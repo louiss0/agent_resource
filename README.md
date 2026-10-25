@@ -3,8 +3,9 @@
 Agent Resource is a Mamba command-line application for managing resources
 consumed by AI coding harnesses. The current scope provides application help
 and version reporting, read-only discovery of project-local and user-wide
-skill candidates, inspection of a selected skill's instructions, and completed
-bounded validation of one selected skill.
+skill candidates, inspection of a selected skill's instructions, completed
+bounded validation of one selected skill, and read-only native Agent
+inspection/validation for Claude, Codex, and the common Pi profile.
 
 ## Requirements
 
@@ -29,13 +30,14 @@ dart run bin/agent_resource.dart --version
 ```
 
 The no-argument and `--help` invocations show root help. Root help lists the
-single `skill` group; `skill --help` lists its `discover`, `inspect`, and
+`skill` and `agent` groups; `skill --help` lists its `discover`, `inspect`, and
 `validate` child commands. There are no root-level aliases, so all skill
 workflows use the `skill ...` command path. Unsupported commands and options
 fail with a nonzero exit status.
 
 ```text
 dart run bin/agent_resource.dart skill --help
+dart run bin/agent_resource.dart agent --help
 ```
 
 ## Commands
@@ -177,6 +179,51 @@ Filesystem/I/O and other operational command errors are plain human-readable
 stderr failures with status 1, rather than fabricated reports. At the
 executable boundary, color is disabled on Mamba's exported Chalk instance, so
 report JSON is raw and directly parseable on either stream.
+
+### Inspect or validate a native Agent definition
+
+```text
+dart run bin/agent_resource.dart agent inspect ./reviewer.md --harness claude
+dart run bin/agent_resource.dart agent validate ./reviewer.toml --harness codex --format json
+dart run bin/agent_resource.dart agent inspect ./reviewer.md --harness pi --show-instructions
+dart run bin/agent_resource.dart agent inspect --request ./bound-role.json
+```
+
+Native Agent files require an explicit harness: `claude`, `codex`, or `pi`.
+Markdown is not auto-detected. The common Pi profile requires name,
+description, a qualified `provider/model-id`, and a nonempty CSV using the
+currently evidenced shared tools `read`, `grep`, `find`, and `ls`. Claude,
+Codex standalone, and Codex config-bound roles retain their distinct native
+schemas; Skill naming and directory rules are not applied to Agents.
+
+A bound Codex role is selected with a versioned JSON request containing its
+declaring config, role key, operation, and explicit working-directory context.
+Its native `config_file` remains relative to the declaring config. Bound roles
+may use native name/description/instruction fallback; standalone files may not.
+The request schema and exact examples are documented in
+`docs/specs/native-agent-inspection.md`.
+
+Agent output defaults to text. `--format json` produces a versioned success
+envelope with native form/evidence, source and binding provenance, validation
+coverage, references, capabilities, and parent requirements. These are static
+observations, not proof of runtime activation, model/tool availability,
+permissions, sandboxing, or harness compatibility. No Agent, hook, MCP server,
+extension, credential helper, model registry, or network service is executed
+or probed.
+
+Reports omit instruction bodies by default and instead include byte/scalar
+lengths and SHA-256. `agent inspect --show-instructions` explicitly includes
+the exact free-form instructions, which may be private. Unknown or sensitive
+declarations are not dumped.
+
+A complete `agent inspect` may succeed with `ready: false` and failed candidate
+diagnostics. `agent validate` is the correctness gate and returns status 2 for
+blocking violations without a success JSON report. Usage/general failures use
+status 1, incomplete required analysis or exhausted budgets status 3, and
+linked-file/safety refusals status 4. Both operations are read-only and create
+no management records, caches, logs, staging, or backups. Agent discovery,
+lifecycle operations, composition, conversion, and parent changes are not yet
+implemented.
 
 ## Analyze
 

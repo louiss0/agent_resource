@@ -103,6 +103,7 @@ void main() {
         expect(_containsToken(output, control), isTrue, reason: control);
       }
       expect(_containsCommandEntry(output, 'skill'), isTrue);
+      expect(_containsCommandEntry(output, 'agent'), isTrue);
       for (final command in [
         'discover',
         'inspect',
@@ -140,6 +141,18 @@ void main() {
           },
         );
       }
+    });
+
+    group('agent', () {
+      test('help lists native inspection commands', () async {
+        final result = _expectSuccess(
+          await createExecutor().fake().execute(['agent', '--help']),
+          isNotEmpty,
+        );
+        for (final command in ['inspect', 'validate']) {
+          expect(_containsCommandEntry(result.output!, command), isTrue);
+        }
+      });
     });
 
     for (final leaf in ['discover', 'inspect', 'validate']) {

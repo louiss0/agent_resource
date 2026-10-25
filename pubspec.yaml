@@ -3,8 +3,10 @@ description: Manage resources consumed by AI coding harnesses.
 environment:
   sdk: ^3.13.2
 dependencies:
+  crypto: ^3.0.7
   mamba: any
   path: any
+  toml: ^0.18.0
   yaml: ^3.1.4
 dev_dependencies:
   lints: any
