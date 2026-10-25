@@ -100,6 +100,7 @@ void main() {
         expect(_containsToken(output, control), isTrue, reason: control);
       }
       expect(_containsCommandEntry(output, 'discover'), isTrue);
+      expect(_containsCommandEntry(output, 'inspect'), isTrue);
       for (final command in ['validate', 'install', 'adopt']) {
         expect(
           _containsCommandEntry(output, command),

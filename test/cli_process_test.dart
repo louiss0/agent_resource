@@ -218,6 +218,8 @@ void main() {
           expect(sandbox.snapshot(), equals(before));
         });
       },
+      // Seven sequential subprocesses each have a 20-second deadline.
+      timeout: const Timeout(Duration(minutes: 3)),
     );
 
     test('timeout kills the child, drains streams, and permits cleanup', () async {

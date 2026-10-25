@@ -57,6 +57,38 @@ validity, management ownership, or whether a consuming harness will discover
 an occurrence; a filesystem failure rejects the whole invocation rather than
 returning partial JSON.
 
+### Inspect one skill directory
+
+```text
+dart run bin/agent_resource.dart inspect --skill <directory>
+```
+
+`inspect` requires the explicit named `--skill` directory selection. Relative
+paths are resolved against the current working directory and returned as
+normalized absolute lexical paths; a selected directory link is allowed without
+canonicalizing its returned path. The command checks only the immediate exact
+`SKILL.md` entry. An absent marker, directory, or link reports
+`"hasSkillFile": false` and `"content": null`; a regular file reports
+`"hasSkillFile": true` and its exact decoded text, including line endings,
+trailing whitespace, and empty content.
+
+Successful output is exactly one JSON object with these fields:
+
+```json
+{"path":"/absolute/selected/directory","hasSkillFile":true,"content":"..."}
+```
+
+Marker reads are strict UTF-8 (with the standard leading UTF-8 BOM behavior)
+and are limited to 1,048,576 bytes; a file requiring more bytes is rejected.
+The implementation reads at most one byte beyond that limit to detect an
+oversized marker. Failures are reported on stderr with a nonzero status and do
+not produce partial JSON on stdout.
+
+Inspection is read-only and non-recursive. It does not follow a linked
+`SKILL.md`, read nested markers, parse frontmatter, validate skill content,
+infer destination or installation scope, record management ownership, or claim
+compatibility with any consuming harness.
+
 ## Analyze
 
 ```text
