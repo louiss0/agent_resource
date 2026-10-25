@@ -1,0 +1,11 @@
+include: package:lints/recommended.yaml
+
+analyzer:
+  language:
+    strict-inference: true
+
+linter:
+  rules:
+    - no_dynamic_casts
+    - no_raw_types
+    - strict_top_level_inference

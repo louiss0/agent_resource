@@ -1,0 +1,9 @@
+name: agent_resource
+description: Manage resources consumed by AI coding harnesses.
+environment:
+  sdk: ^3.13.2
+dependencies:
+  mamba: any
+dev_dependencies:
+  lints: any
+  test: any
