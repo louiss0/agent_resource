@@ -99,7 +99,8 @@ void main() {
       for (final control in ['--help', '-h', '--version', '-v']) {
         expect(_containsToken(output, control), isTrue, reason: control);
       }
-      for (final command in ['discover', 'validate', 'install', 'adopt']) {
+      expect(_containsCommandEntry(output, 'discover'), isTrue);
+      for (final command in ['validate', 'install', 'adopt']) {
         expect(
           _containsCommandEntry(output, command),
           isFalse,

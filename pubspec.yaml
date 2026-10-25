@@ -4,6 +4,7 @@ environment:
   sdk: ^3.13.2
 dependencies:
   mamba: any
+  path: any
 dev_dependencies:
   lints: any
   test: any

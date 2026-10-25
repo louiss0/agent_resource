@@ -1,9 +1,9 @@
 # Agent Resource
 
 Agent Resource is a Mamba command-line application for managing resources
-consumed by AI coding harnesses. The current foundation only provides the
-application identity, root help, and version reporting; resource operations
-are not implemented yet.
+consumed by AI coding harnesses. The current scope provides application help
+and version reporting plus read-only discovery of project-local skill
+candidates.
 
 ## Requirements
 
@@ -29,6 +29,33 @@ dart run bin/agent_resource.dart --version
 
 The no-argument and `--help` invocations show the root help. Unsupported
 commands and options fail with a nonzero exit status.
+
+## Commands
+
+### Discover project-local skills
+
+```text
+dart run bin/agent_resource.dart discover --project <directory>
+```
+
+`discover` requires an explicit existing project directory and prints a JSON
+object containing read-only discovery occurrences. It inspects only the
+immediate real directories under these project-local locations, in this fixed
+order:
+
+- `.agents/skills` (`shared`)
+- `.claude/skills` (`claude`)
+- `.codex/skills` (`codex`)
+
+Each occurrence reports its absolute normalized path, destination,
+`installationScope: "project"`, and whether the candidate contains a regular
+`SKILL.md` file. Missing locations are empty; files in place of configured scan
+directories are errors. Symlinked or junction directories and ordinary files
+at candidate level are ignored. Discovery does not recurse, parse skill
+contents, validate formats, or mutate the project. It makes no claim about
+validity, management ownership, or whether a consuming harness will discover
+an occurrence; a filesystem failure rejects the whole invocation rather than
+returning partial JSON.
 
 ## Analyze
 
