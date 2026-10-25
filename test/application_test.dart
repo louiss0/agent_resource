@@ -101,7 +101,8 @@ void main() {
       }
       expect(_containsCommandEntry(output, 'discover'), isTrue);
       expect(_containsCommandEntry(output, 'inspect'), isTrue);
-      for (final command in ['validate', 'install', 'adopt']) {
+      expect(_containsCommandEntry(output, 'validate'), isTrue);
+      for (final command in ['install', 'adopt']) {
         expect(
           _containsCommandEntry(output, command),
           isFalse,
