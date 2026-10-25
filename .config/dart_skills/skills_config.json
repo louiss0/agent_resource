@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "installations": {
+    "generic": {
+      "package:mamba": {
+        "skills": [
+          {
+            "name": "mamba-framework",
+            "installedAt": "2026-10-21T20:53:31.080852Z",
+            "contentHash": "s3iAl2qbXcEJsWAmXkUGJQ==",
+            "path": "skills/mamba-framework"
+          }
+        ]
+      }
+    },
+    "claude": {
+      "package:mamba": {
+        "skills": [
+          {
+            "name": "mamba-framework",
+            "installedAt": "2026-10-21T20:53:32.027659Z",
+            "contentHash": "aDuAO8BajdybLj1yy0YSzQ==",
+            "path": "skills/mamba-framework"
+          }
+        ]
+      }
+    }
+  }
+}
