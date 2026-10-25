@@ -217,14 +217,17 @@ void main() {
         });
       });
 
-      test('requires --project before command execution', () async {
-        final result = _expectFailure(
-          await _execute(const []),
-          phase: MambaExecutionPhase.parse,
-          messageToken: 'project',
-        );
-        expect(result.error.commandPath, ['agent_resource', 'discover']);
-      });
+      test(
+        'requires exactly one discovery root before command execution',
+        () async {
+          final result = _expectFailure(
+            await _execute(const []),
+            phase: MambaExecutionPhase.parse,
+            messageToken: 'At least one selected option is required',
+          );
+          expect(result.error.commandPath, ['agent_resource', 'discover']);
+        },
+      );
 
       test('requires a value for --project', () async {
         final result = _expectFailure(

@@ -4,39 +4,68 @@ import 'dart:io';
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
-final class DiscoverCommand(final String Function(String) _discover)
-    extends Command {
-  this : super(options: [_project]);
+enum DiscoveryScope { project, user }
 
-  static final _project = StringOption.required(
-    'project',
-    description: 'Project directory to inspect.',
+typedef DiscoverOperation = String Function(String root, DiscoveryScope scope);
+
+final class DiscoverCommand(final DiscoverOperation _discover) extends Command {
+  this
+    : super(
+        selectedOptions: [_selection],
+        longDescription:
+            'Select exactly one explicit root: --project for project-local '
+            'skills or --home for user-wide skills. Neither root is '
+            'inferred from the environment. Beneath the selected root, scan '
+            '.agents/skills (shared), .claude/skills (claude), and '
+            '.codex/skills (codex). Home occurrences report installationScope '
+            'user; project occurrences report project. Only immediate ordinary '
+            'directories are candidates; ordinary files and linked scan or '
+            'candidate directories are excluded. SKILL.md presence requires a '
+            'regular file, not a link. Discovery is read-only, non-recursive, '
+            'and does not claim validation, ownership, or consuming-harness '
+            'compatibility.',
+      );
+
+  static final _selection = SelectedOptions<String>.required(
+    [
+      PairStringOption('project', description: 'Project directory to inspect.'),
+      PairStringOption('home', description: 'User home directory to inspect.'),
+    ],
+    description: 'Select exactly one discovery root.',
+    single: true,
   );
 
   @override
   String get name => 'discover';
 
   @override
-  String get shortDescription => 'Discover project-local skills.';
+  String get shortDescription => 'Discover project-local and user-wide skills.';
 
   @override
   String run(ValueOf valueOf, List<String> args) {
-    final project = valueOf(_project);
-    if (project.trim().isEmpty) {
-      throw MambaException('The --project directory must not be blank.');
+    final selection = valueOf(_selection);
+    final entry = selection.entries.single;
+    final root = entry.value;
+    if (root.trim().isEmpty) {
+      throw MambaException('The --${entry.key} directory must not be blank.');
     }
 
-    return _discover(project);
+    final scope = switch (entry.key) {
+      'project' => DiscoveryScope.project,
+      'home' => DiscoveryScope.user,
+      _ => throw StateError('Unknown discovery selection: ${entry.key}'),
+    };
+    return _discover(root, scope);
   }
 }
 
-String discoverProjectSkills(String project) {
-  final projectPath = p.normalize(Directory(project).absolute.path);
-  _requireProjectDirectory(projectPath);
+String discoverSkills(String root, DiscoveryScope scope) {
+  final rootPath = p.normalize(Directory(root).absolute.path);
+  _requireRootDirectory(rootPath, scope);
 
   final occurrences = <Map<String, Object>>[];
   for (final destination in _destinations) {
-    occurrences.addAll(_discoverDestination(projectPath, destination));
+    occurrences.addAll(_discoverDestination(rootPath, destination, scope));
   }
 
   return jsonEncode({'occurrences': occurrences});
@@ -49,24 +78,29 @@ const _destinations =
       (name: 'codex', harnessDirectory: '.codex', skillsDirectory: 'skills'),
     ];
 
-void _requireProjectDirectory(String projectPath) {
-  final type = _fileSystemType(projectPath, followLinks: true);
+void _requireRootDirectory(String rootPath, DiscoveryScope scope) {
+  final type = _fileSystemType(rootPath, followLinks: true);
   if (type == FileSystemEntityType.directory) {
     return;
   }
 
+  final label = switch (scope) {
+    DiscoveryScope.project => 'Project',
+    DiscoveryScope.user => 'Home',
+  };
   if (type == FileSystemEntityType.notFound) {
-    throw MambaException('Project directory does not exist: $projectPath');
+    throw MambaException('$label directory does not exist: $rootPath');
   }
-  throw MambaException('Project path is not a directory: $projectPath');
+  throw MambaException('$label path is not a directory: $rootPath');
 }
 
 List<Map<String, Object>> _discoverDestination(
-  String projectPath,
+  String rootPath,
   ({String name, String harnessDirectory, String skillsDirectory}) destination,
+  DiscoveryScope scope,
 ) {
   final harnessPath = p.normalize(
-    p.join(projectPath, destination.harnessDirectory),
+    p.join(rootPath, destination.harnessDirectory),
   );
   final harnessType = _fileSystemType(harnessPath, followLinks: false);
   if (harnessType == FileSystemEntityType.notFound ||
@@ -110,12 +144,13 @@ List<Map<String, Object>> _discoverDestination(
           return leftName.compareTo(rightName);
         });
 
+  final installationScope = scope.name;
   return [
     for (final candidate in candidates)
       <String, Object>{
         'path': p.normalize(candidate.absolute.path),
         'destination': destination.name,
-        'installationScope': 'project',
+        'installationScope': installationScope,
         'hasSkillFile': _hasRegularSkillFile(candidate.path),
       },
   ];

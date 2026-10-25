@@ -11,5 +11,5 @@ Executor createExecutor() => Executor(
   'agent_resource',
   'Manage resources consumed by AI coding harnesses.',
   '0.0.0',
-  [DiscoverCommand(discoverProjectSkills), InspectCommand(inspectSkill)],
+  [DiscoverCommand(discoverSkills), InspectCommand(inspectSkill)],
 );

@@ -2,8 +2,8 @@
 
 Agent Resource is a Mamba command-line application for managing resources
 consumed by AI coding harnesses. The current scope provides application help
-and version reporting plus read-only discovery of project-local skill
-candidates.
+and version reporting, read-only discovery of project-local and user-wide
+skill candidates, and inspection of a selected skill's instructions.
 
 ## Requirements
 
@@ -32,15 +32,22 @@ commands and options fail with a nonzero exit status.
 
 ## Commands
 
-### Discover project-local skills
+### Discover project-local or user-wide skills
 
 ```text
 dart run bin/agent_resource.dart discover --project <directory>
+dart run bin/agent_resource.dart discover --home <directory>
 ```
 
-`discover` requires an explicit existing project directory and prints a JSON
-object containing read-only discovery occurrences. It inspects only the
-immediate real directories under these project-local locations, in this fixed
+`discover` requires exactly one explicit root: use `--project` for
+project-local discovery or `--home` for user-wide discovery. Supplying neither
+or both options is rejected before scanning, and no home or other environment
+variable is consulted. Relative roots are resolved against the invocation
+working directory. The selected root may itself be a directory link, but
+linked entries below it are excluded without following their targets.
+
+Discovery prints a JSON object containing read-only occurrences. It inspects
+only the immediate real directories under the selected root, in this fixed
 order:
 
 - `.agents/skills` (`shared`)
@@ -48,14 +55,15 @@ order:
 - `.codex/skills` (`codex`)
 
 Each occurrence reports its absolute normalized path, destination,
-`installationScope: "project"`, and whether the candidate contains a regular
-`SKILL.md` file. Missing locations are empty; files in place of configured scan
-directories are errors. Symlinked or junction directories and ordinary files
-at candidate level are ignored. Discovery does not recurse, parse skill
-contents, validate formats, or mutate the project. It makes no claim about
-validity, management ownership, or whether a consuming harness will discover
-an occurrence; a filesystem failure rejects the whole invocation rather than
-returning partial JSON.
+`installationScope: "project"` for `--project` or `"user"` for `--home`, and
+whether the candidate contains a regular `SKILL.md` file. Missing locations
+are empty; files in place of configured scan directories are errors. Linked
+or junction harness, skills, candidate, and marker entries are excluded, and
+ordinary files at candidate level are ignored. Discovery does not recurse,
+parse skill contents, validate formats, or mutate the selected root. It makes
+no claim about validity, management ownership, origin, or whether a consuming
+harness will discover an occurrence; a filesystem failure rejects the whole
+invocation rather than returning partial JSON.
 
 ### Inspect one skill directory
 
