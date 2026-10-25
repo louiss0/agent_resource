@@ -1,5 +1,9 @@
 # Agent Resource CLI foundation
 
+> **Research-audit amendment — historical milestone and current command tree.** The original foundation intentionally specified an empty root command list; that milestone history remains intact, but its root-level hierarchy is superseded by later implemented features. Current production exposes one `skill` `GroupCommand` under `agent_resource`, with `discover`, `inspect`, and `validate` children and no root-level aliases. Root help lists only `skill`; `agent_resource skill --help` lists the three child commands. Existing foundation tests remain under `test/` and current process assertions initialize all working, home, configuration, and temporary directories before snapshots. Compare names, types, and bytes rather than access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.
+>
+> The later skill specifications also narrow their filesystem claims using the research audit: product destination labels are not universal harness discovery, precedence, or runtime-visibility claims, and trusted stable local roots are assumed without hostile concurrent-race guarantees.
+
 ## Problem Statement
 
 Agent Resource is intended to manage resources consumed by AI coding harnesses while preserving their native formats and compatibility differences. Today its executable is an empty Mamba scaffold with a generic description and no application tests. A user cannot distinguish the intended product from a generated example, and contributors have no verified command-entry baseline on which to add resource workflows.
@@ -37,7 +41,7 @@ Deliver a minimal Agent Resource CLI foundation. Users can invoke the executable
 - Replace the generated description with: "Manage resources consumed by AI coding harnesses."
 - Introduce an application-owned composition function returning a newly configured executor. The production executable and tests use this same function; do not duplicate metadata or command registration in tests.
 - Keep process-facing delivery in the executable through Mamba's production adapter. Use Mamba's fake adapter only in tests.
-- Keep the root command list empty. Do not add demonstration commands, a default action, or speculative discovery, validation, installation, or adoption commands.
+- **Historical foundation state:** Keep the root command list empty for this milestone. Later feature specifications supersede that state for current production with the single `skill` group; do not add root-level aliases or advertise child workflows directly at the root.
 - Use Mamba's built-in help, version, parsing, and error delivery. Do not build a second argument parser or custom help renderer.
 - With no selected command, render root help. Support intrinsic `-h`/`--help` and `-v`/`--version` controls.
 - Unsupported commands and options are rejected, not returned as successful explanatory strings.
@@ -71,7 +75,7 @@ Deliver a minimal Agent Resource CLI foundation. Users can invoke the executable
 11. Root help exposes the short help control `-h`.
 12. Root help exposes the long version control `--version`.
 13. Root help exposes the short version control `-v`.
-14. Root help does not advertise unimplemented discovery, validation, installation, or adoption commands. Assert absence of command entries, not absence of incidental words in prose.
+14. **Historical foundation check:** Root help does not advertise unimplemented discovery, validation, installation, or adoption commands at this milestone. Current production help is governed by the amendment above: root help lists `skill`, and `skill --help` lists `discover`, `inspect`, and `validate`; assert command paths rather than preserving this old empty-root expectation for later features.
 15. Running help repeatedly through one fake adapter produces equivalent successful results, with no accumulated output or changed application identity.
 
 ### Feature 2: Version reporting — 15 acceptance tests
@@ -108,7 +112,7 @@ Deliver a minimal Agent Resource CLI foundation. Users can invoke the executable
 12. Production `--version` exits zero, writes version output to stdout, and leaves stderr empty.
 13. A production unknown-command invocation exits nonzero, writes its diagnostic to stderr, and leaves stdout empty.
 14. A production unknown-option invocation exits nonzero, writes its diagnostic to stderr, and leaves stdout empty.
-15. A sequence of production no-argument, help, version, and rejected invocations leaves the isolated working directory and isolated user-configuration directories unchanged, including nested file contents and link entries if present.
+15. A sequence of production no-argument, help, version, and rejected invocations leaves the complete isolated sandbox unchanged, including working, home, configuration, and temporary directories, nested file contents, and link entries if present.
 
 ### Test implementation and isolation details
 
@@ -118,8 +122,8 @@ Deliver a minimal Agent Resource CLI foundation. Users can invoke the executable
 - Use deliberately unsupported command and option names that cannot collide with intrinsic controls. Do not test combinations of help/version and invalid tokens unless a later product requirement specifies precedence; this milestone adopts Mamba's behavior without redefining it.
 - Construct fresh executors by default. Reuse an adapter only in the explicitly described sequence tests. Never invoke production `main` inside a unit test, because it owns process streams and process exit status.
 - Process tests invoke the real executable using the current Dart SDK and an absolute entry-point path, with the package configuration explicitly resolved when the working directory is temporary. Use argument arrays, not a shell command string.
-- Isolate relevant home/configuration environment variables for subprocesses. Preserve only what the Dart runtime needs; never point tests at the developer's actual harness directories. The isolation contract concerns application effects, not SDK caches outside the sandbox.
-- Seed an isolated directory with a sentinel ordinary file and a nested configuration file before the no-mutation test. Compare names, entry types, and bytes before and after. Do not compare access timestamps, which reads can change.
+- Isolate relevant home/configuration environment variables for subprocesses. Initialize the working, home, configuration, and process-temp directories before taking a full sandbox snapshot. Preserve only what the Dart runtime needs; never point tests at the developer's actual harness directories. The isolation contract concerns application effects, not SDK caches outside the sandbox.
+- Seed each isolated directory with a sentinel ordinary file and a nested configuration file before the no-mutation test. Compare names, entry types, and bytes before and after. Do not compare access timestamps: reads can change them, and read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.
 - Each subprocess gets a finite timeout. On timeout, terminate it, collect available stdout/stderr, and fail the test with the invocation and diagnostic context. Clean temporary directories in teardown even when assertions fail.
 - Windows is a supported environment for this baseline. Use platform path APIs, avoid assumptions about `/tmp`, POSIX permissions, shell escaping, or symlink privileges, and do not require network access after dependencies have been resolved.
 - The absence-of-effects test does not prove universal filesystem or network isolation. Keep the implementation free of resource I/O, management-record creation, and network clients; review this directly rather than adding speculative dependency abstractions.
@@ -139,7 +143,7 @@ Deliver a minimal Agent Resource CLI foundation. Users can invoke the executable
 
 ## Further Notes
 
-This is a deliberately narrow first milestone synthesized from the existing scaffold and domain glossary. The conversation supplies no selected resource workflow, supported harness baseline, or lifecycle safety contract; this spec does not pretend those decisions were made. Later resource features require separate specifications with concrete acceptance criteria.
+This is a deliberately narrow first milestone synthesized from the existing scaffold and domain glossary. The conversation supplies no selected resource workflow, supported harness baseline, or lifecycle safety contract; this spec does not pretend those decisions were made. Later resource features require separate specifications with concrete acceptance criteria. The later research audit preserves this milestone as history while superseding its empty-root hierarchy with the `skill` group and explicitly refusing native precedence/runtime-visibility claims.
 
 The command-level testing seam was proposed in the conversation. The user subsequently directed specification creation without further interviewing; there was no separate explicit seam approval.
 

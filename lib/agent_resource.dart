@@ -1,9 +1,6 @@
 import 'package:mamba/mamba.dart';
 
-import 'discover.dart';
-import 'inspect.dart';
-import 'src/skill_validation.dart';
-import 'validate.dart';
+import 'skill.dart';
 
 /// Creates a fresh executor for the Agent Resource command-line application.
 ///
@@ -13,9 +10,5 @@ Executor createExecutor() => Executor(
   'agent_resource',
   'Manage resources consumed by AI coding harnesses.',
   '0.0.0',
-  [
-    DiscoverCommand(discoverSkills),
-    InspectCommand(inspectSkill),
-    ValidateCommand(validateSkill),
-  ],
+  [SkillCommand()],
 );

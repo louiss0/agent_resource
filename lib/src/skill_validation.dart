@@ -5,6 +5,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
+import 'skill_files.dart';
+
 /// The profile implemented by [validateSkill].
 const skillValidationProfile = 'agentskills-core-ascii-v1';
 
@@ -88,7 +90,7 @@ ValidationReport validateSkill(String skill) {
 
   final diagnostics = <ValidationDiagnostic>[];
   final markerPath = p.join(selectedPath, 'SKILL.md');
-  final markerType = _entityType(markerPath, followLinks: false);
+  final markerType = skillEntityType(markerPath, followLinks: false);
 
   if (markerType == FileSystemEntityType.notFound) {
     diagnostics.add(
@@ -126,7 +128,10 @@ ValidationReport validateSkill(String skill) {
     return _report(selectedPath, diagnostics);
   }
 
-  final markerBytes = _readMarker(markerPath);
+  final markerBytes = readBoundedSkillMarker(
+    markerPath,
+    maxBytes: _maxMarkerBytes,
+  );
   if (markerBytes.length > _maxMarkerBytes) {
     diagnostics.add(
       _diagnostic(
@@ -257,7 +262,7 @@ ValidationReport _report(
 );
 
 void _requireRootDirectory(String path) {
-  final type = _entityType(path, followLinks: true);
+  final type = skillEntityType(path, followLinks: true);
   if (type == FileSystemEntityType.directory) {
     return;
   }
@@ -266,38 +271,6 @@ void _requireRootDirectory(String path) {
     throw MambaException('Skill directory does not exist: $path');
   }
   throw MambaException('Skill path is not a directory: $path');
-}
-
-FileSystemEntityType _entityType(String path, {required bool followLinks}) {
-  try {
-    return FileSystemEntity.typeSync(path, followLinks: followLinks);
-  } on FileSystemException catch (error) {
-    throw MambaException(
-      'Could not inspect filesystem path $path: ${error.message}',
-    );
-  }
-}
-
-List<int> _readMarker(String path) {
-  RandomAccessFile? file;
-  List<int>? bytes;
-  try {
-    file = File(path).openSync();
-    bytes = file.readSync(_maxMarkerBytes + 1);
-  } on FileSystemException catch (error) {
-    throw MambaException('Could not read skill marker $path: ${error.message}');
-  } finally {
-    if (file != null) {
-      try {
-        file.closeSync();
-      } on FileSystemException catch (error) {
-        throw MambaException(
-          'Could not close skill marker $path: ${error.message}',
-        );
-      }
-    }
-  }
-  return bytes;
 }
 
 String _decodeUtf8(List<int> bytes) {

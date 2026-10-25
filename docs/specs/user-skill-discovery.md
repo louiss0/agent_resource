@@ -1,12 +1,16 @@
 # Explicit user-wide skill discovery
 
+> **Research-audit amendment — current command tree and scope.** This amendment supersedes the earlier root-level action-command hierarchy and stale direct invocation examples in this specification. Production exposes one `skill` `GroupCommand` under `agent_resource`, with `discover`, `inspect`, and `validate` children and no root-level aliases. Invoke this feature as `agent_resource skill discover --home ...`; root help lists only `skill`, while `agent_resource skill --help` lists the child commands. Existing tests stay in `test/` and assert the command path `agent_resource` → `skill` → `discover`; process-isolation snapshots initialize all working, home, configuration, and temporary directories before comparison. Compare names, types, and bytes, not access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.
+>
+> The `.agents/skills`, `.claude/skills`, and `.codex/skills` destinations are explicit Agent Resource search conventions. `.agents/skills` labeled `shared` is not a universal multi-harness guarantee; `.codex/skills` is a legacy compatibility scan, not the current documented universal Codex root. Discovery does not claim native precedence or runtime visibility. Lookup is fail-closed: a missing destination is empty only after its parent listing positively confirms absence; lookup or scan failures reject the invocation rather than returning an incomplete inventory. The supported assumption is a trusted, stable local root, not resistance to hostile concurrent replacement.
+
 ## Problem Statement
 
 Project-local discovery cannot inventory skills stored in a user's cross-project environment. A developer needs to inspect an explicitly selected home directory without Agent Resource implicitly scanning the running user's actual home or confusing installation scope with destination and harness compatibility.
 
 ## Solution
 
-Extend discover with --home as an alternative to --project. Require exactly one selected root. Home-mode discovery reports the same discovery occurrences as project mode, but with installationScope set to user. Preserve read-only behavior, deterministic JSON, bounded traversal, and explicit non-claims.
+Extend `skill discover` with --home as an alternative to --project. Require exactly one selected root. Home-mode discovery reports the same discovery occurrences as project mode, but with installationScope set to user. Preserve read-only behavior, deterministic JSON, bounded traversal, and explicit non-claims.
 
 ## User Stories
 
@@ -31,7 +35,7 @@ Extend discover with --home as an alternative to --project. Require exactly one 
 
 ## Implementation Decisions
 
-- Extend the existing discover command rather than adding a parallel root command.
+- Extend the existing `skill discover` child rather than adding a parallel root command or root-level alias.
 - Require exactly one named option: --project or --home. Supplying neither or both is a parser-level failure with a useful diagnostic. Intrinsic command help succeeds without either. Missing option values, unknown options, and unexpected positionals remain parser failures.
 - Use Mamba's declaration relationships for exclusive/required selection, not a second parser. Reject blank selected values at command level before filesystem access.
 - There is no implicit current-directory or actual-home selection. Do not read HOME, USERPROFILE, or XDG variables to determine a discovery root. Relative explicitly selected paths resolve against invocation working directory.
@@ -41,21 +45,21 @@ Extend discover with --home as an alternative to --project. Require exactly one 
 - Preserve ordering: shared, claude, codex; then Dart lexicographic basename order within each destination. Do not deduplicate same-name candidates across destinations.
 - Preserve marker semantics: immediate regular SKILL.md file means true; missing marker, directory, or marker link means false. Do not read marker contents, parse frontmatter, or validate resources.
 - Preserve exclusions: ordinary candidate-level files ignored; linked harness directories, skills directories, and candidate directories skipped without target traversal; no recursive discovery. Filesystem filename casing follows the host environment.
-- Preserve failure semantics: nonexistent or nondirectory selected roots fail with scope-appropriate diagnostics; missing expected destination directories are empty; ordinary files at configured directory positions fail; filesystem access failures fail the whole invocation without partial success JSON.
+- Preserve failure semantics: nonexistent or nondirectory selected roots fail with scope-appropriate diagnostics; a missing expected destination directory is empty only after its parent listing positively confirms absence; ordinary files at configured directory positions fail; parent lookup/listing and other filesystem access failures fail the whole invocation without partial success JSON or an incomplete inventory.
 - Reuse one concrete discovery implementation across scopes, keeping filesystem operations injected through the command composition seam. Do not introduce speculative lifecycle services or management records.
 - No filesystem writes or network access. Discovery alone makes no validity, management ownership, origin, or consuming-harness compatibility claim.
 - Update help and contributor documentation with both explicit forms, exactly-one selection, user scope value, scan conventions, and exclusions. Keep inspect behavior unchanged.
 
 ## Testing Decisions
 
-Use the existing shared executor and real temporary directories as the primary seam. Extend coverage with a separate user-discovery suite rather than duplicating existing project tests. Parameterize parity scenarios where helpful. Keep command groups affiliated with agent_resource and discover only. Use complete Mamba result assertions and small production checks through the existing bounded process helper.
+Use the existing shared executor and real temporary directories as the primary seam. Extend coverage with a separate user-discovery suite rather than duplicating existing project tests. Parameterize parity scenarios where helpful. Keep command groups affiliated with `agent_resource` → `skill` → `discover`, not a root-level discover command. Use complete Mamba result assertions and small production checks through the existing bounded process helper.
 
 The following are 15 acceptance checks per feature area; combine related assertions into focused tests rather than requiring 45 separate test functions.
 
 ### Feature 1: Explicit root selection — 15 checks
 
-1. Root help still advertises discover and inspect.
-2. Discover help exposes both root options.
+1. Root help advertises the `skill` group, not root-level discover or inspect aliases.
+2. `skill --help` lists discover, inspect, and validate; discover help exposes both root options.
 3. Help explains their exactly-one selection contract.
 4. Help succeeds without selecting either root.
 5. Omitting both roots fails with a selection diagnostic.
@@ -92,7 +96,7 @@ The following are 15 acceptance checks per feature area; combine related asserti
 
 1. An explicit selected home is authoritative even when process HOME/USERPROFILE point elsewhere.
 2. A missing root selection never inventories environment-derived home contents.
-3. Missing expected destination directories do not get created.
+3. Missing expected destination directories are positively confirmed absent from parent listings and do not get created.
 4. A file at a harness-directory position fails without partial output.
 5. A file at a skills-directory position fails without partial output.
 6. A linked harness directory is skipped without following its target.
@@ -106,17 +110,17 @@ The following are 15 acceptance checks per feature area; combine related asserti
 14. Production home discovery returns equivalent decoded JSON on stdout, empty stderr, and zero status.
 15. Production invalid selection fails on stderr with nonzero status and empty stdout.
 
-Link-dependent checks explicitly skip with reasons where permissions prevent link creation. Use no privileged permission changes and never inspect the developer's actual home. Production tests redirect home/config variables to disposable fixtures. Compare entries and bytes rather than access timestamps. Preserve bounded subprocess deadlines and unconditional fixture cleanup. Run focused tests during development, analysis regularly, then full tests, formatting, and separate standards/spec review before committing.
+Link-dependent checks explicitly skip with reasons where permissions prevent link creation. Use no privileged permission changes and never inspect the developer's actual home. Production tests redirect home/config variables to disposable fixtures, initializing all environment directories before taking full snapshots. Compare entries and bytes rather than access timestamps; read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates. Preserve bounded subprocess deadlines and unconditional fixture cleanup. Run focused tests during development, analysis regularly, then full tests, formatting, and separate standards/spec review before committing.
 
 ## Out of Scope
 
 - Automatic actual-home detection, merging project and home inventories, recursive workspace searches, or scanning multiple supplied homes.
 - Alternate custom CLAUDE_CONFIG_DIR/CODEX_HOME conventions or environment-derived roots.
-- Harness profiles, official compatibility certification, validation, linting, origin inference, and management ownership detection.
+- Harness profiles, official compatibility certification, validation, linting, origin inference, management ownership detection, native precedence, or runtime-visibility claims.
 - New resource types, installations, adoption, mutation plans, backups, removal, or other writes.
 - Changing inspect output, changing discovery JSON keys, human-oriented tables, and output-schema versioning.
 - Securing the scan against concurrent malicious filesystem replacement; this remains an observation-based read-only scan.
 
 ## Further Notes
 
-The user selected user-wide discovery after project-local discovery and skill inspection were completed. Explicit --home selection and reuse of the three existing destination conventions keep the slice bounded and avoid implicitly reading the real user environment. Continue with the established command-level temporary-filesystem seam, preserve unrelated concurrent work, and commit intended changes to the current branch. Use openai/gpt-5.6-luna for subagents unless explicitly changed.
+The user selected user-wide discovery after project-local discovery and skill inspection were completed. Explicit --home selection and reuse of the three existing destination conventions keep the slice bounded and avoid implicitly reading the real user environment. The research audit adds positive parent-listing confirmation before treating a destination as absent and requires operational failures to refuse incomplete inventories. These are observations under a trusted stable-local-root assumption, not hostile-race resistance. The destination labels remain product conventions: `.agents/skills` is not a universal shared root and `.codex/skills` is a legacy compatibility scan, not the current documented universal Codex root. Continue with the established command-level temporary-filesystem seam, preserve unrelated concurrent work, and commit intended changes to the current branch. Use openai/gpt-5.6-luna for subagents unless explicitly changed.

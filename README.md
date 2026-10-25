@@ -3,7 +3,8 @@
 Agent Resource is a Mamba command-line application for managing resources
 consumed by AI coding harnesses. The current scope provides application help
 and version reporting, read-only discovery of project-local and user-wide
-skill candidates, and inspection of a selected skill's instructions.
+skill candidates, inspection of a selected skill's instructions, and completed
+bounded validation of one selected skill.
 
 ## Requirements
 
@@ -27,19 +28,26 @@ dart run bin/agent_resource.dart --help
 dart run bin/agent_resource.dart --version
 ```
 
-The no-argument and `--help` invocations show the root help. Unsupported
-commands and options fail with a nonzero exit status.
+The no-argument and `--help` invocations show root help. Root help lists the
+single `skill` group; `skill --help` lists its `discover`, `inspect`, and
+`validate` child commands. There are no root-level aliases, so all skill
+workflows use the `skill ...` command path. Unsupported commands and options
+fail with a nonzero exit status.
+
+```text
+dart run bin/agent_resource.dart skill --help
+```
 
 ## Commands
 
 ### Discover project-local or user-wide skills
 
 ```text
-dart run bin/agent_resource.dart discover --project <directory>
-dart run bin/agent_resource.dart discover --home <directory>
+dart run bin/agent_resource.dart skill discover --project <directory>
+dart run bin/agent_resource.dart skill discover --home <directory>
 ```
 
-`discover` requires exactly one explicit root: use `--project` for
+`skill discover` requires exactly one explicit root: use `--project` for
 project-local discovery or `--home` for user-wide discovery. Supplying neither
 or both options is rejected before scanning, and no home or other environment
 variable is consulted. Relative roots are resolved against the invocation
@@ -48,30 +56,41 @@ linked entries below it are excluded without following their targets.
 
 Discovery prints a JSON object containing read-only occurrences. It inspects
 only the immediate real directories under the selected root, in this fixed
-order:
+product-convention order:
 
 - `.agents/skills` (`shared`)
 - `.claude/skills` (`claude`)
 - `.codex/skills` (`codex`)
 
+These destinations are Agent Resource search conventions, not a universal
+multi-harness discovery profile. The shared `.agents/skills` label does not
+prove that every harness reads the occurrence. The `.codex/skills` scan is
+retained for legacy compatibility and is not the current documented universal
+Codex root. Inventory also makes no claim about native precedence or runtime
+visibility in Claude, Codex, or another consumer.
+
 Each occurrence reports its absolute normalized path, destination,
 `installationScope: "project"` for `--project` or `"user"` for `--home`, and
 whether the candidate contains a regular `SKILL.md` file. Missing locations
-are empty; files in place of configured scan directories are errors. Linked
-or junction harness, skills, candidate, and marker entries are excluded, and
-ordinary files at candidate level are ignored. Discovery does not recurse,
+are empty only after their parent listing positively confirms absence; a lookup
+or scan failure rejects the whole invocation rather than presenting an
+incomplete inventory. Files in place of configured scan directories are errors.
+Linked or junction harness, skills, candidate, and marker entries are excluded,
+and ordinary files at candidate level are ignored. Discovery does not recurse,
 parse skill contents, validate formats, or mutate the selected root. It makes
 no claim about validity, management ownership, origin, or whether a consuming
 harness will discover an occurrence; a filesystem failure rejects the whole
-invocation rather than returning partial JSON.
+invocation rather than returning partial JSON. The scan assumes a trusted,
+stable local root and does not claim resistance to hostile concurrent
+filesystem replacement.
 
 ### Inspect one skill directory
 
 ```text
-dart run bin/agent_resource.dart inspect --skill <directory>
+dart run bin/agent_resource.dart skill inspect --skill <directory>
 ```
 
-`inspect` requires the explicit named `--skill` directory selection. Relative
+`skill inspect` requires the explicit named `--skill` directory selection. Relative
 paths are resolved against the current working directory and returned as
 normalized absolute lexical paths; a selected directory link is allowed without
 canonicalizing its returned path. The command checks only the immediate exact
@@ -100,10 +119,10 @@ compatibility with any consuming harness.
 ### Validate one skill directory
 
 ```text
-dart run bin/agent_resource.dart validate --skill <directory>
+dart run bin/agent_resource.dart skill validate --skill <directory>
 ```
 
-`validate` requires the explicit named `--skill` directory. It applies the
+`skill validate` requires the explicit named `--skill` directory. It applies the
 named bounded product profile `agentskills-core-ascii-v1` against the pinned
 Agent Skills baseline at commit
 `69ef37e9424c0a7ea9dd2293b559e43ec8176379`. A selected skill directory may be
@@ -152,11 +171,12 @@ and `message`; `category` is `specification`, `product`, or `advisory`,
 name or `null`. `valid` is true exactly when there are no error diagnostics;
 advisory warnings alone remain valid. Valid reports are written to stdout with
 status 0. An invalid report is still the same JSON shape, but is written to
-stderr by a status-2 failure. Malformed UTF-8 is a product diagnostic in an
-invalid report, not an operational error. Filesystem/I/O and other operational
-command errors are plain human-readable stderr failures with status 1, rather
-than fabricated reports. ANSI styling is disabled at the executable boundary
-so report JSON is directly parseable on either stream.
+stderr by a status-2 failure. Malformed UTF-8 is a product diagnostic in that
+invalid report and therefore also uses status 2, not operational status 1.
+Filesystem/I/O and other operational command errors are plain human-readable
+stderr failures with status 1, rather than fabricated reports. At the
+executable boundary, color is disabled on Mamba's exported Chalk instance, so
+report JSON is raw and directly parseable on either stream.
 
 ## Analyze
 
@@ -177,5 +197,8 @@ dart test
 ```
 
 The process-boundary tests run the executable with isolated temporary working,
-home, and configuration directories. They do not require network access after
-dependencies have been resolved.
+home, and configuration directories, initializing all of those environment
+directories before taking full snapshots. They compare entries, types, and
+bytes rather than access timestamps; read-only behavior does not claim that
+SDK/file-system reads cause no physical access-time updates. They do not
+require network access after dependencies have been resolved.

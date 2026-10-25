@@ -25,8 +25,9 @@ MambaSuccessResult _expectSuccess(MambaExecutionResult result, Matcher output) {
 
 MambaFailureResult _expectFailure(
   MambaExecutionResult result,
-  String diagnosticToken,
-) {
+  String diagnosticToken, {
+  List<String>? commandPath,
+}) {
   expect(
     result,
     isA<MambaFailureResult>()
@@ -42,9 +43,11 @@ MambaFailureResult _expectFailure(
           'phase',
           MambaExecutionPhase.parse,
         )
-        .having((value) => value.error.commandPath, 'command path', [
-          'agent_resource',
-        ]),
+        .having(
+          (value) => value.error.commandPath,
+          'command path',
+          commandPath ?? ['agent_resource'],
+        ),
   );
   return result as MambaFailureResult;
 }
@@ -99,10 +102,14 @@ void main() {
       for (final control in ['--help', '-h', '--version', '-v']) {
         expect(_containsToken(output, control), isTrue, reason: control);
       }
-      expect(_containsCommandEntry(output, 'discover'), isTrue);
-      expect(_containsCommandEntry(output, 'inspect'), isTrue);
-      expect(_containsCommandEntry(output, 'validate'), isTrue);
-      for (final command in ['install', 'adopt']) {
+      expect(_containsCommandEntry(output, 'skill'), isTrue);
+      for (final command in [
+        'discover',
+        'inspect',
+        'validate',
+        'install',
+        'adopt',
+      ]) {
         expect(
           _containsCommandEntry(output, command),
           isFalse,
@@ -110,6 +117,36 @@ void main() {
         );
       }
     });
+
+    group('skill', () {
+      for (final arguments in [
+        const <String>[],
+        const ['--help'],
+      ]) {
+        test(
+          '${arguments.isEmpty ? 'no arguments' : '--help'} lists all three skill commands',
+          () async {
+            final result = _expectSuccess(
+              await createExecutor().fake().execute(['skill', ...arguments]),
+              isNotEmpty,
+            );
+            for (final command in ['discover', 'inspect', 'validate']) {
+              expect(
+                _containsCommandEntry(result.output!, command),
+                isTrue,
+                reason: command,
+              );
+            }
+          },
+        );
+      }
+    });
+
+    for (final leaf in ['discover', 'inspect', 'validate']) {
+      test('rejects root-level $leaf invocation', () async {
+        _expectFailure(await createExecutor().fake().execute([leaf]), leaf);
+      });
+    }
 
     test('repeated root help requests remain equivalent', () async {
       final adapter = createExecutor().fake();

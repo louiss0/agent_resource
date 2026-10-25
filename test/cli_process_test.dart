@@ -14,10 +14,12 @@ final class _Sandbox {
   _Sandbox(this.root)
     : work = Directory('${root.path}${Platform.pathSeparator}work'),
       home = Directory('${root.path}${Platform.pathSeparator}home'),
-      config = Directory('${root.path}${Platform.pathSeparator}config') {
+      config = Directory('${root.path}${Platform.pathSeparator}config'),
+      temp = Directory('${root.path}${Platform.pathSeparator}temp') {
     work.createSync(recursive: true);
     home.createSync(recursive: true);
     config.createSync(recursive: true);
+    temp.createSync(recursive: true);
     Directory('${config.path}${Platform.pathSeparator}nested').createSync();
     File('${work.path}${Platform.pathSeparator}sentinel.txt')
         .writeAsStringSync('do not change');
@@ -30,23 +32,16 @@ final class _Sandbox {
   final Directory work;
   final Directory home;
   final Directory config;
+  final Directory temp;
 
   Map<String, String> snapshot() {
-    final entries = <String, String>{};
-    for (final (label, directory) in [
-      ('work', work),
-      ('home', home),
-      ('config', config),
-    ]) {
-      entries['$label/'] = 'directory';
-      for (final entity in directory.listSync(
-        recursive: true,
-        followLinks: false,
-      )) {
-        final relative = _relativePath(directory.path, entity.path);
+    final entries = <String, String>{'.': 'directory'};
+
+    void visit(Directory directory) {
+      for (final entity in directory.listSync(followLinks: false)) {
+        final relative = _relativePath(root.path, entity.path);
         final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
-        final key = '$label/$relative';
-        entries[key] = switch (type) {
+        entries[relative] = switch (type) {
           FileSystemEntityType.file =>
             'file:${base64Encode(File(entity.path).readAsBytesSync())}',
           FileSystemEntityType.directory => 'directory',
@@ -54,8 +49,13 @@ final class _Sandbox {
           FileSystemEntityType.notFound => 'not-found',
           _ => 'other',
         };
+        if (type == FileSystemEntityType.directory) {
+          visit(Directory(entity.path));
+        }
       }
     }
+
+    visit(root);
     final keys = entries.keys.toList()..sort();
     return <String, String>{for (final key in keys) key: entries[key]!};
   }

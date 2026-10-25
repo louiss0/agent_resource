@@ -1,12 +1,16 @@
 # Read-only project skill discovery
 
+> **Research-audit amendment — current command tree and scope.** This amendment supersedes the earlier root-level action-command hierarchy and stale direct invocation examples in this specification. Production exposes one `skill` `GroupCommand` under `agent_resource`, with `discover`, `inspect`, and `validate` children and no root-level aliases. Invoke this feature as `agent_resource skill discover ...`; root help lists only `skill`, while `agent_resource skill --help` lists the child commands. Existing tests stay in `test/` and assert the command path `agent_resource` → `skill` → `discover`; process-isolation snapshots initialize all working, home, configuration, and temporary directories before comparison. Compare names, types, and bytes, not access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.
+>
+> The `.agents/skills`, `.claude/skills`, and `.codex/skills` destinations are explicit Agent Resource search conventions. `.agents/skills` labeled `shared` is not a universal multi-harness guarantee; `.codex/skills` is a legacy compatibility scan, not the current documented universal Codex root. Discovery does not claim native precedence or runtime visibility. Lookup is fail-closed: a missing destination is empty only after its parent listing positively confirms absence; lookup or scan failures reject the invocation rather than returning an incomplete inventory. The supported assumption is a trusted, stable local root, not resistance to hostile concurrent replacement.
+
 ## Problem Statement
 
 A developer needs to see which skill candidates exist in a selected project without modifying resources, adopting installations, or assuming a harness discovers every location. Agent Resource currently provides only help and version reporting.
 
 ## Solution
 
-Add `discover --project <directory>` to report discovery occurrences from that project's shared, Claude-specific, and Codex-specific skill destinations. Return deterministic JSON with location, project installation scope, destination, and the presence of a regular SKILL.md file. Discovery establishes neither validity nor management ownership or consuming-harness compatibility.
+Add `skill discover --project <directory>` to report discovery occurrences from that project's shared, Claude-specific, and Codex-specific skill destinations. Return deterministic JSON with location, project installation scope, destination, and the presence of a regular SKILL.md file. Discovery establishes neither validity nor management ownership or consuming-harness compatibility.
 
 ## User Stories
 
@@ -31,7 +35,7 @@ Add `discover --project <directory>` to report discovery occurrences from that p
 
 ## Implementation Decisions
 
-- Register one root `discover` action command using the existing shared executor. Start it with the required Mamba command generator.
+- Register `discover` as a child of the `skill` group using the existing shared executor and the required Mamba command generator. Do not register a root-level discover alias.
 - Require named `--project` input. No implicit current-directory or home-directory selection. Resolve relative input against invocation working directory; emit normalized absolute lexical paths without canonicalizing candidate targets.
 - A selected project must exist as a directory. An explicitly selected project root may itself be a directory link; exclusions below apply below that selected boundary.
 - Scan only immediate directory candidates at `.agents/skills`, `.claude/skills`, and `.codex/skills`, corresponding respectively to destination values `shared`, `claude`, and `codex`.
@@ -40,7 +44,7 @@ Add `discover --project <directory>` to report discovery occurrences from that p
 - Include every immediate ordinary directory candidate, even without SKILL.md. The marker boolean is true only for an ordinary file with exact filename `SKILL.md`; links and directories at that name count as false. Do not read or parse marker contents. Filename case sensitivity follows the filesystem; do not invent case-insensitive matching.
 - Fixed output order: shared destination, Claude-specific destination, Codex-specific destination; then Dart string lexicographic order of candidate basenames within each destination. Do not deduplicate by resource name or content.
 - Ignore ordinary files at candidate level. Ignore links/junctions below the selected project boundary, including links at the harness-directory, skills-directory, candidate-directory, or marker positions. Do not recurse into candidate contents for discovery.
-- A missing expected destination directory is empty. An ordinary file occupying a required harness-directory or skills-directory position is a user-facing error. Filesystem access failures fail the whole invocation; never emit a partial success object.
+- A missing expected destination directory is empty only after listing its parent directory and positively confirming that the expected entry is absent. An ordinary file occupying a required harness-directory or skills-directory position is a user-facing error. Parent lookup/listing and other filesystem access failures fail the whole invocation; never emit a partial success object or incomplete inventory.
 - Read-only is an application behavior, not an operating-system sandbox guarantee: create no resources, records, caches, backups, or network clients. No adoption, validation, linting, compatibility certification, or mutation plan is performed.
 - Return successful JSON through Mamba; throw user-facing MambaException for domain/filesystem failures. Use intrinsic help and parser rejection rather than implementing another parser.
 - Extend contributor documentation with real syntax, JSON fields, scan conventions, exclusions, and explicit non-claims. Existing foundation help tests must now allow the implemented discover command while continuing to reject unimplemented workflow advertising.
@@ -48,14 +52,14 @@ Add `discover --project <directory>` to report discovery occurrences from that p
 
 ## Testing Decisions
 
-Test observable command results and filesystem state, not private methods or traversal implementation. Use the shared executor's fake adapter with fresh temporary projects and complete success/failure result assertions. Group tests according to the Mamba command tree. Existing foundation tests and process helpers are prior art. The user approved this command-level filesystem seam when selecting the bounded discovery scope.
+Test observable command results and filesystem state, not private methods or traversal implementation. Use the shared executor's fake adapter with fresh temporary projects and complete success/failure result assertions. Group tests according to the Mamba command tree: `agent_resource` → `skill` → `discover`; no root-level discover test path or alias. Existing foundation tests and process helpers are prior art. Initialize all process working, home, and configuration directories before full snapshots; compare names, types, and bytes rather than access timestamps, and do not claim that SDK/filesystem reads cause no physical timestamp updates. The user approved this command-level filesystem seam when selecting the bounded discovery scope.
 
 The following are 15 acceptance checks per feature area, not a demand for 45 separate test functions. Related checks may share one invocation.
 
 ### Feature 1: Command and output contract — 15 checks
 
-1. Root help advertises the implemented discover command.
-2. Discover help describes project-local skill discovery.
+1. Root help advertises the `skill` group, not a root-level discover alias.
+2. `skill --help` lists discover, inspect, and validate; discover help describes project-local skill discovery.
 3. Discover help exposes the required project option.
 4. Discover help succeeds without providing a project.
 5. Omitting the project input is rejected with nonzero status and useful diagnostic.
@@ -90,8 +94,8 @@ The following are 15 acceptance checks per feature area, not a demand for 45 sep
 
 ### Feature 3: Safety, boundaries, and failure isolation — 15 checks
 
-1. Missing all expected scan directories succeeds without creating them.
-2. Missing only some destinations does not hide candidates in existing destinations.
+1. Missing all expected scan directories succeeds only after parent listings positively confirm each absence, without creating them.
+2. Missing only some destinations is positively confirmed from parent listings and does not hide candidates in existing destinations.
 3. An ordinary file at a harness-directory position fails clearly.
 4. An ordinary file at a skills-directory position fails clearly.
 5. A directory link at a harness-directory position is skipped without scanning its target.
@@ -106,7 +110,7 @@ The following are 15 acceptance checks per feature area, not a demand for 45 sep
 14. A failed project scan followed by a valid scan succeeds without stale failure state.
 15. Results contain no validity, management ownership, or consuming-harness compatibility claims.
 
-Link cases must explicitly skip with a reason where OS permissions cannot create links; never silently mark them tested. Do not require privileged permission changes to simulate access failures on Windows. Cover filesystem failure translation with reliably reproducible invalid entry layouts; inspect catch boundaries for other I/O errors. Compare state rather than access timestamps. Apply finite subprocess timeouts and unconditional fixture cleanup. Run focused tests throughout, static analysis regularly, full suite and formatting at the end, then independent standards/spec reviews before committing.
+Link cases must explicitly skip with a reason where OS permissions cannot create links; never silently mark them tested. Do not require privileged permission changes to simulate access failures on Windows. Cover positive parent-listing absence confirmation and filesystem failure translation with reliably reproducible invalid entry layouts; an operational lookup failure must reject rather than produce an incomplete inventory. Inspect catch boundaries for other I/O errors. Compare state rather than access timestamps. Apply finite subprocess timeouts and unconditional fixture cleanup. Run focused tests throughout, static analysis regularly, full suite and formatting at the end, then independent standards/spec reviews before committing.
 
 ## Out of Scope
 
@@ -114,12 +118,12 @@ Link cases must explicitly skip with a reason where OS permissions cannot create
 - Resources other than skills, including agent definitions, prompts, context, plugins, and MCP server configuration.
 - Recursive workspace scanning, links as discoverable occurrences, following candidate links, file watching, or manifests.
 - Skill content parsing, validation profiles, linting, origin inference, managed installation detection, adoption, and mutation.
-- Harness profiles or claims that a native harness actually consumes any listed occurrence.
+- Harness profiles or claims that a native harness actually consumes any listed occurrence, including precedence or runtime visibility claims.
 - Output tables, filtering, JSON schema versioning, and interactive project selection.
 - Filesystem atomicity or protection against concurrent malicious directory replacement; the scan is observational, not a secured sandbox.
 
 ## Further Notes
 
-This follows the CLI foundation milestone. The user explicitly selected read-only discovery and approved the three project-local destinations and temporary-filesystem command seam. JSON and detailed exclusion/error semantics are implementation choices for this small slice, not claims about native harness behavior.
+This follows the CLI foundation milestone. The user explicitly selected read-only discovery and approved the three project-local destinations and temporary-filesystem command seam. JSON and detailed exclusion/error semantics are implementation choices for this small slice, not claims about native harness behavior. The research audit further requires positive parent-listing confirmation for absence and fail-closed operational errors: an unreadable lookup refuses to present a partial inventory. The destination labels remain product conventions (`.agents/skills` is not a universal shared root; `.codex/skills` is a legacy compatibility scan), and the trusted stable-local-root assumption does not provide hostile-race resistance.
 
 Use openai/gpt-5.6-luna for subagents unless a later explicit model choice changes that instruction. Preserve unrelated untracked setup files and commit only intended feature changes to the current branch after verification and review.

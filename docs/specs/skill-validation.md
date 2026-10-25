@@ -1,12 +1,16 @@
 # Skill validation: agentskills-core-ascii-v1
 
+> **Research-audit amendment — current command tree and scope.** This amendment supersedes the earlier root-level action-command hierarchy and stale direct invocation examples in this specification. Production exposes one `skill` `GroupCommand` under `agent_resource`, with `discover`, `inspect`, and `validate` children and no root-level aliases. Invoke this feature as `agent_resource skill validate --skill ...`; root help lists only `skill`, while `agent_resource skill --help` lists the child commands. Existing tests stay in `test/` and assert the command path `agent_resource` → `skill` → `validate`; process-isolation snapshots initialize all working, home, configuration, and temporary directories before comparison. Compare names, types, and bytes, not access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.
+>
+> The approved `agentskills-core-ascii-v1` profile and its pinned baseline are unchanged. Validation reports are bounded observations, not native harness acceptance, precedence, runtime visibility, or safety claims. The `.agents/skills`/`.claude/skills`/`.codex/skills` labels remain product search conventions; `.agents/skills` is not a universal multi-harness guarantee and `.codex/skills` is a legacy compatibility scan, not the current documented universal Codex root. The supported assumption is a trusted, stable local root, not hostile concurrent-race resistance.
+
 ## Problem Statement
 
 Discovery identifies candidates and inspection returns text, but neither tells a developer whether a skill satisfies a stated correctness profile. The recovered research shows that normative Agent Skills prose, reference-validator behavior, and harness acceptance are different contracts. Users need reproducible, structured checks without executing resource code or overstating compliance.
 
 ## Solution
 
-Add validate --skill <directory> using the named agentskills-core-ascii-v1 validation profile. Identify the pinned documentation baseline in every report. Distinguish specification errors, explicit product restrictions, and advisory warnings. Produce machine-readable reports with meaningful exit statuses. This is bounded static validation, not a safety certificate, universal compliance claim, lint suite, or runtime compatibility check.
+Add skill validate --skill <directory> using the named agentskills-core-ascii-v1 validation profile. Identify the pinned documentation baseline in every report. Distinguish specification errors, explicit product restrictions, and advisory warnings. Produce machine-readable reports with meaningful exit statuses. This is bounded static validation, not a safety certificate, universal compliance claim, lint suite, or runtime compatibility check.
 
 ## User Stories
 
@@ -39,7 +43,7 @@ Add validate --skill <directory> using the named agentskills-core-ascii-v1 valid
 
 ### Command, report, and delivery
 
-- Register a root validate action using the Mamba generator and shared executor. Require --skill; no implicit selection. Help succeeds without a selected directory; ordinary parser rejection remains framework-owned. Reject blank input before filesystem work.
+- Register `validate` as a child of the `skill` group using the Mamba generator and shared executor; do not add a root-level validate alias. Require --skill; no implicit selection. Help succeeds without a selected directory; ordinary parser rejection remains framework-owned. Reject blank input before filesystem work.
 - Inject the validation operation through a focused callback, binding the real operation at composition time. Keep reports and diagnostics typed internally; serialize only at the boundary. Use matching generators for new supported class declarations.
 - Successful completed-valid report: JSON stdout, status 0. Completed-invalid report: JSON stderr, status 2 through MambaException. Operational failure: human-readable stderr, status 1, no report or partial JSON. Do not change process-global exit state inside a command or replace the production adapter.
 - Disable ANSI color on Mamba's exported Chalk instance at the executable boundary so status-2 stderr is directly parseable JSON. Retain create() delivery, not a replacement adapter or custom parser; do not strip styling in report tests.
@@ -50,11 +54,11 @@ Add validate --skill <directory> using the named agentskills-core-ascii-v1 valid
 ### Read and parse boundaries
 
 - Selected root must exist as a directory; nonexistent/nondirectory or inaccessible root is an operational failure. Explicit root directory links are permitted and retain their lexical selected path. This is a disclosed explicit content root, not authorization to traverse internal links.
-- Read only the immediate SKILL.md. Absence produces specification error SKILL_FILE_MISSING; nonregular marker such as a directory produces SKILL_FILE_TYPE; marker links produce product error SKILL_FILE_LINK without target reads. No nested resource traversal, reference fetching, scripts, commands, dependency installation, or file writes.
+- Read only the immediate SKILL.md. Absence produces specification error SKILL_FILE_MISSING only after a successful parent listing positively confirms absence. Lookup or parent-listing failures remain operational errors rather than a missing-marker verdict. A nonregular marker such as a directory produces SKILL_FILE_TYPE; marker links produce product error SKILL_FILE_LINK without target reads. No nested resource traversal, reference fetching, scripts, commands, dependency installation, or file writes.
 - Max marker bytes: 1,048,576, inclusive. Bound actual reads to cap plus one bytes and close every opened file on all paths. Over-cap produces product FILE_SIZE_LIMIT. Strict UTF-8 decoding with standard leading BOM behavior; malformed bytes produce product UTF8_INVALID. Actual I/O failures remain operational failures.
 - Frontmatter starts with an exact standalone --- opening line and ends with a standalone --- closing line. Accept LF/CRLF; do not split a quoted or indented scalar merely because it contains --- characters. Body is ignored and may be empty. Missing opening/closing delimiters produce FRONTMATTER_MISSING or FRONTMATTER_UNTERMINATED specification diagnostics.
 - YAML frontmatter bytes are capped at 65,536, inclusive; over-cap produces product FRONTMATTER_SIZE_LIMIT. Use a non-executing YAML parser as a declared direct dependency. Do not repair malformed values or coerce scalars. Malformed YAML and duplicate keys produce specification YAML_INVALID. Mapping required (FRONTMATTER_MAPPING); nonstring top-level keys produce product FRONTMATTER_KEYS.
-- Byte caps bound input size, not a guaranteed CPU/memory/sandbox property for every parser behavior. No hostile concurrent-replacement resistance is claimed. Portable lookup errors can collapse to absence; report only observations and do not claim a secured filesystem boundary.
+- Byte caps bound input size, not a guaranteed CPU/memory/sandbox property for every parser behavior. No hostile concurrent-replacement resistance or secured filesystem boundary is claimed. Fail closed when portable `typeSync` lookup results cannot be positively confirmed as absence through successful parent listings.
 
 ### Metadata checks
 
@@ -70,14 +74,14 @@ Add validate --skill <directory> using the named agentskills-core-ascii-v1 valid
 
 ## Testing Decisions
 
-Use the established shared-executor temporary-filesystem seam, with complete result metadata and exact/matched report JSON. A small real-process smoke set verifies status and stream delivery for valid, invalid, and operational outcomes. Do not duplicate entire fake suites or test private parser internals. Command groups mirror agent_resource then validate. User approved continuing the existing read-only command seam.
+Use the established shared-executor temporary-filesystem seam, with complete result metadata and exact/matched report JSON. A small real-process smoke set verifies status and stream delivery for valid, invalid, and operational outcomes. Do not duplicate entire fake suites or test private parser internals. Command groups mirror `agent_resource` → `skill` → `validate`; root aliases are not tested or supported. Initialize all working, home, and configuration directories before full snapshots. User approved continuing the existing read-only command seam.
 
 These are 15 acceptance checks per feature area (60 checks total), not 60 mandatory separate test functions. Parameterize related boundaries and accumulate assertions where one invocation proves several facts.
 
 ### Feature 1: Command and report contract — 15 checks
 
-1. Root help advertises validate while preserving discover/inspect.
-2. Validate help explains profile, scope, and non-claims.
+1. Root help advertises the `skill` group, not a root-level validate alias.
+2. `skill --help` lists discover, inspect, and validate; validate help explains profile, scope, and non-claims.
 3. Help exposes --skill and succeeds without a selected root.
 4. Missing --skill is parser rejection.
 5. Missing option value is parser rejection.
@@ -137,7 +141,7 @@ These are 15 acceptance checks per feature area (60 checks total), not 60 mandat
 5. Nested markers do not satisfy the immediate marker requirement.
 6. Marker size exactly 1 MiB is accepted when contents are otherwise valid.
 7. Marker size cap plus one is rejected with product FILE_SIZE_LIMIT.
-8. Malformed UTF-8 yields product UTF8_INVALID and no coercion.
+8. Malformed UTF-8 yields product UTF8_INVALID in a completed invalid report on stderr with status 2, not an operational status-1 failure.
 9. Standard UTF-8 BOM behavior is supported.
 10. YAML frontmatter byte cap exactly 64 KiB passes; cap plus one fails with product restriction.
 11. Multibyte fixtures prove file/frontmatter budgets count bytes, not characters.
@@ -146,7 +150,7 @@ These are 15 acceptance checks per feature area (60 checks total), not 60 mandat
 14. Read files close on success and failure, allowing fixture teardown/rename on Windows.
 15. Reports and documentation make no security/runtime compatibility, universal compliance, origin, or ownership claims.
 
-Explicitly skip link checks with reasons where OS permissions prevent link creation. Avoid privileged permission manipulation. Redirect production home/config environments to temporary fixtures. Compare entry types and bytes, not access timestamps. Use existing finite subprocess deadlines and unconditional cleanup. Run focused tests and analysis during implementation, full tests and formatting at the end, then independent Standards and Spec reviews before committing intended changes only.
+Explicitly skip link checks with reasons where OS permissions prevent link creation. Avoid privileged permission manipulation. Redirect production home/config environments to temporary fixtures, initializing all environment directories before taking full snapshots. Compare entry types and bytes, not access timestamps; read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates. Use existing finite subprocess deadlines and unconditional cleanup. Run focused tests and analysis during implementation, full tests and formatting at the end, then independent Standards and Spec reviews before committing intended changes only.
 
 ## Out of Scope
 
@@ -158,4 +162,4 @@ Explicitly skip link checks with reasons where OS permissions prevent link creat
 
 ## Further Notes
 
-The user explicitly approved this core profile and nonzero-invalid exit contract after the existing research was recovered. Six research notes are now local and the research worktrees have been removed; their branches and a local untracked source archive remain preserved. No fresh research is needed to restate already documented facts. Use openai/gpt-5.6-luna for subagents and preserve unrelated source archives/concurrent changes.
+The user explicitly approved this core profile and nonzero-invalid exit contract after the existing research was recovered; the profile remains unchanged by this audit. Malformed UTF-8 is a completed invalid report with status 2, while filesystem/I/O failures remain operational status 1. Research-derived scope notes keep `.agents/skills`, `.claude/skills`, and `.codex/skills` as product conventions rather than native precedence/runtime guarantees, and assume a trusted stable local root without hostile-race resistance. Six research notes are now local and the research worktrees have been removed; their branches and a local untracked source archive remain preserved. No fresh research is needed to restate already documented facts. Use openai/gpt-5.6-luna for subagents and preserve unrelated source archives/concurrent changes.

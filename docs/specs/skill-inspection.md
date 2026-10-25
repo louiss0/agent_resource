@@ -1,12 +1,16 @@
 # Read-only skill inspection
 
+> **Research-audit amendment — current command tree and scope.** This amendment supersedes the earlier root-level action-command hierarchy and stale direct invocation examples in this specification. Production exposes one `skill` `GroupCommand` under `agent_resource`, with `discover`, `inspect`, and `validate` children and no root-level aliases. Invoke this feature as `agent_resource skill inspect --skill ...`; root help lists only `skill`, while `agent_resource skill --help` lists the child commands. Existing tests stay in `test/` and assert the command path `agent_resource` → `skill` → `inspect`; process-isolation snapshots initialize all working, home, configuration, and temporary directories before comparison. Compare names, types, and bytes, not access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.
+>
+> Inspection reports observations only. The product destination conventions are not native harness guarantees: `.agents/skills` is not universal shared discovery, and `.codex/skills` is retained as a legacy compatibility scan rather than the current documented universal Codex root. Inspection does not claim native precedence or runtime visibility. The supported assumption is a trusted, stable local root; observation-based reads do not resist hostile concurrent replacement.
+
 ## Problem Statement
 
 Discovery lists project-local skill candidates but does not let a user inspect one candidate's instructions through Agent Resource. Users need to select a directory and obtain its marker text without modifying it or confusing file presence with validity, management ownership, or harness compatibility.
 
 ## Solution
 
-Add `inspect --skill <directory>`. Return deterministic JSON describing the explicitly selected directory, whether its immediate SKILL.md is a regular file, and its decoded UTF-8 text when present. Inspection remains read-only and makes no validation claims.
+Add `skill inspect --skill <directory>`. Return deterministic JSON describing the explicitly selected directory, whether its immediate SKILL.md is a regular file, and its decoded UTF-8 text when present. Inspection remains read-only and makes no validation claims.
 
 ## User Stories
 
@@ -31,11 +35,11 @@ Add `inspect --skill <directory>`. Return deterministic JSON describing the expl
 
 ## Implementation Decisions
 
-- Add one root inspect action through the existing shared executor. Use the project's Mamba command generator and intrinsic parser/help behavior.
+- Add `inspect` as a child of the `skill` group through the existing shared executor. Use the project's Mamba command generator and intrinsic parser/help behavior; do not add a root-level inspect alias.
 - Require named --skill input; no implicit current-directory selection. Reject blank values, nonexistent selected directories, and ordinary files selected as directories with useful diagnostics.
 - Normalize the selected directory to an absolute lexical path. Relative input resolves against the invocation working directory. An explicitly selected root may itself be a directory link; do not canonicalize its returned path.
 - Successful JSON has exactly path (string), hasSkillFile (boolean), and content (string or null). No installation scope or destination is inferred from a selected path.
-- Check only the immediate exact marker name SKILL.md. Ordinary file means true with decoded text; absence, directory, or link means false with null. Filesystem case matching follows the host filesystem. Do not recurse or read other entries.
+- Check only the immediate exact marker name SKILL.md. Ordinary file means true with decoded text; absence, directory, or link means false with null. Because `typeSync` can report `notFound` for lookup errors, report absence only after a successful parent listing positively confirms the marker is absent. Lookup or parent-listing failures are operational errors, not an absent-marker result. Filesystem case matching follows the host filesystem. Do not recurse or read other entries.
 - Decode strict UTF-8 using standard Dart decoding, including its standard leading UTF-8 BOM handling. Preserve text, newlines, trailing whitespace, and lack of final newline; do not trim or parse it.
 - Limit reads to 1,048,576 marker bytes. Exactly that many bytes is permitted. Reject larger files with a user-facing diagnostic naming the limit. Bound the actual read to limit plus one bytes rather than relying solely on a size observation, and close the file on all paths.
 - Convert filesystem access and decoding failures into user-facing MambaException failures. Emit no partial JSON on failure. Concurrent malicious replacement is not prevented by an observation-based check; do not claim filesystem sandboxing or atomicity.
@@ -51,8 +55,8 @@ These are 15 acceptance checks per feature area; combine related assertions into
 
 ### Feature 1: Command and JSON contract — 15 checks
 
-1. Root help advertises inspect alongside discover.
-2. Inspect help explains skill inspection.
+1. Root help advertises the `skill` group, not root-level inspect/discover aliases.
+2. `skill --help` lists discover, inspect, and validate; inspect help explains skill inspection.
 3. Inspect help exposes the required skill option.
 4. Inspect help succeeds without a skill value.
 5. Missing skill input is rejected with a useful diagnostic and nonzero status.
@@ -116,4 +120,4 @@ Explicitly skip link-dependent checks with a reason if the environment cannot cr
 
 ## Further Notes
 
-The user selected skill inspection as the next milestone after project-local discovery. The bounded JSON contract and 1 MiB cap are conservative implementation choices for this slice. Continue using the existing command-level temporary-filesystem testing seam. Preserve unrelated untracked files and do not rewrite concurrent commits. Use openai/gpt-5.6-luna for subagents unless explicitly changed.
+The user selected skill inspection as the next milestone after project-local discovery. The bounded JSON contract and 1 MiB cap are conservative implementation choices for this slice. The research audit keeps inspection observational: a trusted stable local root is assumed, but no hostile concurrent-race resistance, native precedence, or runtime-visibility claim is made. Continue using the existing command-level temporary-filesystem testing seam. Preserve unrelated untracked files and do not rewrite concurrent commits. Use openai/gpt-5.6-luna for subagents unless explicitly changed.
