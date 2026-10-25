@@ -149,7 +149,7 @@ void main() {
           await createExecutor().fake().execute(['agent', '--help']),
           isNotEmpty,
         );
-        for (final command in ['inspect', 'validate']) {
+        for (final command in ['list', 'inspect', 'validate']) {
           expect(_containsCommandEntry(result.output!, command), isTrue);
         }
       });

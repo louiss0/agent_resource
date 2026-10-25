@@ -6,7 +6,7 @@ Agent Resource currently inspects Skills but cannot inspect native Agent definit
 
 ## Current command tree
 
-All commands belong under the `agent` group; the user's latest hierarchy decision supersedes any older root-level interpretation. `AgentCommand` owns its related child definitions in `lib/agent.dart`, and the executor registers `AgentCommand` beside `SkillCommand`. No root-level `inspect` or `validate` alias is added.
+All commands belong under the `agent` group; the user's latest hierarchy decision supersedes any older root-level interpretation. `AgentCommand` owns its related child definitions in `lib/agent.dart`, and the executor registers `AgentCommand` beside `SkillCommand`. No root-level `list`, `inspect` or `validate` alias is added. The later discovery checkpoint adds `agent list`; this specification governs the inspection and validation children.
 
 ```text
 agent_resource agent inspect [<native-file>] [--request <request.json>]

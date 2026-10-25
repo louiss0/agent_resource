@@ -180,6 +180,38 @@ stderr failures with status 1, rather than fabricated reports. At the
 executable boundary, color is disabled on Mamba's exported Chalk instance, so
 report JSON is raw and directly parseable on either stream.
 
+### Discover native Agent occurrences
+
+```text
+dart run bin/agent_resource.dart agent list
+dart run bin/agent_resource.dart agent list --scope user --home <directory/>
+dart run bin/agent_resource.dart agent list --scope all --format json
+```
+
+`agent list` defaults to project scope and supports explicit `user` and `all`
+scopes plus an optional harness filter. Claude and Codex project inventory uses
+the bounded working-directory-to-project-root ancestor chain; Pi uses the
+selected project boundary. Explicit context options cover cwd, project root,
+home, Claude config, Codex home, Pi Agent home, and additional Claude read
+roots. Environment-provided native homes are used only when corresponding
+options are absent.
+
+Inventory includes recursive Claude/Codex candidates, Codex config-declared
+roles, and Pi native/Shared candidates. Immediate Pi files are distinguished
+from deeper provider-specific candidates. Reports contain stable occurrence
+IDs, source/binding provenance, native identity and validation observations,
+collisions, and explicit coverage. Occurrence IDs are not managed installation
+IDs or mutation selectors. Every occurrence remains `unmanaged` and
+`notVerified`; `--verify` does not invent a baseline.
+
+Traversal is limited to 64 ancestors, depth 16, 20,000 entries, 2,000
+directories, and 64 MiB of aggregate metadata. Linked candidates are reported
+without reading their targets; linked roots are refused. Missing roots are
+confirmed absent. Malformed candidates remain visible in a successful static
+inventory, while inaccessible required coverage or budget exhaustion fails
+with status 3 and no partial JSON. Inventory does not claim runtime activation,
+native precedence, uniqueness winners, ownership, or modification status.
+
 ### Inspect or validate a native Agent definition
 
 ```text

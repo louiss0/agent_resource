@@ -128,3 +128,76 @@ String _absoluteNormalized(String path) => p.normalize(p.absolute(path));
 
 bool _samePath(String left, String right) =>
     p.equals(_absoluteNormalized(left), _absoluteNormalized(right));
+
+/// The lexical components below the common ancestor of [base] and [path].
+/// The explicit base itself is trusted (as for an explicit working directory),
+/// but derived descendants, including intermediate directories, are not.
+Iterable<String> skillPathComponents(
+  String path, {
+  required String base,
+}) sync* {
+  final target = _absoluteNormalized(path);
+  var common = _absoluteNormalized(base);
+  while (!p.equals(common, target) && !p.isWithin(common, target)) {
+    final parent = p.dirname(common);
+    if (p.equals(parent, common)) break;
+    common = parent;
+  }
+  var current = common;
+  final relative = p.relative(target, from: common);
+  if (relative == '.') return;
+  for (final part in p.split(relative)) {
+    current = p.join(current, part);
+    yield current;
+  }
+}
+
+/// The fail-closed observation contract of [skillEntityType], with streaming
+/// parent checks that retain no directory entries. These checks establish
+/// absence only; they do not enumerate native inventory candidates.
+Future<FileSystemEntityType> skillEntityTypeAsync(
+  String path, {
+  required bool followLinks,
+}) async {
+  final normalized = _absoluteNormalized(path);
+  final observed = _rawEntityType(normalized, followLinks: followLinks);
+  if (observed != FileSystemEntityType.notFound) return observed;
+
+  Future<FileSystemEntityType> confirm(String path, bool follow) async {
+    final parent = p.dirname(path);
+    if (p.equals(parent, path)) {
+      throw MambaException(
+        'Could not confirm whether filesystem path $path exists: '
+        'its parent could not be inspected.',
+      );
+    }
+    final parentType = _rawEntityType(parent, followLinks: true);
+    if (parentType == FileSystemEntityType.notFound) {
+      await confirm(parent, true);
+      return FileSystemEntityType.notFound;
+    }
+    if (parentType != FileSystemEntityType.directory) {
+      return FileSystemEntityType.notFound;
+    }
+    await for (final entry in Directory(parent).list(followLinks: false)) {
+      if (!_samePath(entry.path, path)) continue;
+      final type = _rawEntityType(path, followLinks: follow);
+      if (type == FileSystemEntityType.notFound) {
+        throw MambaException(
+          'Could not classify filesystem path $path after it was listed; '
+          'the lookup may be inaccessible or unstable.',
+        );
+      }
+      return type;
+    }
+    return FileSystemEntityType.notFound;
+  }
+
+  try {
+    return await confirm(normalized, followLinks);
+  } on FileSystemException catch (error) {
+    throw MambaException(
+      'Could not inspect parent directory of $path: ${error.message}',
+    );
+  }
+}

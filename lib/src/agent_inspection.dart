@@ -115,8 +115,8 @@ final class AgentValidationFailed extends AgentValidationStatus {
   String get wireName => 'failed';
 }
 
-/// Required coverage could not complete; reports with this status are never
-/// emitted because incomplete coverage throws status 3 instead.
+/// Required coverage could not complete. Explicit inspection throws instead;
+/// inventory may retain an unsupported linked candidate without target reads.
 final class AgentValidationIncomplete extends AgentValidationStatus {
   const AgentValidationIncomplete() : super._();
 
@@ -124,10 +124,11 @@ final class AgentValidationIncomplete extends AgentValidationStatus {
   String get wireName => 'incomplete';
 }
 
-/// A completed read-only inspection report.
+/// A read-only candidate inspection report.
 ///
-/// The report exists even when the candidate failed validation; operational
-/// and incomplete-coverage failures are thrown instead. Instruction text is
+/// The report exists even when the candidate failed validation. Operational
+/// and incomplete-coverage failures throw, except inventory's explicit opt-in
+/// to observing unsupported links without reading their targets. Instruction text is
 /// never part of the default output; [AgentInspectionInput.showInstructions]
 /// adds it on inspect only.
 final class AgentInspectionReport {
@@ -194,12 +195,17 @@ final class AgentInspectionReport {
     (diagnostic) => diagnostic.severity == AgentDiagnosticSeverity.error,
   );
 
-  /// The sealed validation status; never `incomplete` on a returned report.
+  /// The sealed validation status. Only inventory's unsupported-link
+  /// observation can return incomplete coverage rather than throw.
   AgentValidationStatus get validationStatus =>
-      hasErrors ? const AgentValidationFailed() : const AgentValidationPassed();
+      coverage.contains('link-observation')
+      ? const AgentValidationIncomplete()
+      : hasErrors
+      ? const AgentValidationFailed()
+      : const AgentValidationPassed();
 
-  /// Whether the candidate is ready: errors make it unready, warnings not.
-  bool get ready => !hasErrors;
+  /// Whether required coverage passed; warnings alone do not make it unready.
+  bool get ready => validationStatus is AgentValidationPassed;
 
   /// The exact versioned success envelope for [operation].
   Map<String, Object?> envelope(AgentOperation operation) => <String, Object?>{
@@ -1209,13 +1215,13 @@ Map<String, Object?> _parseDeclaringConfig(String text, String configPath) {
 /// A validated version-1 bound-role request envelope.
 final class _BoundRoleRequest {
   const _BoundRoleRequest({
-    required this.requestPath,
+    this.requestPath,
     required this.configFile,
     required this.roleKey,
     required this.workingDirectory,
   });
 
-  final String requestPath;
+  final String? requestPath;
   final String configFile;
   final String roleKey;
   final String workingDirectory;
@@ -1226,140 +1232,263 @@ AgentInspectionReport _inspectBoundRole(
   String? cwd,
   bool showInstructions,
   AgentOperation operation,
-) {
-  final request = _readRequest(requestFile, cwd, operation);
-  final builder = _ReportBuilder(
-    form: 'codex-config-bound-role',
-    profile: _codexProfile,
-    evidence: <String, Object?>{
-      ..._codexEvidence,
-      'binding': 'codex-config-declared-role',
-    },
+) => _inspectBoundRoleSelection(
+  _readRequest(requestFile, cwd, operation),
+  showInstructions,
+);
+
+/// Inspects one explicitly selected Codex binding without a JSON request file.
+///
+/// Discovery uses this focused entry point so declaration and fallback logic
+/// remains shared with request-driven inspection. The caller supplies native
+/// context explicitly; no ambient configuration is consulted.
+AgentInspectionReport inspectCodexBoundRole({
+  required String configFile,
+  required String roleKey,
+  required String workingDirectory,
+  String? requestFile,
+  bool showInstructions = false,
+}) {
+  if (configFile.trim().isEmpty || roleKey.trim().isEmpty) {
+    throw _usage('A bound role requires nonblank configFile and roleKey.');
+  }
+  return _inspectBoundRoleSelection(
+    _BoundRoleRequest(
+      requestPath: requestFile,
+      configFile: configFile,
+      roleKey: roleKey,
+      workingDirectory: _resolveWorkingDirectory(workingDirectory),
+    ),
+    showInstructions,
   );
-  builder.coverage.add('request-envelope');
-  builder.identityName['bindingHint'] = request.roleKey;
+}
 
-  // Native config_file references retain their native base: the declaring
-  // config file's parent directory.
-  final configPath = _resolvePath(request.workingDirectory, request.configFile);
-  builder.binding = <String, Object?>{
-    'configFile': configPath,
-    'roleKey': request.roleKey,
-    'requestFile': request.requestPath,
-  };
+AgentInspectionReport _inspectBoundRoleSelection(
+  _BoundRoleRequest request,
+  bool showInstructions,
+) => CodexBindingInspection.read(
+  configFile: request.configFile,
+  workingDirectory: request.workingDirectory,
+  requestFile: request.requestPath,
+).inspectRole(request.roleKey, showInstructions: showInstructions);
 
-  final configType = _observeType(configPath, followLinks: false);
-  if (configType == FileSystemEntityType.link) {
-    throw _refusal('Refusing to read the linked declaring config $configPath.');
-  }
-  if (configType == FileSystemEntityType.notFound) {
-    throw _usage('The declaring config does not exist: $configPath');
-  }
-  if (configType != FileSystemEntityType.file) {
-    throw _usage(
-      'The declaring config path is not a regular file: $configPath',
-    );
-  }
-  final configBytes = _readBounded(
-    configPath,
-    _maxConfigBytes,
-    'declaring config',
-  );
-  final configText = _decodeStrictUtf8(configBytes);
-  if (configText == null) {
-    throw _incomplete(
-      'The declaring config $configPath is not valid UTF-8; required read '
-      'coverage is incomplete.',
-    );
-  }
-  final config = _parseDeclaringConfig(configText, configPath);
-  builder.coverage.add('config-parse');
+/// Observes a required metadata read before it occurs.
+typedef AgentMetadataReadObserver = void Function(String path, int maxBytes);
 
-  // Only the explicitly selected [agents.<roleKey>] declaration is read;
-  // unrelated parent keys are not agent fields.
-  final agents = config['agents'];
-  final declaration = agents is Map && agents.containsKey(request.roleKey)
-      ? agents[request.roleKey]
-      : null;
-  if (declaration == null) {
-    throw _usage(
-      'The declaring config $configPath declares no '
-      '[agents.${request.roleKey}] binding.',
-    );
-  }
-  if (declaration is! Map) {
-    builder.error(
-      'DECLARATION_TYPE',
-      AgentDiagnosticCategory.specification,
-      'agents.${request.roleKey}',
-      'The role declaration must be a table.',
-    );
-    _applyBoundFallbacks(builder, request.roleKey, null);
-    return builder.finish(showInstructions: showInstructions);
-  }
-  final declarationMap = Map<String, Object?>.from(declaration);
-  final selection = _validateCodexDeclaration(
-    declarationMap,
-    builder,
-    request.roleKey,
-  );
+/// One parsed Codex declaring config shared by one or more role inspections.
+///
+/// This keeps inventory from reparsing a mixed parent document for every role
+/// while preserving the exact request-driven single-role behavior.
+final class CodexBindingInspection {
+  CodexBindingInspection._({
+    required this.configFile,
+    required this.workingDirectory,
+    required this.requestFile,
+    required this._config,
+    required this._beforeRead,
+  });
 
-  if (selection.configFile != null) {
-    final definitionPath = _resolvePath(
-      p.dirname(configPath),
-      selection.configFile!,
-    );
-    final definitionType = _observeType(definitionPath, followLinks: false);
-    if (definitionType == FileSystemEntityType.link) {
-      throw _refusal(
-        'Refusing to read the linked role definition $definitionPath.',
-      );
+  factory CodexBindingInspection.read({
+    required String configFile,
+    required String workingDirectory,
+    String? requestFile,
+    AgentMetadataReadObserver? beforeRead,
+  }) {
+    if (configFile.trim().isEmpty) {
+      throw _usage('The declaring config path must not be blank.');
     }
-    if (definitionType == FileSystemEntityType.notFound) {
-      throw _incomplete(
-        'The referenced role definition does not exist: $definitionPath',
-      );
-    }
-    if (definitionType != FileSystemEntityType.file) {
-      throw _incomplete(
-        'The referenced role definition is not a regular file: '
-        '$definitionPath',
-      );
-    }
-    builder.definitionFile = definitionPath;
-    builder.coverage.add('definition-read');
-    final bytes = _readBounded(
-      definitionPath,
-      _maxDefinitionBytes,
-      'role definition',
-    );
-    final text = _decodeStrictUtf8(bytes);
-    if (text == null) {
-      builder.error(
-        'UTF8_INVALID',
-        AgentDiagnosticCategory.product,
-        null,
-        'The role definition file is not valid UTF-8; its content was not '
-            'decoded, rewritten, or displayed.',
-      );
-    } else {
-      final fields = _parseTomlCandidate(
-        text,
-        builder,
-        'The role definition file',
-      );
-      if (fields != null) {
-        builder.coverage.add('field-validation');
-        // Bound-role leniency: the role key supplies fallback identity and a
-        // referenced file may omit name and developer_instructions. This
-        // never applies to standalone files.
-        _validateCodexFields(fields, builder, bound: true);
+    final configPath = _resolvePath(workingDirectory, configFile);
+    for (final component in skillPathComponents(
+      configPath,
+      base: workingDirectory,
+    )) {
+      if (_observeType(component, followLinks: false) ==
+          FileSystemEntityType.link) {
+        throw _refusal(
+          'Refusing to read the linked declaring config path $component.',
+        );
       }
     }
+    final configType = _observeType(configPath, followLinks: false);
+    if (configType == FileSystemEntityType.link) {
+      throw _refusal(
+        'Refusing to read the linked declaring config $configPath.',
+      );
+    }
+    if (configType == FileSystemEntityType.notFound) {
+      throw _usage('The declaring config does not exist: $configPath');
+    }
+    if (configType != FileSystemEntityType.file) {
+      throw _usage(
+        'The declaring config path is not a regular file: $configPath',
+      );
+    }
+    beforeRead?.call(configPath, _maxConfigBytes);
+    final configBytes = _readBounded(
+      configPath,
+      _maxConfigBytes,
+      'declaring config',
+    );
+    final configText = _decodeStrictUtf8(configBytes);
+    if (configText == null) {
+      throw _incomplete(
+        'The declaring config $configPath is not valid UTF-8; required read '
+        'coverage is incomplete.',
+      );
+    }
+    return CodexBindingInspection._(
+      configFile: configPath,
+      workingDirectory: workingDirectory,
+      requestFile: requestFile,
+      config: _parseDeclaringConfig(configText, configPath),
+      beforeRead: beforeRead,
+    );
   }
 
-  _applyBoundFallbacks(builder, request.roleKey, selection.description);
-  return builder.finish(showInstructions: showInstructions);
+  final String configFile;
+  final String workingDirectory;
+  final String? requestFile;
+  final Map<String, Object?> _config;
+  final AgentMetadataReadObserver? _beforeRead;
+
+  /// Sorted role-table keys in this declaring layer, excluding scalar global
+  /// agents settings. No precedence is inferred.
+  List<String> get roleKeys {
+    final agents = _config['agents'];
+    if (agents == null) return const <String>[];
+    if (agents is! Map) {
+      throw _incomplete('The declaring config agents value is not a table.');
+    }
+    final keys = <String>[];
+    for (final key in agents.keys) {
+      if (key is! String) {
+        throw _incomplete(
+          'The declaring config contains a non-string role key.',
+        );
+      }
+      if (agents[key] is Map) keys.add(key);
+    }
+    return List<String>.unmodifiable(keys..sort());
+  }
+
+  /// Inspects one role using this already parsed declaring config.
+  /// Inventory alone opts into [observeLinkedDefinition] to retain an incomplete
+  /// linked occurrence. Explicit inspect/validate retain their status-4 refusal.
+  AgentInspectionReport inspectRole(
+    String roleKey, {
+    bool showInstructions = false,
+    bool observeLinkedDefinition = false,
+  }) {
+    if (roleKey.trim().isEmpty) {
+      throw _usage('A bound role requires a nonblank roleKey.');
+    }
+    final agents = _config['agents'];
+    final declaration = agents is Map && agents.containsKey(roleKey)
+        ? agents[roleKey]
+        : null;
+    if (declaration is! Map) {
+      throw _usage(
+        'The declaring config $configFile declares no '
+        '[agents.$roleKey] binding.',
+      );
+    }
+
+    final builder = _ReportBuilder(
+      form: 'codex-config-bound-role',
+      profile: _codexProfile,
+      evidence: <String, Object?>{
+        ..._codexEvidence,
+        'binding': 'codex-config-declared-role',
+      },
+    );
+    builder.coverage.add('config-parse');
+    builder.identityName['bindingHint'] = roleKey;
+    builder.binding = <String, Object?>{
+      'configFile': configFile,
+      'roleKey': roleKey,
+      'requestFile': requestFile,
+    };
+
+    final selection = _validateCodexDeclaration(
+      Map<String, Object?>.from(declaration),
+      builder,
+      roleKey,
+    );
+
+    if (selection.configFile != null) {
+      final definitionPath = _resolvePath(
+        p.dirname(configFile),
+        selection.configFile!,
+      );
+      builder.definitionFile = definitionPath;
+      for (final component in skillPathComponents(
+        definitionPath,
+        base: p.dirname(configFile),
+      )) {
+        if (_observeType(component, followLinks: false) !=
+            FileSystemEntityType.link) {
+          continue;
+        }
+        if (!observeLinkedDefinition) {
+          throw _refusal(
+            'Refusing to read the linked role definition path $component.',
+          );
+        }
+        builder.coverage.add('link-observation');
+        builder.warn(
+          'LINKED_CANDIDATE',
+          AgentDiagnosticCategory.product,
+          null,
+          'The linked candidate was reported without reading its target.',
+        );
+        _applyBoundFallbacks(builder, roleKey, selection.description);
+        return builder.finish(showInstructions: false);
+      }
+      final definitionType = _observeType(definitionPath, followLinks: false);
+      if (definitionType == FileSystemEntityType.notFound) {
+        throw _incomplete(
+          'The referenced role definition does not exist: $definitionPath',
+        );
+      }
+      if (definitionType != FileSystemEntityType.file) {
+        throw _incomplete(
+          'The referenced role definition is not a regular file: '
+          '$definitionPath',
+        );
+      }
+      builder.definitionFile = definitionPath;
+      builder.coverage.add('definition-read');
+      _beforeRead?.call(definitionPath, _maxDefinitionBytes);
+      final bytes = _readBounded(
+        definitionPath,
+        _maxDefinitionBytes,
+        'role definition',
+      );
+      final text = _decodeStrictUtf8(bytes);
+      if (text == null) {
+        builder.error(
+          'UTF8_INVALID',
+          AgentDiagnosticCategory.product,
+          null,
+          'The role definition file is not valid UTF-8; its content was not '
+              'decoded, rewritten, or displayed.',
+        );
+      } else {
+        final fields = _parseTomlCandidate(
+          text,
+          builder,
+          'The role definition file',
+        );
+        if (fields != null) {
+          builder.coverage.add('field-validation');
+          _validateCodexFields(fields, builder, bound: true);
+        }
+      }
+    }
+
+    _applyBoundFallbacks(builder, roleKey, selection.description);
+    return builder.finish(showInstructions: showInstructions);
+  }
 }
 
 /// Validates the selected declaration's native field types and returns its
