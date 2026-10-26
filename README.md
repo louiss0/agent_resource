@@ -252,9 +252,9 @@ A complete `agent inspect` may succeed with `ready: false` and failed candidate
 diagnostics. `agent validate` is the correctness gate and returns status 2 for
 blocking violations without a success JSON report. Usage/general failures use
 status 1, incomplete required analysis or exhausted budgets status 3, and
-linked-file/safety refusals status 4. Both operations are read-only and create
-no management records, caches, logs, staging, or backups. Agent discovery,
-lifecycle operations, composition, conversion, and parent changes are not yet
+linked-file/safety refusals status 4. All Agent operations are read-only and
+create no management records, caches, logs, staging, or backups. Lifecycle
+operations, composition, conversion, and parent changes are not yet
 implemented.
 
 ## Analyze

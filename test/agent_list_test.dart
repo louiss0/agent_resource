@@ -119,7 +119,13 @@ MambaFailureResult _expectFailure(
 
 Map<String, Object?> _report(MambaExecutionResult result) {
   final output = _expectSuccess(result).output!;
-  return Map<String, Object?>.from(jsonDecode(output) as Map<Object?, Object?>);
+  final report = Map<String, Object?>.from(
+    jsonDecode(output) as Map<Object?, Object?>,
+  );
+  // JSON success has no decorative prefix, suffix, or alternate formatting;
+  // the report's complete encoded output is part of the command contract.
+  expect(output, jsonEncode(report));
+  return report;
 }
 
 Map<String, Object?> _data(Map<String, Object?> report) =>
@@ -727,34 +733,33 @@ void main() {
           },
         );
 
+        test('automatic project boundary uses a git marker', () async {
+          await _withSandbox((sandbox) async {
+            _write(sandbox.project, '.git', 'gitdir: elsewhere');
+            _write(sandbox.project, '.claude/agents/root.md', _claude('root'));
+            _write(
+              sandbox.root,
+              '.claude/agents/outside.md',
+              _claude('outside'),
+            );
+            final occurrences = _occurrences(
+              _report(
+                await _execute([
+                  '--cwd',
+                  '${sandbox.work.path}${Platform.pathSeparator}',
+                  '--format',
+                  'json',
+                ]),
+              ),
+            );
+            expect(occurrences, hasLength(1));
+            expect(occurrences.single['path'], contains('root.md'));
+          });
+        });
+
         test(
-          'automatic project boundaries use git markers or cwd fallback',
+          'automatic project boundary falls back to cwd without git',
           () async {
-            await _withSandbox((sandbox) async {
-              _write(sandbox.project, '.git', 'gitdir: elsewhere');
-              _write(
-                sandbox.project,
-                '.claude/agents/root.md',
-                _claude('root'),
-              );
-              _write(
-                sandbox.root,
-                '.claude/agents/outside.md',
-                _claude('outside'),
-              );
-              final occurrences = _occurrences(
-                _report(
-                  await _execute([
-                    '--cwd',
-                    '${sandbox.work.path}${Platform.pathSeparator}',
-                    '--format',
-                    'json',
-                  ]),
-                ),
-              );
-              expect(occurrences, hasLength(1));
-              expect(occurrences.single['path'], contains('root.md'));
-            });
             await _withSandbox((sandbox) async {
               _write(
                 sandbox.project,
@@ -1130,9 +1135,11 @@ void main() {
                   '${current.path}${Platform.pathSeparator}',
                   '--project-root',
                   '${sandbox.project.path}${Platform.pathSeparator}',
+                  '--format',
+                  'json',
                 ]);
                 if (exitCode == 0) {
-                  _expectSuccess(result);
+                  _report(result);
                 } else {
                   _expectFailure(result, exitCode: exitCode);
                 }
@@ -1157,7 +1164,9 @@ void main() {
                 current = Directory(p.join(current.path, 'd$depth'));
               }
               _write(current, 'deep.md', _claude('deep'));
-              _expectSuccess(await _execute(_projectArgs(sandbox)));
+              _report(
+                await _execute([..._projectArgs(sandbox), '--format', 'json']),
+              );
               Directory(p.join(current.path, 'too-deep')).createSync();
               _expectFailure(
                 await _execute(_projectArgs(sandbox)),
@@ -1219,8 +1228,14 @@ void main() {
               handle.truncateSync(1048576);
               handle.closeSync();
             }
-            _expectSuccess(
-              await _execute([..._projectArgs(sandbox), '--harness', 'codex']),
+            _report(
+              await _execute([
+                ..._projectArgs(sandbox),
+                '--harness',
+                'codex',
+                '--format',
+                'json',
+              ]),
             );
             final file = File(p.join(agents.path, 'overflow.toml'));
             final handle = file.openSync(mode: FileMode.write);
@@ -1257,6 +1272,77 @@ void main() {
                 exitCode: 3,
               );
               file.renameSync('${file.path}.closed');
+            });
+          },
+        );
+
+        test(
+          'Pi-only inventory does not scan a Claude/Codex ancestor chain',
+          () async {
+            await _withSandbox((sandbox) async {
+              var current = sandbox.work;
+              for (var index = 0; index < 64; index++) {
+                current = Directory(p.join(current.path, 'deeper'));
+              }
+              current.createSync(recursive: true);
+              _write(sandbox.project, '.pi/agents/worker.md', _pi());
+              final report = _report(
+                await _execute([
+                  '--cwd',
+                  '${current.path}${Platform.pathSeparator}',
+                  '--project-root',
+                  '${sandbox.project.path}${Platform.pathSeparator}',
+                  '--harness',
+                  'pi',
+                  '--format',
+                  'json',
+                ]),
+              );
+              expect(_single(report)['harness'], 'pi');
+              expect(
+                _data(report)['coverage'],
+                isA<Map<Object?, Object?>>().having(
+                  (coverage) => coverage['ancestors'],
+                  'selected Pi boundary',
+                  1,
+                ),
+              );
+            });
+          },
+        );
+
+        test(
+          'deeper linked Pi candidates retain provider-specific form',
+          () async {
+            await _withSandbox((sandbox) async {
+              final agents = Directory(
+                p.join(sandbox.project.path, '.pi', 'agents', 'nested'),
+              )..createSync(recursive: true);
+              final target = _write(sandbox.root, 'target.md', _pi('target'));
+              if (!_tryLink(
+                Link(p.join(agents.path, 'linked.md')),
+                target.path,
+              )) {
+                markTestSkipped('file symlink creation is unavailable');
+                return;
+              }
+              final occurrence = _single(
+                _report(
+                  await _execute([
+                    ..._projectArgs(sandbox),
+                    '--harness',
+                    'pi',
+                    '--format',
+                    'json',
+                  ]),
+                ),
+              );
+              expect(occurrence['eligibility'], 'unsupported-link');
+              expect(occurrence['form'], 'pi-provider-specific-file');
+              expect(
+                jsonEncode(occurrence),
+                isNot(contains('PRIVATE-PI-BODY')),
+              );
             });
           },
         );
@@ -1394,11 +1480,15 @@ void main() {
             );
             _write(sandbox.root, 'sentinel.txt', 'keep');
             final before = _snapshot(sandbox.root);
-            _expectSuccess(await _execute(_projectArgs(sandbox)));
+            _report(
+              await _execute([..._projectArgs(sandbox), '--format', 'json']),
+            );
             file.renameSync('${file.path}.renamed');
             File('${file.path}.renamed').renameSync(file.path);
             file.writeAsStringSync('broken');
-            _expectSuccess(await _execute(_projectArgs(sandbox)));
+            _report(
+              await _execute([..._projectArgs(sandbox), '--format', 'json']),
+            );
             _expectFailure(
               await _execute([
                 '--scope',

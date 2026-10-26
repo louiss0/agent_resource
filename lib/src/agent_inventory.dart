@@ -245,7 +245,9 @@ final class _Inventory {
   }
 
   Future<void> _addProjectRoots() async {
-    final chain = _ancestors();
+    final scanAncestors =
+        _selected(AgentHarness.claude) || _selected(AgentHarness.codex);
+    final chain = scanAncestors ? _ancestors() : [projectRoot];
     ancestors = chain.length;
     for (final ancestor in chain) {
       if (_selected(AgentHarness.claude)) {
@@ -538,7 +540,11 @@ final class _Inventory {
         };
         if (p.extension(child.path) != extension) continue;
         if (childType == FileSystemEntityType.link) {
-          _addLinkedOccurrence(root, child.path);
+          _addLinkedOccurrence(
+            root,
+            child.path,
+            providerSpecific: root.piDistinction && current.depth > 0,
+          );
           continue;
         }
         if (childType != FileSystemEntityType.file) continue;
@@ -679,7 +685,11 @@ final class _Inventory {
     }
   }
 
-  void _addLinkedOccurrence(_Root root, String path) {
+  void _addLinkedOccurrence(
+    _Root root,
+    String path, {
+    bool providerSpecific = false,
+  }) {
     final diagnostic = AgentDiagnostic(
       code: 'LINKED_CANDIDATE',
       category: AgentDiagnosticCategory.product,
@@ -691,9 +701,11 @@ final class _Inventory {
       root: root,
       path: path,
       binding: null,
-      form: root.harness == AgentHarness.pi
-          ? 'pi-agent-file'
-          : '${root.harness.name}-agent-file',
+      form: root.harness != AgentHarness.pi
+          ? '${root.harness.name}-agent-file'
+          : providerSpecific
+          ? 'pi-provider-specific-file'
+          : 'pi-agent-file',
       identity: _unresolvedIdentity(),
       validation: <String, Object?>{
         'status': 'incomplete',
