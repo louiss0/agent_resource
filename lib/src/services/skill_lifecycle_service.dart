@@ -8,11 +8,14 @@ import 'package:yaml/yaml.dart';
 
 import '../skill_files.dart';
 import '../skill_validation.dart';
+import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
 
 enum SkillHarness { claude, codex }
 
 enum SkillDestination { claude, codex, shared }
+
+enum SkillMode { copy, link }
 
 final class SkillInstallInput {
   const new({
@@ -20,12 +23,14 @@ final class SkillInstallInput {
     required this.source,
     required this.destination,
     this.harnesses = const <SkillHarness>[],
+    this.mode = SkillMode.copy,
   });
 
   final LifecycleOptions options;
   final String source;
   final SkillDestination destination;
   final List<SkillHarness> harnesses;
+  final SkillMode mode;
 }
 
 /// Copied-Skill installation and adoption. Later lifecycle operations share
@@ -35,6 +40,11 @@ interface class SkillLifecycleService implements LifecycleResource {
     : state = state ?? LifecycleStateService();
 
   final LifecycleStateService state;
+
+  static const skillKinds = <ArtifactKind>{
+    ArtifactKind.skillCopy,
+    ArtifactKind.skillLink,
+  };
 
   @override
   ArtifactKind get kind => ArtifactKind.skillCopy;
@@ -93,6 +103,9 @@ interface class SkillLifecycleService implements LifecycleResource {
           for (final candidate in candidates) {
             final path = candidate.path;
             final record = _recordAt(records, path, scope);
+            final link = candidate.type == FileSystemEntityType.link
+                ? _linkObservation(path, root)
+                : null;
             occurrences.add(<String, Object?>{
               'occurrenceId': _occurrenceId(scope, selected, path),
               'path': path,
@@ -100,7 +113,13 @@ interface class SkillLifecycleService implements LifecycleResource {
               'destination': selected.name,
               'installationScope': scope.name,
               'hasSkillFile': candidate.hasSkillFile,
-              'eligibility': candidate.eligibility,
+              'eligibility': link?['eligibility'] ?? candidate.eligibility,
+              'nativeLinkKind': link?['nativeLinkKind'],
+              'target': link?['target'],
+              'targetResolved': link?['targetResolved'],
+              'targetValidation': link == null
+                  ? 'notApplicable'
+                  : 'notRequested',
               'installationId': record?.installationId,
               'management': ownershipFailure != null
                   ? 'ownershipUnverified'
@@ -116,7 +135,9 @@ interface class SkillLifecycleService implements LifecycleResource {
           }
         }
       }
-      for (final record in records.where((record) => record.kind == kind)) {
+      for (final record in records.where(
+        (record) => skillKinds.contains(record.kind),
+      )) {
         final alreadyVisible = occurrences.any(
           (occurrence) =>
               occurrence['path'] is String &&
@@ -256,7 +277,7 @@ interface class SkillLifecycleService implements LifecycleResource {
   ) {
     final matches = records.where(
       (record) =>
-          record.kind == kind &&
+          skillKinds.contains(record.kind) &&
           record.scope == scope &&
           record.lifecycle == 'live' &&
           p.equals(record.location, path),
@@ -322,6 +343,9 @@ interface class SkillLifecycleService implements LifecycleResource {
       resource: _ProfiledSkillResource(
         this,
         _selectedProfiles(input.destination, input.harnesses),
+        input.mode == SkillMode.link
+            ? ArtifactKind.skillLink
+            : ArtifactKind.skillCopy,
       ),
       context: context,
       source: source,
@@ -343,10 +367,15 @@ interface class SkillLifecycleService implements LifecycleResource {
         exitCode: 4,
       );
     }
+    final entryKind =
+        state.io.type(location, followLinks: false) == FileSystemEntityType.link
+        ? ArtifactKind.skillLink
+        : ArtifactKind.skillCopy;
     return state.adopt(
       resource: _ProfiledSkillResource(
         this,
         _selectedProfiles(input.destination, input.harnesses),
+        entryKind,
       ),
       context: context,
       location: location,
@@ -355,18 +384,30 @@ interface class SkillLifecycleService implements LifecycleResource {
     );
   }
 
-  Future<LifecycleResult> replace(LifecycleReplaceInput input) async {
+  Future<LifecycleResult> replace(
+    LifecycleReplaceInput input, {
+    SkillMode? mode,
+  }) async {
     final context = LifecycleContext.resolve(input.options);
     _requireMutationScope(context);
     final record = state.recordById(context, input.installationId);
-    if (record.kind != kind) {
+    if (!skillKinds.contains(record.kind)) {
       throw MambaException(
-        'The selected installation is not a Skill copy.',
+        'The selected installation is not a managed Skill.',
         exitCode: 4,
       );
     }
+    final replacementKind = switch (mode) {
+      null => record.kind,
+      SkillMode.copy => ArtifactKind.skillCopy,
+      SkillMode.link => ArtifactKind.skillLink,
+    };
     return state.replace(
-      resource: _ProfiledSkillResource(this, record.validatedProfiles),
+      resource: _ProfiledSkillResource(
+        this,
+        record.validatedProfiles,
+        replacementKind,
+      ),
       context: context,
       installationId: input.installationId,
       source: context.resolvePath(input.source),
@@ -376,8 +417,13 @@ interface class SkillLifecycleService implements LifecycleResource {
   Future<LifecycleResult> remove(LifecycleIdInput input) async {
     final context = LifecycleContext.resolve(input.options);
     _requireMutationScope(context);
+    final record = state.recordById(context, input.id);
     return state.remove(
-      resource: this,
+      resource: _ProfiledSkillResource(
+        this,
+        record.validatedProfiles,
+        record.kind,
+      ),
       context: context,
       installationId: input.id,
     );
@@ -386,9 +432,18 @@ interface class SkillLifecycleService implements LifecycleResource {
   Future<LifecycleResult> restore(LifecycleIdInput input) async {
     final context = LifecycleContext.resolve(input.options);
     _requireMutationScope(context);
-    final record = state.installationForBackup(context, input.id, kind);
+    final backupKind = state.artifactKindForBackup(
+      context,
+      input.id,
+      skillKinds,
+    );
+    final record = state.installationForBackup(context, input.id, backupKind);
     return state.restore(
-      resource: _ProfiledSkillResource(this, record.validatedProfiles),
+      resource: _ProfiledSkillResource(
+        this,
+        record.validatedProfiles,
+        backupKind,
+      ),
       context: context,
       backupId: input.id,
     );
@@ -398,21 +453,48 @@ interface class SkillLifecycleService implements LifecycleResource {
     LifecycleOptions options, {
     String? transactionId,
     String? action,
-  }) => state.recover(
-    resource: this,
-    context: LifecycleContext.resolve(options),
-    transactionId: transactionId,
-    action: action,
-  );
+  }) {
+    final context = LifecycleContext.resolve(options);
+    final resource = transactionId == null
+        ? this
+        : _ProfiledSkillResource(
+            this,
+            const <String>[],
+            state.artifactKindForTransaction(
+              context,
+              transactionId,
+              skillKinds,
+            ),
+          );
+    return state.recover(
+      resource: resource,
+      context: context,
+      transactionId: transactionId,
+      action: action,
+      kinds: skillKinds,
+    );
+  }
 
   Future<LifecycleResult> backupList(LifecycleOptions options) =>
-      state.backupList(LifecycleContext.resolve(options), kind);
+      state.backupList(
+        LifecycleContext.resolve(options),
+        kind,
+        otherKind: ArtifactKind.skillLink,
+      );
 
-  Future<LifecycleResult> cleanup(LifecycleIdInput input) => state.cleanup(
-    resource: this,
-    context: LifecycleContext.resolve(input.options),
-    backupId: input.id,
-  );
+  Future<LifecycleResult> cleanup(LifecycleIdInput input) {
+    final context = LifecycleContext.resolve(input.options);
+    final backupKind = state.artifactKindForBackup(
+      context,
+      input.id,
+      skillKinds,
+    );
+    return state.cleanup(
+      resource: _ProfiledSkillResource(this, const <String>[], backupKind),
+      context: context,
+      backupId: input.id,
+    );
+  }
 
   void validateProfiles(String path, List<String> profiles) {
     for (final profile in profiles) {
@@ -488,6 +570,32 @@ interface class SkillLifecycleService implements LifecycleResource {
     }
   }
 
+  String resolveContentTarget(String path) {
+    final type = state.io.type(path, followLinks: false);
+    if (type == FileSystemEntityType.link) {
+      final target = state.io.readLink(path);
+      return p.normalize(
+        p.isAbsolute(target) ? target : p.join(p.dirname(path), target),
+      );
+    }
+    if (type == FileSystemEntityType.file &&
+        p.basename(path) == 'artifact-link.json') {
+      final entry = state.readLinkBaseline(path).entries.single;
+      return p.normalize(
+        p.isAbsolute(entry.target!)
+            ? entry.target!
+            : p.join(entry.originalParent!, entry.target!),
+      );
+    }
+    if (type != FileSystemEntityType.directory) {
+      throw MambaException(
+        'The Skill candidate is not an ordinary directory or supported link: $path',
+        exitCode: 2,
+      );
+    }
+    return path;
+  }
+
   @override
   void validateAuthority(InstallationRecord record, LifecycleContext context) {
     final destination = SkillDestination.values.firstWhere(
@@ -498,9 +606,9 @@ interface class SkillLifecycleService implements LifecycleResource {
       ),
     );
     final root = _root(context, destination);
-    if (record.kind != kind ||
+    if (!skillKinds.contains(record.kind) ||
         record.scope != context.scope ||
-        record.nativeForm != 'skill-copy' ||
+        record.nativeForm != record.kind.wireName ||
         !p.equals(record.nativeRoot, root) ||
         !p.equals(p.dirname(record.location), root) ||
         p.basename(record.location) != record.name) {
@@ -517,27 +625,26 @@ interface class SkillLifecycleService implements LifecycleResource {
     LifecycleContext context, {
     String? expectedName,
   }) async {
-    final type = skillEntityType(path, followLinks: false);
-    if (type == FileSystemEntityType.link) {
-      throw MambaException(
-        'A linked Skill source or installation is not eligible for copy management.',
-        exitCode: 4,
-      );
+    final type = state.io.type(path, followLinks: false);
+    var nativeForm = 'skill-copy';
+    if (type == FileSystemEntityType.link ||
+        (type == FileSystemEntityType.file &&
+            p.basename(path) == 'artifact-link.json')) {
+      nativeForm = 'skill-link';
     }
-    if (type != FileSystemEntityType.directory) {
-      throw MambaException(
-        'The Skill candidate is not an ordinary directory: $path',
-        exitCode: 2,
-      );
-    }
-    final declaredName = readDeclaredSkillName(path);
+    final inspectedPath = resolveContentTarget(path);
+    state.validateSkillTree(inspectedPath);
+    final declaredName = readDeclaredSkillName(inspectedPath);
     if (expectedName != null && declaredName != expectedName) {
       throw MambaException(
         'The declared Skill name changed during the operation.',
         exitCode: 4,
       );
     }
-    final report = validateSkill(path, expectedDirectoryName: declaredName);
+    final report = validateSkill(
+      inspectedPath,
+      expectedDirectoryName: declaredName,
+    );
     if (!report.valid) {
       throw MambaException(
         'Skill validation failed: ${report.diagnostics.where((diagnostic) => diagnostic.severity == DiagnosticSeverity.error).map((diagnostic) => diagnostic.code).join(', ')}',
@@ -547,7 +654,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     final profiles = _profiles(context, _destinationForPath(context, path));
     return LifecycleCandidate(
       name: declaredName,
-      nativeForm: 'skill-copy',
+      nativeForm: nativeForm,
       validatedProfiles: profiles,
       knownConsumers: const ['claude', 'codex'],
     );
@@ -719,6 +826,31 @@ interface class SkillLifecycleService implements LifecycleResource {
   }
 }
 
+Map<String, Object?> _linkObservation(String path, String root) {
+  try {
+    final service = const NativeLinkService();
+    final kind = service.inspectKind(path);
+    final target = service.readTarget(path);
+    return <String, Object?>{
+      'nativeLinkKind': kind,
+      'target': target,
+      'targetResolved': p.normalize(
+        p.isAbsolute(target) ? target : p.join(p.dirname(path), target),
+      ),
+      'eligibility': p.equals(p.dirname(path), root)
+          ? 'direct-child-link'
+          : 'nested-ineligible-link',
+    };
+  } on MambaException {
+    return <String, Object?>{
+      'nativeLinkKind': 'unsupported-reparse',
+      'target': null,
+      'targetResolved': null,
+      'eligibility': 'unsupported-reparse',
+    };
+  }
+}
+
 final class _SkillCandidate {
   const _SkillCandidate({
     required this.path,
@@ -734,13 +866,18 @@ final class _SkillCandidate {
 }
 
 final class _ProfiledSkillResource implements LifecycleResource {
-  const _ProfiledSkillResource(this.delegate, this.profiles);
+  const _ProfiledSkillResource(
+    this.delegate,
+    this.profiles, [
+    this._kind = ArtifactKind.skillCopy,
+  ]);
 
   final SkillLifecycleService delegate;
   final List<String> profiles;
+  final ArtifactKind _kind;
 
   @override
-  ArtifactKind get kind => delegate.kind;
+  ArtifactKind get kind => _kind;
 
   @override
   void validateAuthority(InstallationRecord record, LifecycleContext context) =>
@@ -757,10 +894,12 @@ final class _ProfiledSkillResource implements LifecycleResource {
       context,
       expectedName: expectedName,
     );
-    delegate.validateProfiles(path, profiles);
+    if (p.basename(path) != 'artifact-link.json') {
+      delegate.validateProfiles(delegate.resolveContentTarget(path), profiles);
+    }
     return LifecycleCandidate(
       name: candidate.name,
-      nativeForm: candidate.nativeForm,
+      nativeForm: _kind.wireName,
       validatedProfiles: profiles,
       knownConsumers: candidate.knownConsumers,
     );

@@ -9,6 +9,7 @@ import 'src/skill_validation.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 import 'lifecycle.dart';
+import 'skill_lifecycle_commands.dart';
 
 /// The scope reported for a discovered skill occurrence.
 enum DiscoveryScope { project, user }
@@ -36,12 +37,12 @@ final class SkillCommand extends GroupCommand {
       SkillListCommand(service),
       InspectCommand(inspect),
       ValidateCommand(validate),
-      LifecycleActionCommand.skillInstall(service),
-      LifecycleActionCommand.skillAdopt(service),
-      LifecycleActionCommand.skillReplace(service),
-      LifecycleActionCommand.skillRemove(service),
-      LifecycleBackupCommand.skill(service),
-      LifecycleActionCommand.skillRecover(service),
+      SkillInstallCommand(service),
+      SkillAdoptCommand(service),
+      SkillReplaceCommand(service),
+      SkillRemoveCommand(service),
+      SkillBackupCommand(service),
+      SkillRecoverCommand(service),
     ];
   }
 

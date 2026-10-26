@@ -92,12 +92,22 @@ agent_resource agent recover [<transaction-id>] [--action rollback|complete]
 ```
 
 Installation copies an arbitrary validated ordinary source without changing
-it. Skill installation uses the declared Skill name; Agent installation
+it. Skill installation defaults to copy; `--mode link` creates a true native
+directory symlink and manages only that link entry. Skill installation uses the
+declared Skill name; Agent installation
 preserves the source basename unless an eligible `--output` is selected.
 Adoption records an eligible existing resource without rewriting its bytes.
 Replacement and restoration preserve installation identity and recorded
 location. Removal and replacement require a currently unchanged complete
 baseline and create independent retained backups before live mutation.
+
+Linked Skills keep target validation separate from entry ownership. Target
+edits do not invalidate an unchanged link entry; removal unlinks an unchanged
+entry even when its target is broken or inaccessible. Link backups retain the
+entry kind and target representation, not target-content history, and restore
+revalidates the target at its original parent before publication. Replacement
+without `--mode` retains the recorded copy/link mode; an explicit mode change
+is a reviewed conversion at the same installation ID and location.
 
 `--dry-run` performs read-only planning and creates no locks, journals,
 ledgers, staging, or backups. Replacement, removal, restore, cleanup, and
@@ -118,8 +128,10 @@ The implementation uses bounded local-disk IO, same-filesystem staging,
 protected intent, independent backups, quarantine, and per-scope coordination.
 It does not claim hostile-writer resistance, joint resource-plus-ledger
 atomicity, universal metadata fidelity, or guaranteed power-loss durability.
-Skill links, registration/parent-setting changes, rich Agent composition,
-remote origins, and conversion remain outside this checkpoint.
+Windows linked installations require a true directory symlink and actionable
+privilege diagnostics; junctions, unknown reparse forms, and copy fallback are
+refused. Registration/parent-setting changes, rich Agent composition, and
+remote origins remain outside this checkpoint.
 
 ### Inspect one skill directory
 

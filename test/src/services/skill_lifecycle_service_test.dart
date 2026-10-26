@@ -7,6 +7,68 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+bool _tryDirectoryLink(String path, String target) {
+  try {
+    Link(path).createSync(target);
+    return true;
+  } on FileSystemException {
+    return false;
+  }
+}
+
+/// Deterministic supported-directory-link simulation for hosts where creating
+/// native links is unavailable. Content still uses the real filesystem.
+final class _SimulatedLinkIO extends LifecycleIO {
+  final links = <String, String>{};
+
+  String _key(String path) => p.normalize(path);
+
+  @override
+  FileSystemEntityType type(String path, {required bool followLinks}) {
+    if (links.containsKey(_key(path))) return FileSystemEntityType.link;
+    return super.type(path, followLinks: followLinks);
+  }
+
+  @override
+  String linkKind(String path) {
+    if (!links.containsKey(_key(path))) {
+      return super.linkKind(path);
+    }
+    return 'posix-directory-symlink';
+  }
+
+  @override
+  String readLink(String path) {
+    final target = links[_key(path)];
+    if (target == null) return super.readLink(path);
+    return target;
+  }
+
+  @override
+  void createLink(String path, String target) {
+    if (links.containsKey(_key(path))) {
+      throw FileSystemException('Link already exists', path);
+    }
+    links[_key(path)] = target;
+  }
+
+  @override
+  void rename(String source, String destination) {
+    final target = links.remove(_key(source));
+    if (target != null) {
+      links[_key(destination)] = target;
+      return;
+    }
+    super.rename(source, destination);
+  }
+
+  @override
+  void delete(String path) {
+    if (links.remove(_key(path)) != null) return;
+    super.delete(path);
+  }
+}
+
 void main() {
   group('SkillLifecycleService', () {
     test(
@@ -438,6 +500,367 @@ void main() {
             service.state.records(LifecycleContext.resolve(options())),
             hasLength(2),
           );
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+    test(
+      'linked install preserves entry ownership through drift and conversion',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp('skill-link-');
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          Directory source(String directory, String body) {
+            final result = Directory(p.join(sandbox.path, directory))
+              ..createSync();
+            File(p.join(result.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\n$body\n',
+            );
+            return result;
+          }
+
+          final first = source('first', 'First.');
+          final probe = p.join(sandbox.path, 'probe');
+          if (!_tryDirectoryLink(probe, first.path)) {
+            // Native positive evidence is unavailable on this host. Do not
+            // substitute a junction or portable fake for the required workflow.
+            print('directory symlink capability unavailable');
+            return;
+          }
+          Link(probe).deleteSync();
+          LifecycleOptions options({bool approved = false}) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            approved: approved,
+          );
+          final service = SkillLifecycleService();
+          final installed = await service.install(
+            SkillInstallInput(
+              options: options(),
+              source: first.path,
+              destination: SkillDestination.claude,
+              mode: SkillMode.link,
+            ),
+          );
+          final id = installed.data['installationId']! as String;
+          final live = p.join(project.path, '.claude', 'skills', 'review');
+          expect(
+            FileSystemEntity.typeSync(live, followLinks: false),
+            FileSystemEntityType.link,
+          );
+          expect(Link(live).targetSync(), first.path);
+          File(p.join(first.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nEdited.\n',
+          );
+          final record = service.state.recordById(
+            LifecycleContext.resolve(options()),
+            id,
+          );
+          expect(service.state.verify(record), ModificationStatus.unchanged);
+          final second = source('second', 'Second.');
+          final linkedAgain = await service.replace(
+            LifecycleReplaceInput(
+              options: options(approved: true),
+              installationId: id,
+              source: second.path,
+            ),
+          );
+          expect(linkedAgain.data['installationId'], id);
+          expect(
+            FileSystemEntity.typeSync(live, followLinks: false),
+            FileSystemEntityType.link,
+          );
+          expect(Link(live).targetSync(), second.path);
+          final copied = await service.replace(
+            LifecycleReplaceInput(
+              options: options(approved: true),
+              installationId: id,
+              source: second.path,
+            ),
+            mode: SkillMode.copy,
+          );
+          expect(copied.data['installationId'], id);
+          expect(
+            FileSystemEntity.typeSync(live, followLinks: false),
+            FileSystemEntityType.directory,
+          );
+          final linked = await service.replace(
+            LifecycleReplaceInput(
+              options: options(approved: true),
+              installationId: id,
+              source: second.path,
+            ),
+            mode: SkillMode.link,
+          );
+          expect(linked.data['installationId'], id);
+          expect(
+            FileSystemEntity.typeSync(live, followLinks: false),
+            FileSystemEntityType.link,
+          );
+          second.deleteSync(recursive: true);
+          final removed = await service.remove(
+            LifecycleIdInput(options: options(approved: true), id: id),
+          );
+          expect(removed.outcome, 'removed');
+          expect(first.existsSync(), isTrue);
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
+      'relative link adoption restores entry evidence after validation',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'skill-relative-',
+        );
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final source = Directory(p.join(sandbox.path, 'source'))
+            ..createSync();
+          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+          );
+          final live = p.join(project.path, '.claude', 'skills', 'review');
+          Directory(p.dirname(live)).createSync(recursive: true);
+          final relative = p.relative(source.path, from: p.dirname(live));
+          if (!_tryDirectoryLink(live, relative)) {
+            print('directory symlink capability unavailable');
+            return;
+          }
+          LifecycleOptions options({bool approved = false}) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            approved: approved,
+          );
+          final service = SkillLifecycleService();
+          final adopted = await service.adopt(
+            SkillInstallInput(
+              options: options(),
+              source: live,
+              destination: SkillDestination.claude,
+            ),
+          );
+          expect(adopted.outcome, 'adopted');
+          expect(Link(live).targetSync(), relative);
+          final id = adopted.data['installationId']! as String;
+          final removed = await service.remove(
+            LifecycleIdInput(options: options(approved: true), id: id),
+          );
+          source.deleteSync(recursive: true);
+          try {
+            await service.restore(
+              LifecycleIdInput(
+                options: options(approved: true),
+                id: removed.data['backupId']! as String,
+              ),
+            );
+            fail('Normal restore accepted a broken target.');
+          } on MambaException {
+            // Current native validation is mandatory for normal restore.
+          }
+          source.createSync();
+          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nRecreated.\n',
+          );
+          final restored = await service.restore(
+            LifecycleIdInput(
+              options: options(approved: true),
+              id: removed.data['backupId']! as String,
+            ),
+          );
+          expect(restored.outcome, 'restored');
+          expect(Link(live).targetSync(), relative);
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+    test(
+      'deterministic link semantics cover mode retention and conversion',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'skill-sim-link-',
+        );
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          Directory source(String directory, String body) {
+            final result = Directory(p.join(sandbox.path, directory))
+              ..createSync();
+            File(p.join(result.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\n$body\n',
+            );
+            return result;
+          }
+
+          final first = source('first', 'First.');
+          final second = source('second', 'Second.');
+          final io = _SimulatedLinkIO();
+          LifecycleOptions options({bool approved = false}) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            approved: approved,
+          );
+          final service = SkillLifecycleService(
+            state: LifecycleStateService(io: io),
+          );
+          final installed = await service.install(
+            SkillInstallInput(
+              options: options(),
+              source: first.path,
+              destination: SkillDestination.claude,
+              mode: SkillMode.link,
+            ),
+          );
+          final id = installed.data['installationId']! as String;
+          final live = p.join(project.path, '.claude', 'skills', 'review');
+          expect(io.type(live, followLinks: false), FileSystemEntityType.link);
+          expect(io.readLink(live), first.path);
+          File(p.join(first.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nEdited.\n',
+          );
+          expect(
+            service.state.verify(
+              service.state.recordById(LifecycleContext.resolve(options()), id),
+            ),
+            ModificationStatus.unchanged,
+          );
+          final retained = await service.replace(
+            LifecycleReplaceInput(
+              options: options(approved: true),
+              installationId: id,
+              source: second.path,
+            ),
+          );
+          expect(retained.data['installationId'], id);
+          expect(io.type(live, followLinks: false), FileSystemEntityType.link);
+          expect(io.readLink(live), second.path);
+          final copied = await service.replace(
+            LifecycleReplaceInput(
+              options: options(approved: true),
+              installationId: id,
+              source: second.path,
+            ),
+            mode: SkillMode.copy,
+          );
+          expect(copied.data['installationId'], id);
+          expect(
+            io.type(live, followLinks: false),
+            FileSystemEntityType.directory,
+          );
+          expect(
+            File(p.join(live, 'SKILL.md')).readAsStringSync(),
+            contains('Second.'),
+          );
+          final linked = await service.replace(
+            LifecycleReplaceInput(
+              options: options(approved: true),
+              installationId: id,
+              source: second.path,
+            ),
+            mode: SkillMode.link,
+          );
+          expect(linked.data['installationId'], id);
+          expect(io.type(live, followLinks: false), FileSystemEntityType.link);
+          second.deleteSync(recursive: true);
+          final removed = await service.remove(
+            LifecycleIdInput(options: options(approved: true), id: id),
+          );
+          expect(removed.outcome, 'removed');
+          expect(first.existsSync(), isTrue);
+          expect(io.links.containsKey(live), isFalse);
+          final backups = await service.backupList(options());
+          final backupsData = backups.data['backups']! as List<Object?>;
+          expect(backupsData, isNotEmpty);
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
+      'deterministic relative-link backup retains original-parent semantics',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'skill-sim-relative-',
+        );
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final source = Directory(p.join(sandbox.path, 'source'))
+            ..createSync();
+          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+          );
+          final live = p.join(project.path, '.claude', 'skills', 'review');
+          Directory(p.dirname(live)).createSync(recursive: true);
+          final relative = p.relative(source.path, from: p.dirname(live));
+          final io = _SimulatedLinkIO()..links[p.normalize(live)] = relative;
+          LifecycleOptions options({bool approved = false}) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            approved: approved,
+          );
+          final service = SkillLifecycleService(
+            state: LifecycleStateService(io: io),
+          );
+          final adopted = await service.adopt(
+            SkillInstallInput(
+              options: options(),
+              source: live,
+              destination: SkillDestination.claude,
+            ),
+          );
+          final id = adopted.data['installationId']! as String;
+          expect(io.readLink(live), relative);
+          final removed = await service.remove(
+            LifecycleIdInput(options: options(approved: true), id: id),
+          );
+          source.deleteSync(recursive: true);
+          try {
+            await service.restore(
+              LifecycleIdInput(
+                options: options(approved: true),
+                id: removed.data['backupId']! as String,
+              ),
+            );
+            fail('Normal restore accepted a broken target.');
+          } on MambaException {
+            // Current target validation is mandatory for normal restore.
+          }
+          source.createSync();
+          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nRecreated.\n',
+          );
+          final restored = await service.restore(
+            LifecycleIdInput(
+              options: options(approved: true),
+              id: removed.data['backupId']! as String,
+            ),
+          );
+          expect(restored.outcome, 'restored');
+          expect(io.readLink(live), relative);
         } finally {
           await sandbox.delete(recursive: true);
         }

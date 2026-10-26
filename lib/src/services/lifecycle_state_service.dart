@@ -8,6 +8,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../skill_files.dart';
+import 'native_link_service.dart';
 
 const managementSchemaVersion = 1;
 const maxManagementDocumentBytes = 8 * 1024 * 1024;
@@ -40,6 +41,7 @@ enum LifecycleScope { project, user, all }
 
 enum ArtifactKind {
   skillCopy('skill-copy'),
+  skillLink('skill-link'),
   agentFile('agent-file');
 
   const ArtifactKind(this.wireName);
@@ -421,18 +423,45 @@ final class BaselineEntry {
     required this.sha256,
     required this.executable,
     required this.readOnly,
+    this.target,
+    this.nativeKind,
+    this.originalParent,
   });
 
   factory BaselineEntry.fromJson(Object? value) {
     final map = _object(value, 'baseline entry');
-    return BaselineEntry(
+    final entry = BaselineEntry(
       path: _relativePath(_string(map, 'path')),
-      type: _enumValue(_string(map, 'type'), const ['file', 'directory']),
+      type: _enumValue(_string(map, 'type'), const [
+        'file',
+        'directory',
+        'link',
+      ]),
       length: _nonNegativeInteger(map, 'length'),
       sha256: _digest(map['sha256']),
       executable: _bool(map, 'executable'),
       readOnly: _bool(map, 'readOnly'),
+      target: _nullableString(map, 'target'),
+      nativeKind: _nullableString(map, 'nativeKind'),
+      originalParent: map['originalParent'] == null
+          ? null
+          : _absolutePath(_string(map, 'originalParent')),
     );
+    if (entry.type == 'link') {
+      if (entry.path != '.' ||
+          entry.length != 0 ||
+          entry.sha256 != null ||
+          entry.target == null ||
+          entry.nativeKind == null ||
+          entry.originalParent == null) {
+        throw const FormatException('Invalid linked-entry baseline.');
+      }
+    } else if (entry.target != null ||
+        entry.nativeKind != null ||
+        entry.originalParent != null) {
+      throw const FormatException('Unexpected link evidence in file baseline.');
+    }
+    return entry;
   }
 
   final String path;
@@ -441,6 +470,9 @@ final class BaselineEntry {
   final String? sha256;
   final bool executable;
   final bool readOnly;
+  final String? target;
+  final String? nativeKind;
+  final String? originalParent;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'path': path,
@@ -449,6 +481,9 @@ final class BaselineEntry {
     'sha256': sha256,
     'executable': executable,
     'readOnly': readOnly,
+    if (target != null) 'target': target,
+    if (nativeKind != null) 'nativeKind': nativeKind,
+    if (originalParent != null) 'originalParent': originalParent,
   };
 }
 
@@ -501,9 +536,12 @@ final class BackupRecord {
     final expectedDirectory = p.join(state, 'backups', backupId);
     if (!p.equals(p.dirname(artifactPath), expectedDirectory) ||
         p.basename(artifactPath) !=
-            (kind == ArtifactKind.skillCopy
-                ? 'artifact'
-                : 'artifact${p.extension(_string(map, 'location'))}')) {
+            switch (kind) {
+              ArtifactKind.skillCopy => 'artifact',
+              ArtifactKind.skillLink => 'artifact-link.json',
+              ArtifactKind.agentFile =>
+                'artifact${p.extension(_string(map, 'location'))}',
+            }) {
       throw const FormatException('Backup artifact path is not manager-owned.');
     }
     final scopeName = _enumValue(_string(map, 'scope'), const [
@@ -644,6 +682,8 @@ final class InstallationRecord {
   final String? transactionId;
 
   InstallationRecord copyWith({
+    ArtifactKind? kind,
+    String? nativeForm,
     ArtifactBaseline? baseline,
     String? lifecycle,
     List<String>? backupIds,
@@ -651,10 +691,10 @@ final class InstallationRecord {
     bool clearTransaction = false,
   }) => InstallationRecord(
     installationId: installationId,
-    kind: kind,
+    kind: kind ?? this.kind,
     scope: scope,
     nativeDestination: nativeDestination,
-    nativeForm: nativeForm,
+    nativeForm: nativeForm ?? this.nativeForm,
     location: location,
     nativeRoot: nativeRoot,
     name: name,
@@ -757,6 +797,15 @@ class LifecycleIO {
     before('write', path);
     File(path).writeAsBytesSync(bytes, flush: true);
   }
+
+  String linkKind(String path) => const NativeLinkService().inspectKind(path);
+
+  String readLink(String path) => const NativeLinkService().readTarget(path);
+
+  void createLink(String path, String target) {
+    before('createLink', path);
+    const NativeLinkService().createDirectoryLink(path, target);
+  }
 }
 
 interface class LifecycleStateService {
@@ -784,8 +833,7 @@ interface class LifecycleStateService {
     );
     if (context.dryRun) {
       return LifecycleResult(
-        command:
-            '${resource.kind == ArtifactKind.skillCopy ? 'skill' : 'agent'} install',
+        command: '${_resourceLabel(resource.kind)} install',
         outcome: 'planned',
         data: _planData('install', context, location, prepared.candidate),
       );
@@ -820,21 +868,30 @@ interface class LifecycleStateService {
       try {
         _ensureLedger(state);
         _prepareStaging(nativeRoot);
-        _copySource(source, stage, resource.kind);
-        final stagedCandidate = await resource.inspect(
+        final linkTarget = _copySource(
+          source,
           stage,
+          resource.kind,
+          linkDestination: location,
+        );
+        final stagedCandidate = await resource.inspect(
+          resource.kind == ArtifactKind.skillLink ? linkTarget! : stage,
           context,
           expectedName: current.candidate.name,
         );
         _sameCandidate(current.candidate, stagedCandidate);
-        final baseline = _manifest(stage, resource.kind);
-        if (baseline.digest != current.sourceDigest) {
+        final baseline = resource.kind == ArtifactKind.skillLink
+            ? _linkBaselineFor(location, io.readLink(stage), io.linkKind(stage))
+            : _manifest(stage, resource.kind);
+        if (resource.kind != ArtifactKind.skillLink &&
+            baseline.digest != current.sourceDigest) {
           throw MambaException(
             'The staged output did not preserve the validated source bytes and attributes.',
             exitCode: 4,
           );
         }
-        if (_manifest(source, resource.kind).digest != current.sourceDigest) {
+        if (_manifest(source, _contentKind(resource.kind)).digest !=
+            current.sourceDigest) {
           throw MambaException(
             'The source changed during installation.',
             exitCode: 4,
@@ -904,8 +961,7 @@ interface class LifecycleStateService {
         });
         _removeIfPresent(p.dirname(stage));
         return LifecycleResult(
-          command:
-              '${resource.kind == ArtifactKind.skillCopy ? 'skill' : 'agent'} install',
+          command: '${_resourceLabel(resource.kind)} install',
           outcome: 'installed',
           data: <String, Object?>{
             'installationId': installationId,
@@ -1105,16 +1161,25 @@ interface class LifecycleStateService {
     required String source,
   }) async {
     final initial = recordById(context, installationId);
-    _requireResource(initial, resource, context, live: true);
+    _requireReplacementResource(initial, resource, context);
     _requireUnchanged(initial);
     final candidate = await resource.inspect(
       source,
       context,
       expectedName: initial.name,
     );
-    if (candidate.nativeForm != initial.nativeForm) {
+    if (candidate.nativeForm != initial.nativeForm &&
+        initial.kind == resource.kind) {
       throw MambaException(
-        'Replacement cannot change the native form.',
+        'Replacement cannot change the native form without an explicit mode change.',
+        exitCode: 4,
+      );
+    }
+    if (initial.kind != resource.kind &&
+        (initial.kind == ArtifactKind.agentFile ||
+            resource.kind == ArtifactKind.agentFile)) {
+      throw MambaException(
+        'Agent replacement cannot change artifact kind.',
         exitCode: 4,
       );
     }
@@ -1154,7 +1219,10 @@ interface class LifecycleStateService {
         expectedName: record.name,
       );
       _sameCandidate(candidate, rechecked);
-      final sourceDigest = _manifest(source, resource.kind).digest;
+      final sourceDigest = _manifest(
+        source,
+        _contentKind(resource.kind),
+      ).digest;
       await resource.checkUnique(
         context,
         record.name,
@@ -1187,21 +1255,34 @@ interface class LifecycleStateService {
       String? backupId;
       try {
         _prepareStaging(record.nativeRoot);
-        _copySource(source, stage, resource.kind);
-        final stagedCandidate = await resource.inspect(
+        final linkTarget = _copySource(
+          source,
           stage,
+          resource.kind,
+          linkDestination: record.location,
+        );
+        final stagedCandidate = await resource.inspect(
+          resource.kind == ArtifactKind.skillLink ? linkTarget! : stage,
           context,
           expectedName: record.name,
         );
         _sameCandidate(rechecked, stagedCandidate);
-        final newBaseline = _manifest(stage, resource.kind);
-        if (newBaseline.digest != sourceDigest) {
+        final newBaseline = resource.kind == ArtifactKind.skillLink
+            ? _linkBaselineFor(
+                record.location,
+                io.readLink(stage),
+                io.linkKind(stage),
+              )
+            : _manifest(stage, resource.kind);
+        if (resource.kind != ArtifactKind.skillLink &&
+            newBaseline.digest != sourceDigest) {
           throw MambaException(
             'The staged replacement did not preserve source bytes and attributes.',
             exitCode: 4,
           );
         }
-        if (_manifest(source, resource.kind).digest != sourceDigest) {
+        if (_manifest(source, _contentKind(resource.kind)).digest !=
+            sourceDigest) {
           throw MambaException(
             'The source changed during replacement.',
             exitCode: 4,
@@ -1235,8 +1316,10 @@ interface class LifecycleStateService {
         published = true;
         _advanceTransaction(transactionPath, 'published');
         _verifyBaseline(record.location, newBaseline, resource.kind);
-        _verifyBaseline(quarantine, record.baseline, resource.kind);
+        _verifyBaseline(quarantine, record.baseline, record.kind);
         final updated = record.copyWith(
+          kind: resource.kind,
+          nativeForm: candidate.nativeForm,
           baseline: newBaseline,
           backupIds: [...record.backupIds, backup.backupId],
           clearTransaction: true,
@@ -1244,7 +1327,7 @@ interface class LifecycleStateService {
         _commitRecords(state, [updated], const <String, Object?>{});
         committed = true;
         _advanceTransaction(transactionPath, 'committedCleanupPending');
-        _verifyBaseline(quarantine, record.baseline, resource.kind);
+        _verifyBaseline(quarantine, record.baseline, record.kind);
         _advanceTransaction(transactionPath, 'cleanupVerified');
         io.delete(quarantine);
         unpublished = false;
@@ -1317,7 +1400,8 @@ interface class LifecycleStateService {
           'modification': 'unchanged',
           'backupExpected': true,
           'consumerEffect':
-              initial.kind == ArtifactKind.skillCopy &&
+              (initial.kind == ArtifactKind.skillCopy ||
+                      initial.kind == ArtifactKind.skillLink) &&
                   initial.nativeDestination == 'shared'
               ? 'all-consumers'
               : 'selected-native-artifact',
@@ -1366,7 +1450,7 @@ interface class LifecycleStateService {
         io.rename(record.location, quarantine);
         unpublished = true;
         _advanceTransaction(transactionPath, 'quarantined');
-        _verifyBaseline(quarantine, record.baseline, resource.kind);
+        _verifyBaseline(quarantine, record.baseline, record.kind);
         final removed = record.copyWith(
           lifecycle: 'removed',
           backupIds: [...record.backupIds, backup.backupId],
@@ -1375,7 +1459,7 @@ interface class LifecycleStateService {
         _commitRecords(state, [removed], const <String, Object?>{});
         committed = true;
         _advanceTransaction(transactionPath, 'committedCleanupPending');
-        _verifyBaseline(quarantine, record.baseline, resource.kind);
+        _verifyBaseline(quarantine, record.baseline, record.kind);
         _advanceTransaction(transactionPath, 'cleanupVerified');
         io.delete(quarantine);
         unpublished = false;
@@ -1391,7 +1475,8 @@ interface class LifecycleStateService {
             'modification': 'missing',
             'backupRetained': true,
             'consumerEffect':
-                record.kind == ArtifactKind.skillCopy &&
+                (record.kind == ArtifactKind.skillCopy ||
+                        record.kind == ArtifactKind.skillLink) &&
                     record.nativeDestination == 'shared'
                 ? 'all-consumers'
                 : 'selected-native-artifact',
@@ -1432,6 +1517,7 @@ interface class LifecycleStateService {
     required LifecycleContext context,
     String? transactionId,
     String? action,
+    Set<ArtifactKind>? kinds,
   }) async {
     if (action != null && action != 'rollback' && action != 'complete') {
       throw MambaException('Unsupported recovery action: $action');
@@ -1441,9 +1527,10 @@ interface class LifecycleStateService {
     }
     final state = context.stateRoot();
     if (transactionId == null) {
-      final transactions = _readTransactions(state, resource.kind)
-          .where((transaction) => !_recoveryTerminal(transaction['phase']))
-          .toList();
+      final transactions =
+          _readTransactions(state, kinds ?? <ArtifactKind>{resource.kind})
+              .where((transaction) => !_recoveryTerminal(transaction['phase']))
+              .toList();
       return LifecycleResult(
         command: '${_resourceLabel(resource.kind)} recover',
         outcome: 'inventoried',
@@ -1573,7 +1660,7 @@ interface class LifecycleStateService {
 
   List<Map<String, Object?>> _readTransactions(
     String state,
-    ArtifactKind kind,
+    Set<ArtifactKind> kinds,
   ) {
     return runZoned(() {
       final root = p.join(state, 'transactions');
@@ -1588,7 +1675,7 @@ interface class LifecycleStateService {
           state,
           p.basenameWithoutExtension(file.path),
         );
-        if (transaction['artifactKind'] == kind.wireName) {
+        if (kinds.any((kind) => kind.wireName == transaction['artifactKind'])) {
           result.add(transaction);
         }
       }
@@ -1647,6 +1734,7 @@ interface class LifecycleStateService {
       ]);
       _enumValue(_string(transaction, 'artifactKind'), const [
         'skill-copy',
+        'skill-link',
         'agent-file',
       ]);
       _enumValue(_string(transaction, 'scope'), const ['project', 'user']);
@@ -1680,7 +1768,7 @@ interface class LifecycleStateService {
       final kindName = transaction['artifactKind']! as String;
       final staged = transaction['stagedPath'];
       if (staged is String) {
-        final expectedName = kindName == 'skill-copy'
+        final expectedName = kindName != 'agent-file'
             ? (newRecord ?? oldRecord)?.name
             : p.basename(location);
         final expected = p.join(
@@ -1722,7 +1810,10 @@ interface class LifecycleStateService {
         if (record == null) continue;
         if (!p.equals(record.location, location) ||
             !p.equals(record.nativeRoot, nativeRoot) ||
-            record.kind.wireName != kindName ||
+            (record == newRecord && record.kind.wireName != kindName) ||
+            (record == oldRecord &&
+                kindName == 'agent-file' &&
+                record.kind != ArtifactKind.agentFile) ||
             (transaction['installationId'] is String &&
                 record.installationId != transaction['installationId'])) {
           throw const FormatException(
@@ -1787,9 +1878,7 @@ interface class LifecycleStateService {
     );
     final operation = transaction['operation']! as String;
     final location = transaction['location']! as String;
-    final kind = ArtifactKind.values.byName(
-      transaction['artifactKind'] == 'skill-copy' ? 'skillCopy' : 'agentFile',
-    );
+    final kind = _artifactKindFromWire(transaction['artifactKind']! as String);
     final oldValue = transaction['oldRecord'];
     final old = oldValue == null ? null : InstallationRecord.fromJson(oldValue);
     final quarantine = transaction['quarantinePath'] as String?;
@@ -1907,7 +1996,7 @@ interface class LifecycleStateService {
                 FileSystemEntityType.notFound) {
           throw const FormatException('Original quarantine is unavailable.');
         }
-        _verifyBaseline(quarantine, old.baseline, kind);
+        _verifyBaseline(quarantine, old.baseline, old.kind);
         _requireAbsent(location);
         io.rename(quarantine, location);
       } else {
@@ -1941,9 +2030,7 @@ interface class LifecycleStateService {
     );
     final phase = transaction['phase']! as String;
     final operation = transaction['operation']! as String;
-    final kind = ArtifactKind.values.byName(
-      transaction['artifactKind'] == 'skill-copy' ? 'skillCopy' : 'agentFile',
-    );
+    final kind = _artifactKindFromWire(transaction['artifactKind']! as String);
     final location = transaction['location']! as String;
     final oldValue = transaction['oldRecord'];
     final old = oldValue == null ? null : InstallationRecord.fromJson(oldValue);
@@ -1951,7 +2038,10 @@ interface class LifecycleStateService {
     final recordCommitted =
         phase == 'committedCleanupPending' || phase == 'cleanupVerified';
 
-    void requireQuarantine(ArtifactBaseline baseline) {
+    void requireQuarantine(
+      ArtifactBaseline baseline,
+      ArtifactKind evidenceKind,
+    ) {
       if (quarantine == null ||
           io.type(quarantine, followLinks: false) ==
               FileSystemEntityType.notFound) {
@@ -1960,7 +2050,7 @@ interface class LifecycleStateService {
           exitCode: 6,
         );
       }
-      _verifyBaseline(quarantine, baseline, kind);
+      _verifyBaseline(quarantine, baseline, evidenceKind);
     }
 
     void verifyRecord(InstallationRecord expected) {
@@ -1992,9 +2082,9 @@ interface class LifecycleStateService {
         throw const FormatException('Missing original record.');
       }
       _requireAbsent(location);
-      requireQuarantine(old.baseline);
+      requireQuarantine(old.baseline, old.kind);
     } else if (phase == 'quarantined' && operation == 'cleanup') {
-      requireQuarantine(cleanupBackup!.baseline);
+      requireQuarantine(cleanupBackup!.baseline, cleanupBackup.kind);
       _requireAbsent(cleanupBackup.artifactPath);
     }
 
@@ -2086,9 +2176,9 @@ interface class LifecycleStateService {
         io.type(quarantine, followLinks: false) !=
             FileSystemEntityType.notFound) {
       if (old != null) {
-        _verifyBaseline(quarantine, old.baseline, kind);
+        _verifyBaseline(quarantine, old.baseline, old.kind);
       } else if (cleanupBackup != null) {
-        _verifyBaseline(quarantine, cleanupBackup.baseline, kind);
+        _verifyBaseline(quarantine, cleanupBackup.baseline, cleanupBackup.kind);
       }
       io.delete(quarantine);
     } else if (operation != 'install' &&
@@ -2203,14 +2293,25 @@ interface class LifecycleStateService {
       String? outgoingBackupId;
       try {
         _prepareStaging(record.nativeRoot);
-        _copySource(currentBackup.artifactPath, stage, resource.kind);
-        final stagedCandidate = await resource.inspect(
+        final linkTarget = _copySource(
+          currentBackup.artifactPath,
           stage,
+          resource.kind,
+          linkDestination: record.location,
+        );
+        final stagedCandidate = await resource.inspect(
+          resource.kind == ArtifactKind.skillLink ? linkTarget! : stage,
           context,
           expectedName: record.name,
         );
         _sameCandidate(candidate, stagedCandidate);
-        final newBaseline = _manifest(stage, resource.kind);
+        final newBaseline = resource.kind == ArtifactKind.skillLink
+            ? _linkBaselineFor(
+                record.location,
+                io.readLink(stage),
+                io.linkKind(stage),
+              )
+            : _manifest(stage, resource.kind);
         if (newBaseline.digest != currentBackup.baseline.digest ||
             _manifest(currentBackup.artifactPath, resource.kind).digest !=
                 currentBackup.baseline.digest) {
@@ -2259,9 +2360,11 @@ interface class LifecycleStateService {
         _advanceTransaction(transactionPath, 'published');
         _verifyBaseline(record.location, newBaseline, resource.kind);
         if (unpublished) {
-          _verifyBaseline(quarantine, record.baseline, resource.kind);
+          _verifyBaseline(quarantine, record.baseline, record.kind);
         }
         final restored = record.copyWith(
+          kind: resource.kind,
+          nativeForm: candidate.nativeForm,
           baseline: newBaseline,
           lifecycle: 'live',
           backupIds: [
@@ -2274,7 +2377,7 @@ interface class LifecycleStateService {
         committed = true;
         _advanceTransaction(transactionPath, 'committedCleanupPending');
         if (unpublished) {
-          _verifyBaseline(quarantine, record.baseline, resource.kind);
+          _verifyBaseline(quarantine, record.baseline, record.kind);
           _advanceTransaction(transactionPath, 'cleanupVerified');
           io.delete(quarantine);
           unpublished = false;
@@ -2333,12 +2436,13 @@ interface class LifecycleStateService {
 
   Future<LifecycleResult> backupList(
     LifecycleContext context,
-    ArtifactKind kind,
-  ) async {
-    final backups = _readBackups(
-      context.stateRoot(),
+    ArtifactKind kind, {
+    ArtifactKind? otherKind,
+  }) async {
+    final backups = _readBackups(context.stateRoot(), <ArtifactKind>{
       kind,
-    ).where((backup) => backup.retention == 'retained').toList();
+      ?otherKind,
+    }).where((backup) => backup.retention == 'retained').toList();
     return LifecycleResult(
       command: '${_resourceLabel(kind)} backup list',
       outcome: 'inventoried',
@@ -2488,8 +2592,50 @@ interface class LifecycleStateService {
     });
   }
 
+  ArtifactBaseline readLinkBaseline(String path) => _linkBaseline(path);
+
+  void validateSkillTree(String path) {
+    _manifest(path, ArtifactKind.skillCopy);
+  }
+
   List<InstallationRecord> records(LifecycleContext context) =>
       _readRecords(context.stateRoot());
+
+  ArtifactKind artifactKindForBackup(
+    LifecycleContext context,
+    String id,
+    Set<ArtifactKind> kinds,
+  ) {
+    final matches = _readBackups(
+      context.stateRoot(),
+      kinds,
+    ).where((backup) => backup.backupId == id);
+    if (matches.length != 1) {
+      throw MambaException(
+        'No unambiguous retained backup $id exists in the selected scope.',
+        exitCode: 4,
+      );
+    }
+    return matches.single.kind;
+  }
+
+  ArtifactKind artifactKindForTransaction(
+    LifecycleContext context,
+    String id,
+    Set<ArtifactKind> kinds,
+  ) {
+    final matches = _readTransactions(
+      context.stateRoot(),
+      kinds,
+    ).where((transaction) => transaction['transactionId'] == id);
+    if (matches.length != 1) {
+      throw MambaException(
+        'No unambiguous transaction $id exists in the selected scope.',
+        exitCode: 4,
+      );
+    }
+    return _artifactKindFromWire(matches.single['artifactKind']! as String);
+  }
 
   InstallationRecord installationForBackup(
     LifecycleContext context,
@@ -2526,6 +2672,31 @@ interface class LifecycleStateService {
     }
   }
 
+  void _requireReplacementResource(
+    InstallationRecord record,
+    LifecycleResource resource,
+    LifecycleContext context,
+  ) {
+    final skillConversion =
+        (record.kind == ArtifactKind.skillCopy ||
+            record.kind == ArtifactKind.skillLink) &&
+        (resource.kind == ArtifactKind.skillCopy ||
+            resource.kind == ArtifactKind.skillLink);
+    if ((record.kind != resource.kind && !skillConversion) ||
+        record.lifecycle != 'live') {
+      throw MambaException(
+        'The stored installation is not eligible for replacement.',
+        exitCode: 4,
+      );
+    }
+    _requireSafePath(
+      record.location,
+      record.nativeRoot,
+      allowFinalLink: record.kind == ArtifactKind.skillLink,
+    );
+    resource.validateAuthority(record, context);
+  }
+
   void _requireResource(
     InstallationRecord record,
     LifecycleResource resource,
@@ -2538,7 +2709,11 @@ interface class LifecycleStateService {
         exitCode: 4,
       );
     }
-    _requireSafePath(record.location, record.nativeRoot);
+    _requireSafePath(
+      record.location,
+      record.nativeRoot,
+      allowFinalLink: record.kind == ArtifactKind.skillLink,
+    );
     resource.validateAuthority(record, context);
   }
 
@@ -2572,14 +2747,17 @@ interface class LifecycleStateService {
   ) {
     final backupId = _newId('bak');
     final directory = p.join(state, 'backups', backupId);
-    final artifact = p.join(
-      directory,
-      record.kind == ArtifactKind.skillCopy
-          ? 'artifact'
-          : 'artifact${p.extension(record.location)}',
-    );
+    final artifact = p.join(directory, switch (record.kind) {
+      ArtifactKind.skillCopy => 'artifact',
+      ArtifactKind.skillLink => 'artifact-link.json',
+      ArtifactKind.agentFile => 'artifact${p.extension(record.location)}',
+    });
     _makePrivate(directory);
-    _copySource(record.location, artifact, record.kind);
+    if (record.kind == ArtifactKind.skillLink) {
+      _writeManagementJson(artifact, record.baseline.toJson());
+    } else {
+      _copySource(record.location, artifact, record.kind);
+    }
     final actual = _manifest(artifact, record.kind);
     if (actual.digest != record.baseline.digest) {
       throw MambaException(
@@ -2611,7 +2789,7 @@ interface class LifecycleStateService {
     );
   }
 
-  List<BackupRecord> _readBackups(String state, ArtifactKind kind) {
+  List<BackupRecord> _readBackups(String state, Set<ArtifactKind> kinds) {
     return runZoned(() {
       final root = p.join(state, 'backups');
       if (io.type(root, followLinks: false) == FileSystemEntityType.notFound) {
@@ -2641,7 +2819,7 @@ interface class LifecycleStateService {
           );
         }
         final backup = _decodeBackup(metadata, state);
-        if (backup.kind == kind) result.add(backup);
+        if (kinds.contains(backup.kind)) result.add(backup);
       }
       result.sort((left, right) => left.backupId.compareTo(right.backupId));
       return result;
@@ -2728,9 +2906,13 @@ interface class LifecycleStateService {
   ) {
     try {
       final transaction = _readTransaction(transactionPath);
-      final kind = transaction['artifactKind'] == 'skill-copy'
-          ? ArtifactKind.skillCopy
-          : ArtifactKind.agentFile;
+      final kind = _artifactKindFromWire(
+        transaction['artifactKind']! as String,
+      );
+      final oldRecord = transaction['oldRecord'] == null
+          ? null
+          : InstallationRecord.fromJson(transaction['oldRecord']);
+      final oldKind = oldRecord?.kind ?? kind;
       if (io.type(location, followLinks: false) !=
           FileSystemEntityType.notFound) {
         if (!published) return false;
@@ -2750,7 +2932,7 @@ interface class LifecycleStateService {
         _verifyBaseline(
           quarantine,
           ArtifactBaseline.fromJson(transaction['oldBaseline']),
-          kind,
+          oldKind,
         );
         io.rename(quarantine, location);
       }
@@ -2761,7 +2943,7 @@ interface class LifecycleStateService {
       _verifyBaseline(
         location,
         ArtifactBaseline.fromJson(transaction['oldBaseline']),
-        kind,
+        oldKind,
       );
       _advanceTransaction(transactionPath, 'failedRestored');
       return true;
@@ -2779,9 +2961,13 @@ interface class LifecycleStateService {
   }) {
     try {
       final transaction = _readTransaction(transactionPath);
-      final kind = transaction['artifactKind'] == 'skill-copy'
-          ? ArtifactKind.skillCopy
-          : ArtifactKind.agentFile;
+      final kind = _artifactKindFromWire(
+        transaction['artifactKind']! as String,
+      );
+      final oldRecord = transaction['oldRecord'] == null
+          ? null
+          : InstallationRecord.fromJson(transaction['oldRecord']);
+      final oldKind = oldRecord?.kind ?? kind;
       if (io.type(location, followLinks: false) !=
           FileSystemEntityType.notFound) {
         if (!published) return false;
@@ -2802,13 +2988,13 @@ interface class LifecycleStateService {
         _verifyBaseline(
           quarantine,
           ArtifactBaseline.fromJson(transaction['oldBaseline']),
-          kind,
+          oldKind,
         );
         io.rename(quarantine, location);
         _verifyBaseline(
           location,
           ArtifactBaseline.fromJson(transaction['oldBaseline']),
-          kind,
+          oldKind,
         );
       } else if (io.type(location, followLinks: false) !=
           FileSystemEntityType.notFound) {
@@ -2832,9 +3018,9 @@ interface class LifecycleStateService {
         return false;
       }
       final transaction = _readTransaction(transactionPath);
-      final kind = transaction['artifactKind'] == 'skill-copy'
-          ? ArtifactKind.skillCopy
-          : ArtifactKind.agentFile;
+      final kind = _artifactKindFromWire(
+        transaction['artifactKind']! as String,
+      );
       final baseline = ArtifactBaseline.fromJson(transaction['oldBaseline']);
       _verifyBaseline(quarantine, baseline, kind);
       io.rename(quarantine, location);
@@ -2895,17 +3081,22 @@ interface class LifecycleStateService {
     String nativeRoot,
     String nativeDestination,
   ) async {
-    _requireSafePath(location, nativeRoot);
+    _requireSafePath(
+      location,
+      nativeRoot,
+      allowFinalLink: resource.kind == ArtifactKind.skillLink,
+    );
     _requireSourceDistinct(source, location, nativeRoot, context.stateRoot());
     final candidate = await resource.inspect(source, context);
-    if (resource.kind == ArtifactKind.skillCopy &&
+    if ((resource.kind == ArtifactKind.skillCopy ||
+            resource.kind == ArtifactKind.skillLink) &&
         p.basename(location) != candidate.name) {
       throw MambaException(
         'The Skill destination name must match the declared name.',
         exitCode: 2,
       );
     }
-    final sourceDigest = _manifest(source, resource.kind).digest;
+    final sourceDigest = _manifest(source, _contentKind(resource.kind)).digest;
     _requireAbsent(location);
     await resource.checkUnique(
       context,
@@ -2915,15 +3106,108 @@ interface class LifecycleStateService {
     return _InstallPreparation(candidate, sourceDigest);
   }
 
-  void _copySource(String source, String stage, ArtifactKind kind) {
+  ArtifactBaseline _linkBaseline(String path) {
+    final type = io.type(path, followLinks: false);
+    if (type == FileSystemEntityType.file &&
+        p.basename(path) == 'artifact-link.json') {
+      final baseline = ArtifactBaseline.fromJson(_readManagementJson(path));
+      if (baseline.entries.length != 1 ||
+          baseline.entries.single.type != 'link') {
+        throw MambaException(
+          'Invalid entry-only link backup evidence.',
+          exitCode: 4,
+        );
+      }
+      return baseline;
+    }
+    if (type != FileSystemEntityType.link) {
+      throw MambaException(
+        'A linked Skill baseline requires a supported top-level directory link.',
+        exitCode: 4,
+      );
+    }
+    final target = io.readLink(path);
+    final nativeKind = io.linkKind(path);
+    return ArtifactBaseline([
+      BaselineEntry(
+        path: '.',
+        type: 'link',
+        length: 0,
+        sha256: null,
+        executable: false,
+        readOnly: false,
+        target: target,
+        nativeKind: nativeKind,
+        originalParent: p.normalize(p.dirname(path)),
+      ),
+    ]);
+  }
+
+  String? _copySource(
+    String source,
+    String stage,
+    ArtifactKind kind, {
+    String? linkDestination,
+  }) {
     _requireAbsent(stage);
+    if (kind == ArtifactKind.skillLink) {
+      io.createDirectory(p.dirname(stage));
+      final sourceType = io.type(source, followLinks: false);
+      final String target;
+      final String? originalParent;
+      if (sourceType == FileSystemEntityType.link) {
+        target = io.readLink(source);
+        originalParent = p.normalize(p.dirname(source));
+      } else if (sourceType == FileSystemEntityType.file &&
+          p.basename(source) == 'artifact-link.json') {
+        final entry = _linkBaseline(source).entries.single;
+        target = entry.target!;
+        originalParent = entry.originalParent;
+      } else if (sourceType == FileSystemEntityType.directory) {
+        target = source;
+        originalParent = null;
+      } else {
+        throw MambaException(
+          'A linked Skill source must be an ordinary directory or verified entry backup.',
+          exitCode: 4,
+        );
+      }
+      final absolute = p.isAbsolute(target) || originalParent == null
+          ? p.normalize(target)
+          : p.normalize(p.join(originalParent, target));
+      final destination = linkDestination ?? source;
+      final stagedTarget = p.isAbsolute(target)
+          ? absolute
+          : p.normalize(p.relative(absolute, from: p.dirname(destination)));
+      io.createLink(stage, stagedTarget);
+      return absolute;
+    }
     if (kind == ArtifactKind.agentFile) {
       io.createDirectory(p.dirname(stage));
       io.copyFile(source, stage);
-      return;
+      return null;
     }
     _copyTree(source, stage);
+    return null;
   }
+
+  ArtifactBaseline _linkBaselineFor(
+    String location,
+    String target,
+    String nativeKind,
+  ) => ArtifactBaseline([
+    BaselineEntry(
+      path: '.',
+      type: 'link',
+      length: 0,
+      sha256: null,
+      executable: false,
+      readOnly: false,
+      target: target,
+      nativeKind: nativeKind,
+      originalParent: p.normalize(p.dirname(location)),
+    ),
+  ]);
 
   void _copyTree(String source, String destination) {
     io.createDirectory(destination);
@@ -2979,6 +3263,7 @@ interface class LifecycleStateService {
   }
 
   ArtifactBaseline _manifest(String path, ArtifactKind kind) {
+    if (kind == ArtifactKind.skillLink) return _linkBaseline(path);
     final entries = <BaselineEntry>[];
     var aggregate = 0;
     var count = 0;
@@ -3083,6 +3368,16 @@ interface class LifecycleStateService {
     ArtifactKind kind,
   ) {
     final actual = _manifest(path, kind);
+    if (kind == ArtifactKind.skillLink) {
+      final left = actual.entries.single;
+      final right = expected.entries.single;
+      if (left.type == 'link' &&
+          right.type == 'link' &&
+          left.target == right.target &&
+          left.nativeKind == right.nativeKind) {
+        return;
+      }
+    }
     if (actual.digest != expected.digest) {
       throw MambaException(
         'The published resource did not match its staged baseline.',
@@ -3098,9 +3393,9 @@ interface class LifecycleStateService {
   ) {
     try {
       final transaction = _readTransaction(transactionPath);
-      final kind = transaction['artifactKind'] == 'skill-copy'
-          ? ArtifactKind.skillCopy
-          : ArtifactKind.agentFile;
+      final kind = _artifactKindFromWire(
+        transaction['artifactKind']! as String,
+      );
       if (io.type(location, followLinks: false) !=
           FileSystemEntityType.notFound) {
         _verifyBaseline(
@@ -3376,7 +3671,11 @@ interface class LifecycleStateService {
     }
   }
 
-  void _requireSafePath(String location, String nativeRoot) {
+  void _requireSafePath(
+    String location,
+    String nativeRoot, {
+    bool allowFinalLink = false,
+  }) {
     if (!p.isAbsolute(location) || !p.isWithin(nativeRoot, location)) {
       throw MambaException(
         'The installation location is outside its native root.',
@@ -3387,6 +3686,7 @@ interface class LifecycleStateService {
       location,
       base: p.dirname(nativeRoot),
     )) {
+      if (allowFinalLink && p.equals(component, location)) continue;
       if (io.type(component, followLinks: false) == FileSystemEntityType.link) {
         throw MambaException(
           'Refusing linked installation authority: $component',
@@ -3555,8 +3855,18 @@ final class _InstallPreparation {
   final String sourceDigest;
 }
 
+ArtifactKind _contentKind(ArtifactKind kind) =>
+    kind == ArtifactKind.skillLink ? ArtifactKind.skillCopy : kind;
+
+ArtifactKind _artifactKindFromWire(String value) => switch (value) {
+  'skill-copy' => ArtifactKind.skillCopy,
+  'skill-link' => ArtifactKind.skillLink,
+  'agent-file' => ArtifactKind.agentFile,
+  _ => throw FormatException('Unsupported artifact kind: $value'),
+};
+
 String _resourceLabel(ArtifactKind kind) =>
-    kind == ArtifactKind.skillCopy ? 'skill' : 'agent';
+    kind == ArtifactKind.agentFile ? 'agent' : 'skill';
 
 String _pathKey(String path) =>
     Platform.isWindows ? p.normalize(path).toLowerCase() : p.normalize(path);
@@ -3625,7 +3935,8 @@ String _enumValue(String value, List<String> choices) {
   return value;
 }
 
-String _digest(Object? value) {
+String? _digest(Object? value) {
+  if (value == null) return null;
   if (value is! String || !RegExp(r'^[a-f0-9]{64}$').hasMatch(value)) {
     throw const FormatException('Invalid SHA-256 digest.');
   }

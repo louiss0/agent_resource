@@ -61,7 +61,7 @@ void main() {
           expect(output, contains(command));
         }
         expect(output, isNot(contains('discover')));
-        expect(output, isNot(contains('link')));
+        expect(output, isNot(contains('lifecycle')));
       });
 
       group('install', () {
@@ -112,6 +112,90 @@ void main() {
             );
           } finally {
             await sandbox.delete(recursive: true);
+          }
+        });
+
+        test(
+          'link mode is explicit and reported in a read-only plan',
+          () async {
+            final sandbox = await Directory.systemTemp.createTemp(
+              'lifecycle-mode-',
+            );
+            try {
+              final project = Directory(p.join(sandbox.path, 'project'))
+                ..createSync();
+              final home = Directory(p.join(sandbox.path, 'home'))
+                ..createSync();
+              final source = Directory(p.join(sandbox.path, 'source'))
+                ..createSync();
+              File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
+              final separator = Platform.pathSeparator;
+              final result = _success(
+                await createExecutor().fake().execute([
+                  'skill',
+                  'install',
+                  '${source.path}$separator',
+                  '--destination',
+                  'claude',
+                  '--mode',
+                  'link',
+                  '--scope',
+                  'project',
+                  '--cwd',
+                  '${project.path}$separator',
+                  '--project-root',
+                  '${project.path}$separator',
+                  '--home',
+                  '${home.path}$separator',
+                  '--dry-run',
+                  '--format',
+                  'json',
+                ]),
+              );
+              final envelope =
+                  jsonDecode(result.output!) as Map<String, Object?>;
+              expect(envelope['outcome'], 'planned');
+              final data = envelope['data']! as Map<String, Object?>;
+              expect(data['nativeForm'], 'skill-link');
+              expect(
+                Directory(p.join(project.path, '.claude')).existsSync(),
+                isFalse,
+              );
+            } finally {
+              await sandbox.delete(recursive: true);
+            }
+          },
+        );
+
+        test('adoption and restore reject a mode selector', () async {
+          for (final arguments in [
+            [
+              'skill',
+              'adopt',
+              'source${Platform.pathSeparator}',
+              '--destination',
+              'claude',
+              '--mode',
+              'link',
+            ],
+            [
+              'skill',
+              'backup',
+              'restore',
+              'bak_00000000000000000000000000000000',
+              '--mode',
+              'link',
+            ],
+          ]) {
+            final result = await createExecutor().fake().execute(arguments);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'exit code', 1)
+                  .having((value) => value.output, 'output', isNull),
+            );
           }
         });
 

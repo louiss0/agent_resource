@@ -4,6 +4,7 @@ environment:
   sdk: ^3.13.2
 dependencies:
   crypto: ^3.0.7
+  ffi: ^2.2.0
   mamba: any
   path: any
   toml: ^0.18.0
