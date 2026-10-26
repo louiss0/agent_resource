@@ -37,6 +37,7 @@ final class AgentInventoryInput {
     this.codexHome,
     this.piAgentDir,
     this.readRoots = const <String>[],
+    this.stateDir,
   });
 
   final String processWorkingDirectory;
@@ -51,6 +52,7 @@ final class AgentInventoryInput {
   final String? codexHome;
   final String? piAgentDir;
   final List<String> readRoots;
+  final String? stateDir;
 }
 
 /// A complete static inventory. Incomplete coverage throws instead of being
@@ -76,6 +78,19 @@ final class AgentInventoryReport {
   final List<Map<String, Object?>> collisions;
   final Map<String, Object?> coverage;
   final List<AgentDiagnostic> diagnostics;
+
+  AgentInventoryReport withManagement({
+    required List<Map<String, Object?>> managedOccurrences,
+    required String managementVerification,
+    required Map<String, Object?> managementCoverage,
+  }) => AgentInventoryReport._(
+    scope: scope,
+    verification: managementVerification,
+    occurrences: managedOccurrences,
+    collisions: collisions,
+    coverage: managementCoverage,
+    diagnostics: diagnostics,
+  );
 
   Map<String, Object?> envelope() => <String, Object?>{
     'schemaVersion': 1,

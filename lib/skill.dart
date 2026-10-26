@@ -6,6 +6,9 @@ import 'package:path/path.dart' as p;
 
 import 'src/skill_files.dart';
 import 'src/skill_validation.dart';
+import 'src/services/lifecycle_state_service.dart';
+import 'src/services/skill_lifecycle_service.dart';
+import 'lifecycle.dart';
 
 /// The scope reported for a discovered skill occurrence.
 enum DiscoveryScope { project, user }
@@ -18,14 +21,29 @@ typedef ValidateOperation = ValidationReport Function(String skill);
 /// children.
 final class SkillCommand extends GroupCommand {
   SkillCommand({
-    DiscoverOperation discover = discoverSkills,
     InspectOperation inspect = inspectSkill,
     ValidateOperation validate = validateSkill,
-  }) : super([
-         DiscoverCommand(discover),
-         InspectCommand(inspect),
-         ValidateCommand(validate),
-       ]);
+    SkillLifecycleService? lifecycle,
+  }) : super(_children(inspect, validate, lifecycle));
+
+  static List<Command> _children(
+    InspectOperation inspect,
+    ValidateOperation validate,
+    SkillLifecycleService? lifecycle,
+  ) {
+    final service = lifecycle ?? SkillLifecycleService();
+    return [
+      SkillListCommand(service),
+      InspectCommand(inspect),
+      ValidateCommand(validate),
+      LifecycleActionCommand.skillInstall(service),
+      LifecycleActionCommand.skillAdopt(service),
+      LifecycleActionCommand.skillReplace(service),
+      LifecycleActionCommand.skillRemove(service),
+      LifecycleBackupCommand.skill(service),
+      LifecycleActionCommand.skillRecover(service),
+    ];
+  }
 
   @override
   String get name => 'skill';
@@ -34,54 +52,84 @@ final class SkillCommand extends GroupCommand {
   String get shortDescription => 'Manage skills.';
 }
 
-final class DiscoverCommand(final DiscoverOperation _discover) extends Command {
+final class SkillListCommand(final SkillLifecycleService _lifecycle)
+    extends Command {
   this
     : super(
-        selectedOptions: [_selection],
+        options: [
+          _scope,
+          _destination,
+          _format,
+          _cwd,
+          _projectRoot,
+          _home,
+          _claudeConfigDir,
+          _codexHome,
+          _stateDir,
+          _readRoots,
+        ],
+        flags: [_verify],
         longDescription:
-            'Select exactly one explicit root: --project for project-local '
-            'skills or --home for user-wide skills. Neither root is '
-            'inferred from the environment. Beneath the selected root, scan '
-            '.agents/skills (shared), .claude/skills (claude), and '
-            '.codex/skills (codex). Home occurrences report installationScope '
-            'user; project occurrences report project. Only immediate ordinary '
-            'directories are candidates; ordinary files and linked scan or '
-            'candidate directories are excluded. SKILL.md presence requires a '
-            'regular file, not a link. Discovery is read-only, non-recursive, '
-            'and does not claim validation, ownership, or consuming-harness '
-            'compatibility.',
+            'Read-only management-aware Skill inventory. Scope defaults to '
+            'user. Project inventory includes the bounded cwd-to-project-root '
+            'ancestor chain. Destination filters presentation only. Managed '
+            'occurrences, tracked-missing records, unmanaged candidates, and '
+            'ownership-unverified states remain distinct. --verify performs a '
+            'fresh complete baseline comparison; without it modification is '
+            'notVerified. No management artifacts are created.',
       );
 
-  static final _selection = SelectedOptions<String>.required(
-    [
-      PairStringOption('project', description: 'Project directory to inspect.'),
-      PairStringOption('home', description: 'User home directory to inspect.'),
-    ],
-    description: 'Select exactly one discovery root.',
-    single: true,
+  static final _scope = ChoiceOption.withDefault(
+    'scope',
+    choices: LifecycleScope.values,
+    defaultValue: LifecycleScope.user,
   );
+  static final _destination = ChoiceOption(
+    'destination',
+    choices: SkillDestination.values,
+  );
+  static final _format = ChoiceOption.withDefault(
+    'format',
+    choices: LifecycleOutputFormat.values,
+    defaultValue: LifecycleOutputFormat.text,
+  );
+  static final _cwd = FolderPathOption('cwd');
+  static final _projectRoot = FolderPathOption('project-root');
+  static final _home = FolderPathOption('home');
+  static final _claudeConfigDir = FolderPathOption('claude-config-dir');
+  static final _codexHome = FolderPathOption('codex-home');
+  static final _stateDir = FolderPathOption('state-dir');
+  static final _readRoots = RepeatableFolderPathOption('read-root');
+  static const _verify = BooleanFlag('verify');
 
   @override
-  String get name => 'discover';
+  String get name => 'list';
 
   @override
-  String get shortDescription => 'Discover project-local and user-wide skills.';
+  String get shortDescription => 'Inventory managed and unmanaged Skills.';
 
   @override
-  String run(ValueOf valueOf, List<String> args) {
-    final selection = valueOf(_selection);
-    final entry = selection.entries.single;
-    final root = entry.value;
-    if (root.trim().isEmpty) {
-      throw MambaException('The --${entry.key} directory must not be blank.');
-    }
-
-    final scope = switch (entry.key) {
-      'project' => DiscoveryScope.project,
-      'home' => DiscoveryScope.user,
-      _ => throw StateError('Unknown discovery selection: ${entry.key}'),
+  Future<String> run(ValueOf valueOf, List<String> args) async {
+    final result = await _lifecycle.list(
+      LifecycleOptions(
+        processWorkingDirectory: Directory.current.path,
+        environment: Platform.environment,
+        scope: valueOf(_scope),
+        cwd: valueOf(_cwd),
+        projectRoot: valueOf(_projectRoot),
+        home: valueOf(_home),
+        claudeConfigDir: valueOf(_claudeConfigDir),
+        codexHome: valueOf(_codexHome),
+        stateDir: valueOf(_stateDir),
+        readRoots: valueOf(_readRoots) ?? const <String>[],
+      ),
+      destination: valueOf(_destination),
+      verify: valueOf(_verify),
+    );
+    return switch (valueOf(_format)) {
+      LifecycleOutputFormat.json => jsonEncode(result.envelope()),
+      LifecycleOutputFormat.text => result.renderText(),
     };
-    return _discover(root, scope);
   }
 }
 

@@ -80,7 +80,7 @@ final class ValidationReport {
 
 /// Validates one explicitly selected skill directory without executing or
 /// inspecting anything outside its immediate SKILL.md marker.
-ValidationReport validateSkill(String skill) {
+ValidationReport validateSkill(String skill, {String? expectedDirectoryName}) {
   if (skill.trim().isEmpty) {
     throw MambaException('The --skill directory must not be blank.');
   }
@@ -240,7 +240,12 @@ ValidationReport validateSkill(String skill) {
     }
   }
 
-  _validateName(frontmatterMap, selectedPath, diagnostics);
+  _validateName(
+    frontmatterMap,
+    selectedPath,
+    diagnostics,
+    expectedDirectoryName: expectedDirectoryName,
+  );
   _validateDescription(frontmatterMap, diagnostics);
   _validateLicense(frontmatterMap, diagnostics);
   _validateCompatibility(frontmatterMap, diagnostics);
@@ -249,6 +254,48 @@ ValidationReport validateSkill(String skill) {
   _warnUnknownFields(frontmatterMap, diagnostics);
 
   return _report(selectedPath, diagnostics);
+}
+
+/// Reads only the declared name so an arbitrary source folder can be copied
+/// to its validated installation name. Full validation remains a separate gate.
+String readDeclaredSkillName(String skill) {
+  final selectedPath = p.normalize(Directory(skill).absolute.path);
+  _requireRootDirectory(selectedPath);
+  final markerPath = p.join(selectedPath, 'SKILL.md');
+  if (skillEntityType(markerPath, followLinks: false) !=
+      FileSystemEntityType.file) {
+    throw MambaException(
+      'The Skill source must contain a regular SKILL.md.',
+      exitCode: 2,
+    );
+  }
+  final bytes = readBoundedSkillMarker(markerPath, maxBytes: _maxMarkerBytes);
+  if (bytes.length > _maxMarkerBytes) {
+    throw MambaException('SKILL.md exceeds the maximum size.', exitCode: 2);
+  }
+  final String content;
+  try {
+    content = utf8.decode(bytes, allowMalformed: false);
+  } on FormatException {
+    throw MambaException('SKILL.md is not valid UTF-8.', exitCode: 2);
+  }
+  final frontmatter = _extractFrontmatter(content);
+  if (frontmatter.status != _FrontmatterStatus.complete) {
+    throw MambaException('SKILL.md frontmatter is incomplete.', exitCode: 2);
+  }
+  final Object? parsed;
+  try {
+    parsed = loadYaml(frontmatter.yamlText!);
+  } on Exception {
+    throw MambaException(
+      'SKILL.md frontmatter is not valid YAML.',
+      exitCode: 2,
+    );
+  }
+  if (parsed is! Map || parsed['name'] is! String) {
+    throw MambaException('SKILL.md requires a string name.', exitCode: 2);
+  }
+  return parsed['name']! as String;
 }
 
 ValidationReport _report(
@@ -322,8 +369,9 @@ String _lineText(String content, int start, int end) {
 void _validateName(
   Map<Object?, Object?> map,
   String selectedPath,
-  List<ValidationDiagnostic> diagnostics,
-) {
+  List<ValidationDiagnostic> diagnostics, {
+  String? expectedDirectoryName,
+}) {
   if (!map.containsKey('name')) {
     diagnostics.add(
       _diagnostic(
@@ -371,7 +419,7 @@ void _validateName(
     );
   }
 
-  if (p.basename(selectedPath) != value) {
+  if ((expectedDirectoryName ?? p.basename(selectedPath)) != value) {
     diagnostics.add(
       _diagnostic(
         code: 'NAME_DIRECTORY',

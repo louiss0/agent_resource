@@ -2,10 +2,11 @@
 
 Agent Resource is a Mamba command-line application for managing resources
 consumed by AI coding harnesses. The current scope provides application help
-and version reporting, read-only discovery of project-local and user-wide
-skill candidates, inspection of a selected skill's instructions, completed
-bounded validation of one selected skill, and read-only native Agent
-inspection/validation for Claude, Codex, and the common Pi profile.
+and version reporting, management-aware Skill and Agent inventories, native
+inspection/validation, copied-Skill and regular-file Agent installation and
+adoption, unchanged-only replacement/removal, retained backups, explicit
+restore/cleanup, and evidence-backed transaction recovery. Claude, Codex, and
+the common Pi profile remain distinct native contracts.
 
 ## Requirements
 
@@ -30,10 +31,11 @@ dart run bin/agent_resource.dart --version
 ```
 
 The no-argument and `--help` invocations show root help. Root help lists the
-`skill` and `agent` groups; `skill --help` lists its `discover`, `inspect`, and
-`validate` child commands. There are no root-level aliases, so all skill
-workflows use the `skill ...` command path. Unsupported commands and options
-fail with a nonzero exit status.
+`skill` and `agent` groups. Each group provides `list`, `inspect`, `validate`,
+`install`, `adopt`, `replace`, `remove`, `backup`, and `recover` paths. There
+are no root-level aliases, and `skill discover` is not retained as a second
+inventory verb. Unsupported commands and options fail with a nonzero exit
+status.
 
 ```text
 dart run bin/agent_resource.dart skill --help
@@ -42,49 +44,82 @@ dart run bin/agent_resource.dart agent --help
 
 ## Commands
 
-### Discover project-local or user-wide skills
+### Inventory Skills and Agents
 
 ```text
-dart run bin/agent_resource.dart skill discover --project <directory>
-dart run bin/agent_resource.dart skill discover --home <directory>
+dart run bin/agent_resource.dart skill list [--scope user|project|all]
+dart run bin/agent_resource.dart agent list [--scope project|user|all]
 ```
 
-`skill discover` requires exactly one explicit root: use `--project` for
-project-local discovery or `--home` for user-wide discovery. Supplying neither
-or both options is rejected before scanning, and no home or other environment
-variable is consulted. Relative roots are resolved against the invocation
-working directory. The selected root may itself be a directory link, but
-linked entries below it are excluded without following their targets.
+Skill scope defaults to user; Agent scope defaults to project. Use `--cwd`,
+`--project-root`, `--home`, native-home overrides, and `--state-dir` to select
+isolated context. Relative operation paths resolve against `--cwd`. Both
+inventories distinguish unmanaged candidates, managed installations,
+tracked-missing records, and ownership-unverified evidence. `--verify` performs
+a fresh baseline comparison; without it, modification is `notVerified`.
 
-Discovery prints a JSON object containing read-only occurrences. It inspects
-only the immediate real directories under the selected root, in this fixed
-product-convention order:
+Skill destinations are `.claude/skills`, `.codex/skills`, and
+`.agents/skills`. Direct ordinary children are eligible for copy adoption;
+nested Skill discoveries remain visible but ineligible. Linked candidates are
+reported without reading their targets. Agent inventory retains its native
+recursive Claude/Codex, immediate common-Pi, and config-binding observations.
+Occurrence IDs are not lifecycle mutation selectors.
 
-- `.agents/skills` (`shared`)
-- `.claude/skills` (`claude`)
-- `.codex/skills` (`codex`)
+Inventory is bounded and read-only. Incomplete required traversal fails rather
+than returning partial JSON. Shared storage and native discovery conventions
+do not prove runtime activation, precedence, or harness compatibility.
 
-These destinations are Agent Resource search conventions, not a universal
-multi-harness discovery profile. The shared `.agents/skills` label does not
-prove that every harness reads the occurrence. The `.codex/skills` scan is
-retained for legacy compatibility and is not the current documented universal
-Codex root. Inventory also makes no claim about native precedence or runtime
-visibility in Claude, Codex, or another consumer.
+### Install, adopt, and manage regular files
 
-Each occurrence reports its absolute normalized path, destination,
-`installationScope: "project"` for `--project` or `"user"` for `--home`, and
-whether the candidate contains a regular `SKILL.md` file. Missing locations
-are empty only after their parent listing positively confirms absence; a lookup
-or scan failure rejects the whole invocation rather than presenting an
-incomplete inventory. Files in place of configured scan directories are errors.
-Linked or junction harness, skills, candidate, and marker entries are excluded,
-and ordinary files at candidate level are ignored. Discovery does not recurse,
-parse skill contents, validate formats, or mutate the selected root. It makes
-no claim about validity, management ownership, origin, or whether a consuming
-harness will discover an occurrence; a filesystem failure rejects the whole
-invocation rather than returning partial JSON. The scan assumes a trusted,
-stable local root and does not claim resistance to hostile concurrent
-filesystem replacement.
+```text
+agent_resource skill install <source-directory/> --destination claude|codex|shared
+agent_resource skill adopt <existing-directory/> --destination claude|codex|shared
+agent_resource skill replace <installation-id> <source-directory/>
+agent_resource skill remove <installation-id>
+agent_resource skill backup list
+agent_resource skill backup restore <backup-id>
+agent_resource skill backup cleanup <backup-id>
+agent_resource skill recover [<transaction-id>] [--action rollback|complete]
+
+agent_resource agent install <native-file> --harness claude|codex|pi [--output <file>]
+agent_resource agent adopt <native-file> --harness claude|codex|pi
+agent_resource agent replace <installation-id> <native-file>
+agent_resource agent remove <installation-id>
+agent_resource agent backup list
+agent_resource agent backup restore <backup-id>
+agent_resource agent backup cleanup <backup-id>
+agent_resource agent recover [<transaction-id>] [--action rollback|complete]
+```
+
+Installation copies an arbitrary validated ordinary source without changing
+it. Skill installation uses the declared Skill name; Agent installation
+preserves the source basename unless an eligible `--output` is selected.
+Adoption records an eligible existing resource without rewriting its bytes.
+Replacement and restoration preserve installation identity and recorded
+location. Removal and replacement require a currently unchanged complete
+baseline and create independent retained backups before live mutation.
+
+`--dry-run` performs read-only planning and creates no locks, journals,
+ledgers, staging, or backups. Replacement, removal, restore, cleanup, and
+recovery actions require `--yes`, or an explicit `--interactive` reviewed
+confirmation. Install and adoption do not require destructive approval.
+JSON and interactive modes conflict; no prompt occurs by default. Explicit
+cancellation uses status 7.
+
+Lifecycle state is stored per project at `.agent-resource` or in the selected
+user state directory. Native files never receive management receipts.
+Recovery acts only on validated persisted evidence and exact current-path
+guards. It cannot overwrite new occupants, erase newer edits, or guess an
+interrupted outcome. Successful recovery reports the state established rather
+than claiming the original operation succeeded. Backup cleanup is never
+automatic and does not promise secure erasure.
+
+The implementation uses bounded local-disk IO, same-filesystem staging,
+protected intent, independent backups, quarantine, and per-scope coordination.
+It does not claim hostile-writer resistance, joint resource-plus-ledger
+atomicity, universal metadata fidelity, or guaranteed power-loss durability.
+Skill links, registration/parent-setting changes, rich Agent composition,
+remote origins, and conversion remain outside this checkpoint.
 
 ### Inspect one skill directory
 
@@ -252,10 +287,9 @@ A complete `agent inspect` may succeed with `ready: false` and failed candidate
 diagnostics. `agent validate` is the correctness gate and returns status 2 for
 blocking violations without a success JSON report. Usage/general failures use
 status 1, incomplete required analysis or exhausted budgets status 3, and
-linked-file/safety refusals status 4. All Agent operations are read-only and
-create no management records, caches, logs, staging, or backups. Lifecycle
-operations, composition, conversion, and parent changes are not yet
-implemented.
+linked-file/safety refusals status 4. Inspection, validation, and inventory
+are read-only. Regular-file lifecycle operations are documented above;
+composition, conversion, registration, and parent changes remain unimplemented.
 
 ## Analyze
 

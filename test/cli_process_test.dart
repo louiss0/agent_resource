@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:mamba/executor.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/process_test_support.dart';
@@ -88,6 +89,7 @@ Future<CliProcessResult> _runCli(
   _Sandbox sandbox,
   List<String> arguments, {
   Duration timeout = const Duration(seconds: 20),
+  String? standardInput,
 }) => runDartScript(
   script: _entrypoint,
   packageConfig: _packageConfig,
@@ -95,6 +97,7 @@ Future<CliProcessResult> _runCli(
   workingDirectory: sandbox.work,
   environment: isolatedEnvironment(sandbox.root),
   timeout: timeout,
+  standardInput: standardInput,
 );
 
 String _normalizePresentation(String value) => value
@@ -220,6 +223,108 @@ void main() {
       },
       // Seven sequential subprocesses each have a 20-second deadline.
       timeout: const Timeout(Duration(minutes: 3)),
+    );
+
+    test(
+      'production lifecycle smoke preserves streams, bytes, and approval gates',
+      () async {
+        await _withSandbox((sandbox) async {
+          final separator = Platform.pathSeparator;
+          final skill = Directory(p.join(sandbox.root.path, 'skill-source'))
+            ..createSync();
+          final skillMarker = File(p.join(skill.path, 'SKILL.md'))
+            ..writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+          final originalSkillBytes = skillMarker.readAsBytesSync();
+          final contextArgs = [
+            '--scope',
+            'project',
+            '--cwd',
+            '${sandbox.work.path}$separator',
+            '--project-root',
+            '${sandbox.work.path}$separator',
+            '--home',
+            '${sandbox.home.path}$separator',
+            '--format',
+            'json',
+          ];
+          final installed = await _runCli(sandbox, [
+            'skill',
+            'install',
+            '${skill.path}$separator',
+            '--destination',
+            'claude',
+            ...contextArgs,
+          ]);
+          expect(installed.exitCode, 0, reason: installed.stderr);
+          expect(installed.stderr, isEmpty);
+          final envelope = jsonDecode(installed.stdout) as Map<String, Object?>;
+          expect(envelope['command'], 'skill install');
+          expect(envelope['outcome'], 'installed');
+          expect(skillMarker.readAsBytesSync(), originalSkillBytes);
+          final liveMarker = File(
+            p.join(
+              sandbox.work.path,
+              '.claude',
+              'skills',
+              'review',
+              'SKILL.md',
+            ),
+          );
+          expect(liveMarker.readAsBytesSync(), originalSkillBytes);
+
+          final refused = await _runCli(sandbox, [
+            'skill',
+            'remove',
+            (envelope['data']! as Map<String, Object?>)['installationId']!
+                as String,
+            ...contextArgs,
+          ]);
+          expect(refused.exitCode, 4);
+          expect(refused.stdout, isEmpty);
+          expect(refused.stderr, contains('approval'));
+          expect(liveMarker.existsSync(), isTrue);
+
+          final cancelled = await _runCli(sandbox, [
+            'skill',
+            'remove',
+            (envelope['data']! as Map<String, Object?>)['installationId']!
+                as String,
+            '--interactive',
+            ...contextArgs.take(contextArgs.length - 2),
+          ], standardInput: 'n\n');
+          expect(cancelled.exitCode, 7);
+          expect(cancelled.stdout, isEmpty);
+          expect(cancelled.stderr, contains('cancelled'));
+          expect(liveMarker.existsSync(), isTrue);
+
+          final agent = File(p.join(sandbox.root.path, 'reviewer.md'))
+            ..writeAsStringSync(
+              '---\nname: reviewer\ndescription: Reviews.\n---\nAgent body.\n',
+            );
+          final agentInstalled = await _runCli(sandbox, [
+            'agent',
+            'install',
+            agent.path,
+            '--harness',
+            'claude',
+            ...contextArgs,
+          ]);
+          expect(agentInstalled.exitCode, 0, reason: agentInstalled.stderr);
+          expect(agentInstalled.stderr, isEmpty);
+          expect(
+            File(p.join(sandbox.work.path, '.claude', 'agents', 'reviewer.md'))
+                .readAsBytesSync(),
+            agent.readAsBytesSync(),
+          );
+          expect(
+            File(p.join(sandbox.work.path, 'sentinel.txt')).readAsStringSync(),
+            'do not change',
+          );
+        });
+      },
+      timeout: const Timeout(Duration(minutes: 2)),
     );
 
     test('timeout kills the child, drains streams, and permits cleanup', () async {

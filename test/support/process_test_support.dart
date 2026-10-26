@@ -41,12 +41,14 @@ Future<CliProcessResult> runDartScript({
   required Directory workingDirectory,
   required Map<String, String> environment,
   Duration timeout = const Duration(seconds: 20),
+  String? standardInput,
 }) => runProcess(
   Platform.resolvedExecutable,
   ['--packages=$packageConfig', script, ...arguments],
   workingDirectory: workingDirectory,
   environment: environment,
   timeout: timeout,
+  standardInput: standardInput,
 );
 
 Future<CliProcessResult> runProcess(
@@ -55,6 +57,7 @@ Future<CliProcessResult> runProcess(
   required Directory workingDirectory,
   required Map<String, String> environment,
   Duration timeout = const Duration(seconds: 20),
+  String? standardInput,
 }) async {
   final Process process;
   try {
@@ -76,7 +79,7 @@ Future<CliProcessResult> runProcess(
 
   final stdout = _OutputCollector(process.stdout);
   final stderr = _OutputCollector(process.stderr);
-  unawaited(_closeInput(process));
+  unawaited(_closeInput(process, standardInput));
   final completion = Future.wait<dynamic>([
     process.exitCode,
     stdout.done,
@@ -128,8 +131,9 @@ Future<bool> _reap(Process process) async {
   }
 }
 
-Future<void> _closeInput(Process process) async {
+Future<void> _closeInput(Process process, String? standardInput) async {
   try {
+    if (standardInput != null) process.stdin.write(standardInput);
     await process.stdin.close().timeout(_streamCancellationTimeout);
   } on Object {
     // A process that exits while its input pipe is closing is already done.
@@ -184,11 +188,13 @@ Map<String, String> isolatedEnvironment(Directory sandbox) {
   final systemRoot =
       Platform.environment['SystemRoot'] ?? Platform.environment['WINDIR'];
   final comSpec = Platform.environment['ComSpec'];
+  final username = Platform.environment['USERNAME'];
 
   final environment = <String, String>{
     'PATH': ?path,
     'SystemRoot': ?systemRoot,
     'ComSpec': ?comSpec,
+    'USERNAME': ?username,
     'TEMP': temp.path,
     'TMP': temp.path,
     'HOME': home.path,

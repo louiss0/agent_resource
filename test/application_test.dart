@@ -125,19 +125,30 @@ void main() {
         const ['--help'],
       ]) {
         test(
-          '${arguments.isEmpty ? 'no arguments' : '--help'} lists all three skill commands',
+          '${arguments.isEmpty ? 'no arguments' : '--help'} lists the Skill command surface',
           () async {
             final result = _expectSuccess(
               await createExecutor().fake().execute(['skill', ...arguments]),
               isNotEmpty,
             );
-            for (final command in ['discover', 'inspect', 'validate']) {
+            for (final command in [
+              'list',
+              'inspect',
+              'validate',
+              'install',
+              'adopt',
+              'replace',
+              'remove',
+              'backup',
+              'recover',
+            ]) {
               expect(
                 _containsCommandEntry(result.output!, command),
                 isTrue,
                 reason: command,
               );
             }
+            expect(_containsCommandEntry(result.output!, 'discover'), isFalse);
           },
         );
       }

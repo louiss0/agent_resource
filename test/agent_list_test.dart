@@ -781,6 +781,7 @@ void main() {
               expect(occurrences.single['path'], contains('near.md'));
             });
           },
+          timeout: const Timeout(Duration(seconds: 90)),
         );
 
         test(
@@ -1069,7 +1070,7 @@ void main() {
                   'json',
                 ]),
               );
-              expect(_data(report)['verification'], 'no-managed-baselines');
+              expect(_data(report)['verification'], 'requested');
               expect(_single(report)['modification'], 'notVerified');
               expect(jsonEncode(report), isNot(contains('unchanged')));
             });

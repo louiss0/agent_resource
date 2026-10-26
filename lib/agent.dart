@@ -6,6 +6,8 @@ import 'package:mamba/mamba.dart';
 
 import 'src/agent_inspection.dart';
 import 'src/agent_inventory.dart';
+import 'src/services/agent_lifecycle_service.dart';
+import 'lifecycle.dart';
 
 /// The output format selected by `--format`.
 enum OutputFormat { text, json }
@@ -27,11 +29,27 @@ final class AgentCommand extends GroupCommand {
   AgentCommand({
     AgentInspectionOperation operation = inspectNativeAgent,
     AgentInventoryOperation inventory = listNativeAgents,
-  }) : super([
-         AgentListCommand(inventory),
-         AgentInspectCommand(operation),
-         AgentValidateCommand(operation),
-       ]);
+    AgentLifecycleService? lifecycle,
+  }) : super(_children(operation, inventory, lifecycle));
+
+  static List<Command> _children(
+    AgentInspectionOperation operation,
+    AgentInventoryOperation inventory,
+    AgentLifecycleService? lifecycle,
+  ) {
+    final service = lifecycle ?? AgentLifecycleService();
+    return [
+      AgentListCommand(inventory, service),
+      AgentInspectCommand(operation),
+      AgentValidateCommand(operation),
+      LifecycleActionCommand.agentInstall(service),
+      LifecycleActionCommand.agentAdopt(service),
+      LifecycleActionCommand.agentReplace(service),
+      LifecycleActionCommand.agentRemove(service),
+      LifecycleBackupCommand.agent(service),
+      LifecycleActionCommand.agentRecover(service),
+    ];
+  }
 
   @override
   String get name => 'agent';
@@ -274,8 +292,10 @@ AgentInspectionInput _inspectionInput({
   );
 }
 
-final class AgentListCommand(final AgentInventoryOperation _inventory)
-    extends Command {
+final class AgentListCommand(
+  final AgentInventoryOperation _inventory,
+  final AgentLifecycleService _lifecycle,
+) extends Command {
   this
     : super(
         options: [
@@ -289,6 +309,7 @@ final class AgentListCommand(final AgentInventoryOperation _inventory)
           _codexHome,
           _piAgentDir,
           _readRoots,
+          _stateDir,
         ],
         flags: [_verify],
         longDescription:
@@ -304,9 +325,11 @@ final class AgentListCommand(final AgentInventoryOperation _inventory)
             '2,000 directories, and 64 MiB of metadata. Linked candidates are '
             'reported without target reads; linked roots are refused. '
             'Occurrence IDs are inventory identities, not managed installation '
-            'IDs or mutation selectors. All occurrences are unmanaged and '
-            'modification-not-verified in this pre-lifecycle slice; --verify '
-            'does not invent a baseline comparison. Inventory makes no native '
+            'IDs or mutation selectors. Managed occurrences expose verified '
+            'installation IDs; unmanaged, tracked-missing, and '
+            'ownership-unverified states remain distinct. Without --verify, '
+            'modification is notVerified; verification never invents a missing '
+            'baseline comparison. Inventory makes no native '
             'activation, runtime precedence, ownership, or uniqueness-winner '
             'claim. Malformed candidates remain visible; incomplete required '
             'coverage fails without partial JSON. No harness, agent, hook, MCP '
@@ -369,6 +392,11 @@ final class AgentListCommand(final AgentInventoryOperation _inventory)
     description: 'Additional read-only Claude project root.',
   );
 
+  static final _stateDir = FolderPathOption(
+    'state-dir',
+    description: 'User lifecycle state directory.',
+  );
+
   static const _verify = BooleanFlag(
     'verify',
     description: 'Request managed baseline comparison when available.',
@@ -396,11 +424,30 @@ final class AgentListCommand(final AgentInventoryOperation _inventory)
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
         readRoots: valueOf(_readRoots) ?? const <String>[],
+        stateDir: valueOf(_stateDir),
+      ),
+    );
+    final managed = _lifecycle.managementAware(
+      report,
+      AgentInventoryInput(
+        processWorkingDirectory: Directory.current.path,
+        environment: Platform.environment,
+        scope: valueOf(_scope),
+        harness: valueOf(_listHarness),
+        verify: valueOf(_verify),
+        cwd: valueOf(_listCwd),
+        projectRoot: valueOf(_projectRoot),
+        home: valueOf(_home),
+        claudeConfigDir: valueOf(_claudeConfigDir),
+        codexHome: valueOf(_codexHome),
+        piAgentDir: valueOf(_piAgentDir),
+        readRoots: valueOf(_readRoots) ?? const <String>[],
+        stateDir: valueOf(_stateDir),
       ),
     );
     return switch (valueOf(_listFormat)) {
-      OutputFormat.json => jsonEncode(report.envelope()),
-      OutputFormat.text => report.renderText(),
+      OutputFormat.json => jsonEncode(managed.envelope()),
+      OutputFormat.text => managed.renderText(),
     };
   }
 }
