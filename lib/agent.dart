@@ -8,6 +8,9 @@ import 'src/agent_inspection.dart';
 import 'src/agent_inventory.dart';
 import 'src/services/agent_lifecycle_service.dart';
 import 'lifecycle.dart';
+import 'agent_config_commands.dart';
+import 'agent_create_command.dart';
+import 'src/services/parent_config_service.dart';
 
 /// The output format selected by `--format`.
 enum OutputFormat { text, json }
@@ -40,6 +43,8 @@ final class AgentCommand extends GroupCommand {
     final service = lifecycle ?? AgentLifecycleService();
     return [
       AgentListCommand(inventory, service),
+      AgentConfigCommand(ParentConfigService()),
+      AgentCreateCommand(),
       AgentInspectCommand(operation),
       AgentValidateCommand(operation),
       LifecycleActionCommand.agentInstall(service),

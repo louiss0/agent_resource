@@ -276,12 +276,250 @@ void main() {
           'recover',
           'inspect',
           'validate',
+          'config',
+          'create',
         ]) {
           expect(output, contains(command));
         }
         for (final unsupported in ['register', 'compose', 'convert', 'clone']) {
           expect(output, isNot(contains(unsupported)));
         }
+      });
+
+      group('create', () {
+        test('plans a reviewed bound-role creation without effects', () async {
+          final sandbox = await Directory.systemTemp.createTemp('create-cli-');
+          try {
+            final project = Directory(p.join(sandbox.path, 'project'))
+              ..createSync();
+            final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+            final codex = Directory(p.join(sandbox.path, 'codex'))
+              ..createSync();
+            Directory(p.join(project.path, '.codex')).createSync();
+            File(p.join(project.path, '.codex', 'config.toml'))
+                .writeAsStringSync('# keep\n');
+            final source = File(p.join(sandbox.path, 'reviewer.toml'))
+              ..writeAsStringSync(
+                'name = "reviewer"\ndescription = "Reviews."\n'
+                'developer_instructions = "Review."\n',
+              );
+            final request = File(p.join(sandbox.path, 'bound.json'))
+              ..writeAsStringSync(
+                jsonEncode(<String, Object?>{
+                  'schemaVersion': 1,
+                  'operation': 'create',
+                  'source': <String, Object?>{
+                    'kind': 'codex-role',
+                    'configFile': p.join(project.path, '.codex', 'config.toml'),
+                    'roleKey': 'reviewer',
+                  },
+                  'ownership': 'both',
+                  'definition': <String, Object?>{'source': source.path},
+                }),
+              );
+            final separator = Platform.pathSeparator;
+            final result = _success(
+              await createExecutor().fake().execute([
+                'agent',
+                'create',
+                '--request',
+                request.path,
+                '--scope',
+                'project',
+                '--cwd',
+                '${project.path}$separator',
+                '--project-root',
+                '${project.path}$separator',
+                '--home',
+                '${home.path}$separator',
+                '--codex-home',
+                '${codex.path}$separator',
+                '--dry-run',
+                '--format',
+                'json',
+              ]),
+            );
+            final envelope = jsonDecode(result.output!) as Map<String, Object?>;
+            expect(envelope['outcome'], 'planned');
+            expect(
+              (envelope['data']! as Map<String, Object?>)['planId'],
+              isA<String>(),
+            );
+            expect(
+              File(p.join(project.path, '.codex', 'agents', 'reviewer.toml'))
+                  .existsSync(),
+              isFalse,
+            );
+            expect(
+              File(p.join(project.path, '.codex', 'config.toml'))
+                  .readAsStringSync(),
+              '# keep\n',
+            );
+          } finally {
+            await sandbox.delete(recursive: true);
+          }
+        });
+      });
+
+      group('config', () {
+        test(
+          'plan is read-only and apply requires quiescence acknowledgement',
+          () async {
+            final sandbox = await Directory.systemTemp.createTemp(
+              'config-cli-',
+            );
+            try {
+              final project = Directory(p.join(sandbox.path, 'project'))
+                ..createSync();
+              final home = Directory(p.join(sandbox.path, 'home'))
+                ..createSync();
+              final request = File(p.join(sandbox.path, 'plan.json'))
+                ..writeAsStringSync(
+                  jsonEncode(<String, Object?>{
+                    'schemaVersion': 1,
+                    'operation': 'plan',
+                    'source': <String, Object?>{
+                      'harness': 'claude',
+                      'scope': 'project',
+                      'layer': 'project',
+                      'file': '.claude/settings.json',
+                    },
+                    'changes': [
+                      <String, Object?>{
+                        'unit': 'model',
+                        'action': 'set',
+                        'value': 'opus',
+                      },
+                    ],
+                  }),
+                );
+              final separator = Platform.pathSeparator;
+              final common = [
+                '--scope',
+                'project',
+                '--cwd',
+                '${project.path}$separator',
+                '--project-root',
+                '${project.path}$separator',
+                '--home',
+                '${home.path}$separator',
+              ];
+              final planned = _success(
+                await createExecutor().fake().execute([
+                  'agent',
+                  'config',
+                  'plan',
+                  '--request',
+                  request.path,
+                  ...common,
+                  '--format',
+                  'json',
+                ]),
+              );
+              final envelope =
+                  jsonDecode(planned.output!) as Map<String, Object?>;
+              expect(envelope['outcome'], 'planned');
+              final planId =
+                  (envelope['data']! as Map<String, Object?>)['planId']!
+                      as String;
+              expect(
+                File(p.join(project.path, '.claude', 'settings.json'))
+                    .existsSync(),
+                isFalse,
+              );
+              final applyRequest = File(p.join(sandbox.path, 'apply.json'))
+                ..writeAsStringSync(
+                  jsonEncode(<String, Object?>{
+                    'schemaVersion': 1,
+                    'operation': 'apply',
+                    'source': <String, Object?>{
+                      'harness': 'claude',
+                      'scope': 'project',
+                      'layer': 'project',
+                      'file': '.claude/settings.json',
+                    },
+                    'changes': [
+                      <String, Object?>{
+                        'unit': 'model',
+                        'action': 'set',
+                        'value': 'opus',
+                      },
+                    ],
+                    'planId': planId,
+                    'clientsStopped': false,
+                  }),
+                );
+              final refusal = await createExecutor().fake().execute([
+                'agent',
+                'config',
+                'apply',
+                '--request',
+                applyRequest.path,
+                ...common,
+                '--yes',
+              ]);
+              expect(
+                refusal,
+                isA<MambaFailureResult>()
+                    .having((value) => value.exitCode, 'exit code', 4)
+                    .having((value) => value.output, 'output', isNull)
+                    .having(
+                      (value) => value.message,
+                      'message',
+                      contains('stopped-client'),
+                    ),
+              );
+              applyRequest.writeAsStringSync(
+                jsonEncode(<String, Object?>{
+                  'schemaVersion': 1,
+                  'operation': 'apply',
+                  'source': <String, Object?>{
+                    'harness': 'claude',
+                    'scope': 'project',
+                    'layer': 'project',
+                    'file': '.claude/settings.json',
+                  },
+                  'changes': [
+                    <String, Object?>{
+                      'unit': 'model',
+                      'action': 'set',
+                      'value': 'opus',
+                    },
+                  ],
+                  'planId': planId,
+                  'clientsStopped': true,
+                }),
+              );
+              final applied = _success(
+                await createExecutor().fake().execute([
+                  'agent',
+                  'config',
+                  'apply',
+                  '--request',
+                  applyRequest.path,
+                  ...common,
+                  '--yes',
+                  '--clients-stopped',
+                  '--format',
+                  'json',
+                ]),
+              );
+              final appliedEnvelope =
+                  jsonDecode(applied.output!) as Map<String, Object?>;
+              expect(appliedEnvelope['outcome'], 'applied');
+              final settings = File(
+                p.join(project.path, '.claude', 'settings.json'),
+              );
+              expect(
+                (jsonDecode(settings.readAsStringSync())
+                    as Map<String, Object?>)['model'],
+                'opus',
+              );
+            } finally {
+              await sandbox.delete(recursive: true);
+            }
+          },
+        );
       });
 
       group('install', () {

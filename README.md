@@ -303,6 +303,50 @@ linked-file/safety refusals status 4. Inspection, validation, and inventory
 are read-only. Regular-file lifecycle operations are documented above;
 composition, conversion, registration, and parent changes remain unimplemented.
 
+### Manage native parent settings and Codex bound roles
+
+```text
+agent_resource agent config inspect --request <request.json> --scope project|user
+agent_resource agent config plan --request <request.json> --scope project|user
+agent_resource agent config apply --request <request.json> --scope project|user --yes --clients-stopped
+agent_resource agent create --request <request.json> --scope project|user
+agent_resource agent adopt <native-file>|--request <request.json> --harness codex
+agent_resource agent replace <installation-id> <native-file>|--request <request.json>
+agent_resource agent remove <installation-id>|--request <request.json>
+```
+
+Parent requests select the native harness, scope, layer, and source file
+explicitly; Agent project defaults never choose a parent file. Supported typed
+units include Claude permissions/sandbox/model/environment/MCP selections and
+Codex approval/sandbox/model/MCP/registration selections. Managed, system,
+authentication, and session-enforced sources remain refusal or inspect-only.
+
+Inspection and planning are read-only. Plans return a stable ID bound to the
+request, context, source fingerprint, selected values, ownership decisions, and
+known impacts. Apply requires that exact ID, approval, and a separate
+`--clients-stopped` acknowledgement. JSON edits preserve unrelated bytes and
+ordering; TOML edits preserve comments, trivia, and unknown members. Credential
+literals are rejected, existing secrets are not reported, and runtime
+enforcement/activation remains unverified.
+
+Codex bound-role requests identify the declaring config and role key. They may
+select registration ownership, definition ownership, or both explicitly.
+Definition paths resolve from the declaring config, standalone install never
+implicitly registers, and removing a registration never deletes its definition
+or unrelated roles. Bound-role creation plans by default and publishes only the
+reviewed definition/registration pair.
+
+Parent backups retain private prior document/selected-unit evidence for
+selective restore. `agent backup restore` for a parent backup requires a fresh
+plan ID and stopped-client acknowledgement; restore patches only approved units
+into the current document and preserves unrelated later edits. Cleanup requires
+approval and refuses changed evidence.
+
+`--dry-run` performs bounded read-only planning and creates no locks, plans,
+ledgers, staging, or backups. Parent source limits are 8 MiB per document,
+parse depth 64, 100,000 nodes, 16 files and 32 MiB aggregate per plan; request
+and management limits remain independently binding.
+
 ## Analyze
 
 ```text
