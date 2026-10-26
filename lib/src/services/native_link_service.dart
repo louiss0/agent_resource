@@ -63,7 +63,8 @@ interface class NativeLinkService {
 
 String _windowsDirectoryKind(String path) {
   final attributes = _win32.getFileAttributes(path);
-  if (attributes == 0xFFFFFFFF || attributes & 0x10 == 0) {
+  final broken = attributes == 0xFFFFFFFF;
+  if (!broken && attributes & 0x10 == 0) {
     throw MambaException(
       'The Windows linked entry is not a directory: $path',
       exitCode: 4,
@@ -109,6 +110,9 @@ String _windowsDirectoryKind(String path) {
         exitCode: 4,
       );
     }
+    // A dangling directory symlink can make GetFileAttributesW fail while the
+    // reparse tag remains a symlink. The owned entry is still observable and
+    // removable; target resolution is a separate observation.
     return 'windows-directory-symlink';
   } finally {
     calloc.free(returned);
