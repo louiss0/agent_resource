@@ -50,7 +50,9 @@ abstract base class _ConfigCommand extends Command {
           _state,
           _scope,
         ],
-        flags: apply ? const [_yes, _clientsStopped] : const [],
+        flags: apply
+            ? const [_yes, _ackClientsStopped, _clientsStopped]
+            : const [],
       );
 
   final ParentConfigService _service;
@@ -76,7 +78,14 @@ abstract base class _ConfigCommand extends Command {
     choices: const [LifecycleScope.user, LifecycleScope.project],
   );
   static const _yes = BooleanFlag('yes');
-  static const _clientsStopped = BooleanFlag('clients-stopped');
+  static const _ackClientsStopped = BooleanFlag(
+    'ack-clients-stopped',
+    description: 'Acknowledge that native clients were stopped before apply.',
+  );
+  static const _clientsStopped = BooleanFlag(
+    'clients-stopped',
+    description: 'Compatibility alias for --ack-clients-stopped.',
+  );
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
@@ -111,7 +120,8 @@ abstract base class _ConfigCommand extends Command {
       );
     }
     if (_operation == ParentOperation.apply) {
-      if (!valueOf(_clientsStopped) || !request.clientsStopped) {
+      if ((!valueOf(_ackClientsStopped) && !valueOf(_clientsStopped)) ||
+          !request.clientsStopped) {
         throw MambaException(
           'Parent apply requires the stopped-client acknowledgement.',
           exitCode: 4,

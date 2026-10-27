@@ -148,6 +148,7 @@ final class AgentInspectionReport {
     required this.references,
     required this.capabilities,
     required this.parentRequirements,
+    required this.nativeFields,
     required this.showInstructions,
   });
 
@@ -187,6 +188,11 @@ final class AgentInspectionReport {
   final List<Map<String, Object?>> references;
   final List<Map<String, Object?>> capabilities;
   final List<Map<String, Object?>> parentRequirements;
+
+  /// Decoded native fields for trusted composition/conversion operations.
+  /// This is never included directly in inspection output, so unknown or
+  /// sensitive values remain withheld from ordinary reports.
+  final Map<String, Object?> nativeFields;
 
   final bool showInstructions;
 
@@ -390,6 +396,44 @@ AgentInspectionReport inspectNativeAgent(
     cwd,
     input.showInstructions,
   );
+}
+
+/// Validates an in-memory native candidate without creating a staging file.
+///
+/// This is intended for preview-first composition and conversion. The same
+/// native parsers and correctness rules are used as for file inspection; no
+/// filesystem or runtime discovery is performed.
+AgentInspectionReport inspectNativeAgentContent({
+  required String content,
+  required AgentHarness harness,
+  String? definitionFile,
+  bool showInstructions = false,
+}) {
+  if (utf8.encode(content).length > _maxDefinitionBytes) {
+    throw _incomplete('The proposed native definition exceeds 1 MiB.');
+  }
+  final builder = _directBuilder(harness)
+    ..coverage.add('in-memory-candidate')
+    ..definitionFile = definitionFile;
+  return _validateDecodedNative(
+    content,
+    harness,
+    builder,
+    showInstructions,
+    'The proposed definition',
+  );
+}
+
+void _validateClaudeOrPiFields(
+  AgentHarness harness,
+  Map<Object?, Object?> fields,
+  _ReportBuilder builder,
+) {
+  if (harness == AgentHarness.claude) {
+    _validateClaudeFields(fields, builder);
+  } else {
+    _validatePiFields(fields, builder);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +673,7 @@ final class _ReportBuilder {
   final List<Map<String, Object?>> capabilities = <Map<String, Object?>>[];
   final List<Map<String, Object?>> parentRequirements =
       <Map<String, Object?>>[];
+  Map<String, Object?> nativeFields = const <String, Object?>{};
 
   void error(
     String code,
@@ -692,6 +737,7 @@ final class _ReportBuilder {
         parentRequirements: List<Map<String, Object?>>.unmodifiable(
           parentRequirements.map(Map<String, Object?>.unmodifiable),
         ),
+        nativeFields: Map<String, Object?>.unmodifiable(nativeFields),
         showInstructions: showInstructions,
       );
 }
@@ -738,23 +784,7 @@ AgentInspectionReport _inspectDirect(
 ) {
   final workingDirectory = _resolveWorkingDirectory(cwd);
   final path = _resolvePath(workingDirectory, nativeFile);
-  final builder = switch (harness) {
-    AgentHarness.claude => _ReportBuilder(
-      form: 'claude-agent-file',
-      profile: _claudeProfile,
-      evidence: _claudeEvidence,
-    ),
-    AgentHarness.codex => _ReportBuilder(
-      form: 'codex-agent-file',
-      profile: _codexProfile,
-      evidence: _codexEvidence,
-    ),
-    AgentHarness.pi => _ReportBuilder(
-      form: 'pi-agent-file',
-      profile: _piProfile,
-      evidence: _piEvidence,
-    ),
-  };
+  final builder = _directBuilder(harness);
   builder.coverage.add('source-selection');
   builder.definitionFile = path;
 
@@ -788,22 +818,53 @@ AgentInspectionReport _inspectDirect(
     return builder.finish(showInstructions: showInstructions);
   }
 
+  return _validateDecodedNative(
+    text,
+    harness,
+    builder,
+    showInstructions,
+    'The definition file',
+  );
+}
+
+_ReportBuilder _directBuilder(AgentHarness harness) => switch (harness) {
+  AgentHarness.claude => _ReportBuilder(
+    form: 'claude-agent-file',
+    profile: _claudeProfile,
+    evidence: _claudeEvidence,
+  ),
+  AgentHarness.codex => _ReportBuilder(
+    form: 'codex-agent-file',
+    profile: _codexProfile,
+    evidence: _codexEvidence,
+  ),
+  AgentHarness.pi => _ReportBuilder(
+    form: 'pi-agent-file',
+    profile: _piProfile,
+    evidence: _piEvidence,
+  ),
+};
+
+AgentInspectionReport _validateDecodedNative(
+  String text,
+  AgentHarness harness,
+  _ReportBuilder builder,
+  bool showInstructions,
+  String label,
+) {
   if (harness == AgentHarness.codex) {
-    final fields = _parseTomlCandidate(text, builder, 'The definition file');
+    final fields = _parseTomlCandidate(text, builder, label);
     if (fields != null) {
+      builder.nativeFields = fields;
       builder.coverage.add('field-validation');
       _validateCodexFields(fields, builder, bound: false);
     }
-    return builder.finish(showInstructions: showInstructions);
-  }
-
-  final fields = _parseMarkdownCandidate(text, builder, harness);
-  if (fields != null) {
-    builder.coverage.add('field-validation');
-    if (harness == AgentHarness.claude) {
-      _validateClaudeFields(fields, builder);
-    } else {
-      _validatePiFields(fields, builder);
+  } else {
+    final fields = _parseMarkdownCandidate(text, builder, harness);
+    if (fields != null) {
+      builder.nativeFields = Map<String, Object?>.from(fields);
+      builder.coverage.add('field-validation');
+      _validateClaudeOrPiFields(harness, fields, builder);
     }
   }
   return builder.finish(showInstructions: showInstructions);
@@ -1480,6 +1541,7 @@ final class CodexBindingInspection {
           'The role definition file',
         );
         if (fields != null) {
+          builder.nativeFields = fields;
           builder.coverage.add('field-validation');
           _validateCodexFields(fields, builder, bound: true);
         }

@@ -16,6 +16,20 @@ enum BoundOwnership { registration, definition, both }
 
 enum BoundOperation { create, adopt, replace, remove }
 
+/// Identifies the legacy bound-role envelope shape without using exceptions
+/// for dispatch. Full validation still occurs in [parseBoundRoleRequest].
+bool isBoundRoleRequest(String requestFile, String workingDirectory) {
+  final path = p.normalize(
+    p.isAbsolute(requestFile)
+        ? requestFile
+        : p.join(workingDirectory, requestFile),
+  );
+  final bytes = readBoundedSkillMarker(path, maxBytes: parentDocumentLimit);
+  final map = parseStrictJsonObject(utf8.decode(bytes, allowMalformed: false));
+  final source = map['source'];
+  return source is Map<String, Object?> && source['kind'] == 'codex-role';
+}
+
 final class BoundRoleRequest {
   const new({
     required this.operation,

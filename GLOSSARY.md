@@ -79,6 +79,27 @@ Constructing an agent definition from supported declarations and resource refere
 **Agent portability**:
 The extent to which an agent definition's requirements and behavior can be represented in another harness, including altered, lost, or unverified semantics.
 
+**Agent authoring**:
+Creating, cloning, editing, or composing a native Agent definition without implying cross-harness conversion or runtime orchestration.
+
+**Operation request**:
+A bounded, versioned JSON document selecting one explicit operation, native source/target, context, declarations, and field-specific decisions; it is not a universal Agent schema.
+
+**Plan identity**:
+The stable identifier of a Mutation plan, bound to its request and relevant source, target, reference, parent, and decision observations rather than timestamps or random transaction IDs.
+
+**Conversion field account**:
+The per-field evidence for Agent portability, recording represented, altered, inherited, unresolved, unrepresentable, or deliberately omitted declarations and their native provenance.
+
+**Exposure note**:
+A deterministic, source-qualified observation about a declared execution surface and its conditions; not a security score, effective-tool enumeration, or enforcement certification.
+
+**Agent graph**:
+A bounded set of typed native dependency nodes and relationship edges with declaration provenance, resolution bases, coverage, and relationship-specific blockers.
+
+**Readiness**:
+Whether complete static correctness, reference, destination, ownership, and field-decision checks permit a reviewed publication; never a claim of runtime activation or enforcement.
+
 **Context**:
 Persistent project or user instructions consumed by a coding harness, initially represented by AGENTS.md or CLAUDE.md.
 _Avoid_: Agent template, agent definition

@@ -262,29 +262,36 @@ void main() {
     });
 
     group('agent', () {
-      test('help lists regular-file lifecycle commands only', () async {
-        final output = _success(
-          await createExecutor().fake().execute(['agent', '--help']),
-        ).output!;
-        for (final command in [
-          'list',
-          'install',
-          'adopt',
-          'replace',
-          'remove',
-          'backup',
-          'recover',
-          'inspect',
-          'validate',
-          'config',
-          'create',
-        ]) {
-          expect(output, contains(command));
-        }
-        for (final unsupported in ['register', 'compose', 'convert', 'clone']) {
-          expect(output, isNot(contains(unsupported)));
-        }
-      });
+      test(
+        'help lists lifecycle, authoring, and conversion commands',
+        () async {
+          final output = _success(
+            await createExecutor().fake().execute(['agent', '--help']),
+          ).output!;
+          for (final command in [
+            'list',
+            'install',
+            'adopt',
+            'replace',
+            'remove',
+            'backup',
+            'recover',
+            'inspect',
+            'validate',
+            'config',
+            'create',
+            'compose',
+            'clone',
+            'edit',
+            'convert',
+          ]) {
+            expect(output, contains(command));
+          }
+          for (final unsupported in ['register']) {
+            expect(output, isNot(contains(unsupported)));
+          }
+        },
+      );
 
       group('create', () {
         test('plans a reviewed bound-role creation without effects', () async {

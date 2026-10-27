@@ -793,6 +793,11 @@ class LifecycleIO {
     }
   }
 
+  void deleteEmptyDirectory(String path) {
+    before('deleteEmptyDirectory', path);
+    Directory(path).deleteSync();
+  }
+
   void write(String path, List<int> bytes) {
     before('write', path);
     File(path).writeAsBytesSync(bytes, flush: true);
@@ -812,6 +817,41 @@ interface class LifecycleStateService {
   LifecycleStateService({this.io = const LifecycleIO()});
 
   final LifecycleIO io;
+
+  /// Stages a proposed native source on the destination volume only after
+  /// private preparation has been established. The source is temporary input
+  /// to the ordinary lifecycle transaction, not retained recovery evidence.
+  Future<T> withStagedSource<T>({
+    required String nativeRoot,
+    required String name,
+    required List<int> bytes,
+    required Future<T> Function(String path) body,
+  }) async {
+    if (p.basename(name) != name || name == '.' || name == '..') {
+      throw MambaException('A staged source requires a plain basename.');
+    }
+    final root = p.join(p.dirname(nativeRoot), '.agent-resource-authoring');
+    _makePrivate(root);
+    final transactionId = _newId('authoring');
+    final directory = p.join(root, transactionId);
+    final path = p.join(directory, name);
+    io.createDirectory(directory);
+    try {
+      io.write(path, bytes);
+      return await body(path);
+    } finally {
+      _removeIfPresent(directory);
+      try {
+        if (io.list(root).isEmpty) {
+          io.deleteEmptyDirectory(root);
+        }
+      } on FileSystemException {
+        // Another candidate may be preparing concurrently; never recursively
+        // remove shared authoring storage.
+      }
+    }
+  }
+
   static final _inProcessLocks = <String, Future<void>>{};
   static final _random = Random.secure();
 

@@ -3,10 +3,12 @@
 Agent Resource is a Mamba command-line application for managing resources
 consumed by AI coding harnesses. The current scope provides application help
 and version reporting, management-aware Skill and Agent inventories, native
-inspection/validation, copied-Skill and regular-file Agent installation and
-adoption, unchanged-only replacement/removal, retained backups, explicit
-restore/cleanup, and evidence-backed transaction recovery. Claude, Codex, and
-the common Pi profile remain distinct native contracts.
+inspection/validation, bounded dependency/capability graphs, native Agent
+create/clone/edit/compose workflows, all-six conversion, copied-Skill and
+regular-file Agent installation and adoption, unchanged-only
+replacement/removal, retained backups, explicit restore/cleanup, and
+evidence-backed transaction recovery. Claude, Codex, and the common Pi
+profile remain distinct native contracts.
 
 ## Requirements
 
@@ -130,8 +132,8 @@ It does not claim hostile-writer resistance, joint resource-plus-ledger
 atomicity, universal metadata fidelity, or guaranteed power-loss durability.
 Windows linked installations require a true directory symlink and actionable
 privilege diagnostics; junctions, unknown reparse forms, and copy fallback are
-refused. Registration/parent-setting changes, rich Agent composition, and
-remote origins remain outside this checkpoint.
+refused. Remote origins, runtime resource execution, and live harness/account
+probes remain outside the application contract.
 
 ### Inspect one skill directory
 
@@ -248,8 +250,9 @@ roles, and Pi native/Shared candidates. Immediate Pi files are distinguished
 from deeper provider-specific candidates. Reports contain stable occurrence
 IDs, source/binding provenance, native identity and validation observations,
 collisions, and explicit coverage. Occurrence IDs are not managed installation
-IDs or mutation selectors. Every occurrence remains `unmanaged` and
-`notVerified`; `--verify` does not invent a baseline.
+IDs or mutation selectors. Unmanaged, managed, tracked-missing, and
+ownership-unverified occurrences remain distinct; without `--verify`,
+modification is `notVerified`, and verification never invents a baseline.
 
 Traversal is limited to 64 ancestors, depth 16, 20,000 entries, 2,000
 directories, and 64 MiB of aggregate metadata. Linked candidates are reported
@@ -300,15 +303,49 @@ diagnostics. `agent validate` is the correctness gate and returns status 2 for
 blocking violations without a success JSON report. Usage/general failures use
 status 1, incomplete required analysis or exhausted budgets status 3, and
 linked-file/safety refusals status 4. Inspection, validation, and inventory
-are read-only. Regular-file lifecycle operations are documented above;
-composition, conversion, registration, and parent changes remain unimplemented.
+are read-only. `agent inspect` includes bounded typed dependency edges,
+source-qualified capabilities, exposure notes, and missing-reference blockers
+without executing or inferring runtime dependencies. Regular-file lifecycle
+operations are documented above.
+
+### Create, clone, edit, compose, and convert native Agents
+
+```text
+agent_resource agent create <request.json>
+agent_resource agent clone <request.json>
+agent_resource agent edit <request.json>
+agent_resource agent compose <request.json>
+agent_resource agent convert <request.json>
+```
+
+Authoring and conversion requests are bounded, versioned JSON with explicit
+native source/target/context data. Planning is read-only by default and
+creates no management artifacts. Apply requires `--apply`, the current
+`--plan-id`, and `--yes`, or explicit interactive review. Ordered instruction
+parts, base conflicts, unknown fields, model/tool/effort mappings, reference
+changes, and deliberate omissions are reported before publication. Default
+reports omit instruction bodies; `--show-instructions` is an explicit privacy
+choice.
+
+All six Claude/Codex/common-Pi conversion directions produce native target
+candidates with per-field represented/altered/inherited/unresolved/
+unrepresentable/omitted outcomes. Changed controls need field-specific
+decisions; generic approval cannot approve unknown losses. Sources and
+bindings remain unchanged. Parent prerequisites and Codex target registration
+remain separate explicit plans. Publication reuses native validation, graph
+readiness, lifecycle ownership, retained backups, and recovery. Request
+schemas and examples are in `docs/specs/agent-authoring-conversion.md`.
+
+Static readiness and textual preservation do not claim runtime activation,
+behavior-lossless conversion, model/tool availability, or permission
+enforcement.
 
 ### Manage native parent settings and Codex bound roles
 
 ```text
 agent_resource agent config inspect --request <request.json> --scope project|user
 agent_resource agent config plan --request <request.json> --scope project|user
-agent_resource agent config apply --request <request.json> --scope project|user --yes --clients-stopped
+agent_resource agent config apply --request <request.json> --scope project|user --yes --ack-clients-stopped
 agent_resource agent create --request <request.json> --scope project|user
 agent_resource agent adopt <native-file>|--request <request.json> --harness codex
 agent_resource agent replace <installation-id> <native-file>|--request <request.json>
@@ -324,7 +361,8 @@ authentication, and session-enforced sources remain refusal or inspect-only.
 Inspection and planning are read-only. Plans return a stable ID bound to the
 request, context, source fingerprint, selected values, ownership decisions, and
 known impacts. Apply requires that exact ID, approval, and a separate
-`--clients-stopped` acknowledgement. JSON edits preserve unrelated bytes and
+`--ack-clients-stopped` acknowledgement (`--clients-stopped` remains a
+compatibility alias). JSON edits preserve unrelated bytes and
 ordering; TOML edits preserve comments, trivia, and unknown members. Credential
 literals are rejected, existing secrets are not reported, and runtime
 enforcement/activation remains unverified.
@@ -364,6 +402,19 @@ dart format --output=none --set-exit-if-changed lib bin test
 ```text
 dart test
 ```
+
+Build and execute the sanitized production-artifact release gate with:
+
+```text
+dart compile exe bin/agent_resource.dart -o build/agent_resource.exe
+dart run test/support/release_gate.dart build/agent_resource.exe build/release-evidence.json
+```
+
+Use `build/agent_resource` without `.exe` on macOS/Linux. CI runs this gate on
+all three native operating systems and uploads only the sanitized evidence
+JSON. `docs/release-qualification.md` contains the behavior/evidence index,
+current blockers, and explicit readiness decision; green tests alone do not
+qualify a release.
 
 The process-boundary tests run the executable with isolated temporary working,
 home, and configuration directories, initializing all of those environment

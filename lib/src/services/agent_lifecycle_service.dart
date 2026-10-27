@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:mamba/mamba.dart';
@@ -289,6 +291,79 @@ interface class AgentLifecycleService {
     context: LifecycleContext.resolve(input.options),
     backupId: input.id,
   );
+
+  /// Inspects an unchanged recorded Agent source without acquiring any new
+  /// ownership or weakening the baseline check.
+  AgentInspectionReport inspectManagedSource({
+    required LifecycleOptions options,
+    required String installationId,
+  }) {
+    final context = LifecycleContext.resolve(options);
+    final record = state.recordById(context, installationId);
+    if (record.kind != ArtifactKind.agentFile ||
+        record.nativeProfile == null ||
+        state.verify(record) != ModificationStatus.unchanged) {
+      throw MambaException(
+        'The managed source must be an unchanged native Agent file.',
+        exitCode: 4,
+      );
+    }
+    return inspectNativeAgent(
+      AgentInspectionInput(
+        nativeFile: record.location,
+        harness: AgentHarness.values.singleWhere(
+          (value) => value.name == record.nativeProfile,
+        ),
+        cwd: context.cwd,
+      ),
+      operation: AgentOperation.inspect,
+    );
+  }
+
+  /// Checks native root, destination, reserved-path, extension, and scope
+  /// eligibility without creating any artifact.
+  void validateTarget({
+    required LifecycleOptions options,
+    required AgentHarness harness,
+    required AgentDestination destination,
+    required String output,
+  }) {
+    final context = LifecycleContext.resolve(options);
+    _requireMutationScope(context);
+    _eligibleAuthority(
+      context,
+      context.resolvePath(output),
+      harness,
+      destination,
+    );
+  }
+
+  /// Provides a protected native-volume candidate to the ordinary lifecycle
+  /// operation. No candidate bytes are written before privacy is established.
+  Future<T> withStagedCandidate<T>({
+    required LifecycleOptions options,
+    required AgentHarness harness,
+    required AgentDestination destination,
+    required String output,
+    required String content,
+    required Future<T> Function(String path) body,
+  }) {
+    final context = LifecycleContext.resolve(options);
+    _requireMutationScope(context);
+    final location = context.resolvePath(output);
+    final authority = _eligibleAuthority(
+      context,
+      location,
+      harness,
+      destination,
+    );
+    return state.withStagedSource(
+      nativeRoot: authority,
+      name: 'candidate${harness == AgentHarness.codex ? '.toml' : '.md'}',
+      bytes: utf8.encode(content),
+      body: body,
+    );
+  }
 
   String _defaultRoot(
     LifecycleContext context,

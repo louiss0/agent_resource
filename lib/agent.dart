@@ -7,9 +7,14 @@ import 'package:mamba/mamba.dart';
 import 'src/agent_inspection.dart';
 import 'src/agent_inventory.dart';
 import 'src/services/agent_lifecycle_service.dart';
+import 'src/services/agent_graph_service.dart';
 import 'lifecycle.dart';
 import 'agent_config_commands.dart';
 import 'agent_create_command.dart';
+import 'agent_compose.dart';
+import 'agent_clone.dart';
+import 'agent_edit.dart';
+import 'agent_convert.dart';
 import 'src/services/parent_config_service.dart';
 
 /// The output format selected by `--format`.
@@ -33,19 +38,25 @@ final class AgentCommand extends GroupCommand {
     AgentInspectionOperation operation = inspectNativeAgent,
     AgentInventoryOperation inventory = listNativeAgents,
     AgentLifecycleService? lifecycle,
-  }) : super(_children(operation, inventory, lifecycle));
+    AgentGraphService? graph,
+  }) : super(_children(operation, inventory, lifecycle, graph));
 
   static List<Command> _children(
     AgentInspectionOperation operation,
     AgentInventoryOperation inventory,
     AgentLifecycleService? lifecycle,
+    AgentGraphService? graph,
   ) {
     final service = lifecycle ?? AgentLifecycleService();
     return [
       AgentListCommand(inventory, service),
       AgentConfigCommand(ParentConfigService()),
       AgentCreateCommand(),
-      AgentInspectCommand(operation),
+      AgentComposeCommand(),
+      AgentCloneCommand(),
+      AgentEditCommand(),
+      AgentConvertCommand(),
+      AgentInspectCommand(operation, graph: graph),
       AgentValidateCommand(operation),
       LifecycleActionCommand.agentInstall(service),
       LifecycleActionCommand.agentAdopt(service),
@@ -64,8 +75,12 @@ final class AgentCommand extends GroupCommand {
       'Discover, inspect, and validate native agent definitions.';
 }
 
-final class AgentInspectCommand(final AgentInspectionOperation _operation)
-    extends Command {
+final class AgentInspectCommand(
+  final AgentInspectionOperation _operation, {
+  AgentGraphService? graph,
+}) extends Command {
+  final AgentGraphService _graphService = graph ?? AgentGraphService();
+
   this
     : super(
         discretionaryPositionals: [_nativeFile],
@@ -149,9 +164,17 @@ final class AgentInspectCommand(final AgentInspectionOperation _operation)
 
     const operation = AgentOperation.inspect;
     final report = _operation(input, operation: operation);
+    final graph = _graphService.analyzeInspection(report);
     return switch (valueOf(_format)) {
-      OutputFormat.json => jsonEncode(report.envelope(operation)),
-      OutputFormat.text => report.renderText(operation),
+      OutputFormat.json => jsonEncode(<String, Object?>{
+        ...report.envelope(operation),
+        'data': <String, Object?>{
+          ...report.envelope(operation)['data']! as Map<String, Object?>,
+          'graph': graph.toJson(),
+        },
+      }),
+      OutputFormat.text =>
+        '${report.renderText(operation)}${graph.renderText()}',
     };
   }
 }

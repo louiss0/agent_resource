@@ -179,7 +179,10 @@ final class LifecycleActionCommand extends Command {
            _dryRun,
            _yes,
            _interactive,
-           if (_resource == _Resource.agent) _clientsStopped,
+           if (_resource == _Resource.agent) ...[
+             _ackClientsStopped,
+             _clientsStopped,
+           ],
          ],
          longDescription:
              'Offline local lifecycle management. Relative paths resolve against '
@@ -281,9 +284,13 @@ final class LifecycleActionCommand extends Command {
     suffixes: const ['.json'],
     description: 'Bound-role operation request.',
   );
+  static const _ackClientsStopped = BooleanFlag(
+    'ack-clients-stopped',
+    description: 'Acknowledge that native clients were stopped before apply.',
+  );
   static const _clientsStopped = BooleanFlag(
     'clients-stopped',
-    description: 'Acknowledge that native clients were stopped before apply.',
+    description: 'Compatibility alias for --ack-clients-stopped.',
   );
 
   static final _format = ChoiceOption.withDefault(
@@ -484,7 +491,7 @@ final class LifecycleActionCommand extends Command {
               exitCode: 1,
             );
           }
-          return _bound(bound, options, _operation);
+          return _bound(valueOf, bound, options, _operation);
         }
         if (source == null) {
           throw MambaException(
@@ -503,7 +510,7 @@ final class LifecycleActionCommand extends Command {
               exitCode: 1,
             );
           }
-          return _bound(bound, options, _operation);
+          return _bound(valueOf, bound, options, _operation);
         }
         if (source == null) {
           throw MambaException(
@@ -528,7 +535,7 @@ final class LifecycleActionCommand extends Command {
               exitCode: 1,
             );
           }
-          return _bound(bound, options, _operation);
+          return _bound(valueOf, bound, options, _operation);
         }
         return service.remove(
           LifecycleIdInput(
@@ -555,7 +562,8 @@ final class LifecycleActionCommand extends Command {
             options: options,
             backupId: id,
             planId: valueOf(_parentPlan) ?? '',
-            clientsStopped: valueOf(_clientsStopped),
+            clientsStopped:
+                valueOf(_ackClientsStopped) || valueOf(_clientsStopped),
           );
           return LifecycleResult(
             command: result.command,
@@ -588,6 +596,7 @@ final class LifecycleActionCommand extends Command {
   }
 
   Future<LifecycleResult> _bound(
+    ValueOf valueOf,
     String requestFile,
     LifecycleOptions options,
     _Operation expected,
@@ -596,6 +605,14 @@ final class LifecycleActionCommand extends Command {
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
     );
+    final acknowledged =
+        valueOf(_ackClientsStopped) || valueOf(_clientsStopped);
+    if (acknowledged != request.clientsStopped) {
+      throw MambaException(
+        'The request and command must agree on clientsStopped.',
+        exitCode: 4,
+      );
+    }
     if (request.operation.name != expected.name) {
       throw MambaException(
         'The bound-role request operation must match the selected command.',

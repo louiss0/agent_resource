@@ -351,6 +351,7 @@ void _expectEnvelope(
     'references',
     'capabilities',
     'parentRequirements',
+    if (command == 'agent inspect') 'graph',
     'ready',
   });
   expect(data['form'], allOf(isA<String>(), isNotEmpty));

@@ -3,6 +3,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,3 +42,17 @@ jobs:
       - name: Smoke the built executable
         shell: bash
         run: ./build/${{ matrix.artifact }} --help
+      - name: Run built-production release workflows and retain sanitized evidence
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            dart run test/support/release_gate.dart build/${{ matrix.artifact }} build/release-evidence.json --require-qualified
+          else
+            dart run test/support/release_gate.dart build/${{ matrix.artifact }} build/release-evidence.json
+          fi
+      - name: Upload sanitized native release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ runner.os }}
+          path: build/release-evidence.json
+          if-no-files-found: error
