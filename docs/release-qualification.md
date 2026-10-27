@@ -7,12 +7,13 @@ separate claims. The native CI matrix and compiled-artifact gate are required
 evidence producers; a local green suite or a help-only executable smoke is not
 a release claim.
 
-The current local Windows gate observed built-production statuses 0, 1, 2, 3,
-4, and 7 and all six conversion plan/apply/validate workflows. It did not
-observe real statuses 5 or 6, and the host refused true directory-symlink
-creation. Those are explicit blockers. macOS and Linux evidence must come from
-their native CI jobs, not be inferred from Windows. A final approval requires
-reviewing all three same-revision bundles and closing every mandatory blocker.
+The current local Windows gate observes true directory-symlink creation and
+built-production statuses 0 through 7, including a real restored commit
+failure and committed-cleanup-pending outcome, plus all six conversion
+plan/apply/validate workflows. Its mandatory local blockers are cleared.
+macOS and Linux evidence must still come from their native CI jobs, not be
+inferred from Windows. A final approval requires reviewing all three
+same-revision bundles and closing every mandatory blocker.
 
 Qualification does not authorize tags, releases, signing, distribution,
 production cutover, live accounts, or harness installation. Offline native
@@ -29,14 +30,20 @@ job uploads only `build/release-evidence.json` through
 `actions/upload-artifact`.
 
 Push/pull-request jobs retain evidence without claiming approval. A manual
-`workflow_dispatch` runs the same gate with `--require-qualified`, which exits
-nonzero when any blocker remains. Local reviewers can use that flag after the
-evidence path argument for the same enforcement.
+`workflow_dispatch` runs each native gate with `--require-qualified`, then a
+`release-decision` job aggregates all three same-revision bundles. The
+aggregator—not a self-declared per-job deferral—verifies native job presence,
+SDK/lockfile/revision/artifact identity, Windows link capability, and observed
+statuses 0–7 before issuing the integrated verdict. Local reviewers can use
+`--require-qualified` after the evidence path for per-job enforcement and
+`test/support/release_decision.dart` for the integrated decision.
 
 A bundle records the exact revision, artifact length/SHA-256, selected SDK,
 lockfile SHA-256, native OS/architecture/filesystem observations, true
 directory-link capability, CI job provenance, sanitized scenario arguments,
-stream lengths, and observed/missing statuses. Raw native documents,
+stream lengths, and observed/missing/deferred statuses. Rare statuses 5/6 are
+mandatory across the release but may be deferred to the capable native Windows
+job; they are blockers only when the release bundle lacks that evidence. Raw native documents,
 instructions, stdout, stderr, credentials, and unrelated account state are not
 retained. Test fixtures are synthetic and isolated from real cwd/home/config/
 state/temp locations.
@@ -77,9 +84,9 @@ three-OS CI matrix plus the per-job sanitized bundle.
 | AR-LIFE-001 | Existing Skill/Agent install/adopt/replace/remove/backup/recovery suites assert entries, ownership, backups, and sentinels | Existing command/operation native suite |
 | AR-LINK-001 | True-link entry ownership, target drift/broken targets, Windows subtype/privilege behavior | Existing native-link suite plus measured artifact-gate capability |
 | AR-PARENT-001 | Parent selected-unit patches preserve unrelated bytes/settings and require acknowledgement | Existing parent/bound-role native suite; canonical/legacy CLI aliases |
-| AR-REC-001 | Deterministic fault/restart tests assert restored, recovery-required, cleanup-pending, occupants, and corrupt evidence | Existing lifecycle/parent fault suites; real rare artifact statuses still required |
+| AR-REC-001 | Deterministic fault/restart tests assert restored, recovery-required, cleanup-pending, occupants, and corrupt evidence | Existing lifecycle/parent fault suites plus real Windows statuses 5/6 and protected journal/baseline assertions |
 | AR-STATUS-001 | Real statuses 0, 1, 2, 3, 4, and 7 use correct streams/statuses | Built artifact on every native OS |
-| AR-STATUS-002 | Windows holds a real target-file lock during managed replacement; any resulting restored/recovery outcome is recorded. Real statuses 5 and 6 still require reproducible native evidence, not backdoors/races | **Blocker for each status not observed on a capable native job** |
+| AR-STATUS-002 | A read-only ledger produces real post-publication restored status 5; a read-only managed Agent produces committed-cleanup-pending status 6 while preserving its baseline | Observed on native Windows; deferred on other jobs, never replaced with injected-fault evidence |
 | AR-BOUND-001 | Existing exact/one-over parser, inventory, tree, parent, request, management, graph, and aggregate budgets | Native full suite; over-cap artifact status 3 |
 | AR-ISO-001 | Process/environment helpers isolate cwd/home/config/state/temp and preserve escape sentinels | Existing process suite and artifact gate |
 | AR-IFACE-001 | Help/parser tests cover retained declarations, request aliases, operation agreement, conflicts, and no-effects rejection | Command and artifact smoke |
@@ -93,7 +100,7 @@ three-OS CI matrix plus the per-job sanitized bundle.
    results, skipped mandatory positives, and unsafe artifact contents.
 3. Require successful formatting, analysis, focused/full suites, native matrix,
    and built-artifact workflows on the candidate.
-4. Obtain real status 5/6 evidence and required Windows true-directory-link
+4. Verify real status 5/6 evidence and required Windows true-directory-link
    capability/refusal evidence; do not substitute injected-fault results for
    production-process evidence.
 5. Record remaining limits and blockers explicitly. Only an empty mandatory

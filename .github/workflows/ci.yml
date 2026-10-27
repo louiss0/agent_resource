@@ -56,3 +56,27 @@ jobs:
           name: release-evidence-${{ runner.os }}
           path: build/release-evidence.json
           if-no-files-found: error
+
+  release-decision:
+    if: github.event_name == 'workflow_dispatch'
+    needs: native-lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: 3.13.2
+      - name: Verify committed dependency resolution
+        run: dart pub get --enforce-lockfile
+      - name: Download all native evidence bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: evidence
+      - name: Decide integrated native release qualification
+        run: dart run test/support/release_decision.dart build/release-decision.json evidence/release-evidence-Windows/release-evidence.json evidence/release-evidence-macOS/release-evidence.json evidence/release-evidence-Linux/release-evidence.json
+      - name: Upload integrated release decision
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-decision
+          path: build/release-decision.json
+          if-no-files-found: error

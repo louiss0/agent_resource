@@ -295,44 +295,18 @@ $privateInstruction
     );
 
     if (Platform.isWindows) {
-      final replacement = File(p.join(sandbox.path, 'replacement.md'))
-        ..writeAsStringSync('''---
-name: reviewer
-description: Replacement during a native lock fixture.
----
-Replacement instructions.
-''');
-      final locked = File(installedLocation).openSync();
-      try {
-        locked.lockSync(FileLock.exclusive);
-        final restoredAttempt = await run(
-          'built-rare-restored-or-recovery-attempt',
-          work,
-          [
-            'agent',
-            'replace',
-            installation,
-            replacement.path,
-            '--yes',
-            ...context,
-          ],
-        );
-        _expect(
-          restoredAttempt.exitCode != 1 &&
-              restoredAttempt.exitCode != 2 &&
-              restoredAttempt.exitCode != 3 &&
-              restoredAttempt.exitCode != 7,
-          'Rare native failure fixture produced an unrelated outcome.',
-          restoredAttempt,
-        );
-      } finally {
-        try {
-          locked.unlockSync();
-        } on FileSystemException {
-          // Closing also releases the native lock.
-        }
-        locked.closeSync();
-      }
+      await _proveRestoredFailure(
+        sandbox: sandbox,
+        work: work,
+        context: context,
+        run: run,
+      );
+      await _proveCommittedCleanupPending(
+        sandbox: sandbox,
+        work: work,
+        context: context,
+        run: run,
+      );
     }
 
     for (final source in const ['claude', 'codex', 'pi']) {
@@ -469,7 +443,14 @@ Linked body.
       for (var status = 0; status <= 7; status++)
         if (!observed.contains(status)) status,
     ];
-    for (final status in missing) {
+    final deferred = <int>[
+      if (!Platform.isWindows)
+        for (final status in missing)
+          if (status == 5 || status == 6) status,
+    ];
+    for (final status in missing.where(
+      (status) => !deferred.contains(status),
+    )) {
       blockers.add(<String, Object?>{
         'code': 'PRODUCTION_STATUS_EVIDENCE_MISSING',
         'status': status,
@@ -480,13 +461,15 @@ Linked body.
     final lockfile = File(p.join(_packageRoot().path, 'pubspec.lock'));
     final evidence = <String, Object?>{
       'schemaVersion': 1,
+      'qualificationScope': 'native-job',
       'revision': Platform.environment['GITHUB_SHA'] ?? 'local-working-tree',
       'artifact': <String, Object?>{
         'path': executable.path.replaceAll(sandbox.path, '<sandbox>'),
         'sha256': sha256.convert(executable.readAsBytesSync()).toString(),
         'byteLength': executable.lengthSync(),
       },
-      'selectedSdk': Platform.version,
+      'selectedSdk': Platform.version.split(' ').first,
+      'selectedSdkRuntime': Platform.version,
       'dependencyLockSha256': sha256
           .convert(lockfile.readAsBytesSync())
           .toString(),
@@ -509,6 +492,10 @@ Linked body.
       'results': results,
       'observedStatuses': observed,
       'missingStatuses': missing,
+      'deferredStatuses': deferred,
+      'deferredEvidenceScope': deferred.isEmpty
+          ? null
+          : 'capable-native-windows-job',
       'blockers': blockers,
       'qualified': blockers.isEmpty,
       'runtimeActivationVerified': false,
@@ -529,6 +516,212 @@ Linked body.
     }
   } finally {
     await sandbox.delete(recursive: true);
+  }
+}
+
+Future<void> _proveRestoredFailure({
+  required Directory sandbox,
+  required Directory work,
+  required List<String> context,
+  required Future<CliProcessResult> Function(
+    String scenario,
+    Directory cwd,
+    List<String> arguments, {
+    String? input,
+  })
+  run,
+}) async {
+  final source = File(p.join(sandbox.path, 'restored.md'))
+    ..writeAsStringSync('''---
+name: restored
+description: Restored failure fixture.
+---
+Restored instructions.
+''');
+  final ledger = File(
+    p.join(work.path, '.agent-resource', 'installations.json'),
+  );
+  if (!ledger.existsSync()) {
+    throw StateError(
+      'The status-5 fixture requires an existing installation ledger.',
+    );
+  }
+  _windowsReadOnly(ledger, true);
+  final CliProcessResult result;
+  try {
+    result = await run('built-real-status-5', work, [
+      'agent',
+      'install',
+      source.path,
+      '--harness',
+      'claude',
+      ...context,
+    ]);
+  } finally {
+    _windowsReadOnly(ledger, false);
+  }
+  _expect(
+    result.exitCode == 5,
+    'Post-publication commit failure did not return restored status 5.',
+    result,
+  );
+  _expect(result.stdout.isEmpty, 'Restored failure emitted stdout.', result);
+  _expect(
+    result.stderr.contains('installations.json') &&
+        result.stderr.contains('original absent state was restored'),
+    'Status 5 was not tied to the read-only ledger commit failure.',
+    result,
+  );
+  final transaction = RegExp(r'transaction (trx_[a-f0-9]{32})')
+      .firstMatch(result.stderr)
+      ?.group(1);
+  _expect(
+    transaction != null,
+    'Status 5 omitted transaction evidence.',
+    result,
+  );
+  final journal = jsonDecode(
+    File(
+      p.join(work.path, '.agent-resource', 'transactions', '$transaction.json'),
+    ).readAsStringSync(),
+  ) as Map<String, Object?>;
+  _expect(
+    journal['phase'] == 'failedRestored',
+    'Status 5 did not retain failed-restored evidence.',
+    result,
+  );
+  _expect(
+    !File(p.join(work.path, '.claude', 'agents', 'restored.md')).existsSync(),
+    'Status 5 did not restore the original absent state.',
+    result,
+  );
+}
+
+Future<void> _proveCommittedCleanupPending({
+  required Directory sandbox,
+  required Directory work,
+  required List<String> context,
+  required Future<CliProcessResult> Function(
+    String scenario,
+    Directory cwd,
+    List<String> arguments, {
+    String? input,
+  })
+  run,
+}) async {
+  final source = File(p.join(sandbox.path, 'cleanup.md'))
+    ..writeAsStringSync('''---
+name: cleanup
+description: Committed cleanup fixture.
+---
+Read-only instructions.
+''');
+  final sourceBytes = source.readAsBytesSync();
+  _windowsReadOnly(source, true);
+  _expectReadOnly(source);
+  try {
+    final installed = await run('built-real-status-6-setup', work, [
+      'agent',
+      'install',
+      source.path,
+      '--harness',
+      'claude',
+      ...context,
+    ]);
+    _expect(
+      installed.exitCode == 0,
+      'Read-only Agent setup failed.',
+      installed,
+    );
+    final installation =
+        (_json(installed)['data']! as Map<String, Object?>)['installationId']!
+            as String;
+    final result = await run('built-real-status-6', work, [
+      'agent',
+      'remove',
+      installation,
+      '--yes',
+      ...context,
+    ]);
+    _expect(
+      result.exitCode == 6,
+      'Read-only quarantine cleanup did not return status 6.',
+      result,
+    );
+    _expect(
+      result.stdout.isEmpty,
+      'Recovery-required failure emitted stdout.',
+      result,
+    );
+    final transaction = RegExp(r'transaction (trx_[a-f0-9]{32})')
+        .firstMatch(result.stderr)
+        ?.group(1);
+    _expect(
+      transaction != null,
+      'Status 6 omitted transaction evidence.',
+      result,
+    );
+    final journal = jsonDecode(
+      File(
+        p.join(
+          work.path,
+          '.agent-resource',
+          'transactions',
+          '$transaction.json',
+        ),
+      ).readAsStringSync(),
+    ) as Map<String, Object?>;
+    final quarantine = File(journal['quarantinePath']! as String);
+    _expect(
+      quarantine.existsSync(),
+      'Committed quarantine is missing.',
+      result,
+    );
+    _expectReadOnly(quarantine);
+    _expect(
+      quarantine.readAsBytesSync().toString() == sourceBytes.toString() &&
+          source.readAsBytesSync().toString() == sourceBytes.toString(),
+      'Status 6 changed source or protected quarantine bytes.',
+      result,
+    );
+    final baseline =
+        (journal['oldBaseline']! as List<Object?>).single
+            as Map<String, Object?>;
+    _expect(
+      baseline['readOnly'] == true &&
+          baseline['sha256'] == sha256.convert(sourceBytes).toString(),
+      'Status 6 did not preserve the original read-only baseline.',
+      result,
+    );
+    _expect(
+      journal['phase'] == 'cleanupVerified',
+      'Status 6 did not retain committed-cleanup-pending evidence.',
+      result,
+    );
+    // Sandbox cleanup only, not an application recovery claim. The protected
+    // baseline above was verified with its original read-only attribute.
+    _windowsReadOnly(quarantine, false);
+  } finally {
+    _windowsReadOnly(source, false);
+  }
+}
+
+void _windowsReadOnly(File file, bool enabled) {
+  final result = Process.runSync('attrib', [
+    if (enabled) '+R' else '-R',
+    file.path,
+  ]);
+  if (result.exitCode != 0) {
+    throw StateError(
+      'Could not ${enabled ? 'set' : 'clear'} the real file read-only condition: '
+      '${result.stderr}',
+    );
+  }
+}
+
+void _expectReadOnly(File file) {
+  if (FileStat.statSync(file.path).mode & 0x92 != 0) {
+    throw StateError('Expected a real read-only file: ${file.path}');
   }
 }
 

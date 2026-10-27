@@ -136,6 +136,7 @@ MambaSuccessResult _expectSuccess(MambaExecutionResult result) {
     isA<MambaSuccessResult>()
         .having((value) => value.exitCode, 'exit code', 0)
         .having((value) => value.output, 'output', isNotNull),
+    reason: result is MambaFailureResult ? result.message : null,
   );
   return result as MambaSuccessResult;
 }
@@ -751,7 +752,7 @@ zeta: false
               final target = Directory(p.join(parent.path, 'valid-skill'))
                 ..createSync();
               File(p.join(target.path, 'SKILL.md'))
-                  .writeAsStringSync(_marker());
+                  .writeAsStringSync(_marker(name: 'selected-link'));
               final linkPath = p.join(parent.path, 'selected-link');
               if (!await _tryCreateLink(linkPath, target.path)) {
                 markTestSkipped('directory symlink creation is unavailable');
