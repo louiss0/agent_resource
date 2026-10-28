@@ -3,6 +3,7 @@ description: Manage resources consumed by AI coding harnesses.
 environment:
   sdk: ^3.13.2
 dependencies:
+  archive: 4.0.7
   clix: 1.2.0+agent-resource.1
   crypto: ^3.0.7
   ffi: ^2.2.0
