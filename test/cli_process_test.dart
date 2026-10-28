@@ -190,6 +190,16 @@ void main() {
       });
     }
 
+    test('production failures retain normal Mamba stderr coloring', () async {
+      await _withSandbox((sandbox) async {
+        final result = await _runCli(sandbox, ['unsupported-command']);
+        expect(result.exitCode, isNot(0));
+        expect(result.stdout, isEmpty);
+        expect(result.stderr, contains('\x1B[31m'));
+        expect(result.stderr, contains('unsupported-command'));
+      });
+    });
+
     test(
       'the informational and rejected sequence does not mutate sentinels',
       () async {
@@ -253,9 +263,14 @@ void main() {
             'skill',
             'install',
             '${skill.path}$separator',
-            '--destination',
+            '--source-kind',
+            'resource',
+            '--target',
             'claude',
+            '--method',
+            'copy',
             ...contextArgs,
+            '--yes',
           ]);
           expect(installed.exitCode, 0, reason: installed.stderr);
           expect(installed.stderr, isEmpty);
@@ -273,12 +288,19 @@ void main() {
             ),
           );
           expect(liveMarker.readAsBytesSync(), originalSkillBytes);
+          final installedUnit =
+              ((envelope['data']! as Map<String, Object?>)['units']!
+                          as List<Object?>)
+                      .single!
+                  as Map<String, Object?>;
+          final installationId =
+              (installedUnit['installationIds']! as List<Object?>).single!
+                  as String;
 
           final refused = await _runCli(sandbox, [
             'skill',
             'remove',
-            (envelope['data']! as Map<String, Object?>)['installationId']!
-                as String,
+            installationId,
             ...contextArgs,
           ]);
           expect(refused.exitCode, 4);
@@ -289,8 +311,7 @@ void main() {
           final cancelled = await _runCli(sandbox, [
             'skill',
             'remove',
-            (envelope['data']! as Map<String, Object?>)['installationId']!
-                as String,
+            installationId,
             '--interactive',
             ...contextArgs.take(contextArgs.length - 2),
           ], standardInput: 'n\n');
@@ -307,9 +328,14 @@ void main() {
             'agent',
             'install',
             agent.path,
-            '--harness',
+            '--source-kind',
+            'resource',
+            '--profile',
+            'claude',
+            '--target',
             'claude',
             ...contextArgs,
+            '--yes',
           ]);
           expect(agentInstalled.exitCode, 0, reason: agentInstalled.stderr);
           expect(agentInstalled.stderr, isEmpty);

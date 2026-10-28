@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
+import '../installation/installation_plan.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
 
@@ -42,6 +43,7 @@ enum LifecycleScope { project, user, all }
 enum ArtifactKind {
   skillCopy('skill-copy'),
   skillLink('skill-link'),
+  skillCanonical('skill-canonical'),
   agentFile('agent-file');
 
   const ArtifactKind(this.wireName);
@@ -412,6 +414,7 @@ abstract interface class LifecycleResource {
     required String nativeDestination,
     String? excludeInstallationId,
     String? excludePath,
+    Set<String> allowedPaths = const <String>{},
   });
 }
 
@@ -537,7 +540,8 @@ final class BackupRecord {
     if (!p.equals(p.dirname(artifactPath), expectedDirectory) ||
         p.basename(artifactPath) !=
             switch (kind) {
-              ArtifactKind.skillCopy => 'artifact',
+              ArtifactKind.skillCopy ||
+              ArtifactKind.skillCanonical => 'artifact',
               ArtifactKind.skillLink => 'artifact-link.json',
               ArtifactKind.agentFile =>
                 'artifact${p.extension(_string(map, 'location'))}',
@@ -607,6 +611,37 @@ final class BackupRecord {
   );
 }
 
+final class ExposureRecord {
+  const ExposureRecord({
+    required this.path,
+    required this.target,
+    required this.nativeKind,
+    required this.baseline,
+  });
+
+  factory ExposureRecord.fromJson(Object? value) {
+    final map = _object(value, 'canonical exposure');
+    return ExposureRecord(
+      path: _absolutePath(_string(map, 'path')),
+      target: _enumValue(_string(map, 'target'), const ['claude', 'codex']),
+      nativeKind: _string(map, 'nativeKind'),
+      baseline: ArtifactBaseline.fromJson(map['baseline']),
+    );
+  }
+
+  final String path;
+  final String target;
+  final String nativeKind;
+  final ArtifactBaseline baseline;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'path': path,
+    'target': target,
+    'nativeKind': nativeKind,
+    'baseline': baseline.toJson(),
+  };
+}
+
 final class InstallationRecord {
   const new({
     required this.installationId,
@@ -625,6 +660,7 @@ final class InstallationRecord {
     required this.origin,
     required this.backupIds,
     required this.transactionId,
+    this.exposures = const <ExposureRecord>[],
   });
 
   factory InstallationRecord.fromJson(Object? value) {
@@ -661,6 +697,12 @@ final class InstallationRecord {
         for (final id in _stringList(map['backupIds'])) _id(id, 'bak'),
       ],
       transactionId: _nullableId(map['transactionId'], 'trx'),
+      exposures: map['exposures'] == null
+          ? const <ExposureRecord>[]
+          : [
+              for (final exposure in _list(map['exposures'], 'exposures'))
+                ExposureRecord.fromJson(exposure),
+            ],
     );
   }
 
@@ -680,6 +722,7 @@ final class InstallationRecord {
   final Map<String, Object?> origin;
   final List<String> backupIds;
   final String? transactionId;
+  final List<ExposureRecord> exposures;
 
   InstallationRecord copyWith({
     ArtifactKind? kind,
@@ -688,6 +731,8 @@ final class InstallationRecord {
     String? lifecycle,
     List<String>? backupIds,
     String? transactionId,
+    List<ExposureRecord>? exposures,
+    Map<String, Object?>? origin,
     bool clearTransaction = false,
   }) => InstallationRecord(
     installationId: installationId,
@@ -703,11 +748,12 @@ final class InstallationRecord {
     knownConsumers: knownConsumers,
     baseline: baseline ?? this.baseline,
     lifecycle: lifecycle ?? this.lifecycle,
-    origin: origin,
+    origin: origin ?? this.origin,
     backupIds: backupIds ?? this.backupIds,
     transactionId: clearTransaction
         ? null
         : transactionId ?? this.transactionId,
+    exposures: exposures ?? this.exposures,
   );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -727,6 +773,10 @@ final class InstallationRecord {
     'lifecycle': lifecycle,
     'backupIds': backupIds,
     'transactionId': transactionId,
+    if (kind == ArtifactKind.skillCanonical) ...<String, Object?>{
+      'recordSchemaVersion': 2,
+      'exposures': [for (final exposure in exposures) exposure.toJson()],
+    },
   };
 }
 
@@ -1045,6 +1095,386 @@ interface class LifecycleStateService {
           'Installation failed before publication; protected preparation '
           'evidence $transactionPath. $error',
           exitCode: 1,
+        );
+      }
+    });
+  }
+
+  /// Publishes one reviewed resource and all of its requested targets as a
+  /// single recovery unit. Planning is performed by resource workflows; this
+  /// authority revalidates observations, stages entries, journals intent,
+  /// commits records, and performs evidence-backed rollback.
+  Future<ResourceUnitPublicationResult> installResourceUnit({
+    required LifecycleResource resource,
+    required LifecycleContext context,
+    required InstallationUnitPlan unit,
+  }) async {
+    final creating = unit.entries
+        .where(
+          (entry) =>
+              entry.kind != InstallationEntryKind.consumer &&
+              entry.action != InstallationEntryAction.unchanged,
+        )
+        .toList();
+    if (creating.isEmpty) {
+      return ResourceUnitPublicationResult(
+        status: InstallationUnitStatus.unchanged,
+        installationIds: unit.installationIds,
+        transactionId: '',
+      );
+    }
+    final primary = unit.entries.first.path;
+    return _serialized(context, primary, () async {
+      final state = context.stateRoot();
+      final transactionId = _newId('trx');
+      final transactionPath = p.join(
+        state,
+        'transactions',
+        '$transactionId.json',
+      );
+      final candidate = await resource.inspect(unit.sourcePath, context);
+      if (candidate.name != unit.nativeName ||
+          _manifest(unit.sourcePath, _contentKind(resource.kind)).digest !=
+              unit.sourceDigest) {
+        throw MambaException(
+          'The reviewed source observations changed before ${unit.resourceId} was written.',
+          exitCode: 4,
+        );
+      }
+      final allowedPaths = <String>{
+        for (final entry in unit.entries) entry.path,
+      };
+      await resource.checkUnique(
+        context,
+        candidate.name,
+        nativeDestination: creating.first.nativeDestination ?? 'shared',
+        allowedPaths: allowedPaths,
+      );
+      _ensureLedger(state);
+      final existingByPath = <String, InstallationRecord>{};
+      for (final entry in unit.entries) {
+        final existing = _findRecord(state, location: entry.path);
+        if (existing != null) existingByPath[entry.path] = existing;
+        if (entry.action == InstallationEntryAction.unchanged &&
+            entry.kind != InstallationEntryKind.consumer) {
+          if (existing == null || existing.lifecycle != 'live') {
+            throw MambaException(
+              'The reviewed managed installation is no longer live: ${entry.path}',
+              exitCode: 4,
+            );
+          }
+          _requireUnchanged(existing);
+        }
+      }
+      final canonicalEntry = unit.method == InstallationMethod.canonical
+          ? unit.entries.firstWhere(
+              (entry) => entry.kind == InstallationEntryKind.content,
+            )
+          : null;
+      final existingCanonical = canonicalEntry == null
+          ? null
+          : existingByPath[canonicalEntry.path];
+      final staged = <int, String>{};
+      final baselines = <int, ArtifactBaseline>{};
+      final kinds = <int, ArtifactKind>{};
+      final published = <int>[];
+      final newRecords = <InstallationRecord>[];
+      final installationIds = <String>[];
+      var commitAttempted = false;
+      var committed = false;
+      var intentWritten = false;
+      final stagingRoots = <String>{};
+      try {
+        _ensureLedger(state);
+        for (var index = 0; index < unit.entries.length; index++) {
+          final entry = unit.entries[index];
+          if (entry.kind == InstallationEntryKind.consumer ||
+              entry.action == InstallationEntryAction.unchanged) {
+            continue;
+          }
+          final kind = _ownedArtifactKind(entry.artifactKind);
+          final nativeRoot = entry.nativeRoot;
+          if (nativeRoot == null) {
+            throw StateError('A published entry requires a native root.');
+          }
+          _requireSafePath(
+            entry.path,
+            nativeRoot,
+            allowFinalLink: kind == ArtifactKind.skillLink,
+          );
+          _requireSourceDistinct(
+            unit.sourcePath,
+            entry.path,
+            nativeRoot,
+            state,
+          );
+          _requireAbsent(entry.path);
+          final stage = _stagePath(
+            nativeRoot,
+            transactionId,
+            '$index-${p.basename(entry.path)}',
+          );
+          stagingRoots.add(p.dirname(stage));
+          _prepareStaging(nativeRoot);
+          final linkSource =
+              unit.method == InstallationMethod.canonical &&
+                  kind == ArtifactKind.skillLink
+              ? canonicalEntry!.path
+              : unit.sourcePath;
+          if (unit.method == InstallationMethod.canonical &&
+              kind == ArtifactKind.skillLink) {
+            io.createDirectory(p.dirname(stage));
+            io.createLink(stage, linkSource);
+          } else {
+            _copySource(linkSource, stage, kind, linkDestination: entry.path);
+          }
+          final baseline = kind == ArtifactKind.skillLink
+              ? _linkBaselineFor(
+                  entry.path,
+                  io.readLink(stage),
+                  io.linkKind(stage),
+                )
+              : _manifest(stage, kind);
+          if (kind != ArtifactKind.skillLink &&
+              (kind == ArtifactKind.skillCopy ||
+                  kind == ArtifactKind.skillCanonical ||
+                  kind == ArtifactKind.agentFile) &&
+              _manifest(unit.sourcePath, _contentKind(resource.kind)).digest !=
+                  unit.sourceDigest) {
+            throw MambaException(
+              'The source changed while ${unit.resourceId} was staged.',
+              exitCode: 4,
+            );
+          }
+          staged[index] = stage;
+          baselines[index] = baseline;
+          kinds[index] = kind;
+        }
+
+        String? canonicalId;
+        ArtifactBaseline? canonicalBaseline;
+        if (canonicalEntry != null) {
+          final contentIndex = unit.entries.indexOf(canonicalEntry);
+          canonicalBaseline =
+              canonicalEntry.action == InstallationEntryAction.unchanged
+              ? existingCanonical!.baseline
+              : baselines[contentIndex];
+          canonicalId = existingCanonical?.installationId ?? _newId('ins');
+          installationIds.add(canonicalId);
+        }
+        for (var index = 0; index < unit.entries.length; index++) {
+          final entry = unit.entries[index];
+          if (entry.kind == InstallationEntryKind.consumer) continue;
+          if (unit.method == InstallationMethod.canonical &&
+              entry.kind == InstallationEntryKind.content) {
+            continue;
+          }
+          if (unit.method == InstallationMethod.canonical &&
+              entry.kind == InstallationEntryKind.link) {
+            continue;
+          }
+          final existing = existingByPath[entry.path];
+          final id = existing?.installationId ?? _newId('ins');
+          installationIds.add(id);
+          final baseline = entry.action == InstallationEntryAction.unchanged
+              ? existing!.baseline
+              : baselines[index]!;
+          final kind = entry.action == InstallationEntryAction.unchanged
+              ? existing!.kind
+              : kinds[index]!;
+          newRecords.add(
+            InstallationRecord(
+              installationId: id,
+              kind: kind,
+              scope: context.scope,
+              nativeDestination: entry.nativeDestination ?? 'shared',
+              nativeForm: kind == ArtifactKind.agentFile
+                  ? candidate.nativeForm
+                  : kind.wireName,
+              location: entry.path,
+              nativeRoot: entry.nativeRoot ?? existing!.nativeRoot,
+              name: candidate.name,
+              nativeProfile: resource.kind == ArtifactKind.agentFile
+                  ? candidate.validatedProfiles.single
+                  : null,
+              validatedProfiles: <String>[?entry.target],
+              knownConsumers: <String>[?entry.target],
+              baseline: baseline,
+              lifecycle: 'live',
+              origin: unit.origin,
+              backupIds: existing?.backupIds ?? const <String>[],
+              transactionId: null,
+            ),
+          );
+        }
+        if (canonicalEntry != null) {
+          final exposures = <ExposureRecord>[...?existingCanonical?.exposures];
+          for (var index = 0; index < unit.entries.length; index++) {
+            final entry = unit.entries[index];
+            if (entry.kind != InstallationEntryKind.link ||
+                entry.action == InstallationEntryAction.unchanged) {
+              continue;
+            }
+            final baseline = baselines[index]!;
+            final link = baseline.entries.single;
+            if (exposures.any(
+              (exposure) => p.equals(exposure.path, entry.path),
+            )) {
+              continue;
+            }
+            exposures.add(
+              ExposureRecord(
+                path: entry.path,
+                target: entry.target!,
+                nativeKind: link.nativeKind!,
+                baseline: baseline,
+              ),
+            );
+          }
+          final targets = <String>{
+            for (final entry in unit.entries) ?entry.target,
+          }.toList()..sort();
+          newRecords.add(
+            InstallationRecord(
+              installationId: canonicalId!,
+              kind: ArtifactKind.skillCanonical,
+              scope: context.scope,
+              nativeDestination: 'canonical',
+              nativeForm: 'skill-canonical',
+              location: canonicalEntry.path,
+              nativeRoot: canonicalEntry.nativeRoot!,
+              name: candidate.name,
+              nativeProfile: null,
+              validatedProfiles: targets,
+              knownConsumers: targets,
+              baseline: canonicalBaseline!,
+              lifecycle: 'live',
+              origin: unit.origin,
+              backupIds: existingCanonical?.backupIds ?? const <String>[],
+              transactionId: null,
+              exposures: List<ExposureRecord>.unmodifiable(exposures),
+            ),
+          );
+        }
+        _writeTransaction(transactionPath, <String, Object?>{
+          'schemaVersion': 2,
+          'transactionId': transactionId,
+          'installationId': installationIds.first,
+          'operation': 'resource-unit-install',
+          'artifactKind': resource.kind.wireName,
+          'scope': context.scope.name,
+          'location': primary,
+          'nativeRoot': creating.first.nativeRoot,
+          'resourceId': unit.resourceId,
+          'sourceDigest': unit.sourceDigest,
+          'origin': unit.origin,
+          'entries': [
+            for (var index = 0; index < unit.entries.length; index++)
+              if (staged.containsKey(index))
+                <String, Object?>{
+                  'index': index,
+                  'location': unit.entries[index].path,
+                  'nativeRoot': unit.entries[index].nativeRoot,
+                  'artifactKind': kinds[index]!.wireName,
+                  'newBaseline': baselines[index]!.toJson(),
+                  'stagedPath': staged[index],
+                },
+          ],
+          'oldRecords': [
+            for (final record in existingByPath.values) record.toJson(),
+          ],
+          'newRecords': [for (final record in newRecords) record.toJson()],
+          'publishedIndices': const <int>[],
+          'phase': 'prepared',
+        });
+        intentWritten = true;
+        for (final index in staged.keys) {
+          final entry = unit.entries[index];
+          _requireAbsent(entry.path);
+          io.createDirectory(p.dirname(entry.path));
+          _requireAbsent(entry.path);
+          io.rename(staged[index]!, entry.path);
+          published.add(index);
+          _writeTransaction(transactionPath, <String, Object?>{
+            ..._readTransaction(transactionPath),
+            'publishedIndices': published,
+            'phase': 'published',
+          });
+          _verifyBaseline(entry.path, baselines[index]!, kinds[index]!);
+        }
+        for (final entry in unit.entries.where(
+          (entry) =>
+              entry.action == InstallationEntryAction.unchanged &&
+              entry.kind != InstallationEntryKind.consumer,
+        )) {
+          _requireUnchanged(existingByPath[entry.path]!);
+        }
+        commitAttempted = true;
+        _commitRecords(state, newRecords, const <String, Object?>{});
+        committed = true;
+        _writeTransaction(transactionPath, <String, Object?>{
+          ..._readTransaction(transactionPath),
+          'phase': 'committedCleanupPending',
+        });
+        for (final root in stagingRoots) {
+          _removeIfPresent(root);
+        }
+        _writeTransaction(transactionPath, <String, Object?>{
+          ..._readTransaction(transactionPath),
+          'phase': 'committed',
+        });
+        return ResourceUnitPublicationResult(
+          status: InstallationUnitStatus.installed,
+          installationIds: List<String>.unmodifiable(installationIds),
+          transactionId: transactionId,
+        );
+      } on Exception catch (error) {
+        if (!intentWritten) {
+          if (error is MambaException) rethrow;
+          throw MambaException(
+            '${unit.resourceId} failed before its transaction intent was written: $error',
+          );
+        }
+        if (committed || commitAttempted) {
+          throw MambaException(
+            '${unit.resourceId} has uncertain committed management state or '
+            'required cleanup pending; transaction $transactionId, evidence '
+            '$transactionPath. $error',
+            exitCode: 6,
+          );
+        }
+        var restored = true;
+        for (final index in published.reversed) {
+          final entry = unit.entries[index];
+          try {
+            _verifyBaseline(entry.path, baselines[index]!, kinds[index]!);
+            final quarantine = _quarantinePath(
+              entry.nativeRoot!,
+              transactionId,
+              entry.path,
+            );
+            _requireAbsent(quarantine);
+            io.createDirectory(p.dirname(quarantine));
+            io.rename(entry.path, quarantine);
+          } on Exception {
+            restored = false;
+          }
+        }
+        if (restored) {
+          _writeTransaction(transactionPath, <String, Object?>{
+            ..._readTransaction(transactionPath),
+            'phase': 'failedRestored',
+          });
+          throw MambaException(
+            '${unit.resourceId} failed and its prior state was restored; '
+            'transaction $transactionId. $error',
+            exitCode: 5,
+          );
+        }
+        throw MambaException(
+          '${unit.resourceId} requires recovery; transaction $transactionId, '
+          'evidence $transactionPath. $error',
+          exitCode: 6,
         );
       }
     });
@@ -2638,6 +3068,9 @@ interface class LifecycleStateService {
     _manifest(path, ArtifactKind.skillCopy);
   }
 
+  String contentDigest(String path, ArtifactKind kind) =>
+      _manifest(path, kind).digest;
+
   List<InstallationRecord> records(LifecycleContext context) =>
       _readRecords(context.stateRoot());
 
@@ -2695,6 +3128,15 @@ interface class LifecycleStateService {
       );
     }
     return record;
+  }
+
+  bool verifyExposure(ExposureRecord exposure) {
+    try {
+      _verifyBaseline(exposure.path, exposure.baseline, ArtifactKind.skillLink);
+      return true;
+    } on Exception {
+      return false;
+    }
   }
 
   ModificationStatus verify(InstallationRecord record) {
@@ -2788,7 +3230,7 @@ interface class LifecycleStateService {
     final backupId = _newId('bak');
     final directory = p.join(state, 'backups', backupId);
     final artifact = p.join(directory, switch (record.kind) {
-      ArtifactKind.skillCopy => 'artifact',
+      ArtifactKind.skillCopy || ArtifactKind.skillCanonical => 'artifact',
       ArtifactKind.skillLink => 'artifact-link.json',
       ArtifactKind.agentFile => 'artifact${p.extension(record.location)}',
     });
@@ -3129,7 +3571,8 @@ interface class LifecycleStateService {
     _requireSourceDistinct(source, location, nativeRoot, context.stateRoot());
     final candidate = await resource.inspect(source, context);
     if ((resource.kind == ArtifactKind.skillCopy ||
-            resource.kind == ArtifactKind.skillLink) &&
+            resource.kind == ArtifactKind.skillLink ||
+            resource.kind == ArtifactKind.skillCanonical) &&
         p.basename(location) != candidate.name) {
       throw MambaException(
         'The Skill destination name must match the declared name.',
@@ -3692,7 +4135,8 @@ interface class LifecycleStateService {
       );
     } on FileSystemException catch (error) {
       throw MambaException(
-        'Could not acquire lifecycle coordination for $location: ${error.message}',
+        'Could not acquire lifecycle coordination for $location: '
+        '${error.path == null ? '' : '${error.path}: '}${error.message}',
         exitCode: 4,
       );
     } finally {
@@ -3895,12 +4339,23 @@ final class _InstallPreparation {
   final String sourceDigest;
 }
 
-ArtifactKind _contentKind(ArtifactKind kind) =>
-    kind == ArtifactKind.skillLink ? ArtifactKind.skillCopy : kind;
+ArtifactKind _ownedArtifactKind(OwnedArtifactKind? kind) => switch (kind) {
+  OwnedArtifactKind.skillCopy => ArtifactKind.skillCopy,
+  OwnedArtifactKind.skillLink => ArtifactKind.skillLink,
+  OwnedArtifactKind.skillCanonical => ArtifactKind.skillCanonical,
+  OwnedArtifactKind.agentFile => ArtifactKind.agentFile,
+  null => throw StateError('A published entry requires an artifact kind.'),
+};
+
+ArtifactKind _contentKind(ArtifactKind kind) => switch (kind) {
+  ArtifactKind.skillLink => ArtifactKind.skillCopy,
+  _ => kind,
+};
 
 ArtifactKind _artifactKindFromWire(String value) => switch (value) {
   'skill-copy' => ArtifactKind.skillCopy,
   'skill-link' => ArtifactKind.skillLink,
+  'skill-canonical' => ArtifactKind.skillCanonical,
   'agent-file' => ArtifactKind.agentFile,
   _ => throw FormatException('Unsupported artifact kind: $value'),
 };

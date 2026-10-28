@@ -35,8 +35,15 @@ Original instructions.
           'agent',
           'install',
           source.path,
-          '--harness',
+          '--source-kind',
+          'resource',
+          '--profile',
           'claude',
+          '--target',
+          'claude',
+          '--scope',
+          'project',
+          '--yes',
           ...context,
         ]);
         expect(
@@ -48,8 +55,14 @@ Original instructions.
           (installed as MambaSuccessResult).output!,
         ) as Map<String, Object?>;
         final installationData = installation['data']! as Map<String, Object?>;
-        final installationId = installationData['installationId']! as String;
-        final location = installationData['location']! as String;
+        final unit =
+            (installationData['units']! as List<Object?>).single!
+                as Map<String, Object?>;
+        final installationId =
+            (unit['installationIds']! as List<Object?>).single! as String;
+        final entry =
+            (unit['entries']! as List<Object?>).single! as Map<String, Object?>;
+        final location = entry['path']! as String;
         final request = File(p.join(sandbox.path, 'edit.json'))
           ..writeAsStringSync(
             jsonEncode(<String, Object?>{

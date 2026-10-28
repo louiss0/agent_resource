@@ -176,6 +176,12 @@ interface class AgentLifecycleService {
     );
   }
 
+  LifecycleResource installationResource(AgentHarness harness) =>
+      _AgentResource(harness, this);
+
+  String installRoot(LifecycleContext context, AgentHarness harness) =>
+      _defaultRoot(context, harness, AgentDestination.native);
+
   Future<LifecycleResult> install(AgentInstallInput input) async {
     final context = LifecycleContext.resolve(input.options);
     _requireMutationScope(context);
@@ -626,6 +632,7 @@ final class _AgentResource implements LifecycleResource {
     required String nativeDestination,
     String? excludeInstallationId,
     String? excludePath,
+    Set<String> allowedPaths = const <String>{},
   }) async {
     final report = await listNativeAgents(
       AgentInventoryInput(
@@ -660,9 +667,11 @@ final class _AgentResource implements LifecycleResource {
     }
     for (final occurrence in report.occurrences) {
       final path = occurrence['path'];
-      if (excludePath != null &&
-          path is String &&
-          p.equals(path, excludePath)) {
+      if ((excludePath != null &&
+              path is String &&
+              p.equals(path, excludePath)) ||
+          (path is String &&
+              allowedPaths.any((allowed) => p.equals(path, allowed)))) {
         continue;
       }
       final identity = occurrence['identity']! as Map<String, Object?>;

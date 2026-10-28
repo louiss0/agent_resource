@@ -163,7 +163,10 @@ MambaFailureResult _expectFailure(
 }
 
 Map<String, Object?> _decodeObject(String text) {
-  final decoded = jsonDecode(text);
+  // Process fixtures isolate presentation from the JSON payload; production
+  // retains normal Mamba stderr coloring.
+  final plain = text.replaceAll(RegExp(r'\x1B\[[0-9;]*m'), '');
+  final decoded = jsonDecode(plain);
   expect(decoded, isA<Map<Object?, Object?>>());
   return Map<String, Object?>.from(decoded as Map<Object?, Object?>);
 }

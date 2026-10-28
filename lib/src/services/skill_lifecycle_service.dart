@@ -44,6 +44,7 @@ interface class SkillLifecycleService implements LifecycleResource {
   static const skillKinds = <ArtifactKind>{
     ArtifactKind.skillCopy,
     ArtifactKind.skillLink,
+    ArtifactKind.skillCanonical,
   };
 
   @override
@@ -332,6 +333,11 @@ interface class SkillLifecycleService implements LifecycleResource {
     return roots;
   }
 
+  LifecycleResource installationResource({
+    required List<String> targets,
+    required ArtifactKind kind,
+  }) => _ProfiledSkillResource(this, targets, kind);
+
   Future<LifecycleResult> install(SkillInstallInput input) async {
     final context = LifecycleContext.resolve(input.options);
     _requireMutationScope(context);
@@ -598,17 +604,21 @@ interface class SkillLifecycleService implements LifecycleResource {
 
   @override
   void validateAuthority(InstallationRecord record, LifecycleContext context) {
-    final destination = SkillDestination.values.firstWhere(
-      (value) => value.name == record.nativeDestination,
-      orElse: () => throw MambaException(
-        'Unsupported stored Skill destination.',
-        exitCode: 4,
-      ),
-    );
+    final canonical = record.kind == ArtifactKind.skillCanonical;
+    final destination = canonical
+        ? SkillDestination.shared
+        : SkillDestination.values.firstWhere(
+            (value) => value.name == record.nativeDestination,
+            orElse: () => throw MambaException(
+              'Unsupported stored Skill destination.',
+              exitCode: 4,
+            ),
+          );
     final root = _root(context, destination);
     if (!skillKinds.contains(record.kind) ||
         record.scope != context.scope ||
         record.nativeForm != record.kind.wireName ||
+        (canonical && record.nativeDestination != 'canonical') ||
         !p.equals(record.nativeRoot, root) ||
         !p.equals(p.dirname(record.location), root) ||
         p.basename(record.location) != record.name) {
@@ -667,11 +677,12 @@ interface class SkillLifecycleService implements LifecycleResource {
     required String nativeDestination,
     String? excludeInstallationId,
     String? excludePath,
+    Set<String> allowedPaths = const <String>{},
   }) async {
     final destinations = switch (nativeDestination) {
       'claude' => const [SkillDestination.claude, SkillDestination.shared],
       'codex' => const [SkillDestination.codex, SkillDestination.shared],
-      'shared' => const [
+      'shared' || 'canonical' => const [
         SkillDestination.claude,
         SkillDestination.codex,
         SkillDestination.shared,
@@ -713,7 +724,8 @@ interface class SkillLifecycleService implements LifecycleResource {
                 exitCode: 3,
               );
             }
-            if (excludePath != null && p.equals(child.path, excludePath)) {
+            if ((excludePath != null && p.equals(child.path, excludePath)) ||
+                allowedPaths.any((path) => p.equals(child.path, path))) {
               continue;
             }
             final childType = skillEntityType(child.path, followLinks: false);
@@ -912,11 +924,13 @@ final class _ProfiledSkillResource implements LifecycleResource {
     required String nativeDestination,
     String? excludeInstallationId,
     String? excludePath,
+    Set<String> allowedPaths = const <String>{},
   }) => delegate.checkUnique(
     context,
     name,
     nativeDestination: nativeDestination,
     excludeInstallationId: excludeInstallationId,
     excludePath: excludePath,
+    allowedPaths: allowedPaths,
   );
 }

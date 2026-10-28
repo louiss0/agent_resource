@@ -8,8 +8,10 @@ import 'src/agent_inspection.dart';
 import 'src/agent_inventory.dart';
 import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/agent_graph_service.dart';
+import 'src/services/agent_installation_service.dart';
 import 'lifecycle.dart';
 import 'agent_config_commands.dart';
+import 'agent_install.dart';
 import 'agent_create_command.dart';
 import 'agent_compose.dart';
 import 'agent_clone.dart';
@@ -39,13 +41,15 @@ final class AgentCommand extends GroupCommand {
     AgentInventoryOperation inventory = listNativeAgents,
     AgentLifecycleService? lifecycle,
     AgentGraphService? graph,
-  }) : super(_children(operation, inventory, lifecycle, graph));
+    AgentInstallationService? installation,
+  }) : super(_children(operation, inventory, lifecycle, graph, installation));
 
   static List<Command> _children(
     AgentInspectionOperation operation,
     AgentInventoryOperation inventory,
     AgentLifecycleService? lifecycle,
     AgentGraphService? graph,
+    AgentInstallationService? installation,
   ) {
     final service = lifecycle ?? AgentLifecycleService();
     return [
@@ -58,7 +62,9 @@ final class AgentCommand extends GroupCommand {
       AgentConvertCommand(),
       AgentInspectCommand(operation, graph: graph),
       AgentValidateCommand(operation),
-      LifecycleActionCommand.agentInstall(service),
+      AgentInstallCommand(
+        installation ?? AgentInstallationService(lifecycle: service),
+      ),
       LifecycleActionCommand.agentAdopt(service),
       LifecycleActionCommand.agentReplace(service),
       LifecycleActionCommand.agentRemove(service),

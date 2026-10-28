@@ -4,9 +4,14 @@ import 'dart:io';
 
 import 'package:mamba/mamba.dart';
 
+import 'installation_command_support.dart';
 import 'lifecycle.dart'
     show LifecycleConfirmation, LifecycleOutputFormat, RecoveryAction;
+import 'src/installation/installation_plan.dart';
+import 'src/installation/installation_request.dart';
+import 'src/services/acquisition_service.dart';
 import 'src/services/lifecycle_state_service.dart';
+import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 
 Future<bool> _defaultConfirmation(String prompt) async {
@@ -72,27 +77,81 @@ Future<bool> _confirmDestruction(
 }
 
 final class SkillInstallCommand extends Command {
-  final SkillLifecycleService _service;
+  SkillInstallCommand(this._installation)
+    : super(
+        discretionaryPositionals: [_source],
+        options: [
+          _resources,
+          _targets,
+          _scope,
+          _method,
+          _ref,
+          _subpath,
+          _sourceKind,
+          _format,
+          _cwd,
+          _projectRoot,
+          _home,
+          _claude,
+          _codex,
+          _state,
+          _readRoots,
+          _destination,
+          _harness,
+          _mode,
+        ],
+        flags: const [_allResources, _dryRun, _yes, _interactive],
+        conflicts: const {
+          'resource': ['all-resources'],
+        },
+        longDescription:
+            'Install exact or curated Skills with canonical content and tracked '
+            'exposures (canonical), independent copies (copy), or durable local '
+            'source links (source-link). Canonical content uses scope-specific '
+            '.agents/skills; Codex consumes it directly and Claude receives a '
+            'managed exposure link. No heuristic scanning, implicit dependency '
+            'installation, source execution, silent link fallback, or remote '
+            'source-link is performed. Interactive user scope and canonical '
+            'method are disclosed defaults. JSON and unattended execution '
+            'require explicit planning choices and --yes unless --dry-run.',
+      );
 
-  static final _source = FolderPathPositional('source-directory');
-  static final _destination = ChoiceOption.required(
-    'destination',
-    choices: SkillDestination.values,
+  final SkillInstallationService _installation;
+
+  static final _source = NormalPositional.optional(
+    'source',
+    description: 'Local path, Git locator, direct download, or archive.',
   );
-  static final _mode = ChoiceOption.withDefault(
-    'mode',
-    choices: SkillMode.values,
-    defaultValue: SkillMode.copy,
+  static final _resources = RepeatableStringOption(
+    'resource',
+    description: 'Exact catalog ID; repeat for multiple entries.',
   );
-  static final _scope = ChoiceOption.withDefault(
+  static final _targets = RepeatableChoiceOption('target', const [
+    InstallationTarget.claude,
+    InstallationTarget.codex,
+  ], description: 'Consuming harness; repeat to select both.');
+  static final _scope = ChoiceOption(
     'scope',
-    choices: LifecycleScope.values,
-    defaultValue: LifecycleScope.user,
+    choices: const [LifecycleScope.project, LifecycleScope.user],
+    description: 'Installation scope; user is the interactive default.',
   );
-  static final _harnesses = RepeatableChoiceOption(
-    'harness',
-    SkillHarness.values,
-    unique: true,
+  static final _method = ChoiceOption(
+    'method',
+    choices: InstallationMethod.values,
+    description: 'canonical, copy, or durable local source-link.',
+  );
+  static final _ref = StringOption(
+    'ref',
+    description: 'Git branch, tag, or commit; Git sources only.',
+  );
+  static final _subpath = StringOption(
+    'subpath',
+    description: 'Explicit source-relative root; never broadened to a scan.',
+  );
+  static final _sourceKind = ChoiceOption(
+    'source-kind',
+    choices: AcquisitionSourceKind.values,
+    description: 'Explicit collection or exact-resource intent.',
   );
   static final _format = ChoiceOption.withDefault(
     'format',
@@ -106,60 +165,95 @@ final class SkillInstallCommand extends Command {
   static final _codex = FolderPathOption('codex-home');
   static final _state = FolderPathOption('state-dir');
   static final _readRoots = RepeatableFolderPathOption('read-root');
+  static const _allResources = BooleanFlag(
+    'all-resources',
+    description: 'Select every curated Skill entry.',
+  );
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
-  static const _interactive = BooleanFlag('interactive');
 
-  new(this._service)
-    : super(
-        mandatoryPositionals: [_source],
-        options: [
-          _destination,
-          _mode,
-          _scope,
-          _harnesses,
-          _format,
-          _cwd,
-          _projectRoot,
-          _home,
-          _claude,
-          _codex,
-          _state,
-          _readRoots,
-        ],
-        flags: const [_dryRun, _yes, _interactive],
-      );
+  static final _destination = StringOption('destination', hidden: true);
+  static final _harness = StringOption('harness', hidden: true);
+  static final _mode = StringOption('mode', hidden: true);
+  static const _interactive = BooleanFlag('interactive', hidden: true);
 
   @override
   String get name => 'install';
+
   @override
-  String get shortDescription => 'Install a copied or linked Skill.';
+  String get shortDescription =>
+      'Install curated or exact Skills interactively.';
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    _rejectRetired(valueOf);
     final format = valueOf(_format);
-    _checkInteractive(format, valueOf(_interactive));
-    final result = await _service.install(
-      SkillInstallInput(
-        options: _options(
-          valueOf(_scope),
-          valueOf(_cwd),
-          valueOf(_projectRoot),
-          valueOf(_home),
-          valueOf(_claude),
-          valueOf(_codex),
-          valueOf(_state),
-          valueOf(_readRoots) ?? const [],
-          valueOf(_dryRun),
-          valueOf(_yes),
+    final source = valueOf(_source);
+    if (source != null && source.trim().isEmpty) {
+      throw MambaException('The installation source must not be blank.');
+    }
+    final result = await _installation.run(
+      InstallationWorkflowRequest(
+        source: source,
+        options: LifecycleOptions(
+          processWorkingDirectory: Directory.current.path,
+          environment: Map<String, String>.unmodifiable(Platform.environment),
+          scope: valueOf(_scope) ?? LifecycleScope.user,
+          cwd: valueOf(_cwd),
+          projectRoot: valueOf(_projectRoot),
+          home: valueOf(_home),
+          claudeConfigDir: valueOf(_claude),
+          codexHome: valueOf(_codex),
+          stateDir: valueOf(_state),
+          readRoots: valueOf(_readRoots) ?? const <String>[],
+          dryRun: valueOf(_dryRun),
+          approved: valueOf(_yes),
         ),
-        source: valueOf(_source),
-        destination: valueOf(_destination),
-        harnesses: valueOf(_harnesses) ?? const [],
-        mode: valueOf(_mode),
+        sourceKind: valueOf(_sourceKind),
+        resourceIds: (valueOf(_resources) ?? const <String>[]).toSet().toList(),
+        allResources: valueOf(_allResources),
+        targets: (valueOf(_targets) ?? const <InstallationTarget>[])
+            .toSet()
+            .toList(),
+        method: valueOf(_method),
+        profile: null,
+        ref: valueOf(_ref),
+        subpath: valueOf(_subpath),
+        scopeExplicit: valueOf(_scope) != null,
       ),
+      interactive:
+          format == LifecycleOutputFormat.text &&
+          _installation.hasInteractiveTerminal,
     );
-    return _render(result, format);
+    return renderInstallationResult(result, format);
+  }
+
+  void _rejectRetired(ValueOf valueOf) {
+    if (valueOf(_destination) != null) {
+      throw MambaException(
+        '--destination is retired for skill install. Use --target for '
+        'consumers and --method canonical|copy|source-link for ownership; '
+        'application-owned compatibility paths replace destination selection.',
+      );
+    }
+    if (valueOf(_harness) != null) {
+      throw MambaException(
+        '--harness is retired for skill install and is not consuming-target '
+        'authorization. Use --target claude|codex instead.',
+      );
+    }
+    if (valueOf(_mode) != null) {
+      throw MambaException(
+        '--mode is retired for skill install. Use --method copy for independent '
+        'copies, source-link for a durable local source, or canonical.',
+      );
+    }
+    if (valueOf(_interactive)) {
+      throw MambaException(
+        '--interactive is retired: interactive installation is the default on '
+        'a usable text terminal. JSON and unattended mode stay explicit.',
+      );
+    }
   }
 }
 

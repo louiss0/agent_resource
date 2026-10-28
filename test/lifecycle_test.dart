@@ -84,8 +84,12 @@ void main() {
                 'skill',
                 'install',
                 '${source.path}$separator',
-                '--destination',
+                '--source-kind',
+                'resource',
+                '--target',
                 'claude',
+                '--method',
+                'copy',
                 '--scope',
                 'project',
                 '--cwd',
@@ -137,10 +141,12 @@ void main() {
                   'skill',
                   'install',
                   '${source.path}$separator',
-                  '--destination',
+                  '--source-kind',
+                  'resource',
+                  '--target',
                   'claude',
-                  '--mode',
-                  'link',
+                  '--method',
+                  'source-link',
                   '--scope',
                   'project',
                   '--cwd',
@@ -158,7 +164,10 @@ void main() {
                   jsonDecode(result.output!) as Map<String, Object?>;
               expect(envelope['outcome'], 'planned');
               final data = envelope['data']! as Map<String, Object?>;
-              expect(data['nativeForm'], 'skill-link');
+              final unit =
+                  (data['units']! as List<Object?>).single!
+                      as Map<String, Object?>;
+              expect(unit['method'], 'source-link');
               expect(
                 Directory(p.join(project.path, '.claude')).existsSync(),
                 isFalse,
@@ -200,19 +209,17 @@ void main() {
         });
 
         test(
-          'typed paths and JSON/interactive conflicts reject before effects',
+          'unknown options and retired interactive input reject before effects',
           () async {
             final result = await createExecutor().fake().execute([
               'skill',
               'install',
-              'missing-separator',
-              '--destination',
-              'claude',
+              '--not-an-input',
             ]);
             _failure(
               result,
               1,
-              'Invalid path',
+              '--not-an-input',
               phase: MambaExecutionPhase.parse,
               commandPath: const ['agent_resource', 'skill', 'install'],
             );
@@ -220,9 +227,6 @@ void main() {
             final conflict = await createExecutor().fake().execute([
               'skill',
               'install',
-              '..${Platform.pathSeparator}',
-              '--destination',
-              'claude',
               '--interactive',
               '--format',
               'json',
@@ -230,7 +234,7 @@ void main() {
             _failure(
               conflict,
               1,
-              'conflict',
+              'retired',
               phase: MambaExecutionPhase.run,
               commandPath: const ['agent_resource', 'skill', 'install'],
             );
@@ -530,7 +534,7 @@ void main() {
       });
 
       group('install', () {
-        test('native source requires an explicit harness', () async {
+        test('native source requires explicit unattended scope', () async {
           final result = await createExecutor().fake().execute([
             'agent',
             'install',
@@ -539,8 +543,8 @@ void main() {
           _failure(
             result,
             1,
-            '--harness',
-            phase: MambaExecutionPhase.parse,
+            '--scope',
+            phase: MambaExecutionPhase.run,
             commandPath: const ['agent_resource', 'agent', 'install'],
           );
         });

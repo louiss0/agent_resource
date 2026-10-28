@@ -1,0 +1,33 @@
+name: clix
+description: Powerful Dart CLI toolkit for building interactive command-line apps with prompts, colors, logging, and progress indicators.
+version: 1.2.0+agent-resource.1
+homepage: https://github.com/altwaireb/clix
+repository: https://github.com/altwaireb/clix
+issue_tracker: https://github.com/altwaireb/clix/issues
+documentation: https://pub.dev/documentation/clix
+funding:
+  - https://github.com/sponsors/altwaireb
+
+topics:
+  - cli
+  - terminal
+  - interactive
+  - prompts
+  - dart-tools
+
+assets:
+  - assets/logo.png
+
+screenshots:
+  - description: "Clix Logo - CLI Development Toolkit for Dart"
+    path: assets/logo.png
+
+environment:
+  sdk: ^3.8.2
+
+dependencies:
+  args: ^2.7.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

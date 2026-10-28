@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'src/skill_files.dart';
 import 'src/skill_validation.dart';
 import 'src/services/lifecycle_state_service.dart';
+import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 import 'lifecycle.dart';
 import 'skill_lifecycle_commands.dart';
@@ -25,19 +26,23 @@ final class SkillCommand extends GroupCommand {
     InspectOperation inspect = inspectSkill,
     ValidateOperation validate = validateSkill,
     SkillLifecycleService? lifecycle,
-  }) : super(_children(inspect, validate, lifecycle));
+    SkillInstallationService? installation,
+  }) : super(_children(inspect, validate, lifecycle, installation));
 
   static List<Command> _children(
     InspectOperation inspect,
     ValidateOperation validate,
     SkillLifecycleService? lifecycle,
+    SkillInstallationService? installation,
   ) {
     final service = lifecycle ?? SkillLifecycleService();
     return [
       SkillListCommand(service),
       InspectCommand(inspect),
       ValidateCommand(validate),
-      SkillInstallCommand(service),
+      SkillInstallCommand(
+        installation ?? SkillInstallationService(lifecycle: service),
+      ),
       SkillAdoptCommand(service),
       SkillReplaceCommand(service),
       SkillRemoveCommand(service),
