@@ -15,12 +15,12 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 ## Seven implementation slices
 
 - [x] 1. Typed inputs/catalog and parser contract.
-- [x] 2. Local planning and Clix interactions (scripted component coverage complete; real terminal qualification remains slice 7).
+- [ ] 2. Local planning and Clix interactions (planning and stock-Clix wiring compile; required Select All, graceful cancellation/EOF, and terminal restoration are not provided by stock Clix 1.2.0).
 - [x] 3. Resource-unit publication (initial coordinated install/no-op/rollback path; restart recovery expansion remains slice 6).
 - [x] 4. Canonical lifecycle completeness.
 - [x] 5. Remote acquisition.
 - [x] 6. Batch fault/cancellation proof.
-- [x] 7. Public migration and qualification (local Windows implementation gates complete; external platform/terminal/TLS evidence remains explicitly open).
+- [ ] 7. Public migration and qualification (migration and non-interactive gates are implemented; the stock-Clix interaction contract is a release blocker).
 
 ## Architecture invariants
 
@@ -35,7 +35,7 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 
 - Baseline `dart test`: 317 passed, 4 pre-existing Windows permission skips.
 - `dart analyze`: no issues after slices 1–3.
-- Focused Clix patch analysis: no issues.
+- Historical pre-removal focused Clix patch analysis: no issues. This evidence does not apply to the current stock-Clix dependency.
 - Checkpoint `dart test`: 380 passed, 4 pre-existing Windows permission skips.
 - `test/cli_process_test.dart`: production streams/status/color and schema-v2 lifecycle smoke passed on Windows.
 - Real canonical directory-link creation and mid-publication rollback passed in isolated temporary filesystems.
@@ -52,7 +52,13 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - Integrated CI qualification at revision ec48558: [workflow run 40745695510](https://github.com/louiss0/agent_resource/actions/runs/40745695510). Windows, macOS, and Linux native jobs all passed with `--require-qualified`; the release-decision job passed. Its decision reports `qualified: true`, no blockers, statuses 0 through 7, and runtime activation/equivalence explicitly unverified.
 - HTTPS credential forwarding and real TLS Git integration were not exercised; local plaintext HTTP and Git-daemon fixtures covered the protocol-independent bounds and redaction logic. A public HTTPS direct-file download was exercised without credential forwarding.
 
-macOS/Linux and real terminal/PTY checks remain outstanding and are not inferred from these results.
+### Current stock-Clix removal and interaction blocker
+
+The vendored `third_party/clix` fork and its dedicated patch-behavior tests are removed. The application now uses hosted `clix: 1.2.0` with Mamba 1.0.0 and no dependency override. Fork-only `CliPromptCancelledException` and `CliInputClosedException` references are removed; no replacement prompt library, shim, fork, or Cancel option was introduced.
+
+Application-owned prompt labels include the literal `(Ctrl+C to cancel)` hint. With stock Clix this is only guidance for an external process interrupt. It does not perform graceful cancellation, restore terminal modes, or return `InteractionAnswer.cancelled`. Stock `MultiSelect` has no Select All action, does not map Escape or Ctrl+C to typed cancellation, can continue looping on EOF, and restores echo/line modes only through its normal `finally` path. The approved interaction contract is therefore not implemented by the current stock dependency, and real PTY qualification cannot be claimed.
+
+Stock-Clix removal verification: formatting and analysis passed; 56 focused installation/workflow tests passed; the full suite passed 407 tests with 4 pre-existing Windows permission skips; and the rebuilt Windows artifact gate observed statuses 0 through 7. The dedicated fork component suite was deleted. These tests use scripted interaction adapters or unattended commands and do not prove raw stock-Clix prompt safety.
 
 ## Review findings and resolutions
 
@@ -71,4 +77,4 @@ All actionable review findings have regression coverage and were rechecked by th
 
 ## Remaining platform/release evidence
 
-Windows is available locally. macOS and Linux native checks require separate runners and must not be inferred from Windows or skipped tests. Real Windows/macOS/Linux PTY terminal-mode restoration and HTTPS/TLS credential-boundary integration remain unrun. Local plaintext HTTP and Git-daemon fixtures do not close those release-qualification blockers.
+The stock-Clix interaction limitations above are implementation blockers, not merely missing platform evidence. Earlier integrated native-CI results were produced with the removed fork and changed lockfile, so they do not qualify the current candidate. Real Windows/macOS/Linux PTY behavior and HTTPS/TLS credential-boundary integration remain unverified. Non-interactive built-artifact and lifecycle evidence does not establish Select All, graceful cancellation/EOF handling, or terminal restoration.

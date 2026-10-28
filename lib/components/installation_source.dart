@@ -1,9 +1,11 @@
 import 'package:mamba/mamba.dart';
 
-/// Clix text input for an omitted installation source. Blank cancels; the
-/// patched ConsoleIO keeps EOF distinct as an exception.
+/// Clix text input for an omitted installation source. Blank cancels.
+/// Stock Clix EOF behavior is not a distinct cancellation signal.
 final class InstallationSourceComponent {
-  const InstallationSourceComponent({this.label = 'Resource source'});
+  const InstallationSourceComponent({
+    this.label = 'Resource source (Ctrl+C to cancel)',
+  });
 
   final String label;
 

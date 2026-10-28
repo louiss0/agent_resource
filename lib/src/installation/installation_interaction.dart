@@ -1,7 +1,5 @@
 import 'dart:io';
 
-import 'package:mamba/mamba.dart';
-
 import '../../components/agent_profile.dart';
 import '../../components/installation_approval.dart';
 import '../../components/installation_source.dart';
@@ -131,15 +129,7 @@ final class ClixInstallationInteraction implements InstallationInteraction {
 
   Future<InteractionAnswer<T>> _guard<T>(
     Future<InteractionAnswer<T>> Function() body,
-  ) async {
-    try {
-      return await body();
-    } on CliInputClosedException {
-      throw MambaException(
-        'Interactive input closed unexpectedly; no installation was approved.',
-      );
-    }
-  }
+  ) => body();
 }
 
 String _offeringLabel(CatalogOffering offering) {
