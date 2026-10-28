@@ -76,18 +76,6 @@ final class InstallationBatch {
           );
           continue;
         }
-        if (unit.status == InstallationUnitStatus.unchanged) {
-          final result = await state.installResourceUnit(
-            resource: resourceFor(unit),
-            context: context,
-            unit: unit,
-          );
-          units[index] = unit.copyWith(
-            status: result.status,
-            installationIds: result.installationIds,
-          );
-          continue;
-        }
         try {
           final result = await state.installResourceUnit(
             resource: resourceFor(unit),
@@ -98,7 +86,9 @@ final class InstallationBatch {
             status: result.status,
             installationIds: result.installationIds,
           );
-          retainedSuccess = true;
+          retainedSuccess =
+              retainedSuccess ||
+              result.status == InstallationUnitStatus.installed;
           if (interrupted) {
             diagnostics.add(
               '${unit.resourceId}: committed ${result.transactionId}; '

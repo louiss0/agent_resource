@@ -1152,6 +1152,11 @@ interface class LifecycleStateService {
               entry.action != InstallationEntryAction.unchanged,
         )
         .toList();
+    final recordsConsumer = unit.entries.any(
+      (entry) =>
+          entry.kind == InstallationEntryKind.consumer &&
+          entry.action != InstallationEntryAction.unchanged,
+    );
     final primary = unit.entries.first.path;
     return _serialized(context, primary, () async {
       final state = context.stateRoot();
@@ -1242,7 +1247,7 @@ interface class LifecycleStateService {
           verifyUnchangedEntry(entry);
         }
       }
-      if (creating.isEmpty) {
+      if (creating.isEmpty && !recordsConsumer) {
         return ResourceUnitPublicationResult(
           status: InstallationUnitStatus.unchanged,
           installationIds: unit.installationIds,
@@ -1452,7 +1457,8 @@ interface class LifecycleStateService {
           'artifactKind': resource.kind.wireName,
           'scope': context.scope.name,
           'location': primary,
-          'nativeRoot': creating.first.nativeRoot,
+          'nativeRoot': (creating.isEmpty ? unit.entries.first : creating.first)
+              .nativeRoot,
           'resourceId': unit.resourceId,
           'sourceDigest': unit.sourceDigest,
           'origin': unit.origin,

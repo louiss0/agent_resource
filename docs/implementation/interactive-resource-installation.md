@@ -20,7 +20,7 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - [x] 4. Canonical lifecycle completeness.
 - [x] 5. Remote acquisition.
 - [x] 6. Batch fault/cancellation proof.
-- [ ] 7. Public migration and qualification.
+- [x] 7. Public migration and qualification (local Windows implementation gates complete; external platform/terminal/TLS evidence remains explicitly open).
 
 ## Architecture invariants
 
@@ -43,15 +43,26 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - Slice 4: canonical list/replace/detach/remove/backup/restore, versioned record and backup validation, true no-op revalidation, and schema-v2 coordinated restart rollback/completion passed in `resource_unit_transaction_test.dart` (9 tests).
 - Slice 5: 12 acquisition tests passed for local sources, inert immutable Git archive materialization, bounded HTTP, ZIP/TAR/TAR.GZ, redirects/privacy, duplicate/path/special-entry refusal, deadlines, and cleanup. `archive: 4.0.7` is pinned and its decoder callback is used so duplicate entries cannot be silently deduplicated before validation.
 - Slice 6 focused scheduler tests pass for independent continuation, dependency skipping, recovery-required stop, and post-write interruption. The 15-test resource-unit matrix also covers verified-old commit rollback (5), committed/uncertain recovery (6), terminal-journal failure, new occupants, stale exposures, committed cleanup, and fresh-service rollback/completion.
-- The rebuilt Windows production release gate observed statuses 0 through 7 with zero blockers, including real read-only-ledger rollback, protected cleanup evidence, and canonical content/exposure publication.
+- The rebuilt Windows production release gate observed statuses 0 through 7 with zero blockers, including real read-only-ledger rollback, protected cleanup evidence, and canonical content/exposure publication. It was rerun with `--require-qualified` after final review fixes.
+- Final local qualification: `dart pub get --enforce-lockfile`, formatting, and `dart analyze` passed; the full suite passed 410 tests with 4 pre-existing Windows permission skips.
 - HTTPS credential forwarding and real TLS Git integration were not exercised; local plaintext HTTP and Git-daemon fixtures covered the protocol-independent bounds and redaction logic.
 
 macOS/Linux and real terminal/PTY checks remain outstanding and are not inferred from these results.
 
 ## Review findings and resolutions
 
-Pending final two-axis review against baseline `b251028`.
+Two independent reviews ran against baseline `b251028` after commit `d1a53a4`.
+
+- Spec: single-offering catalogs now always use the resource MultiSelect interaction; no silent lone-item selection remains.
+- Spec/Standards: consumer-only Codex additions now commit direct-consumer metadata without rewriting canonical content.
+- Spec: general preflight errors retain status 1 rather than being reclassified as ownership refusals.
+- Spec: unchanged-unit failures enter the same aggregate outcome and continuation policy as other units.
+- Spec: HTTP uses an overall deadline timer that forcibly closes stalled redirect/download IO.
+- Standards: redirected archives pass the resolved URL format explicitly to the decoder; a redirect-to-ZIP regression is covered.
+- Standards judgement call: the two thin domain-facing MultiSelect wrappers share similar mapping code but retain their distinct typed candidate/target contracts; this was not a correctness finding.
+
+All actionable review findings have regression coverage and were rechecked by the final full suite and built-artifact gate.
 
 ## Remaining platform/release evidence
 
-Windows is available locally. macOS and Linux native checks require separate runners and must not be inferred from Windows or skipped tests.
+Windows is available locally. macOS and Linux native checks require separate runners and must not be inferred from Windows or skipped tests. Real Windows/macOS/Linux PTY terminal-mode restoration and HTTPS/TLS credential-boundary integration remain unrun. Local plaintext HTTP and Git-daemon fixtures do not close those release-qualification blockers.

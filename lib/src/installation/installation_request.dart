@@ -131,8 +131,6 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
         'Unattended collection installation requires --resource or '
         '--all-resources.',
       );
-    } else if (offerings.length == 1) {
-      selected = offerings;
     } else {
       while (true) {
         final answer = await interaction.selectResources(offerings);

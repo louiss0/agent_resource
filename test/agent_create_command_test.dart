@@ -84,17 +84,23 @@ void main() {
       final sandbox = await Directory.systemTemp.createTemp('agent-create-');
       try {
         final request = File(p.join(sandbox.path, 'bound.json'))
-          ..writeAsStringSync(jsonEncode(<String, Object?>{
-            'schemaVersion': 1,
-            'operation': 'create',
-            'source': <String, Object?>{
-              'kind': 'codex-role',
-              'configFile': '.codex/config.toml',
-              'roleKey': 'reviewer',
-            },
-          }));
+          ..writeAsStringSync(
+            jsonEncode(<String, Object?>{
+              'schemaVersion': 1,
+              'operation': 'create',
+              'source': <String, Object?>{
+                'kind': 'codex-role',
+                'configFile': '.codex/config.toml',
+                'roleKey': 'reviewer',
+              },
+            }),
+          );
         final result = await createExecutor().fake().execute([
-          'agent', 'create', '--request', request.path, '--apply',
+          'agent',
+          'create',
+          '--request',
+          request.path,
+          '--apply',
         ]);
 
         expect(
@@ -103,7 +109,10 @@ void main() {
               .having((value) => value.exitCode, 'exit code', 1)
               .having((value) => value.output, 'output', isNull),
         );
-        expect((result as MambaFailureResult).message, contains('compatibility path'));
+        expect(
+          (result as MambaFailureResult).message,
+          contains('compatibility path'),
+        );
       } finally {
         await sandbox.delete(recursive: true);
       }

@@ -297,7 +297,13 @@ interface class AcquisitionService {
       if (_isArchivePath(result.resolved.path)) {
         final extracted = p.join(temporary.path, 'extracted');
         await Directory(extracted).create();
-        _extractArchive(downloaded, extracted, clock, request.deadline);
+        _extractArchive(
+          downloaded,
+          extracted,
+          clock,
+          request.deadline,
+          formatPath: result.resolved.path,
+        );
         await File(downloaded).delete();
         final selected = _selectRemoteRoot(extracted, request.subpath);
         return AcquisitionWorkspace(
@@ -479,11 +485,12 @@ void _extractArchive(
   String source,
   String destination,
   Stopwatch clock,
-  Duration deadline,
-) {
+  Duration deadline, {
+  String? formatPath,
+}) {
   InputFileStream? input;
   try {
-    final lower = source.toLowerCase();
+    final lower = (formatPath ?? source).toLowerCase();
     final encodedNames = <String>{};
     var encodedEntries = 0;
     void validateEncodedEntry(ArchiveFile entry) {
@@ -702,6 +709,11 @@ Future<_DownloadResult> _download(
   Duration deadline,
 ) async {
   final client = HttpClient()..autoUncompress = false;
+  var expired = false;
+  final deadlineTimer = Timer(_remaining(clock, deadline), () {
+    expired = true;
+    client.close(force: true);
+  });
   var uri = initial;
   var authorization = initial.scheme == 'https' && initial.userInfo.isNotEmpty
       ? 'Basic ${base64Encode(utf8.encode(initial.userInfo))}'
@@ -801,10 +813,22 @@ Future<_DownloadResult> _download(
   } on TimeoutException {
     throw MambaException('The acquisition deadline elapsed.', exitCode: 3);
   } on HttpException {
+    if (expired) {
+      throw MambaException('The acquisition deadline elapsed.', exitCode: 3);
+    }
     throw MambaException('The source download failed.', exitCode: 3);
   } on SocketException {
+    if (expired) {
+      throw MambaException('The acquisition deadline elapsed.', exitCode: 3);
+    }
     throw MambaException('The source download failed.', exitCode: 3);
+  } on Exception {
+    if (expired) {
+      throw MambaException('The acquisition deadline elapsed.', exitCode: 3);
+    }
+    rethrow;
   } finally {
+    deadlineTimer.cancel();
     client.close(force: true);
   }
 }

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_installation_service.dart';
 import 'package:mamba/executor.dart';
 import 'package:path/path.dart' as p;
@@ -266,6 +267,39 @@ void main() {
           },
         );
 
+        test(
+          'interactive single-offering collection still requires selection',
+          () async {
+            final collection = Directory(
+              p.join(sandbox.path, 'single-collection'),
+            )..createSync();
+            final selected = Directory(
+              p.join(collection.path, 'skills', 'review'),
+            )..createSync(recursive: true);
+            File(p.join(selected.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+            File(p.join(collection.path, 'agent-resources.toml'))
+                .writeAsStringSync('''
+schema_version = 1
+[[skills]]
+id = "code-review"
+path = "skills/review"
+''');
+            interaction.resourceSelections.add(['code-review']);
+            interaction.targetSelections.add([InstallationTarget.codex]);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              collection.path,
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(result, isA<MambaSuccessResult>());
+            expect(interaction.resourceSelections, isEmpty);
+          },
+        );
+
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {
           final collection = Directory(p.join(sandbox.path, 'collection'))
             ..createSync();
@@ -343,6 +377,56 @@ path = "skills/other"
           },
         );
 
+        test('consumer-only canonical addition records Codex without rewriting content', () async {
+          final source = skill('consumer-addition');
+          List<String> install(List<String> targets) => [
+            'skill',
+            'install',
+            source.path,
+            '--source-kind',
+            'resource',
+            for (final target in targets) ...['--target', target],
+            '--method',
+            'canonical',
+            ...context(),
+            '--yes',
+            '--format',
+            'json',
+          ];
+          final first = await executor().fake().execute(install(['claude']));
+          expect(first, isA<MambaSuccessResult>());
+          final content = p.join(project.path, '.agents', 'skills', 'review');
+          final before = File(p.join(content, 'SKILL.md')).readAsBytesSync();
+          final second = await executor().fake().execute(
+            install(['claude', 'codex']),
+          );
+          expect(
+            second,
+            isA<MambaSuccessResult>(),
+            reason: second is MambaFailureResult ? second.message : null,
+          );
+          final envelope = jsonDecode(
+            (second as MambaSuccessResult).output!,
+          ) as Map<String, Object?>;
+          expect(envelope['outcome'], 'installed');
+          expect(File(p.join(content, 'SKILL.md')).readAsBytesSync(), before);
+          final records = LifecycleStateService().records(
+            LifecycleContext.resolve(
+              LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+              ),
+            ),
+          );
+          expect(
+            records.single.knownConsumers,
+            containsAll(['claude', 'codex']),
+          );
+        });
+
         test('canonical apply and verified repeat produce installed then unchanged', () async {
           final source = skill('exact');
           final args = [
@@ -402,6 +486,47 @@ path = "skills/other"
                   as Map<String, Object?>;
           expect(secondUnit['installationIds'], firstUnit['installationIds']);
           expect(File(p.join(content, 'SKILL.md')).existsSync(), isTrue);
+        });
+
+        test('general batch preflight conflicts use status one', () async {
+          final collection = Directory(p.join(sandbox.path, 'conflicts'))
+            ..createSync();
+          for (final id in ['one', 'two']) {
+            final directory = Directory(p.join(collection.path, id))
+              ..createSync();
+            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: review\ndescription: Same native name.\n---\nBody.\n',
+            );
+          }
+          File(p.join(collection.path, 'agent-resources.toml'))
+              .writeAsStringSync('''
+schema_version = 1
+[[skills]]
+id = "one"
+path = "one"
+[[skills]]
+id = "two"
+path = "two"
+''');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            collection.path,
+            '--all-resources',
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            ...context(),
+            '--yes',
+            '--format',
+            'json',
+          ]);
+          expect(
+            result,
+            isA<MambaFailureResult>().having((r) => r.exitCode, 'status', 1),
+          );
+          expect(project.listSync(recursive: true), isEmpty);
         });
 
         test(

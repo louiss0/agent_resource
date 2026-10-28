@@ -143,6 +143,62 @@ void main() {
     );
 
     test(
+      'unchanged-unit failure joins the aggregate and independent outcome',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'batch-unchanged-',
+        );
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final attempted = <String>[];
+          final stale = _unit('one')
+              .copyWith(status: InstallationUnitStatus.unchanged);
+          final state = _FakeState((unit) async {
+            attempted.add(unit.resourceId);
+            if (unit.resourceId == 'one') {
+              throw MambaException('stale observation', exitCode: 4);
+            }
+            return const ResourceUnitPublicationResult(
+              status: InstallationUnitStatus.installed,
+              installationIds: ['ins_two'],
+              transactionId: 'trx_two',
+            );
+          });
+          await expectLater(
+            () => InstallationBatch().execute(
+              plan: _plan([stale, _unit('two')]),
+              context: _context(project, home),
+              state: state,
+              resourceFor: (_) => _FakeResource(),
+              interaction: ScriptedInstallationInteraction(),
+              interactive: false,
+              approved: true,
+            ),
+            throwsA(
+              isA<MambaException>()
+                  .having((error) => error.exitCode, 'status', 5)
+                  .having(
+                    (error) => error.message,
+                    'message',
+                    contains('stale observation'),
+                  )
+                  .having(
+                    (error) => error.message,
+                    'message',
+                    contains('installed'),
+                  ),
+            ),
+          );
+          expect(attempted, ['one', 'two']);
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
       'recovery uncertainty stops every remaining unit with status six',
       () async {
         final sandbox = await Directory.systemTemp.createTemp('batch-stop-');

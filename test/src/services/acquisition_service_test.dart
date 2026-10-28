@@ -256,6 +256,36 @@ void main() {
       },
     );
 
+    test('uses the resolved archive format after a redirect', () async {
+      final bytes = ZipEncoder().encode(
+        Archive()..add(ArchiveFile.string('package/review.txt', 'redirected')),
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) {
+        if (request.uri.path == '/download') {
+          request.response
+            ..statusCode = HttpStatus.found
+            ..headers.set(HttpHeaders.locationHeader, '/source.zip')
+            ..close();
+          return;
+        }
+        request.response
+          ..add(bytes)
+          ..close();
+      });
+
+      final workspace = await AcquisitionService().acquire(
+        request('http://127.0.0.1:${server.port}/download'),
+      );
+      addTearDown(workspace.close);
+      expect(
+        File(p.join(workspace.selectedRoot, 'package', 'review.txt'))
+            .readAsStringSync(),
+        'redirected',
+      );
+    });
+
     test('extracts tar.gz and rejects linked archive entries', () async {
       final linked = Archive()
         ..add(
@@ -427,6 +457,40 @@ void main() {
         );
       },
     );
+
+    test('applies the deadline across a trickling HTTP response', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        try {
+          for (var index = 0; index < 20; index++) {
+            request.response.write('chunk');
+            await request.response.flush();
+            await Future<void>.delayed(const Duration(milliseconds: 30));
+          }
+          await request.response.close();
+        } on HttpException {
+          // The overall acquisition deadline deliberately closes the stream.
+        }
+      });
+      final clock = Stopwatch()..start();
+      await expectLater(
+        AcquisitionService().acquire(
+          request(
+            'http://127.0.0.1:${server.port}/trickle.txt',
+            deadline: const Duration(milliseconds: 100),
+          ),
+        ),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('deadline'),
+          ),
+        ),
+      );
+      expect(clock.elapsed, lessThan(const Duration(milliseconds: 500)));
+    });
 
     test(
       'enforces direct-file input limits and acquisition deadlines',

@@ -130,7 +130,7 @@ interface class AgentInstallationService {
       if (errors.isNotEmpty) {
         throw MambaException(
           'Agent installation preflight failed; no installation writes occurred:\n- ${errors.join('\n- ')}',
-          exitCode: worstStatus == 1 ? 4 : worstStatus,
+          exitCode: worstStatus,
         );
       }
       final plan = InstallationPlan.create(
