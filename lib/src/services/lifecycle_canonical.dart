@@ -371,7 +371,16 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
           this,
         );
         if (restored) {
-          _advanceTransaction(transactionPath, 'failedRestored');
+          try {
+            _advanceTransaction(transactionPath, 'failedRestored');
+          } on Exception catch (journalError) {
+            throw MambaException(
+              'Canonical $operation was physically restored, but its terminal '
+              'recovery evidence could not be written; transaction '
+              '$transactionId, evidence $transactionPath. $journalError',
+              exitCode: 6,
+            );
+          }
           throw MambaException(
             'Canonical $operation failed and all prior entries were restored; '
             'transaction $transactionId. $error',

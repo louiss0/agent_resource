@@ -79,6 +79,73 @@ final class _StopBeforeSecondQuarantine extends LifecycleIO {
   }
 }
 
+final class _FailCanonicalCommit extends LifecycleIO {
+  @override
+  void write(String path, List<int> bytes) {
+    if (path.contains('installations.json') &&
+        String.fromCharCodes(bytes).contains('skill-canonical')) {
+      throw const FileSystemException('Injected record commit failure');
+    }
+    super.write(path, bytes);
+  }
+}
+
+final class _FailAfterCanonicalCommit extends LifecycleIO {
+  @override
+  void rename(String source, String destination) {
+    super.rename(source, destination);
+    if (destination.endsWith('installations.json') &&
+        File(destination).readAsStringSync().contains('skill-canonical')) {
+      throw const FileSystemException('Injected post-commit journal failure');
+    }
+  }
+}
+
+final class _FailRestoredJournal extends LifecycleIO {
+  var _publicationFailed = false;
+
+  @override
+  void write(String path, List<int> bytes) {
+    if (path.contains('transactions')) {
+      final text = String.fromCharCodes(bytes);
+      if (!_publicationFailed && text.contains('"phase":"published"')) {
+        _publicationFailed = true;
+        throw const FileSystemException('Injected publication failure');
+      }
+      if (text.contains('"phase":"failedRestored"')) {
+        throw const FileSystemException('Injected terminal journal failure');
+      }
+    }
+    super.write(path, bytes);
+  }
+}
+
+final class _OccupySecondPublication extends LifecycleIO {
+  var _publications = 0;
+
+  @override
+  void rename(String source, String destination) {
+    if (source.contains('${p.separator}staging${p.separator}')) {
+      _publications++;
+      if (_publications == 2) {
+        Directory(destination).createSync(recursive: true);
+        File(p.join(destination, 'sentinel.txt')).writeAsStringSync('preserve');
+      }
+    }
+    super.rename(source, destination);
+  }
+}
+
+final class _FailCommittedCleanup extends LifecycleIO {
+  @override
+  void delete(String path) {
+    if (path.contains('${p.separator}staging${p.separator}')) {
+      throw const FileSystemException('Injected committed cleanup failure');
+    }
+    super.delete(path);
+  }
+}
+
 final class _FailAfterFirstPublication extends LifecycleIO {
   var _failed = false;
 
@@ -536,6 +603,205 @@ void main() {
         expect(state.records(context).single.lifecycle, 'live');
       },
     );
+
+    test(
+      'record commit failure safely restores when old state is verified',
+      () async {
+        final planned = validUnit();
+        final state = LifecycleStateService(io: _FailCanonicalCommit());
+        await expectLater(
+          () => state.installResourceUnit(
+            resource: const _SkillUnitResource(),
+            context: context,
+            unit: planned,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              5,
+            ),
+          ),
+        );
+        expect(state.records(context), isEmpty);
+        expect(Directory(planned.entries[0].path).existsSync(), isFalse);
+        expect(
+          FileSystemEntity.typeSync(
+            planned.entries[1].path,
+            followLinks: false,
+          ),
+          FileSystemEntityType.notFound,
+        );
+      },
+    );
+
+    test(
+      'record commit uncertainty completes from persisted evidence',
+      () async {
+        final planned = validUnit();
+        final interrupted = LifecycleStateService(
+          io: _FailAfterCanonicalCommit(),
+        );
+        await expectLater(
+          () => interrupted.installResourceUnit(
+            resource: const _SkillUnitResource(),
+            context: context,
+            unit: planned,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
+        );
+        expect(interrupted.records(context), hasLength(1));
+        expect(Directory(planned.entries[0].path).existsSync(), isTrue);
+        final transactionFile = Directory(
+          p.join(project.path, '.agent-resource', 'transactions'),
+        ).listSync().whereType<File>().single;
+        final state = LifecycleStateService();
+        await state.recover(
+          resource: const _SkillUnitResource(),
+          context: LifecycleContext.resolve(
+            context.options.copyWith(approved: true),
+          ),
+          transactionId: p.basenameWithoutExtension(transactionFile.path),
+          action: 'complete',
+        );
+        expect(state.records(context), hasLength(1));
+        expect(
+          FileSystemEntity.typeSync(
+            planned.entries[1].path,
+            followLinks: false,
+          ),
+          FileSystemEntityType.link,
+        );
+      },
+    );
+
+    test('terminal journal failure after rollback requires recovery', () async {
+      final planned = validUnit();
+      final state = LifecycleStateService(io: _FailRestoredJournal());
+      await expectLater(
+        () => state.installResourceUnit(
+          resource: const _SkillUnitResource(),
+          context: context,
+          unit: planned,
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(Directory(planned.entries[0].path).existsSync(), isFalse);
+      expect(
+        FileSystemEntity.typeSync(planned.entries[1].path, followLinks: false),
+        FileSystemEntityType.notFound,
+      );
+      expect(state.records(context), isEmpty);
+    });
+
+    test(
+      'rollback preserves a new occupant and restores prior entries',
+      () async {
+        final planned = validUnit();
+        final state = LifecycleStateService(io: _OccupySecondPublication());
+        await expectLater(
+          () => state.installResourceUnit(
+            resource: const _SkillUnitResource(),
+            context: context,
+            unit: planned,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              5,
+            ),
+          ),
+        );
+        expect(Directory(planned.entries[0].path).existsSync(), isFalse);
+        expect(
+          File(p.join(planned.entries[1].path, 'sentinel.txt'))
+              .readAsStringSync(),
+          'preserve',
+        );
+        expect(state.records(context), isEmpty);
+      },
+    );
+
+    test(
+      'committed cleanup failure retains evidence for restart completion',
+      () async {
+        final planned = validUnit();
+        final interrupted = LifecycleStateService(io: _FailCommittedCleanup());
+        await expectLater(
+          () => interrupted.installResourceUnit(
+            resource: const _SkillUnitResource(),
+            context: context,
+            unit: planned,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
+        );
+        expect(interrupted.records(context), hasLength(1));
+        final transactionFile = Directory(
+          p.join(project.path, '.agent-resource', 'transactions'),
+        ).listSync().whereType<File>().single;
+        final state = LifecycleStateService();
+        await state.recover(
+          resource: const _SkillUnitResource(),
+          context: LifecycleContext.resolve(
+            context.options.copyWith(approved: true),
+          ),
+          transactionId: p.basenameWithoutExtension(transactionFile.path),
+          action: 'complete',
+        );
+        expect(state.records(context), hasLength(1));
+        expect(
+          Directory(
+            p.join(
+              project.path,
+              '.agents',
+              '.agent-resource',
+              'staging',
+              p.basenameWithoutExtension(transactionFile.path),
+            ),
+          ).existsSync(),
+          isFalse,
+        );
+      },
+    );
+
+    test('unchanged canonical exposure drift blocks a stale no-op', () async {
+      final state = LifecycleStateService();
+      final planned = validUnit();
+      await state.installResourceUnit(
+        resource: const _SkillUnitResource(),
+        context: context,
+        unit: planned,
+      );
+      final other = Directory(p.join(sandbox.path, 'other'))..createSync();
+      Link(planned.entries[1].path).deleteSync();
+      Link(planned.entries[1].path).createSync(other.path);
+      await expectLater(
+        () => state.installResourceUnit(
+          resource: const _SkillUnitResource(),
+          context: context,
+          unit: validUnit(unchanged: true),
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 4),
+        ),
+      );
+      expect(Link(planned.entries[1].path).targetSync(), other.path);
+    });
 
     test(
       'safely restores every published entry after a journal failure',

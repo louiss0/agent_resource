@@ -12,9 +12,9 @@ import 'installation_request.dart';
 /// in resource workflows; this class owns approval, continuation and aggregate
 /// outcome truthfulness.
 final class InstallationBatch {
-  InstallationBatch({this._interruption});
+  InstallationBatch({this.interruption});
 
-  final Stream<void>? _interruption;
+  final Stream<void>? interruption;
 
   Future<InstallationWorkflowResult> execute({
     required InstallationPlan plan,
@@ -39,7 +39,7 @@ final class InstallationBatch {
     }
 
     var interrupted = false;
-    final subscription = (_interruption ?? ProcessSignal.sigint.watch()).listen(
+    final subscription = (interruption ?? ProcessSignal.sigint.watch()).listen(
       (_) => interrupted = true,
     );
     final units = plan.units.toList();
@@ -49,10 +49,14 @@ final class InstallationBatch {
     var retainedSuccess = false;
     var recoveryRequired = false;
     var stopped = false;
+    final blockedBy = <InstallationUnitPlan>[];
     final failureStatuses = <int>[];
     try {
       for (var index = 0; index < units.length; index++) {
-        if (interrupted && !retainedSuccess && !recoveredFailure) {
+        if (interrupted &&
+            !retainedSuccess &&
+            !recoveredFailure &&
+            !recoveryRequired) {
           return InstallationCancelledResult(plan.command);
         }
         if (stopped || interrupted) {
@@ -63,6 +67,15 @@ final class InstallationBatch {
           continue;
         }
         final unit = units[index];
+        if (blockedBy.any((failed) => !_independent(failed, unit))) {
+          units[index] = unit.copyWith(
+            status: InstallationUnitStatus.notStarted,
+          );
+          diagnostics.add(
+            '${unit.resourceId}: not started because a shared-path unit required restoration.',
+          );
+          continue;
+        }
         if (unit.status == InstallationUnitStatus.unchanged) {
           final result = await state.installResourceUnit(
             resource: resourceFor(unit),
@@ -103,18 +116,10 @@ final class InstallationBatch {
             );
           } else if (error.exitCode == 5) {
             recoveredFailure = true;
+            blockedBy.add(unit);
             units[index] = unit.copyWith(
               status: InstallationUnitStatus.failedRestored,
             );
-            for (
-              var remaining = index + 1;
-              remaining < units.length;
-              remaining++
-            ) {
-              if (!_independent(unit, units[remaining])) {
-                stopped = true;
-              }
-            }
           } else {
             units[index] = unit.copyWith(
               status: InstallationUnitStatus.notStarted,

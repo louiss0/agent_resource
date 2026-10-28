@@ -19,7 +19,7 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - [x] 3. Resource-unit publication (initial coordinated install/no-op/rollback path; restart recovery expansion remains slice 6).
 - [x] 4. Canonical lifecycle completeness.
 - [x] 5. Remote acquisition.
-- [ ] 6. Batch fault/cancellation proof (scheduler and restart recovery implemented; remaining fault-matrix and process qualification in progress).
+- [x] 6. Batch fault/cancellation proof.
 - [ ] 7. Public migration and qualification.
 
 ## Architecture invariants
@@ -42,7 +42,8 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - Resume baseline: the preserved canonical draft initially had six compile errors; after minimal compile repairs, the full suite independently passed 380 tests with the same four Windows skips.
 - Slice 4: canonical list/replace/detach/remove/backup/restore, versioned record and backup validation, true no-op revalidation, and schema-v2 coordinated restart rollback/completion passed in `resource_unit_transaction_test.dart` (9 tests).
 - Slice 5: 12 acquisition tests passed for local sources, inert immutable Git archive materialization, bounded HTTP, ZIP/TAR/TAR.GZ, redirects/privacy, duplicate/path/special-entry refusal, deadlines, and cleanup. `archive: 4.0.7` is pinned and its decoder callback is used so duplicate entries cannot be silently deduplicated before validation.
-- Slice 6 focused scheduler tests pass for independent continuation, dependency skipping, recovery-required stop, and post-write interruption.
+- Slice 6 focused scheduler tests pass for independent continuation, dependency skipping, recovery-required stop, and post-write interruption. The 15-test resource-unit matrix also covers verified-old commit rollback (5), committed/uncertain recovery (6), terminal-journal failure, new occupants, stale exposures, committed cleanup, and fresh-service rollback/completion.
+- The rebuilt Windows production release gate observed statuses 0 through 7 with zero blockers, including real read-only-ledger rollback, protected cleanup evidence, and canonical content/exposure publication.
 - HTTPS credential forwarding and real TLS Git integration were not exercised; local plaintext HTTP and Git-daemon fixtures covered the protocol-independent bounds and redaction logic.
 
 macOS/Linux and real terminal/PTY checks remain outstanding and are not inferred from these results.

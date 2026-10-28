@@ -1523,7 +1523,41 @@ interface class LifecycleStateService {
             '${unit.resourceId} failed before its transaction intent was written: $error',
           );
         }
-        if (committed || commitAttempted) {
+        if (commitAttempted && !committed) {
+          final oldRecords = existingByPath.values.toList();
+          late final bool oldState;
+          late final bool newState;
+          try {
+            oldState = _coordinatedRecordsMatch(
+              state,
+              oldRecords,
+              newRecords,
+              committed: false,
+            );
+            newState = _coordinatedRecordsMatch(
+              state,
+              oldRecords,
+              newRecords,
+              committed: true,
+            );
+          } on Exception catch (readError) {
+            throw MambaException(
+              '${unit.resourceId} could not verify committed management state; '
+              'transaction $transactionId, evidence $transactionPath. $readError',
+              exitCode: 6,
+            );
+          }
+          if (newState) {
+            committed = true;
+          } else if (!oldState) {
+            throw MambaException(
+              '${unit.resourceId} has uncertain committed management state; '
+              'transaction $transactionId, evidence $transactionPath. $error',
+              exitCode: 6,
+            );
+          }
+        }
+        if (committed) {
           throw MambaException(
             '${unit.resourceId} has uncertain committed management state or '
             'required cleanup pending; transaction $transactionId, evidence '
@@ -1549,10 +1583,19 @@ interface class LifecycleStateService {
           }
         }
         if (restored) {
-          _writeTransaction(transactionPath, <String, Object?>{
-            ..._readTransaction(transactionPath),
-            'phase': 'failedRestored',
-          });
+          try {
+            _writeTransaction(transactionPath, <String, Object?>{
+              ..._readTransaction(transactionPath),
+              'phase': 'failedRestored',
+            });
+          } on Exception catch (journalError) {
+            throw MambaException(
+              '${unit.resourceId} was physically restored, but its terminal '
+              'recovery evidence could not be written; transaction '
+              '$transactionId, evidence $transactionPath. $journalError',
+              exitCode: 6,
+            );
+          }
           throw MambaException(
             '${unit.resourceId} failed and its prior state was restored; '
             'transaction $transactionId. $error',
@@ -2674,6 +2717,21 @@ interface class LifecycleStateService {
         io.delete(staged);
       }
     }
+    final stagingRoots = <String>{
+      for (final entry in entries.values)
+        p.dirname(entry['stagedPath']! as String),
+    };
+    for (final root in stagingRoots) {
+      if (io.type(root, followLinks: false) != FileSystemEntityType.notFound) {
+        if (io.list(root).isNotEmpty) {
+          throw MambaException(
+            'Committed staging cleanup has unexpected remaining evidence: $root',
+            exitCode: 6,
+          );
+        }
+        io.delete(root);
+      }
+    }
     _advanceTransaction(path, 'committed');
     return 'committed';
   }
@@ -2841,6 +2899,44 @@ interface class LifecycleStateService {
       }
     }
     _commitRecords(state, desired, const <String, Object?>{});
+  }
+
+  bool _coordinatedRecordsMatch(
+    String state,
+    List<InstallationRecord> oldRecords,
+    List<InstallationRecord> newRecords, {
+    required bool committed,
+  }) {
+    final ids = <String>{
+      for (final record in [...oldRecords, ...newRecords])
+        record.installationId,
+    };
+    for (final id in ids) {
+      final actual = _findRecord(state, installationId: id);
+      if (committed) {
+        final expected = newRecords.where(
+          (record) => record.installationId == id,
+        );
+        if (expected.length != 1 ||
+            actual == null ||
+            jsonEncode(actual.toJson()) !=
+                jsonEncode(expected.single.toJson())) {
+          return false;
+        }
+      } else {
+        final expected = oldRecords.where(
+          (record) => record.installationId == id,
+        );
+        if (expected.isEmpty) {
+          if (actual != null) return false;
+        } else if (actual == null ||
+            jsonEncode(actual.toJson()) !=
+                jsonEncode(expected.single.toJson())) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   List<String> _availableRecoveryActions(Map<String, Object?> transaction) {
@@ -4530,6 +4626,19 @@ interface class LifecycleStateService {
         otherState = context.stateRoot(scope);
       } on MambaException {
         continue;
+      }
+      final ledger = p.join(otherState, 'installations.json');
+      if (io.type(ledger, followLinks: false) ==
+          FileSystemEntityType.notFound) {
+        final stateType = io.type(otherState, followLinks: false);
+        final lockOnly =
+            stateType != FileSystemEntityType.notFound &&
+            io
+                .list(otherState)
+                .every((entry) => p.basename(entry.path) == 'coordination');
+        if (stateType == FileSystemEntityType.notFound || lockOnly) {
+          continue;
+        }
       }
       final other = _findRecord(otherState, location: location);
       if (other != null && other.lifecycle == 'live') {
