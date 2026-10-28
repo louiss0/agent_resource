@@ -534,8 +534,13 @@ Canonical body.
       },
       'selectedSdk': Platform.version.split(' ').first,
       'selectedSdkRuntime': Platform.version,
+      // Checkout line endings differ between native hosts without changing
+      // dependency resolution. Hash the canonical LF representation so the
+      // integrated decision compares lock content rather than checkout EOL.
       'dependencyLockSha256': sha256
-          .convert(lockfile.readAsBytesSync())
+          .convert(
+            utf8.encode(lockfile.readAsStringSync().replaceAll('\r\n', '\n')),
+          )
           .toString(),
       'environment': <String, Object?>{
         'operatingSystem': Platform.operatingSystem,

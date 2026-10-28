@@ -324,23 +324,21 @@ Future<void> main(List<String> args) async {
 }
 
 bool _nativeEnvironmentMatches(String os, Map<String, Object?> environment) {
+  final operatingSystem = environment['operatingSystem'];
   final version = environment['operatingSystemVersion'];
   final architecture = environment['architecture'];
-  if (version is! String ||
+  if (operatingSystem != os ||
+      version is! String ||
       version.isEmpty ||
       architecture is! String ||
       architecture.isEmpty ||
       architecture == 'unknown') {
     return false;
   }
-  return switch (os) {
-    'windows' => version.toLowerCase().contains('windows'),
-    'macos' =>
-      version.toLowerCase().contains('darwin') ||
-          version.toLowerCase().contains('macos'),
-    'linux' => version.toLowerCase().contains('linux'),
-    _ => false,
-  };
+  // macOS Dart may report only "Version … (Build …)" rather than naming
+  // macOS or Darwin. The explicit Platform.operatingSystem field is the
+  // native identity; the version string need only be present and nonempty.
+  return true;
 }
 
 bool _sameStatuses(Set<int> left, Set<int> right) =>
