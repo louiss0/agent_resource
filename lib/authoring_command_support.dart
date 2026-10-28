@@ -1,6 +1,4 @@
-import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:mamba/mamba.dart';
 
@@ -9,11 +7,8 @@ import 'src/services/lifecycle_state_service.dart';
 
 typedef AuthoringConfirmation = Future<bool> Function(String prompt);
 
-Future<bool> defaultAuthoringConfirmation(String prompt) async {
-  stderr.write('$prompt [y/N] ');
-  final answer = stdin.readLineSync()?.trim().toLowerCase();
-  return answer == 'y' || answer == 'yes';
-}
+Future<bool> defaultAuthoringConfirmation(String prompt) =>
+    Confirm(prompt: prompt, defaultValue: false).interact();
 
 String selectOperationRequest(String? positional, String? named) {
   if (positional != null && named != null) {

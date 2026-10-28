@@ -7,16 +7,12 @@ final class AgentProfileComponent {
 
   final String label;
 
-  Future<String?> render() async {
-    final value = await ClixInput(
-      prompt: '$label (claude, codex, pi-common)',
-      validator: (value) =>
-          value.trim().isEmpty ||
-              const {'claude', 'codex', 'pi-common'}.contains(value)
-          ? null
-          : 'Choose claude, codex, or pi-common.',
-    ).interact();
-    final trimmed = value.trim();
-    return trimmed.isEmpty ? null : trimmed;
-  }
+  Future<String?> render() =>
+      Select(
+        prompt: label,
+        options: const ['claude', 'codex', 'pi-common'],
+      ).interact().then(
+        (index) =>
+            index < 0 ? null : const ['claude', 'codex', 'pi-common'][index],
+      );
 }

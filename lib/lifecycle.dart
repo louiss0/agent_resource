@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show Directory, Platform;
 
 import 'package:mamba/mamba.dart';
 
@@ -30,11 +30,8 @@ enum _Operation {
 
 typedef LifecycleConfirmation = Future<bool> Function(String prompt);
 
-Future<bool> _defaultConfirmation(String prompt) async {
-  stderr.write('$prompt [y/N] ');
-  final answer = stdin.readLineSync()?.trim().toLowerCase();
-  return answer == 'y' || answer == 'yes';
-}
+Future<bool> _defaultConfirmation(String prompt) =>
+    Confirm(prompt: prompt, defaultValue: false).interact();
 
 /// Shared backup group registered below both native resource groups.
 final class LifecycleBackupCommand extends GroupCommand {

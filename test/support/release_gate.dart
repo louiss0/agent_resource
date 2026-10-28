@@ -241,8 +241,9 @@ $privateInstruction
       cancelled,
     );
     _expect(
-      cancelled.stdout.isEmpty,
-      'Cancellation emitted stdout.',
+      cancelled.stdout.contains('reviewed remove operation') &&
+          cancelled.stdout.contains('No'),
+      'Cancellation did not render the Clix confirmation.',
       cancelled,
     );
 

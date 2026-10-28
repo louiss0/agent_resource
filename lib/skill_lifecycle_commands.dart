@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show Directory, Platform;
 
 import 'package:mamba/mamba.dart';
 
@@ -14,11 +14,8 @@ import 'src/services/lifecycle_state_service.dart';
 import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 
-Future<bool> _defaultConfirmation(String prompt) async {
-  stderr.write('$prompt [y/N] ');
-  final answer = stdin.readLineSync()?.trim().toLowerCase();
-  return answer == 'y' || answer == 'yes';
-}
+Future<bool> _defaultConfirmation(String prompt) =>
+    Confirm(prompt: prompt, defaultValue: false).interact();
 
 LifecycleOptions _options(
   LifecycleScope scope,

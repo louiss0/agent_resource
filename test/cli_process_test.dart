@@ -316,7 +316,11 @@ void main() {
             ...contextArgs.take(contextArgs.length - 2),
           ], standardInput: 'n\n');
           expect(cancelled.exitCode, 7);
-          expect(cancelled.stdout, isEmpty);
+          // Clix Confirm renders its prompt on stdout; Mamba's cancellation
+          // diagnostic remains on stderr. No resource or management mutation
+          // is permitted by declining.
+          expect(cancelled.stdout, contains('reviewed destructive operation'));
+          expect(cancelled.stdout, contains('No'));
           expect(cancelled.stderr, contains('cancelled'));
           expect(liveMarker.existsSync(), isTrue);
 
