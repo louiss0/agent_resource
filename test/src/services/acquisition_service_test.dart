@@ -218,6 +218,37 @@ void main() {
     );
 
     test(
+      'decodes gzip HTTP content encoding before validating bytes',
+      () async {
+        final bytes = utf8.encode('name: review\n');
+        final compressed = GZipEncoder().encode(bytes);
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        server.listen((request) {
+          request.response
+            ..headers.set(HttpHeaders.contentEncodingHeader, 'gzip')
+            ..add(compressed)
+            ..close();
+        });
+
+        final workspace = await AcquisitionService().acquire(
+          request(
+            'http://127.0.0.1:${server.port}/SKILL.md',
+            sourceKind: AcquisitionSourceKind.resource,
+          ),
+        );
+        addTearDown(workspace.close);
+
+        expect(workspace.selectedFile, isNotNull);
+        expect(await File(workspace.selectedFile!).readAsBytes(), bytes);
+        expect(
+          workspace.provenance.downloadDigest,
+          sha256.convert(bytes).toString(),
+        );
+      },
+    );
+
+    test(
       'extracts a bounded archive and applies its selected subpath',
       () async {
         final archive = Archive()

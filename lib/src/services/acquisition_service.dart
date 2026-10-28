@@ -708,7 +708,10 @@ Future<_DownloadResult> _download(
   Stopwatch clock,
   Duration deadline,
 ) async {
-  final client = HttpClient()..autoUncompress = false;
+  // HTTP content encoding is transport compression; the decoded resource bytes
+  // are what must be validated and installed. The decompressed stream is still
+  // counted against the bounded download limit below.
+  final client = HttpClient()..autoUncompress = true;
   var expired = false;
   final deadlineTimer = Timer(_remaining(clock, deadline), () {
     expired = true;
@@ -776,6 +779,13 @@ Future<_DownloadResult> _download(
         await response.drain<void>();
         throw MambaException(
           'The source download returned HTTP ${response.statusCode}.',
+          exitCode: 3,
+        );
+      }
+      if (response.contentLength > _downloadLimit) {
+        await response.drain<void>();
+        throw MambaException(
+          'The download exceeded the 64 MiB input limit.',
           exitCode: 3,
         );
       }

@@ -211,10 +211,15 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
       'A direct agent file requires one --target consistent with --profile.',
     );
   }
+  final selectedFile = workspace.selectedFile;
+  final selectedPath =
+      resourceType == CatalogResourceType.skill && selectedFile != null
+      ? p.dirname(selectedFile)
+      : selectedFile ?? workspace.selectedRoot;
   return InstallationCandidateSet([
     InstallationCandidate(
       id: null,
-      path: workspace.selectedFile ?? workspace.selectedRoot,
+      path: selectedPath,
       label: null,
       profile: profile,
       catalogEntry: false,

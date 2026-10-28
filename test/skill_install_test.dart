@@ -427,6 +427,81 @@ path = "skills/other"
           );
         });
 
+        test(
+          'direct SKILL.md installs only that file and discloses the boundary',
+          () async {
+            final directory = skill('direct-file');
+            File(p.join(directory.path, 'notes.md'))
+                .writeAsStringSync('Not part of the direct-file package.\n');
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              p.join(directory.path, 'SKILL.md'),
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'canonical',
+              ...context(),
+              '--format',
+              'json',
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final envelope = jsonDecode(
+              (result as MambaSuccessResult).output!,
+            ) as Map<String, Object?>;
+            final data = envelope['data']! as Map<String, Object?>;
+            final source = data['source']! as Map<String, Object?>;
+            expect(source['packageBoundary'], 'single-file');
+            final diagnostics = envelope['diagnostics']! as List<Object?>;
+            expect(
+              (diagnostics.single! as Map<String, Object?>)['code'],
+              'single-file-boundary',
+            );
+
+            final installed = await executor().fake().execute([
+              'skill',
+              'install',
+              p.join(directory.path, 'SKILL.md'),
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'canonical',
+              ...context(),
+              '--format',
+              'json',
+              '--yes',
+            ]);
+            expect(
+              installed,
+              isA<MambaSuccessResult>(),
+              reason: installed is MambaFailureResult
+                  ? installed.message
+                  : null,
+            );
+            final content = Directory(
+              p.join(project.path, '.agents', 'skills', 'review'),
+            );
+            expect(File(p.join(content.path, 'SKILL.md')).existsSync(), isTrue);
+            expect(
+              File(p.join(content.path, 'notes.md')).existsSync(),
+              isFalse,
+            );
+            expect(
+              content.listSync().map((entity) => p.basename(entity.path)),
+              ['SKILL.md'],
+            );
+          },
+        );
+
         test('canonical apply and verified repeat produce installed then unchanged', () async {
           final source = skill('exact');
           final args = [

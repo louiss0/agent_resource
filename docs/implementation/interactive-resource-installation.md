@@ -45,7 +45,10 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - Slice 6 focused scheduler tests pass for independent continuation, dependency skipping, recovery-required stop, and post-write interruption. The 15-test resource-unit matrix also covers verified-old commit rollback (5), committed/uncertain recovery (6), terminal-journal failure, new occupants, stale exposures, committed cleanup, and fresh-service rollback/completion.
 - The rebuilt Windows production release gate observed statuses 0 through 7 with zero blockers, including real read-only-ledger rollback, protected cleanup evidence, and canonical content/exposure publication. It was rerun with `--require-qualified` after final review fixes.
 - Final local qualification: `dart pub get --enforce-lockfile`, formatting, and `dart analyze` passed; the full suite passed 410 tests with 4 pre-existing Windows permission skips.
-- HTTPS credential forwarding and real TLS Git integration were not exercised; local plaintext HTTP and Git-daemon fixtures covered the protocol-independent bounds and redaction logic.
+- Independent coordinator reverification on the committed checkpoint: formatting and analysis passed; the full suite passed 410 tests with the same 4 Windows skips; the rebuilt Windows artifact gate observed statuses 0 through 7 with `Qualified: true; blockers: 0`.
+- Independent built-artifact smoke found and fixed two uncovered source-boundary defects. A direct downloaded/local `SKILL.md` was accepted as an exact Skill but failed preflight because inspection received the file rather than its single-file staging directory; exact-file Skill planning now uses that directory and a regression proves only `SKILL.md` is installed. HTTP content encoding was also written compressed to disk; `HttpClient` now decodes transport compression and the decompressed byte stream remains bounded. A local HTTP gzip regression and a real HTTPS dry-run against a public `raw.githubusercontent.com` Skill both pass.
+- After those fixes: formatting and analysis passed, the full suite passed 412 tests with 4 pre-existing Windows permission skips, and the rebuilt Windows artifact gate again observed statuses 0 through 7 with zero blockers.
+- HTTPS credential forwarding and real TLS Git integration were not exercised; local plaintext HTTP and Git-daemon fixtures covered the protocol-independent bounds and redaction logic. A public HTTPS direct-file download was exercised without credential forwarding.
 
 macOS/Linux and real terminal/PTY checks remain outstanding and are not inferred from these results.
 
@@ -60,6 +63,7 @@ Two independent reviews ran against baseline `b251028` after commit `d1a53a4`.
 - Spec: HTTP uses an overall deadline timer that forcibly closes stalled redirect/download IO.
 - Standards: redirected archives pass the resolved URL format explicitly to the decoder; a redirect-to-ZIP regression is covered.
 - Standards judgement call: the two thin domain-facing MultiSelect wrappers share similar mapping code but retain their distinct typed candidate/target contracts; this was not a correctness finding.
+- Independent coordinator regression fixes: exact single-file Skill planning and HTTP transport decompression now have focused tests and were rechecked by the full suite and built-artifact gate.
 
 All actionable review findings have regression coverage and were rechecked by the final full suite and built-artifact gate.
 
