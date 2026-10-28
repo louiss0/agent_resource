@@ -19,7 +19,11 @@ typedef _Sandbox = ({
 });
 
 Future<T> _withSandbox<T>(Future<T> Function(_Sandbox) body) async {
-  final root = await Directory.systemTemp.createTemp('agent-resource-list-');
+  final created = await Directory.systemTemp.createTemp('agent-resource-list-');
+  // macOS may report /var/... while the child process resolves the same path
+  // as /private/var/...; canonicalize before passing explicit containment
+  // context to the production process.
+  final root = Directory(created.resolveSymbolicLinksSync());
   final sandbox = (
     root: root,
     project: Directory(p.join(root.path, 'project')),
@@ -32,7 +36,7 @@ Future<T> _withSandbox<T>(Future<T> Function(_Sandbox) body) async {
   try {
     return await body(sandbox);
   } finally {
-    await root.delete(recursive: true);
+    if (root.existsSync()) await root.delete(recursive: true);
   }
 }
 
