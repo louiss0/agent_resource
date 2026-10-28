@@ -69,6 +69,8 @@ Future<void> main(List<String> args) async {
       'json',
     ];
     final context = <String>[
+      '--scope',
+      'project',
       '--cwd',
       '${work.path}${p.separator}',
       '--project-root',
@@ -188,14 +190,23 @@ $privateInstruction
       'agent',
       'install',
       valid.path,
-      '--harness',
+      '--source-kind',
+      'resource',
+      '--profile',
       'claude',
+      '--target',
+      'claude',
+      '--yes',
       ...context,
     ]);
     _expect(installed.exitCode == 0, 'Built installation failed.', installed);
+    final installedUnit =
+        ((_json(installed)['data']! as Map<String, Object?>)['units']!
+                    as List<Object?>)
+                .single!
+            as Map<String, Object?>;
     final installation =
-        (_json(installed)['data']! as Map<String, Object?>)['installationId']!
-            as String;
+        (installedUnit['installationIds']! as List<Object?>).single! as String;
     final refused = await run('built-status-4', work, [
       'agent',
       'remove',
@@ -236,7 +247,8 @@ $privateInstruction
     );
 
     final installedLocation =
-        (_json(installed)['data']! as Map<String, Object?>)['location']!
+        ((installedUnit['entries']! as List<Object?>).single!
+                as Map<String, Object?>)['path']!
             as String;
     final editRequest = File(p.join(sandbox.path, 'edit-request.json'))
       ..writeAsStringSync(
@@ -334,8 +346,13 @@ Original body.
       'skill',
       'install',
       '${skillSource.path}${p.separator}',
-      '--destination',
+      '--source-kind',
+      'resource',
+      '--target',
       'claude',
+      '--method',
+      'copy',
+      '--yes',
       ...context,
     ]);
     _expect(
@@ -343,10 +360,7 @@ Original body.
       'Skill copy install failed.',
       skillInstalled,
     );
-    final skillId =
-        (_json(skillInstalled)['data']!
-                as Map<String, Object?>)['installationId']!
-            as String;
+    final skillId = _installationId(skillInstalled);
     File(p.join(skillSource.path, 'SKILL.md')).writeAsStringSync('''---
 name: release-copy
 description: Copy lifecycle fixture.
@@ -374,7 +388,7 @@ Replacement body.
     ]);
     _expect(backups.exitCode == 0, 'Skill backup listing failed.', backups);
     final adopted = Directory(
-      p.join(home.path, '.claude', 'skills', 'release-adopted'),
+      p.join(work.path, '.claude', 'skills', 'release-adopted'),
     )..createSync(recursive: true);
     File(p.join(adopted.path, 'SKILL.md')).writeAsStringSync('''---
 name: release-adopted
@@ -406,10 +420,13 @@ Linked body.
         'skill',
         'install',
         '${linkedSource.path}${p.separator}',
-        '--destination',
+        '--source-kind',
+        'resource',
+        '--target',
         'claude',
-        '--mode',
-        'link',
+        '--method',
+        'source-link',
+        '--yes',
         ...context,
       ]);
       _expect(
@@ -418,7 +435,7 @@ Linked body.
         linked,
       );
       final linkEntry = p.join(
-        home.path,
+        work.path,
         '.claude',
         'skills',
         'release-linked',
@@ -428,6 +445,53 @@ Linked body.
             FileSystemEntityType.link,
         'Linked Skill workflow did not produce a true link entry.',
         linked,
+      );
+
+      final canonicalSource = Directory(p.join(sandbox.path, 'skill-canonical'))
+        ..createSync();
+      File(p.join(canonicalSource.path, 'SKILL.md')).writeAsStringSync('''---
+name: release-canonical
+description: Canonical lifecycle fixture.
+---
+Canonical body.
+''');
+      final canonical = await run('built-skill-canonical-install', work, [
+        'skill',
+        'install',
+        '${canonicalSource.path}${p.separator}',
+        '--source-kind',
+        'resource',
+        '--target',
+        'claude',
+        '--target',
+        'codex',
+        '--method',
+        'canonical',
+        '--yes',
+        ...context,
+      ]);
+      _expect(
+        canonical.exitCode == 0,
+        'Canonical Skill installation failed.',
+        canonical,
+      );
+      final canonicalContent = p.join(
+        work.path,
+        '.agents',
+        'skills',
+        'release-canonical',
+      );
+      final canonicalExposure = p.join(
+        work.path,
+        '.claude',
+        'skills',
+        'release-canonical',
+      );
+      _expect(
+        File(p.join(canonicalContent, 'SKILL.md')).existsSync() &&
+            Link(canonicalExposure).targetSync() == canonicalContent,
+        'Canonical content and tracked exposure were not published.',
+        canonical,
       );
     }
     if (Platform.isWindows && !linkCapability) {
@@ -553,8 +617,13 @@ Restored instructions.
       'agent',
       'install',
       source.path,
-      '--harness',
+      '--source-kind',
+      'resource',
+      '--profile',
       'claude',
+      '--target',
+      'claude',
+      '--yes',
       ...context,
     ]);
   } finally {
@@ -568,7 +637,7 @@ Restored instructions.
   _expect(result.stdout.isEmpty, 'Restored failure emitted stdout.', result);
   _expect(
     result.stderr.contains('installations.json') &&
-        result.stderr.contains('original absent state was restored'),
+        result.stderr.contains('prior state was restored'),
     'Status 5 was not tied to the read-only ledger commit failure.',
     result,
   );
@@ -624,8 +693,13 @@ Read-only instructions.
       'agent',
       'install',
       source.path,
-      '--harness',
+      '--source-kind',
+      'resource',
+      '--profile',
       'claude',
+      '--target',
+      'claude',
+      '--yes',
       ...context,
     ]);
     _expect(
@@ -633,9 +707,7 @@ Read-only instructions.
       'Read-only Agent setup failed.',
       installed,
     );
-    final installation =
-        (_json(installed)['data']! as Map<String, Object?>)['installationId']!
-            as String;
+    final installation = _installationId(installed);
     final result = await run('built-real-status-6', work, [
       'agent',
       'remove',
@@ -929,6 +1001,13 @@ Future<bool> _directoryLinkCapability(Directory sandbox) async {
   } on UnsupportedError {
     return false;
   }
+}
+
+String _installationId(CliProcessResult result) {
+  final data = _json(result)['data']! as Map<String, Object?>;
+  final unit =
+      (data['units']! as List<Object?>).single! as Map<String, Object?>;
+  return (unit['installationIds']! as List<Object?>).single! as String;
 }
 
 Map<String, Object?> _json(CliProcessResult result) {

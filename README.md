@@ -4,10 +4,10 @@ Agent Resource is a Mamba command-line application for managing resources
 consumed by AI coding harnesses. The current scope provides application help
 and version reporting, management-aware Skill and Agent inventories, native
 inspection/validation, bounded dependency/capability graphs, native Agent
-create/clone/edit/compose workflows, all-six conversion, copied-Skill and
-regular-file Agent installation and adoption, unchanged-only
-replacement/removal, retained backups, explicit restore/cleanup, and
-evidence-backed transaction recovery. Claude, Codex, and the common Pi
+create/clone/edit/compose workflows, all-six conversion, canonical, copied,
+and source-linked Skill installation, native Agent copies and adoption,
+unchanged-only replacement/removal, retained backups, explicit
+restore/cleanup, and evidence-backed transaction recovery. Claude, Codex, and the common Pi
 profile remain distinct native contracts.
 
 ## Requirements
@@ -71,19 +71,119 @@ Inventory is bounded and read-only. Incomplete required traversal fails rather
 than returning partial JSON. Shared storage and native discovery conventions
 do not prove runtime activation, precedence, or harness compatibility.
 
-### Install, adopt, and manage regular files
+### Install Skills and native Agents
+
+Text installation is interactive by default on a usable terminal. It prompts
+for a missing source and required selections, displays the complete plan, and
+asks for approval before writes. Skill scope and method default to `user` and
+`canonical`; Agent scope defaults to `project`. These defaults are not assumed
+for unattended or JSON installation.
 
 ```text
-agent_resource skill install <source-directory/> --destination claude|codex|shared
+agent_resource skill install [source]
+  [--resource <catalog-id> ... | --all-resources]
+  [--target claude|codex ...] [--scope project|user]
+  [--method canonical|copy|source-link] [--ref <revision>]
+  [--subpath <source-relative-path>] [--source-kind collection|resource]
+  [--dry-run] [--yes] [--format text|json]
+
+agent_resource agent install [source]
+  [--resource <catalog-id> ... | --all-resources]
+  [--target claude|codex|pi ...] [--profile claude|codex|pi-common]
+  [--scope project|user] [--ref <revision>]
+  [--subpath <source-relative-path>] [--source-kind collection|resource]
+  [--dry-run] [--yes] [--format text|json]
+```
+
+A source can be an explicit local path, supported Git locator, direct download,
+or archive. `--ref` is Git-only; `--subpath` selects one source-relative root
+without broadening the search. `--source-kind` distinguishes a curated
+collection from an exact resource. Catalog selection repeats `--resource` or
+uses `--all-resources`. No heuristic source-tree discovery or automatic
+dependency installation occurs.
+
+Unattended and JSON invocations require an explicit source and scope, consuming
+targets, catalog selection where applicable, and `--yes` for the current final
+plan. They also require exact resources to use `--source-kind resource`; Skills
+must specify `--method`, and direct Agent files must specify a consistent
+`--profile` and single `--target`. `--dry-run` previews without approval or
+management writes. `--yes` grants no force, takeover, repair, adoption, or
+selection authority.
+
+For example, these unattended commands install one exact Skill canonically for
+both consumers and one Claude Agent as a native copy:
+
+```text
+agent_resource skill install ./reviewer --source-kind resource --target claude --target codex --scope user --method canonical --yes
+agent_resource agent install ./reviewer.md --source-kind resource --profile claude --target claude --scope project --yes
+```
+
+Skill `canonical` owns content in scope-specific `.agents/skills`. Codex reads
+that content directly; Claude receives a managed native exposure link.
+`copy` creates independent native copies, while `source-link` manages links to
+an explicitly selected durable local Skill directory. Remote, temporary, and
+single-file sources are ineligible for `source-link`. The Skill's declared name
+determines its destination name. Agents are copy-only: `--profile` declares a
+direct file's native schema, never converts it, and the validated source
+basename is preserved at the application-owned native destination. Agent
+installation does not create links, register Codex roles, or edit parent
+configuration.
+
+A collection has an `agent-resources.toml` at its selected root. Its version-1
+TOML schema uses exact IDs and safe source-relative paths; Agent entries must
+declare their profile:
+
+```toml
+schema_version = 1
+
+[[skills]]
+id = "code-reviewer"
+path = "skills/code-reviewer"
+label = "Code reviewer"
+
+[[agents]]
+id = "claude-reviewer"
+path = "agents/reviewer.md"
+profile = "claude"
+label = "Claude reviewer"
+
+[[agents]]
+id = "pi-reviewer"
+path = "agents/pi-reviewer.md"
+profile = "pi-common"
+```
+
+Catalog entries support only `id`, `path`, and optional `label` for Skills,
+plus required `profile` for Agents. Profiles are `claude`, `codex`, or
+`pi-common`. IDs are lowercase ASCII kebab-case. A direct downloaded TOML file
+does not authorize crawling its host; select the containing local repository,
+Git repository, or archive instead.
+
+The retired install options `--destination`, `--harness`, `--mode`, and
+`--interactive`, and Agent `--output`, are rejected with migration guidance.
+Use `--target`, `--method`, and direct-Agent `--profile` as applicable. See
+[the installation migration guide](docs/migrate-interactive-installation.md)
+for safely replacing old managed installations.
+
+Install JSON success uses a schema-version-2 envelope with `command`,
+`outcome`, `data`, and `diagnostics`; `data` contains `planId`, sanitized
+`source`, `scope`, `units`, and `summary`. Outcomes are `planned`, `installed`,
+or `unchanged`. Failures emit no success JSON and leave stdout empty; Mamba
+reports human-readable aggregate diagnostics and recovery guidance on stderr
+with a nonzero status. Human text and Mamba errors may use normal terminal
+color; JSON success data is plain and contains no prompts or progress output.
+
+### Adopt, replace, remove, back up, and recover
+
+```text
 agent_resource skill adopt <existing-directory/> --destination claude|codex|shared
 agent_resource skill replace <installation-id> <source-directory/>
-agent_resource skill remove <installation-id>
+agent_resource skill remove <installation-id> [--target claude]
 agent_resource skill backup list
 agent_resource skill backup restore <backup-id>
 agent_resource skill backup cleanup <backup-id>
 agent_resource skill recover [<transaction-id>] [--action rollback|complete]
 
-agent_resource agent install <native-file> --harness claude|codex|pi [--output <file>]
 agent_resource agent adopt <native-file> --harness claude|codex|pi
 agent_resource agent replace <installation-id> <native-file>
 agent_resource agent remove <installation-id>
@@ -93,47 +193,42 @@ agent_resource agent backup cleanup <backup-id>
 agent_resource agent recover [<transaction-id>] [--action rollback|complete]
 ```
 
-Installation copies an arbitrary validated ordinary source without changing
-it. Skill installation defaults to copy; `--mode link` creates a true native
-directory symlink and manages only that link entry. Skill installation uses the
-declared Skill name; Agent installation
-preserves the source basename unless an eligible `--output` is selected.
 Adoption records an eligible existing resource without rewriting its bytes.
 Replacement and restoration preserve installation identity and recorded
 location. Removal and replacement require a currently unchanged complete
 baseline and create independent retained backups before live mutation.
+Canonical replacement preserves its method and accounts for all associated
+exposures and direct consumers. Canonical `skill remove --target claude`
+detaches only the managed Claude exposure; Codex's direct consumer relationship
+cannot be revoked by metadata removal while shared content remains.
 
 Linked Skills keep target validation separate from entry ownership. Target
 edits do not invalidate an unchanged link entry; removal unlinks an unchanged
-entry even when its target is broken or inaccessible. Link backups retain the
-entry kind and target representation, not target-content history, and restore
-revalidates the target at its original parent before publication. Replacement
-without `--mode` retains the recorded copy/link mode; an explicit mode change
-is a reviewed conversion at the same installation ID and location.
+entry even when its target is broken or inaccessible and never deletes the
+external target. Link backups retain the entry kind and target representation,
+not target-content history, and restore revalidates the target at its original
+parent before publication. Legacy replacement without `--mode` retains the
+recorded copy/link mode; an explicit legacy mode change is a reviewed
+conversion at the same installation ID and location.
 
 `--dry-run` performs read-only planning and creates no locks, journals,
 ledgers, staging, or backups. Replacement, removal, restore, cleanup, and
 recovery actions require `--yes`, or an explicit `--interactive` reviewed
-confirmation. Install and adoption do not require destructive approval.
-JSON and interactive modes conflict; no prompt occurs by default. Explicit
-cancellation uses status 7.
+confirmation. Lifecycle state is stored per project at `.agent-resource` or in
+the selected user state directory. Native files never receive management
+receipts. Recovery acts only on validated persisted evidence and exact
+current-path guards. It cannot overwrite new occupants, erase newer edits, or
+guess an interrupted outcome. Backup cleanup is never automatic and does not
+promise secure erasure.
 
-Lifecycle state is stored per project at `.agent-resource` or in the selected
-user state directory. Native files never receive management receipts.
-Recovery acts only on validated persisted evidence and exact current-path
-guards. It cannot overwrite new occupants, erase newer edits, or guess an
-interrupted outcome. Successful recovery reports the state established rather
-than claiming the original operation succeeded. Backup cleanup is never
-automatic and does not promise secure erasure.
-
-The implementation uses bounded local-disk IO, same-filesystem staging,
-protected intent, independent backups, quarantine, and per-scope coordination.
-It does not claim hostile-writer resistance, joint resource-plus-ledger
-atomicity, universal metadata fidelity, or guaranteed power-loss durability.
-Windows linked installations require a true directory symlink and actionable
-privilege diagnostics; junctions, unknown reparse forms, and copy fallback are
-refused. Remote origins, runtime resource execution, and live harness/account
-probes remain outside the application contract.
+The implementation uses bounded acquisition and local-disk IO,
+same-filesystem staging, protected intent, independent backups, quarantine,
+and per-scope coordination. It does not claim hostile-writer resistance, joint
+resource-plus-ledger atomicity, universal metadata fidelity, or guaranteed
+power-loss durability. Windows linked installations require a true directory
+symlink and actionable privilege diagnostics; junctions, unknown reparse
+forms, and copy fallback are refused. Runtime resource execution and live
+harness/account probes remain outside the application contract.
 
 ### Inspect one skill directory
 
@@ -225,9 +320,8 @@ status 0. An invalid report is still the same JSON shape, but is written to
 stderr by a status-2 failure. Malformed UTF-8 is a product diagnostic in that
 invalid report and therefore also uses status 2, not operational status 1.
 Filesystem/I/O and other operational command errors are plain human-readable
-stderr failures with status 1, rather than fabricated reports. At the
-executable boundary, color is disabled on Mamba's exported Chalk instance, so
-report JSON is raw and directly parseable on either stream.
+stderr failures with status 1, rather than fabricated reports. Report JSON is raw and directly parseable on either stream; normal human
+output and Mamba stderr may be colored.
 
 ### Discover native Agent occurrences
 

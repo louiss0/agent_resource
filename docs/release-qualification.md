@@ -7,13 +7,17 @@ separate claims. The native CI matrix and compiled-artifact gate are required
 evidence producers; a local green suite or a help-only executable smoke is not
 a release claim.
 
-The current local Windows gate observes true directory-symlink creation and
-built-production statuses 0 through 7, including a real restored commit
-failure and committed-cleanup-pending outcome, plus all six conversion
-plan/apply/validate workflows. Its mandatory local blockers are cleared.
-macOS and Linux evidence must still come from their native CI jobs, not be
-inferred from Windows. A final approval requires reviewing all three
-same-revision bundles and closing every mandatory blocker.
+The current local Windows built-artifact gate observes true directory-symlink
+creation and built-production statuses 0 through 7, including a real restored
+commit failure and committed-cleanup-pending outcome, schema-version-2 native
+Agent and Skill installation, canonical content/exposure publication, and all
+six conversion plan/apply/validate workflows. Its built-artifact blockers are
+cleared. macOS and Linux evidence must still come from their native CI jobs,
+not be inferred from Windows. Real terminal/PTY qualification and TLS
+credential-forwarding integration evidence also remain open; scripted byte
+streams and plaintext local fixtures are not substitutes. A final approval
+requires reviewing all three same-revision bundles and closing every mandatory
+blocker.
 
 Qualification does not authorize tags, releases, signing, distribution,
 production cutover, live accounts, or harness installation. Offline native
@@ -82,6 +86,12 @@ three-OS CI matrix plus the per-job sanitized bundle.
 | AR-CONV-007 | Bound Codex conversion retains role/config provenance and exact source bytes | Operation on every native OS |
 | AR-CONV-008 | Conversion command accounts represented/altered/omitted fields and preserves source | Command; per-field results in artifact plans |
 | AR-LIFE-001 | Existing Skill/Agent install/adopt/replace/remove/backup/recovery suites assert entries, ownership, backups, and sentinels | Existing command/operation native suite |
+| AR-INSTALL-001 | `skill_install_test.dart`, `agent_install_test.dart`, and catalog suites cover explicit unattended choices, curated TOML, full preflight, schema-v2 envelopes, and no-effect rejection | Command and built-artifact schema-v2 install scenarios |
+| AR-INSTALL-002 | Canonical content/direct consumers/managed exposures, independent copies, durable source links, and native Agent copies retain distinct ownership | Operation on isolated filesystems; built canonical/copy/link scenarios |
+| AR-ACQ-001 | `acquisition_service_test.dart` covers inert immutable Git, bounded HTTP/archive processing, provenance privacy, malicious entries, duplicate members, deadlines, and cleanup | Native operation suite; TLS credential integration remains a blocker |
+| AR-REC-002 | `resource_unit_transaction_test.dart` and `installation_batch_test.dart` prove coordinated restart recovery, commit-state classification, independent continuation, dependency skipping, and interruption | Deterministic isolated-filesystem operation tests plus real Windows statuses 5/6 |
+| AR-MIG-001 | `docs/migrate-interactive-installation.md` requires source/evidence verification, retained backups, deliberate non-atomic removal/reinstall, and source-target preservation | Documentation review; no automatic conversion or origin inference |
+| AR-TERM-001 | Scripted Clix cases cover selection, cancellation, EOF, and cursor restoration | Real Windows/macOS/Linux terminal/PTY evidence remains a blocker |
 | AR-LINK-001 | True-link entry ownership, target drift/broken targets, Windows subtype/privilege behavior | Existing native-link suite plus measured artifact-gate capability |
 | AR-PARENT-001 | Parent selected-unit patches preserve unrelated bytes/settings and require acknowledgement | Existing parent/bound-role native suite; canonical/legacy CLI aliases |
 | AR-REC-001 | Deterministic fault/restart tests assert restored, recovery-required, cleanup-pending, occupants, and corrupt evidence | Existing lifecycle/parent fault suites plus real Windows statuses 5/6 and protected journal/baseline assertions |
