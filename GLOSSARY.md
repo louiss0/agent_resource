@@ -37,6 +37,12 @@ A particular resource installation that Agent Resource has created or explicitly
 **Copied installation**:
 A managed installation whose resource contents are a separate copy owned for lifecycle management, rather than a link to a user-owned source.
 
+**Canonical skill installation**:
+A managed skill installation whose owned contents are shared with consuming harnesses through explicitly tracked exposures, without assigning competing ownership of those contents to each harness.
+
+**Harness exposure**:
+A recorded way a harness can discover an installed resource, directly or through an associated link; an exposure does not establish that the harness loaded or activated the resource.
+
 **Linked installation**:
 A managed installation that owns only a link entry pointing to a resource; its target remains outside that installation's ownership.
 
