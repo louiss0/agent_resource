@@ -7,6 +7,14 @@ separate claims. The native CI matrix and compiled-artifact gate are required
 evidence producers; a local green suite or a help-only executable smoke is not
 a release claim.
 
+The implementation candidate at `ec48558` passed the integrated native CI gate
+([run 40745695510](https://github.com/louiss0/agent_resource/actions/runs/40745695510)):
+Windows, macOS, and Linux jobs all passed with `--require-qualified`, the
+aggregator reported `qualified: true` with no blockers, and production statuses
+0–7 were observed. This is native matrix evidence, not the final readiness
+decision below; real PTY terminal evidence and HTTPS credential/TLS Git
+integration remain open, and a release still requires final human approval.
+
 The current local Windows built-artifact gate observes true directory-symlink
 creation and built-production statuses 0 through 7, including a real restored
 commit failure and committed-cleanup-pending outcome, schema-version-2 native
