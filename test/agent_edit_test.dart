@@ -28,6 +28,10 @@ Original instructions.
           '${project.path}${p.separator}',
           '--home',
           '${home.path}${p.separator}',
+          // Lifecycle coordination also covers the user state root. Keep this
+          // test's lock and evidence isolated from concurrently running tests.
+          '--state-dir',
+          '${p.join(sandbox.path, 'state')}${p.separator}',
           '--format',
           'json',
         ];
