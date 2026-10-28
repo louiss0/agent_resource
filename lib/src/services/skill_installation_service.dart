@@ -376,6 +376,7 @@ interface class SkillInstallationService {
         _requireUnchanged(canonicalRecord);
         entries[index] = entry.copyWith(
           action: InstallationEntryAction.unchanged,
+          observedDigest: canonicalRecord.baseline.digest,
         );
         ids.add(canonicalRecord.installationId);
         continue;
@@ -397,6 +398,7 @@ interface class SkillInstallationService {
           }
           entries[index] = entry.copyWith(
             action: InstallationEntryAction.unchanged,
+            observedDigest: exposure.baseline.digest,
           );
           continue;
         }
@@ -430,6 +432,7 @@ interface class SkillInstallationService {
         _requireUnchanged(record);
         entries[index] = entry.copyWith(
           action: InstallationEntryAction.unchanged,
+          observedDigest: record.baseline.digest,
         );
         ids.add(record.installationId);
       } else if (occupant != FileSystemEntityType.notFound) {

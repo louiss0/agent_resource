@@ -17,9 +17,9 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - [x] 1. Typed inputs/catalog and parser contract.
 - [x] 2. Local planning and Clix interactions (scripted component coverage complete; real terminal qualification remains slice 7).
 - [x] 3. Resource-unit publication (initial coordinated install/no-op/rollback path; restart recovery expansion remains slice 6).
-- [ ] 4. Canonical lifecycle completeness.
-- [ ] 5. Remote acquisition.
-- [ ] 6. Batch fault/cancellation proof.
+- [x] 4. Canonical lifecycle completeness.
+- [x] 5. Remote acquisition.
+- [ ] 6. Batch fault/cancellation proof (scheduler and restart recovery implemented; remaining fault-matrix and process qualification in progress).
 - [ ] 7. Public migration and qualification.
 
 ## Architecture invariants
@@ -39,6 +39,11 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - Checkpoint `dart test`: 380 passed, 4 pre-existing Windows permission skips.
 - `test/cli_process_test.dart`: production streams/status/color and schema-v2 lifecycle smoke passed on Windows.
 - Real canonical directory-link creation and mid-publication rollback passed in isolated temporary filesystems.
+- Resume baseline: the preserved canonical draft initially had six compile errors; after minimal compile repairs, the full suite independently passed 380 tests with the same four Windows skips.
+- Slice 4: canonical list/replace/detach/remove/backup/restore, versioned record and backup validation, true no-op revalidation, and schema-v2 coordinated restart rollback/completion passed in `resource_unit_transaction_test.dart` (9 tests).
+- Slice 5: 12 acquisition tests passed for local sources, inert immutable Git archive materialization, bounded HTTP, ZIP/TAR/TAR.GZ, redirects/privacy, duplicate/path/special-entry refusal, deadlines, and cleanup. `archive: 4.0.7` is pinned and its decoder callback is used so duplicate entries cannot be silently deduplicated before validation.
+- Slice 6 focused scheduler tests pass for independent continuation, dependency skipping, recovery-required stop, and post-write interruption.
+- HTTPS credential forwarding and real TLS Git integration were not exercised; local plaintext HTTP and Git-daemon fixtures covered the protocol-independent bounds and redaction logic.
 
 macOS/Linux and real terminal/PTY checks remain outstanding and are not inferred from these results.
 

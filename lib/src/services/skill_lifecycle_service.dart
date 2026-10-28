@@ -104,6 +104,12 @@ interface class SkillLifecycleService implements LifecycleResource {
           for (final candidate in candidates) {
             final path = candidate.path;
             final record = _recordAt(records, path, scope);
+            final canonical = record?.kind == ArtifactKind.skillCanonical
+                ? record
+                : _canonicalRecordForPath(records, path);
+            final exposure = canonical == null
+                ? null
+                : _exposureAt(canonical, path);
             final link = candidate.type == FileSystemEntityType.link
                 ? _linkObservation(path, root)
                 : null;
@@ -121,7 +127,44 @@ interface class SkillLifecycleService implements LifecycleResource {
               'targetValidation': link == null
                   ? 'notApplicable'
                   : 'notRequested',
-              'installationId': record?.installationId,
+              'installationId':
+                  record?.installationId ?? canonical?.installationId,
+              if (canonical != null)
+                'artifactKind': ArtifactKind.skillCanonical.wireName,
+              if (canonical != null && p.equals(canonical.location, path)) ...{
+                'exposures': [
+                  for (final item in canonical.exposures)
+                    <String, Object?>{
+                      'path': item.path,
+                      'target': item.target,
+                      'nativeKind': item.nativeKind,
+                      'baselineDigest': item.baseline.digest,
+                      'modification': !verify
+                          ? 'notVerified'
+                          : state.verifyExposure(item)
+                          ? 'unchanged'
+                          : 'changed',
+                    },
+                ],
+                'directConsumers': [
+                  for (final consumer in canonical.knownConsumers)
+                    if (canonical.exposures.every(
+                      (item) => item.target != consumer,
+                    ))
+                      consumer,
+                ],
+                'runtimeActivation': 'notClaimed',
+              },
+              if (exposure != null) ...{
+                'canonicalLocation': canonical!.location,
+                'exposureBaselineDigest': exposure.baseline.digest,
+                'exposureModification': !verify
+                    ? 'notVerified'
+                    : state.verifyExposure(exposure)
+                    ? 'unchanged'
+                    : 'changed',
+                'runtimeActivation': 'notClaimed',
+              },
               'management': ownershipFailure != null
                   ? 'ownershipUnverified'
                   : record == null
@@ -152,7 +195,9 @@ interface class SkillLifecycleService implements LifecycleResource {
         occurrences.add(<String, Object?>{
           'occurrenceId': _occurrenceId(
             scope,
-            SkillDestination.values.byName(record.nativeDestination),
+            record.kind == ArtifactKind.skillCanonical
+                ? SkillDestination.shared
+                : SkillDestination.values.byName(record.nativeDestination),
             record.location,
           ),
           'path': record.location,
@@ -162,6 +207,29 @@ interface class SkillLifecycleService implements LifecycleResource {
           'hasSkillFile': false,
           'eligibility': 'tracked-missing',
           'installationId': record.installationId,
+          if (record.kind == ArtifactKind.skillCanonical) ...{
+            'artifactKind': record.kind.wireName,
+            'exposures': [
+              for (final item in record.exposures)
+                <String, Object?>{
+                  'path': item.path,
+                  'target': item.target,
+                  'nativeKind': item.nativeKind,
+                  'baselineDigest': item.baseline.digest,
+                  'modification': !verify
+                      ? 'notVerified'
+                      : state.verifyExposure(item)
+                      ? 'unchanged'
+                      : 'changed',
+                },
+            ],
+            'directConsumers': [
+              for (final consumer in record.knownConsumers)
+                if (record.exposures.every((item) => item.target != consumer))
+                  consumer,
+            ],
+            'runtimeActivation': 'notClaimed',
+          },
           'management': 'managed',
           'modification': !verify
               ? 'notVerified'
@@ -292,6 +360,27 @@ interface class SkillLifecycleService implements LifecycleResource {
     return matches.isEmpty ? null : matches.single;
   }
 
+  InstallationRecord? _canonicalRecordForPath(
+    List<InstallationRecord> records,
+    String path,
+  ) {
+    for (final record in records) {
+      if (record.kind == ArtifactKind.skillCanonical &&
+          record.lifecycle == 'live' &&
+          record.exposures.any((exposure) => p.equals(exposure.path, path))) {
+        return record;
+      }
+    }
+    return null;
+  }
+
+  ExposureRecord? _exposureAt(InstallationRecord record, String path) {
+    for (final exposure in record.exposures) {
+      if (p.equals(exposure.path, path)) return exposure;
+    }
+    return null;
+  }
+
   String _occurrenceId(
     LifecycleScope scope,
     SkillDestination destination,
@@ -408,6 +497,39 @@ interface class SkillLifecycleService implements LifecycleResource {
       SkillMode.copy => ArtifactKind.skillCopy,
       SkillMode.link => ArtifactKind.skillLink,
     };
+    final source = context.resolvePath(input.source);
+    if (record.kind == ArtifactKind.skillCanonical) {
+      if (mode != null) {
+        throw MambaException(
+          'Canonical replacement preserves its canonical method; --mode is not applicable.',
+          exitCode: 4,
+        );
+      }
+      return state.replaceCanonical(
+        resource: _ProfiledSkillResource(
+          this,
+          record.validatedProfiles,
+          ArtifactKind.skillCanonical,
+        ),
+        context: context,
+        installationId: input.installationId,
+        source: source,
+        origin: <String, Object?>{
+          'status': 'evidenced',
+          'schemaVersion': 1,
+          'source': <String, Object?>{
+            'kind': 'local',
+            'requestedLocator': input.source,
+            'resolvedLocator': source,
+            'temporary': false,
+          },
+          'contentDigest': state.contentDigest(
+            source,
+            ArtifactKind.skillCanonical,
+          ),
+        },
+      );
+    }
     return state.replace(
       resource: _ProfiledSkillResource(
         this,
@@ -416,14 +538,36 @@ interface class SkillLifecycleService implements LifecycleResource {
       ),
       context: context,
       installationId: input.installationId,
-      source: context.resolvePath(input.source),
+      source: source,
     );
   }
 
-  Future<LifecycleResult> remove(LifecycleIdInput input) async {
+  Future<LifecycleResult> remove(
+    LifecycleIdInput input, {
+    SkillHarness? target,
+  }) async {
     final context = LifecycleContext.resolve(input.options);
     _requireMutationScope(context);
     final record = state.recordById(context, input.id);
+    if (record.kind == ArtifactKind.skillCanonical) {
+      return state.removeCanonical(
+        resource: _ProfiledSkillResource(
+          this,
+          record.validatedProfiles,
+          ArtifactKind.skillCanonical,
+        ),
+        context: context,
+        installationId: input.id,
+        target: target?.name,
+      );
+    }
+    if (target != null) {
+      throw MambaException(
+        '--target applies only to canonical exposure detachment; legacy '
+        'copy/link artifacts require whole-installation removal.',
+        exitCode: 4,
+      );
+    }
     return state.remove(
       resource: _ProfiledSkillResource(
         this,
@@ -444,6 +588,17 @@ interface class SkillLifecycleService implements LifecycleResource {
       skillKinds,
     );
     final record = state.installationForBackup(context, input.id, backupKind);
+    if (record.kind == ArtifactKind.skillCanonical) {
+      return state.restoreCanonical(
+        resource: _ProfiledSkillResource(
+          this,
+          record.validatedProfiles,
+          ArtifactKind.skillCanonical,
+        ),
+        context: context,
+        backupId: input.id,
+      );
+    }
     return state.restore(
       resource: _ProfiledSkillResource(
         this,
@@ -485,7 +640,10 @@ interface class SkillLifecycleService implements LifecycleResource {
       state.backupList(
         LifecycleContext.resolve(options),
         kind,
-        otherKind: ArtifactKind.skillLink,
+        additionalKinds: const {
+          ArtifactKind.skillLink,
+          ArtifactKind.skillCanonical,
+        },
       );
 
   Future<LifecycleResult> cleanup(LifecycleIdInput input) {
@@ -626,6 +784,22 @@ interface class SkillLifecycleService implements LifecycleResource {
         'Stored Skill location does not match current native authority.',
         exitCode: 4,
       );
+    }
+    if (canonical) {
+      final expectedExposure = p.join(context.claudeSkillsRoot(), record.name);
+      final paths = <String>{};
+      for (final exposure in record.exposures) {
+        if (exposure.target != 'claude' ||
+            !p.equals(exposure.path, expectedExposure) ||
+            !paths.add(p.normalize(exposure.path)) ||
+            exposure.baseline.entries.length != 1 ||
+            exposure.baseline.entries.single.type != 'link') {
+          throw MambaException(
+            'Stored canonical exposure does not match current native authority.',
+            exitCode: 4,
+          );
+        }
+      }
     }
   }
 

@@ -435,6 +435,11 @@ final class SkillRemoveCommand extends Command {
   final LifecycleConfirmation _confirmation;
 
   static final _id = NormalPositional('installation-id');
+  static final _target = ChoiceOption(
+    'target',
+    choices: SkillHarness.values,
+    description: 'Detach one managed canonical exposure (Claude only).',
+  );
   static final _scope = ChoiceOption.withDefault(
     'scope',
     choices: LifecycleScope.values,
@@ -459,6 +464,7 @@ final class SkillRemoveCommand extends Command {
     : super(
         mandatoryPositionals: [_id],
         options: [
+          _target,
           _scope,
           _format,
           _cwd,
@@ -502,10 +508,13 @@ final class SkillRemoveCommand extends Command {
       interactive,
       dryRun,
       yes,
-      () async => _service.remove(input(true, false)),
+      () async => _service.remove(input(true, false), target: valueOf(_target)),
       _confirmation,
     );
-    final result = await _service.remove(input(dryRun, approved));
+    final result = await _service.remove(
+      input(dryRun, approved),
+      target: valueOf(_target),
+    );
     return _render(result, format);
   }
 }

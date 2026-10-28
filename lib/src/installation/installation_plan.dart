@@ -80,6 +80,7 @@ final class InstallationEntryPlan {
     this.nativeRoot,
     this.nativeDestination,
     this.artifactKind,
+    this.observedDigest,
   });
 
   final String path;
@@ -90,6 +91,7 @@ final class InstallationEntryPlan {
   final String? nativeRoot;
   final String? nativeDestination;
   final OwnedArtifactKind? artifactKind;
+  final String? observedDigest;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'path': path,
@@ -99,17 +101,25 @@ final class InstallationEntryPlan {
     if (linkTarget != null) 'linkTarget': linkTarget,
   };
 
-  InstallationEntryPlan copyWith({InstallationEntryAction? action}) =>
-      InstallationEntryPlan(
-        path: path,
-        kind: kind,
-        action: action ?? this.action,
-        target: target,
-        linkTarget: linkTarget,
-        nativeRoot: nativeRoot,
-        nativeDestination: nativeDestination,
-        artifactKind: artifactKind,
-      );
+  Map<String, Object?> identityJson() => <String, Object?>{
+    ...toJson(),
+    if (observedDigest != null) 'observedDigest': observedDigest,
+  };
+
+  InstallationEntryPlan copyWith({
+    InstallationEntryAction? action,
+    String? observedDigest,
+  }) => InstallationEntryPlan(
+    path: path,
+    kind: kind,
+    action: action ?? this.action,
+    target: target,
+    linkTarget: linkTarget,
+    nativeRoot: nativeRoot,
+    nativeDestination: nativeDestination,
+    artifactKind: artifactKind,
+    observedDigest: observedDigest ?? this.observedDigest,
+  );
 }
 
 final class InstallationUnitPlan {
@@ -156,7 +166,7 @@ final class InstallationUnitPlan {
     'nativeName': nativeName,
     if (profile != null) 'profile': profile,
     'method': method.wireName,
-    'entries': [for (final entry in entries) entry.toJson()],
+    'entries': [for (final entry in entries) entry.identityJson()],
     'sourceDigest': sourceDigest,
     'origin': origin,
   };

@@ -11,6 +11,8 @@ import '../installation/installation_plan.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
 
+part 'lifecycle_canonical.dart';
+
 const managementSchemaVersion = 1;
 const maxManagementDocumentBytes = 8 * 1024 * 1024;
 const maxManagementDepth = 32;
@@ -523,6 +525,7 @@ final class BackupRecord {
     required this.baseline,
     required this.artifactPath,
     required this.retention,
+    this.canonicalRecord,
   });
 
   factory BackupRecord.fromJson(Object? value, String state) {
@@ -535,6 +538,17 @@ final class BackupRecord {
     final kind = ArtifactKind.values.firstWhere(
       (value) => value.wireName == kindName,
     );
+    final schemaVersion = _integer(map, 'schemaVersion');
+    if ((kind == ArtifactKind.skillCanonical && schemaVersion != 2) ||
+        (kind != ArtifactKind.skillCanonical && schemaVersion != 1)) {
+      throw const FormatException(
+        'Unsupported backup schema for artifact kind.',
+      );
+    }
+    if (kind != ArtifactKind.skillCanonical &&
+        map.containsKey('canonicalRecord')) {
+      throw const FormatException('Unexpected canonical backup evidence.');
+    }
     final artifactPath = _absolutePath(_string(map, 'artifactPath'));
     final expectedDirectory = p.join(state, 'backups', backupId);
     if (!p.equals(p.dirname(artifactPath), expectedDirectory) ||
@@ -568,6 +582,9 @@ final class BackupRecord {
         'retained',
         'cleaned',
       ]),
+      canonicalRecord: kind == ArtifactKind.skillCanonical
+          ? InstallationRecord.fromJson(map['canonicalRecord'])
+          : null,
     );
   }
 
@@ -581,9 +598,10 @@ final class BackupRecord {
   final ArtifactBaseline baseline;
   final String artifactPath;
   final String retention;
+  final InstallationRecord? canonicalRecord;
 
   Map<String, Object?> toJson() => <String, Object?>{
-    'schemaVersion': 1,
+    'schemaVersion': kind == ArtifactKind.skillCanonical ? 2 : 1,
     'backupId': backupId,
     'installationId': installationId,
     'transactionId': transactionId,
@@ -595,6 +613,7 @@ final class BackupRecord {
     'artifactDigest': baseline.digest,
     'artifactPath': artifactPath,
     'retention': retention,
+    if (canonicalRecord != null) 'canonicalRecord': canonicalRecord!.toJson(),
   };
 
   BackupRecord copyWith({String? retention}) => BackupRecord(
@@ -608,6 +627,7 @@ final class BackupRecord {
     baseline: baseline,
     artifactPath: artifactPath,
     retention: retention ?? this.retention,
+    canonicalRecord: canonicalRecord,
   );
 }
 
@@ -670,6 +690,20 @@ final class InstallationRecord {
       _string(map, 'artifactKind'),
       ArtifactKind.values.map((value) => value.wireName).toList(),
     );
+    final canonical = kind == 'skill-canonical';
+    if (canonical) {
+      if (_integer(map, 'recordSchemaVersion') != 2 ||
+          !map.containsKey('exposures')) {
+        throw const FormatException(
+          'Unsupported canonical installation schema.',
+        );
+      }
+    } else if (map.containsKey('recordSchemaVersion') ||
+        map.containsKey('exposures')) {
+      throw const FormatException(
+        'Unexpected canonical installation evidence.',
+      );
+    }
     final location = _absolutePath(_string(map, 'location'));
     final nativeRoot = _absolutePath(_string(map, 'nativeRoot'));
     if (!p.isWithin(nativeRoot, location)) {
@@ -732,6 +766,8 @@ final class InstallationRecord {
     List<String>? backupIds,
     String? transactionId,
     List<ExposureRecord>? exposures,
+    List<String>? knownConsumers,
+    List<String>? validatedProfiles,
     Map<String, Object?>? origin,
     bool clearTransaction = false,
   }) => InstallationRecord(
@@ -744,8 +780,8 @@ final class InstallationRecord {
     nativeRoot: nativeRoot,
     name: name,
     nativeProfile: nativeProfile,
-    validatedProfiles: validatedProfiles,
-    knownConsumers: knownConsumers,
+    validatedProfiles: validatedProfiles ?? this.validatedProfiles,
+    knownConsumers: knownConsumers ?? this.knownConsumers,
     baseline: baseline ?? this.baseline,
     lifecycle: lifecycle ?? this.lifecycle,
     origin: origin ?? this.origin,
@@ -1116,13 +1152,6 @@ interface class LifecycleStateService {
               entry.action != InstallationEntryAction.unchanged,
         )
         .toList();
-    if (creating.isEmpty) {
-      return ResourceUnitPublicationResult(
-        status: InstallationUnitStatus.unchanged,
-        installationIds: unit.installationIds,
-        transactionId: '',
-      );
-    }
     final primary = unit.entries.first.path;
     return _serialized(context, primary, () async {
       final state = context.stateRoot();
@@ -1132,6 +1161,7 @@ interface class LifecycleStateService {
         'transactions',
         '$transactionId.json',
       );
+      _blockPendingAcrossScopes(context, primary);
       final candidate = await resource.inspect(unit.sourcePath, context);
       if (candidate.name != unit.nativeName ||
           _manifest(unit.sourcePath, _contentKind(resource.kind)).digest !=
@@ -1147,24 +1177,77 @@ interface class LifecycleStateService {
       await resource.checkUnique(
         context,
         candidate.name,
-        nativeDestination: creating.first.nativeDestination ?? 'shared',
+        nativeDestination:
+            (creating.isEmpty ? unit.entries.first : creating.first)
+                .nativeDestination ??
+            'shared',
         allowedPaths: allowedPaths,
       );
       _ensureLedger(state);
       final existingByPath = <String, InstallationRecord>{};
+      void verifyUnchangedEntry(InstallationEntryPlan entry) {
+        final existing = existingByPath[entry.path];
+        if (existing == null &&
+            unit.method == InstallationMethod.canonical &&
+            entry.kind == InstallationEntryKind.link) {
+          final owners = _readRecords(state).where(
+            (record) =>
+                record.kind == ArtifactKind.skillCanonical &&
+                record.lifecycle == 'live' &&
+                record.exposures.any(
+                  (exposure) => p.equals(exposure.path, entry.path),
+                ),
+          );
+          if (owners.length == 1) {
+            final exposure = owners.single.exposures.singleWhere(
+              (item) => p.equals(item.path, entry.path),
+            );
+            if ((entry.observedDigest != null &&
+                    exposure.baseline.digest != entry.observedDigest) ||
+                (entry.target != null && exposure.target != entry.target) ||
+                !verifyExposure(exposure)) {
+              throw MambaException(
+                'The reviewed canonical exposure changed before publication: ${entry.path}',
+                exitCode: 4,
+              );
+            }
+            return;
+          }
+        }
+        if (existing == null || existing.lifecycle != 'live') {
+          throw MambaException(
+            'The reviewed managed installation is no longer live: ${entry.path}',
+            exitCode: 4,
+          );
+        }
+        if (entry.observedDigest != null &&
+            existing.baseline.digest != entry.observedDigest) {
+          throw MambaException(
+            'The reviewed managed baseline changed before publication: ${entry.path}',
+            exitCode: 4,
+          );
+        }
+        if (existing.kind == ArtifactKind.skillCanonical) {
+          _requireCanonicalUnchanged(existing);
+        } else {
+          _requireUnchanged(existing);
+        }
+      }
+
       for (final entry in unit.entries) {
         final existing = _findRecord(state, location: entry.path);
         if (existing != null) existingByPath[entry.path] = existing;
         if (entry.action == InstallationEntryAction.unchanged &&
             entry.kind != InstallationEntryKind.consumer) {
-          if (existing == null || existing.lifecycle != 'live') {
-            throw MambaException(
-              'The reviewed managed installation is no longer live: ${entry.path}',
-              exitCode: 4,
-            );
-          }
-          _requireUnchanged(existing);
+          verifyUnchangedEntry(entry);
         }
+      }
+      if (creating.isEmpty) {
+        return ResourceUnitPublicationResult(
+          status: InstallationUnitStatus.unchanged,
+          installationIds: unit.installationIds,
+          transactionId: '',
+        );
       }
       final canonicalEntry = unit.method == InstallationMethod.canonical
           ? unit.entries.firstWhere(
@@ -1332,6 +1415,7 @@ interface class LifecycleStateService {
             );
           }
           final targets = <String>{
+            ...?existingCanonical?.knownConsumers,
             for (final entry in unit.entries) ?entry.target,
           }.toList()..sort();
           newRecords.add(
@@ -1349,7 +1433,11 @@ interface class LifecycleStateService {
               knownConsumers: targets,
               baseline: canonicalBaseline!,
               lifecycle: 'live',
-              origin: unit.origin,
+              origin:
+                  existingCanonical != null &&
+                      canonicalEntry.action == InstallationEntryAction.unchanged
+                  ? existingCanonical.origin
+                  : unit.origin,
               backupIds: existingCanonical?.backupIds ?? const <String>[],
               transactionId: null,
               exposures: List<ExposureRecord>.unmodifiable(exposures),
@@ -1407,7 +1495,7 @@ interface class LifecycleStateService {
               entry.action == InstallationEntryAction.unchanged &&
               entry.kind != InstallationEntryKind.consumer,
         )) {
-          _requireUnchanged(existingByPath[entry.path]!);
+          verifyUnchangedEntry(entry);
         }
         commitAttempted = true;
         _commitRecords(state, newRecords, const <String, Object?>{});
@@ -2055,7 +2143,11 @@ interface class LifecycleStateService {
       final current = _transactionById(state, transactionId, resource.kind);
       _validateRecoveryAuthority(resource, context, current);
       try {
-        final established = action == 'rollback'
+        final established = current['schemaVersion'] == 2
+            ? action == 'rollback'
+                  ? _rollbackCoordinatedTransaction(state, current)
+                  : _completeCoordinatedTransaction(state, current)
+            : action == 'rollback'
             ? _rollbackTransaction(state, current)
             : _completeTransaction(state, current);
         return LifecycleResult(
@@ -2087,6 +2179,15 @@ interface class LifecycleStateService {
       final value = transaction[key];
       if (value != null) records.add(InstallationRecord.fromJson(value));
     }
+    for (final key in const ['oldRecords', 'newRecords']) {
+      final value = transaction[key];
+      if (value != null) {
+        records.addAll([
+          for (final item in _list(value, key))
+            InstallationRecord.fromJson(item),
+        ]);
+      }
+    }
     if (records.isEmpty && transaction['operation'] == 'cleanup') {
       final backup = _backupById(
         context.stateRoot(),
@@ -2101,10 +2202,15 @@ interface class LifecycleStateService {
         exitCode: 4,
       );
     }
+    final coordinated = transaction['schemaVersion'] == 2;
     for (final record in records) {
       if (record.scope != context.scope ||
-          !p.equals(record.location, transaction['location']! as String) ||
-          !p.equals(record.nativeRoot, transaction['nativeRoot']! as String)) {
+          (!coordinated &&
+              (!p.equals(record.location, transaction['location']! as String) ||
+                  !p.equals(
+                    record.nativeRoot,
+                    transaction['nativeRoot']! as String,
+                  )))) {
         throw MambaException(
           'Transaction and installation authority do not match.',
           exitCode: 4,
@@ -2188,11 +2294,15 @@ interface class LifecycleStateService {
     String expectedId,
   ) {
     try {
-      if (_integer(transaction, 'schemaVersion') != 1 ||
-          _id(_string(transaction, 'transactionId'), 'trx') != expectedId) {
+      final schemaVersion = _integer(transaction, 'schemaVersion');
+      if (_id(_string(transaction, 'transactionId'), 'trx') != expectedId ||
+          (schemaVersion != 1 && schemaVersion != 2)) {
         throw const FormatException(
           'Transaction identity or schema is invalid.',
         );
+      }
+      if (schemaVersion == 2) {
+        return _validateCoordinatedTransaction(transaction, state, expectedId);
       }
       final operation = _enumValue(_string(transaction, 'operation'), const [
         'install',
@@ -2202,11 +2312,15 @@ interface class LifecycleStateService {
         'restore',
         'cleanup',
       ]);
-      _enumValue(_string(transaction, 'artifactKind'), const [
-        'skill-copy',
-        'skill-link',
-        'agent-file',
-      ]);
+      final artifactKind = _enumValue(
+        _string(transaction, 'artifactKind'),
+        const ['skill-copy', 'skill-link', 'skill-canonical', 'agent-file'],
+      );
+      if (artifactKind == 'skill-canonical' && operation != 'cleanup') {
+        throw const FormatException(
+          'Canonical transitions require schema-version-2 evidence.',
+        );
+      }
       _enumValue(_string(transaction, 'scope'), const ['project', 'user']);
       final location = _absolutePath(_string(transaction, 'location'));
       final nativeRoot = _absolutePath(_string(transaction, 'nativeRoot'));
@@ -2314,6 +2428,421 @@ interface class LifecycleStateService {
     }
   }
 
+  Map<String, Object?> _validateCoordinatedTransaction(
+    Map<String, Object?> transaction,
+    String state,
+    String expectedId,
+  ) {
+    final operation = _enumValue(_string(transaction, 'operation'), const [
+      'resource-unit-install',
+      'canonical-replace',
+      'canonical-remove',
+      'canonical-detach',
+      'canonical-restore',
+    ]);
+    _artifactKindFromWire(_string(transaction, 'artifactKind'));
+    final scope = _enumValue(_string(transaction, 'scope'), const [
+      'project',
+      'user',
+    ]);
+    _enumValue(_string(transaction, 'phase'), const [
+      'prepared',
+      'quarantined',
+      'published',
+      'committedCleanupPending',
+      'committed',
+      'rolledBack',
+      'failedRestored',
+      'recoveryRequired',
+      'recoveringRollback',
+      'recoveringComplete',
+    ]);
+    final location = _absolutePath(_string(transaction, 'location'));
+    final nativeRoot = _absolutePath(_string(transaction, 'nativeRoot'));
+    if (!p.isWithin(nativeRoot, location)) {
+      throw const FormatException(
+        'Coordinated location escapes its native root.',
+      );
+    }
+    final records = <InstallationRecord>[];
+    for (final key in const ['oldRecord', 'newRecord']) {
+      if (transaction[key] != null) {
+        records.add(InstallationRecord.fromJson(transaction[key]));
+      }
+    }
+    for (final key in const ['oldRecords', 'newRecords']) {
+      if (transaction[key] != null) {
+        records.addAll([
+          for (final value in _list(transaction[key], key))
+            InstallationRecord.fromJson(value),
+        ]);
+      }
+    }
+    if (records.isEmpty ||
+        records.any(
+          (record) =>
+              record.scope.name != scope ||
+              (record.installationId != transaction['installationId'] &&
+                  operation != 'resource-unit-install'),
+        ) ||
+        !records.any(
+          (record) =>
+              p.equals(record.location, location) &&
+              p.equals(record.nativeRoot, nativeRoot),
+        )) {
+      throw const FormatException(
+        'Coordinated record authority is inconsistent.',
+      );
+    }
+    if (operation == 'resource-unit-install') {
+      final entries = _list(transaction['entries'], 'resource-unit entries');
+      final indices = <int>{};
+      for (final value in entries) {
+        final entry = _object(value, 'resource-unit entry');
+        final index = _nonNegativeValue(entry['index']);
+        if (!indices.add(index)) {
+          throw const FormatException('Duplicate resource-unit entry index.');
+        }
+        final entryLocation = _absolutePath(_string(entry, 'location'));
+        final entryRoot = _absolutePath(_string(entry, 'nativeRoot'));
+        if (!p.isWithin(entryRoot, entryLocation)) {
+          throw const FormatException(
+            'Resource-unit entry escapes its native root.',
+          );
+        }
+        _artifactKindFromWire(_string(entry, 'artifactKind'));
+        ArtifactBaseline.fromJson(entry['newBaseline']);
+        final expectedStage = _stagePath(
+          entryRoot,
+          expectedId,
+          '$index-${p.basename(entryLocation)}',
+        );
+        if (!p.equals(
+          _absolutePath(_string(entry, 'stagedPath')),
+          expectedStage,
+        )) {
+          throw const FormatException(
+            'Resource-unit staging evidence is unsafe.',
+          );
+        }
+      }
+      final published = <int>{};
+      for (final value in _list(
+        transaction['publishedIndices'],
+        'published indices',
+      )) {
+        final index = _nonNegativeValue(value);
+        if (!indices.contains(index) || !published.add(index)) {
+          throw const FormatException('Invalid published resource-unit index.');
+        }
+      }
+    } else {
+      if (transaction['oldRecord'] == null ||
+          transaction['newRecord'] == null) {
+        throw const FormatException(
+          'Canonical transition records are missing.',
+        );
+      }
+      final changes = _list(transaction['changes'], 'canonical changes');
+      for (final value in changes) {
+        final change = _CanonicalChange.fromJson(value);
+        if (!p.isWithin(change.nativeRoot, change.location)) {
+          throw const FormatException(
+            'Canonical change escapes its native root.',
+          );
+        }
+        final expected = change.withTransaction(expectedId);
+        if (change.stagedPath != expected.stagedPath ||
+            change.quarantinePath != expected.quarantinePath) {
+          throw const FormatException('Canonical storage evidence is unsafe.');
+        }
+      }
+      for (final action in _stringList(transaction['completedActions'])) {
+        final match = RegExp(r'^(\d+)-(remove|publish)$').firstMatch(action);
+        if (match == null ||
+            int.parse(match.group(1)!) < 0 ||
+            int.parse(match.group(1)!) >= changes.length) {
+          throw const FormatException('Invalid completed canonical action.');
+        }
+      }
+    }
+    return transaction;
+  }
+
+  String _rollbackCoordinatedTransaction(
+    String state,
+    Map<String, Object?> transaction,
+  ) {
+    return transaction['operation'] == 'resource-unit-install'
+        ? _rollbackResourceUnitTransaction(state, transaction)
+        : _rollbackCanonicalTransaction(state, transaction);
+  }
+
+  String _completeCoordinatedTransaction(
+    String state,
+    Map<String, Object?> transaction,
+  ) {
+    return transaction['operation'] == 'resource-unit-install'
+        ? _completeResourceUnitTransaction(state, transaction)
+        : _completeCanonicalTransaction(state, transaction);
+  }
+
+  String _rollbackResourceUnitTransaction(
+    String state,
+    Map<String, Object?> transaction,
+  ) {
+    final id = transaction['transactionId']! as String;
+    final path = p.join(state, 'transactions', '$id.json');
+    final entries = _resourceUnitJournalEntries(transaction);
+    final published = _intList(transaction['publishedIndices']);
+    for (final index in published.reversed) {
+      final entry = entries[index]!;
+      final location = entry['location']! as String;
+      final kind = _artifactKindFromWire(entry['artifactKind']! as String);
+      if (io.type(location, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        _verifyBaseline(
+          location,
+          ArtifactBaseline.fromJson(entry['newBaseline']),
+          kind,
+        );
+        final quarantine = _quarantinePath(
+          entry['nativeRoot']! as String,
+          id,
+          location,
+        );
+        _requireAbsent(quarantine);
+        io.createDirectory(p.dirname(quarantine));
+        io.rename(location, quarantine);
+      }
+    }
+    for (final entry in entries.values) {
+      _requireAbsent(entry['location']! as String);
+    }
+    _restoreCoordinatedRecords(state, transaction);
+    _advanceTransaction(path, 'rolledBack');
+    return 'rolledBack';
+  }
+
+  String _completeResourceUnitTransaction(
+    String state,
+    Map<String, Object?> transaction,
+  ) {
+    final id = transaction['transactionId']! as String;
+    final path = p.join(state, 'transactions', '$id.json');
+    final entries = _resourceUnitJournalEntries(transaction);
+    final published = _intList(transaction['publishedIndices']);
+    for (final index in entries.keys) {
+      final entry = entries[index]!;
+      final location = entry['location']! as String;
+      final baseline = ArtifactBaseline.fromJson(entry['newBaseline']);
+      final kind = _artifactKindFromWire(entry['artifactKind']! as String);
+      if (!published.contains(index)) {
+        final staged = entry['stagedPath']! as String;
+        _verifyBaseline(staged, baseline, kind);
+        _requireAbsent(location);
+        io.createDirectory(p.dirname(location));
+        _requireAbsent(location);
+        io.rename(staged, location);
+        published.add(index);
+        _writeTransaction(path, <String, Object?>{
+          ..._readTransaction(path),
+          'publishedIndices': published,
+          'phase': 'published',
+        });
+      }
+      _verifyBaseline(location, baseline, kind);
+    }
+    final newRecords = _coordinatedRecords(transaction, 'newRecords');
+    for (final record in newRecords) {
+      _verifyCoordinatedRecordState(record);
+    }
+    _commitCoordinatedRecords(state, transaction, newRecords);
+    _writeTransaction(path, <String, Object?>{
+      ..._readTransaction(path),
+      'phase': 'committedCleanupPending',
+    });
+    for (final entry in entries.values) {
+      final staged = entry['stagedPath']! as String;
+      if (io.type(staged, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        _verifyBaseline(
+          staged,
+          ArtifactBaseline.fromJson(entry['newBaseline']),
+          _artifactKindFromWire(entry['artifactKind']! as String),
+        );
+        io.delete(staged);
+      }
+    }
+    _advanceTransaction(path, 'committed');
+    return 'committed';
+  }
+
+  String _rollbackCanonicalTransaction(
+    String state,
+    Map<String, Object?> transaction,
+  ) {
+    final id = transaction['transactionId']! as String;
+    final path = p.join(state, 'transactions', '$id.json');
+    final changes = _canonicalJournalChanges(transaction);
+    final completed = _stringList(transaction['completedActions']);
+    if (!_rollbackCanonicalActions(changes, completed, this)) {
+      throw MambaException(
+        'Canonical rollback evidence is incomplete or changed.',
+        exitCode: 6,
+      );
+    }
+    final initial = InstallationRecord.fromJson(transaction['oldRecord']);
+    _verifyCoordinatedRecordState(initial);
+    final current = _findRecord(state, installationId: initial.installationId);
+    final restored = initial.copyWith(
+      backupIds: <String>{
+        ...initial.backupIds,
+        ...?current?.backupIds,
+        if (transaction['outgoingBackupId'] is String)
+          transaction['outgoingBackupId']! as String,
+      }.toList(),
+      clearTransaction: true,
+    );
+    _commitCoordinatedRecords(state, transaction, [restored]);
+    _advanceTransaction(path, 'rolledBack');
+    return 'rolledBack';
+  }
+
+  String _completeCanonicalTransaction(
+    String state,
+    Map<String, Object?> transaction,
+  ) {
+    final id = transaction['transactionId']! as String;
+    final path = p.join(state, 'transactions', '$id.json');
+    final changes = _canonicalJournalChanges(transaction);
+    final completed = _stringList(transaction['completedActions']);
+    for (var index = 0; index < changes.length; index++) {
+      _applyCanonicalChange(changes[index], completed, path, index);
+    }
+    final desired = InstallationRecord.fromJson(transaction['newRecord']);
+    _verifyCoordinatedRecordState(desired);
+    _commitCoordinatedRecords(state, transaction, [desired]);
+    _writeTransaction(path, <String, Object?>{
+      ..._readTransaction(path),
+      'phase': 'committedCleanupPending',
+    });
+    for (final change in changes.where((change) => change.removeOld)) {
+      final quarantine = change.quarantinePath!;
+      _verifyBaseline(quarantine, change.oldBaseline!, change.kind);
+      io.delete(quarantine);
+    }
+    _advanceTransaction(path, 'committed');
+    return 'committed';
+  }
+
+  Map<int, Map<String, Object?>> _resourceUnitJournalEntries(
+    Map<String, Object?> transaction,
+  ) => <int, Map<String, Object?>>{
+    for (final value in _list(transaction['entries'], 'resource-unit entries'))
+      _nonNegativeValue(_object(value, 'resource-unit entry')['index']):
+          _object(value, 'resource-unit entry'),
+  };
+
+  List<_CanonicalChange> _canonicalJournalChanges(
+    Map<String, Object?> transaction,
+  ) => [
+    for (final value in _list(transaction['changes'], 'canonical changes'))
+      _CanonicalChange.fromJson(value),
+  ];
+
+  List<int> _intList(Object? value) => [
+    for (final item in _list(value, 'integer list')) _nonNegativeValue(item),
+  ];
+
+  List<InstallationRecord> _coordinatedRecords(
+    Map<String, Object?> transaction,
+    String key,
+  ) => [
+    for (final value in _list(transaction[key], key))
+      InstallationRecord.fromJson(value),
+  ];
+
+  void _verifyCoordinatedRecordState(InstallationRecord record) {
+    if (record.kind == ArtifactKind.skillCanonical) {
+      _verifyCanonicalState(record);
+    } else if (record.lifecycle == 'removed') {
+      _requireAbsent(record.location);
+    } else {
+      _verifyBaseline(record.location, record.baseline, record.kind);
+    }
+  }
+
+  void _restoreCoordinatedRecords(
+    String state,
+    Map<String, Object?> transaction,
+  ) {
+    final oldRecords = _coordinatedRecords(transaction, 'oldRecords');
+    final newRecords = _coordinatedRecords(transaction, 'newRecords');
+    final current = _readRecords(state);
+    final expected = <String, List<InstallationRecord>>{};
+    for (final record in [...oldRecords, ...newRecords]) {
+      expected.putIfAbsent(record.installationId, () => []).add(record);
+    }
+    for (final record in current) {
+      final alternatives = expected[record.installationId];
+      if (alternatives != null &&
+          alternatives.every(
+            (candidate) =>
+                jsonEncode(candidate.toJson()) != jsonEncode(record.toJson()),
+          )) {
+        throw MambaException(
+          'Management evidence changed after the coordinated transaction.',
+          exitCode: 6,
+        );
+      }
+    }
+    final ids = expected.keys.toSet();
+    final restored =
+        [
+          for (final record in current)
+            if (!ids.contains(record.installationId)) record,
+          ...oldRecords,
+        ]..sort(
+          (left, right) => left.installationId.compareTo(right.installationId),
+        );
+    _writeManagementJson(p.join(state, 'installations.json'), <String, Object?>{
+      'schemaVersion': managementSchemaVersion,
+      'installations': [for (final record in restored) record.toJson()],
+    });
+  }
+
+  void _commitCoordinatedRecords(
+    String state,
+    Map<String, Object?> transaction,
+    List<InstallationRecord> desired,
+  ) {
+    final oldRecords = transaction['oldRecords'] != null
+        ? _coordinatedRecords(transaction, 'oldRecords')
+        : [InstallationRecord.fromJson(transaction['oldRecord'])];
+    final current = _readRecords(state);
+    for (final id in <String>{
+      for (final record in [...oldRecords, ...desired]) record.installationId,
+    }) {
+      final actual = current.where((record) => record.installationId == id);
+      if (actual.isEmpty) continue;
+      final expected = [
+        for (final record in [...oldRecords, ...desired])
+          if (record.installationId == id) record,
+      ];
+      if (expected.every(
+        (record) =>
+            jsonEncode(record.toJson()) != jsonEncode(actual.single.toJson()),
+      )) {
+        throw MambaException(
+          'Management evidence changed before coordinated recovery.',
+          exitCode: 6,
+        );
+      }
+    }
+    _commitRecords(state, desired, const <String, Object?>{});
+  }
+
   List<String> _availableRecoveryActions(Map<String, Object?> transaction) {
     final phase = transaction['phase'];
     final operation = transaction['operation'];
@@ -2321,7 +2850,9 @@ interface class LifecycleStateService {
       return const ['complete'];
     }
     if (phase == 'prepared') {
-      return operation == 'install' || operation == 'adopt'
+      return operation == 'install' ||
+              operation == 'adopt' ||
+              operation == 'resource-unit-install'
           ? const ['rollback', 'complete']
           : const ['rollback'];
     }
@@ -2908,10 +3439,12 @@ interface class LifecycleStateService {
     LifecycleContext context,
     ArtifactKind kind, {
     ArtifactKind? otherKind,
+    Set<ArtifactKind> additionalKinds = const <ArtifactKind>{},
   }) async {
     final backups = _readBackups(context.stateRoot(), <ArtifactKind>{
       kind,
       ?otherKind,
+      ...additionalKinds,
     }).where((backup) => backup.retention == 'retained').toList();
     return LifecycleResult(
       command: '${_resourceLabel(kind)} backup list',
@@ -3258,6 +3791,9 @@ interface class LifecycleStateService {
       baseline: record.baseline,
       artifactPath: artifact,
       retention: 'retained',
+      canonicalRecord: record.kind == ArtifactKind.skillCanonical
+          ? record
+          : null,
     );
     _writeBackup(backup);
     return backup;
@@ -4408,6 +4944,13 @@ String? _nullableString(Map<String, Object?> map, String key) {
 int _integer(Map<String, Object?> map, String key) {
   final value = map[key];
   if (value is! int) throw FormatException('$key must be an integer.');
+  return value;
+}
+
+int _nonNegativeValue(Object? value) {
+  if (value is! int || value < 0) {
+    throw const FormatException('Expected a non-negative integer.');
+  }
   return value;
 }
 

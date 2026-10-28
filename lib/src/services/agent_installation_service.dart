@@ -239,7 +239,10 @@ interface class AgentInstallationService {
           exitCode: 4,
         );
       }
-      plannedEntry = entry.copyWith(action: InstallationEntryAction.unchanged);
+      plannedEntry = entry.copyWith(
+        action: InstallationEntryAction.unchanged,
+        observedDigest: record.baseline.digest,
+      );
       ids.add(record.installationId);
     } else if (FileSystemEntity.typeSync(location, followLinks: false) !=
         FileSystemEntityType.notFound) {
