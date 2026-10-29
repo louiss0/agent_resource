@@ -142,6 +142,8 @@ void main() {
             '${project.path}${p.separator}',
             '--home',
             '${home.path}${p.separator}',
+            '--state-dir',
+            '${p.join(sandbox.path, 'state')}${p.separator}',
             '--format',
             'json',
           ];

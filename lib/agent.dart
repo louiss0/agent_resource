@@ -176,6 +176,7 @@ final class AgentInspectCommand(
         ...report.envelope(operation),
         'data': <String, Object?>{
           ...report.envelope(operation)['data']! as Map<String, Object?>,
+          'ready': graph.ready,
           'graph': graph.toJson(),
         },
       }),

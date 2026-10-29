@@ -9,7 +9,7 @@ import 'package:test/test.dart';
 void main() {
   group('agent clone', () {
     test(
-      'plans a definition-only clone with source provenance and no writes',
+      'plans and applies a definition-only clone with source provenance',
       () async {
         final sandbox = await Directory.systemTemp.createTemp('agent-clone-');
         try {
@@ -91,6 +91,49 @@ Review correctness.
             Directory(p.join(project.path, '.agent-resource')).existsSync(),
             isFalse,
           );
+
+          final applied = await createExecutor().fake().execute([
+            'agent',
+            'clone',
+            request.path,
+            '--apply',
+            '--plan-id',
+            data['planId']! as String,
+            '--yes',
+            '--cwd',
+            '${project.path}${p.separator}',
+            '--project-root',
+            '${project.path}${p.separator}',
+            '--home',
+            '${home.path}${p.separator}',
+            '--state-dir',
+            '${p.join(sandbox.path, 'state')}${p.separator}',
+            '--format',
+            'json',
+          ]);
+          expect(
+            applied,
+            isA<MambaSuccessResult>().having(
+              (value) => value.exitCode,
+              'exit code',
+              0,
+            ),
+            reason: applied is MambaFailureResult ? applied.message : null,
+          );
+          final appliedReport = jsonDecode(
+            (applied as MambaSuccessResult).output!,
+          ) as Map<String, Object?>;
+          expect(appliedReport['command'], 'agent clone');
+          expect(appliedReport['outcome'], 'installed');
+          expect(source.readAsBytesSync(), sourceBytes);
+          expect(File(output).readAsStringSync(), '''---
+description: "Reviews changes."
+model: "claude-sonnet"
+name: "reviewer"
+tools: ["Read","Grep"]
+---
+Review correctness.
+''');
         } finally {
           await sandbox.delete(recursive: true);
         }

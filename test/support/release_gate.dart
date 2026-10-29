@@ -125,6 +125,135 @@ $privateInstruction
       inspected,
     );
 
+    Future<({Map<String, Object?> report, CliProcessResult process})>
+    planAndApply(String operation, File request, File target) async {
+      final plan = await run('built-$operation-plan', work, [
+        'agent',
+        operation,
+        request.path,
+        ...context,
+      ]);
+      _expect(plan.exitCode == 0, 'Built $operation planning failed.', plan);
+      _expect(plan.stderr.isEmpty, '$operation planning wrote stderr.', plan);
+      _expect(
+        !target.existsSync(),
+        '$operation planning wrote the target.',
+        plan,
+      );
+      final planId =
+          ((_json(plan)['data']! as Map<String, Object?>)['planId']!) as String;
+      final applied = await run('built-$operation-apply', work, [
+        'agent',
+        operation,
+        request.path,
+        '--apply',
+        '--plan-id',
+        planId,
+        '--yes',
+        ...context,
+      ]);
+      _expect(applied.exitCode == 0, 'Built $operation apply failed.', applied);
+      _expect(
+        applied.stderr.isEmpty,
+        '$operation apply wrote stderr.',
+        applied,
+      );
+      _expect(
+        target.existsSync(),
+        '$operation apply omitted the target.',
+        applied,
+      );
+      return (report: _json(applied), process: applied);
+    }
+
+    final createRequest = File(p.join(sandbox.path, 'create.json'))
+      ..writeAsStringSync(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 1,
+          'operation': 'create',
+          'target': <String, Object?>{
+            'harness': 'claude',
+            'output': '.claude/agents/author.md',
+          },
+          'context': <String, Object?>{'workingDirectory': './'},
+          'definition': <String, Object?>{
+            'name': 'author',
+            'description': 'Authors changes.',
+            'tools': <Object?>['Read'],
+          },
+          'instructions': <Object?>[privateInstruction],
+        }),
+      );
+    final created = File(p.join(work.path, '.claude', 'agents', 'author.md'));
+    final createApply = await planAndApply('create', createRequest, created);
+    _expect(
+      createApply.report['command'] == 'agent create',
+      'Create apply leaked the lifecycle command identity.',
+      createApply.process,
+    );
+
+    final composeRequest = File(p.join(sandbox.path, 'compose.json'))
+      ..writeAsStringSync(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 1,
+          'operation': 'compose',
+          'target': <String, Object?>{
+            'harness': 'codex',
+            'output': '.codex/agents/composed.toml',
+          },
+          'context': <String, Object?>{'workingDirectory': './'},
+          'definition': <String, Object?>{
+            'name': 'composed',
+            'description': 'Composes instructions.',
+          },
+          'instructions': <Object?>['First correctness.', 'Then tests.'],
+        }),
+      );
+    final composed = File(
+      p.join(work.path, '.codex', 'agents', 'composed.toml'),
+    );
+    final composeApply = await planAndApply(
+      'compose',
+      composeRequest,
+      composed,
+    );
+    _expect(
+      composed.readAsStringSync().contains(
+        'developer_instructions = "First correctness.\\nThen tests."',
+      ),
+      'Compose apply did not preserve ordered instructions.',
+      composeApply.process,
+    );
+
+    final missingPreload = File(p.join(sandbox.path, 'missing-preload.md'))
+      ..writeAsStringSync('''---
+name: missing-preload
+description: Missing required Skill.
+skills: [absent]
+---
+Review.
+''');
+    final blockedGraph = await run('built-graph-not-ready', work, [
+      'agent',
+      'inspect',
+      missingPreload.path,
+      '--harness',
+      'claude',
+      ...inspectionContext,
+    ]);
+    _expect(
+      blockedGraph.exitCode == 0,
+      'Complete blocked graph analysis did not return status 0.',
+      blockedGraph,
+    );
+    final blockedData = _json(blockedGraph)['data']! as Map<String, Object?>;
+    _expect(
+      blockedData['ready'] == false &&
+          (blockedData['graph']! as Map<String, Object?>)['ready'] == false,
+      'Missing preload did not make inspection unready.',
+      blockedGraph,
+    );
+
     final invalid = File(p.join(sandbox.path, 'invalid.md'))
       ..writeAsStringSync('---\ndescription: Missing name.\n---\nBody.\n');
     final correctness = await run('built-status-2', work, [

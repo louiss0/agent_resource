@@ -42,7 +42,13 @@ final class LifecycleBackupCommand extends GroupCommand {
     AgentLifecycleService service, {
     ParentConfigService? parentConfig,
     BoundRoleService? boundRole,
-  }) : this._(_Resource.agent, null, service, parentConfig, boundRole);
+  }) : this._(
+         _Resource.agent,
+         null,
+         service,
+         parentConfig ?? ParentConfigService(),
+         boundRole ?? BoundRoleService(),
+       );
 
   LifecycleBackupCommand._(
     _Resource resource,

@@ -8,7 +8,7 @@ import 'package:test/test.dart';
 
 void main() {
   group('agent edit', () {
-    test('plans an edit only for an unchanged recorded installation', () async {
+    test('plans and applies an edit through a retained-backup replacement', () async {
       final sandbox = await Directory.systemTemp.createTemp('agent-edit-');
       try {
         final project = Directory(p.join(sandbox.path, 'project'))
@@ -117,6 +117,66 @@ Original instructions.
         );
         expect(result.output, isNot(contains('Edited instructions.')));
         expect(File(location).readAsBytesSync(), before);
+
+        final applied = await createExecutor().fake().execute([
+          'agent',
+          'edit',
+          request.path,
+          '--apply',
+          '--plan-id',
+          data['planId']! as String,
+          '--yes',
+          ...context,
+        ]);
+        expect(
+          applied,
+          isA<MambaSuccessResult>().having(
+            (value) => value.exitCode,
+            'exit code',
+            0,
+          ),
+          reason: applied is MambaFailureResult ? applied.message : null,
+        );
+        final appliedReport = jsonDecode(
+          (applied as MambaSuccessResult).output!,
+        ) as Map<String, Object?>;
+        expect(appliedReport['command'], 'agent edit');
+        expect(appliedReport['outcome'], 'replaced');
+        final appliedData = appliedReport['data']! as Map<String, Object?>;
+        final backupId = appliedData['backupId'];
+        expect(backupId, isA<String>());
+        expect(File(location).readAsStringSync(), '''---
+description: "Edited description."
+name: "reviewer"
+---
+Original instructions.
+
+Edited instructions.''');
+
+        final backups = await createExecutor().fake().execute([
+          'agent',
+          'backup',
+          'list',
+          ...context,
+        ]);
+        expect(
+          backups,
+          isA<MambaSuccessResult>().having(
+            (value) => value.exitCode,
+            'exit code',
+            0,
+          ),
+        );
+        final backupReport = jsonDecode(
+          (backups as MambaSuccessResult).output!,
+        ) as Map<String, Object?>;
+        final backupData = backupReport['data']! as Map<String, Object?>;
+        expect(
+          (backupData['backups']! as List<Object?>).any(
+            (entry) => (entry! as Map<String, Object?>)['backupId'] == backupId,
+          ),
+          isTrue,
+        );
       } finally {
         await sandbox.delete(recursive: true);
       }

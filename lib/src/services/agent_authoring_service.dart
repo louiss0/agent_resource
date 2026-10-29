@@ -480,18 +480,6 @@ interface class AgentAuthoringService {
         );
       }
     }
-    final unknown = _unknownFields(harness, fields);
-    for (final key in unknown) {
-      if (!request.decisions.contains('field:$key')) {
-        diagnostics.add(
-          _finding(
-            'FIELD_DECISION_REQUIRED',
-            key,
-            'Unknown or source-only field $key requires an explicit field:$key decision.',
-          ),
-        );
-      }
-    }
     final parts = <String>[];
     if (request.baseInstructions != 'replace' &&
         inherited?.instructionText != null) {
@@ -551,6 +539,30 @@ interface class AgentAuthoringService {
       for (final diagnostic in candidateInspection.diagnostics)
         diagnostic.toJson(),
     ]);
+    for (final diagnostic in candidateInspection.diagnostics) {
+      final field = diagnostic.field;
+      if (_requiresFieldDecision(diagnostic.code) &&
+          field != null &&
+          !request.decisions.contains('field:$field')) {
+        diagnostics.add(
+          _finding(
+            'FIELD_DECISION_REQUIRED',
+            field,
+            'Unknown or source-only field $field requires an explicit '
+                'field:$field decision.',
+          ),
+        );
+      }
+    }
+    if (inherited != null) {
+      diagnostics.addAll(
+        _referenceDecisionFindings(
+          inherited.references,
+          candidateInspection.references,
+          request,
+        ),
+      );
+    }
     final graph = _graph.analyzeInspection(candidateInspection);
     final installationId = request.target['installationId'] as String?;
     if (request.operation == AuthoringOperation.edit) {
@@ -625,7 +637,7 @@ interface class AgentAuthoringService {
       'graph': graph.toJson(),
     };
     final planId =
-        'agent-plan-${sha256.convert(utf8.encode(jsonEncode(planIdentity)))}';
+        'agent-plan-${sha256.convert(utf8.encode(jsonEncode(_canonicalJson(planIdentity))))}';
     final ready =
         graph.ready &&
         diagnostics.every((diagnostic) => diagnostic['severity'] != 'error') &&
@@ -747,7 +759,7 @@ interface class AgentAuthoringService {
           ),
         };
         return LifecycleResult(
-          command: applied.command,
+          command: 'agent ${request.operation.name}',
           outcome: applied.outcome,
           data: <String, Object?>{
             ...applied.data,
@@ -836,6 +848,19 @@ interface class AgentAuthoringService {
   }
 }
 
+Object? _canonicalJson(Object? value) {
+  if (value is Map) {
+    final keys = value.keys.cast<String>().toList()..sort();
+    return <String, Object?>{
+      for (final key in keys) key: _canonicalJson(value[key]),
+    };
+  }
+  if (value is List) {
+    return <Object?>[for (final entry in value) _canonicalJson(entry)];
+  }
+  return value;
+}
+
 Map<String, Object?> _finding(String code, String field, String message) =>
     <String, Object?>{
       'code': code,
@@ -862,46 +887,104 @@ Map<String, Object?> _nativeFields(AgentInspectionReport report) =>
         if (entry.key != 'developer_instructions') entry.key: entry.value,
     };
 
-Set<String> _unknownFields(AgentHarness harness, Map<String, Object?> fields) {
-  const common = <String>{'name', 'description'};
-  final known = switch (harness) {
-    AgentHarness.claude => <String>{
-      ...common,
-      'tools',
-      'disallowedTools',
-      'model',
-      'permissionMode',
-      'maxTurns',
-      'autoCompactWindow',
-      'skills',
-      'mcpServers',
-      'hooks',
-      'memory',
-      'background',
-      'omitClaudeMd',
-      'effort',
-      'isolation',
-      'color',
-      'initialPrompt',
-      'experimental',
-    },
-    AgentHarness.codex => <String>{
-      ...common,
-      'developer_instructions',
-      'model',
-      'model_reasoning_effort',
-      'model_reasoning_summary',
-      'model_verbosity',
-      'nickname_candidates',
-      'features',
-      'skills',
-      'personality',
-      'service_tier',
-    },
-    AgentHarness.pi => <String>{...common, 'model', 'tools', 'thinking'},
-  };
-  return fields.keys.where((key) => !known.contains(key)).toSet();
+List<Map<String, Object?>> _referenceDecisionFindings(
+  List<Map<String, Object?>> source,
+  List<Map<String, Object?>> target,
+  AuthoringRequest request,
+) {
+  Map<String, int> counts(Iterable<Map<String, Object?>> references) {
+    final result = <String, int>{};
+    for (final reference in references) {
+      final key = '${reference['kind']}:${reference['name']}';
+      result[key] = (result[key] ?? 0) + 1;
+    }
+    return result;
+  }
+
+  Map<String, int> difference(
+    Iterable<Map<String, Object?>> left,
+    Iterable<Map<String, Object?>> right,
+  ) {
+    final result = counts(left);
+    for (final entry in counts(right).entries) {
+      final remaining = (result[entry.key] ?? 0) - entry.value;
+      if (remaining > 0) {
+        result[entry.key] = remaining;
+      } else {
+        result.remove(entry.key);
+      }
+    }
+    return result;
+  }
+
+  final removed = difference(source, target);
+  final added = difference(target, source);
+
+  final findings = <Map<String, Object?>>[];
+  void requireDecision(String decision, String impact) {
+    if (!request.decisions.contains(decision)) {
+      findings.add(
+        _finding(
+          'REFERENCE_DECISION_REQUIRED',
+          'references',
+          '$impact requires the explicit $decision decision.',
+        ),
+      );
+    }
+  }
+
+  void consume(Map<String, int> impacts, String key) {
+    final remaining = impacts[key] ?? 0;
+    if (remaining <= 1) {
+      impacts.remove(key);
+    } else {
+      impacts[key] = remaining - 1;
+    }
+  }
+
+  for (final mapping in request.references.entries) {
+    final separator = mapping.key.indexOf(':');
+    if (separator <= 0) continue;
+    final kind = mapping.key.substring(0, separator);
+    final targetKey = '$kind:${mapping.value}';
+    if ((removed[mapping.key] ?? 0) > 0 && (added[targetKey] ?? 0) > 0) {
+      final decision = 'reference:${mapping.key}:${mapping.value}';
+      requireDecision(decision, 'Changing ${mapping.key} to $targetKey');
+      consume(removed, mapping.key);
+      consume(added, targetKey);
+    }
+  }
+  for (final sourceKey in removed.keys.toList()..sort()) {
+    final separator = sourceKey.indexOf(':');
+    final kind = sourceKey.substring(0, separator);
+    for (final targetKey in added.keys.toList()..sort()) {
+      if (!targetKey.startsWith('$kind:')) continue;
+      final targetName = targetKey.substring(kind.length + 1);
+      final decision = 'reference:$sourceKey:$targetName';
+      if (!request.decisions.contains(decision)) continue;
+      consume(removed, sourceKey);
+      consume(added, targetKey);
+      break;
+    }
+  }
+  for (final key in removed.keys.toList()..sort()) {
+    requireDecision('reference:$key:remove', 'Removing $key');
+  }
+  for (final key in added.keys.toList()..sort()) {
+    requireDecision('reference:$key:add', 'Adding $key');
+  }
+  return findings;
 }
+
+bool _requiresFieldDecision(String code) => const <String>{
+  'UNKNOWN_FIELD',
+  'SOURCE_ONLY_FIELD',
+  'EXPERIMENTAL_UNKNOWN_FIELD',
+  'FEATURE_UNKNOWN',
+  'SKILL_CONFIG_UNKNOWN',
+  'SKILLS_BUNDLED_UNKNOWN',
+  'SKILLS_UNKNOWN',
+}.contains(code);
 
 String _profile(AgentHarness harness) => switch (harness) {
   AgentHarness.claude => 'claude-agent-native-v1',

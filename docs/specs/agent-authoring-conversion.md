@@ -86,7 +86,11 @@ is `include` (base followed by explicit parts), `retain` (base only), or
 `replace` (explicit parts only). Conflicting base/explicit fields produce a
 complete not-ready plan until a field-specific `field:<name>` decision is
 present. Unknown/source-only target fields likewise require explicit
-resolution; new credential literals are refused.
+resolution; new credential literals are refused. Changes to inherited native
+references require separate impact decisions: `reference:<kind>:<old>:<new>`
+for an explicit rename, or `reference:<kind>:<name>:add` / `:remove` for
+additions and removals. Generic publication approval does not substitute for
+these decisions.
 
 ## Conversion request and field account
 

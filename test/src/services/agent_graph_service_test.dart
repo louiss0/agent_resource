@@ -18,6 +18,7 @@ void main() {
 name: reviewer
 description: Reviews.
 model: claude-sonnet
+tools: [Read]
 skills: [missing-skill]
 mcpServers: [docs]
 ---
@@ -40,12 +41,24 @@ Review.
             report.edges.map((edge) => edge['kind']),
             containsAll(<String>['model', 'skill-preload', 'mcp-association']),
           );
+          expect(
+            report.edges.every(
+              (edge) => edge['profile'] == 'claude-agent-native-v1',
+            ),
+            isTrue,
+          );
           final skillNode = report.nodes.singleWhere(
             (node) => node['id'] == 'skill:missing-skill',
           );
           expect(skillNode['resolutionBase'], sandbox.path);
           expect(skillNode['coverage'], 'missing');
           expect(report.exposureNotes, isNotEmpty);
+          final toolExposure = report.exposureNotes.singleWhere(
+            (note) => note['kind'] == 'tool-allowlist',
+          );
+          expect(toolExposure['sourceProfile'], 'claude-agent-native-v1');
+          expect(toolExposure['conditions'], isA<List<Object?>>());
+          expect(toolExposure['contraryEvidence'], isA<List<Object?>>());
           expect(report.toJson().toString(), isNot(contains('Review.')));
         } finally {
           sandbox.deleteSync(recursive: true);

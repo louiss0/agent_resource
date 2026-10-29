@@ -57,5 +57,51 @@ Private instructions.
         }
       },
     );
+
+    test('a missing required preload makes the inspection unready', () async {
+      final sandbox = await Directory.systemTemp.createTemp(
+        'agent-graph-command-',
+      );
+      try {
+        final source = File(p.join(sandbox.path, 'reviewer.md'))
+          ..writeAsStringSync('''---
+name: reviewer
+description: Reviews.
+skills: [missing-skill]
+---
+Review.
+''');
+        final result = await createExecutor().fake().execute([
+          'agent',
+          'inspect',
+          source.path,
+          '--harness',
+          'claude',
+          '--cwd',
+          '${sandbox.path}${p.separator}',
+          '--format',
+          'json',
+        ]);
+
+        expect(
+          result,
+          isA<MambaSuccessResult>().having(
+            (value) => value.exitCode,
+            'exit code',
+            0,
+          ),
+          reason: result is MambaFailureResult ? result.message : null,
+        );
+        final report = jsonDecode(
+          (result as MambaSuccessResult).output!,
+        ) as Map<String, Object?>;
+        final data = report['data']! as Map<String, Object?>;
+        final graph = data['graph']! as Map<String, Object?>;
+        expect(graph['ready'], isFalse);
+        expect(data['ready'], isFalse);
+      } finally {
+        await sandbox.delete(recursive: true);
+      }
+    });
   });
 }

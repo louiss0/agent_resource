@@ -171,6 +171,7 @@ interface class AgentGraphService {
         'from': bindingId,
         'to': rootId,
         'kind': 'binding',
+        'profile': inspection.profile,
         'provenance': <String, Object?>{
           'configFile': config,
           'roleKey': binding['roleKey'],
@@ -277,6 +278,7 @@ interface class AgentGraphService {
           'from': work.id,
           'to': id,
           'kind': relationship,
+          'profile': inspection.profile,
           'provenance': <String, Object?>{
             'definitionFile': definition,
             'binding': binding,
@@ -330,6 +332,9 @@ interface class AgentGraphService {
           'kind': capability['kind'],
           'name': capability['name'],
           'provenance': capability['label'],
+          'sourceProfile': inspection.profile,
+          'conditions': capability['conditions'],
+          'contraryEvidence': capability['contraryEvidence'],
           'note':
               '${capability['label']} ${capability['kind']} declaration from '
               '${inspection.profile}; runtime availability and enforcement are not verified.',
@@ -339,6 +344,15 @@ interface class AgentGraphService {
           'kind': reference['kind'],
           'name': reference['name'],
           'provenance': reference['label'],
+          'sourceProfile': inspection.profile,
+          'conditions': inspection.parentRequirements,
+          'contraryEvidence': inspection.diagnostics
+              .where(
+                (diagnostic) =>
+                    diagnostic.severity == AgentDiagnosticSeverity.error,
+              )
+              .map((diagnostic) => diagnostic.toJson())
+              .toList(),
           'note':
               '${reference['label']} ${reference['kind']} association from '
               '${inspection.profile}; no runtime connection or availability probe was performed.',
