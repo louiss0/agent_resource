@@ -118,10 +118,27 @@ $privateInstruction
       'Unexpected inspect envelope.',
       inspected,
     );
+    final inspectionData = inspection['data']! as Map<String, Object?>;
+    final graph = inspectionData['graph'];
     _expect(
-      (inspection['data']! as Map<String, Object?>)['graph']
-          is Map<String, Object?>,
+      graph is Map<String, Object?>,
       'Graph evidence missing.',
+      inspected,
+    );
+    final graphData = graph as Map<String, Object?>;
+    _expect(
+      graphData['runtimeVerification'] == 'notPerformed',
+      'Graph evidence claimed runtime verification.',
+      inspected,
+    );
+    final exposureNotes = (graphData['exposureNotes']! as List<Object?>)
+        .cast<Map<String, Object?>>();
+    _expect(
+      exposureNotes.isNotEmpty &&
+          exposureNotes.every(
+            (note) => note['sourceProfile'] == 'claude-agent-native-v1',
+          ),
+      'Graph exposure notes lacked source-qualified provenance.',
       inspected,
     );
 
@@ -223,6 +240,45 @@ $privateInstruction
       ),
       'Compose apply did not preserve ordered instructions.',
       composeApply.process,
+    );
+
+    const cloneInstruction = 'CLONE-INSTRUCTION-RELEASE-GATE';
+    final cloneSource = File(p.join(sandbox.path, 'clone-source.md'))
+      ..writeAsStringSync('''---
+name: release-clone
+description: Clone lifecycle fixture.
+---
+$cloneInstruction
+''');
+    const cloneOutput = '.claude/agents/release-clone.md';
+    final cloneRequest = File(p.join(sandbox.path, 'clone.json'))
+      ..writeAsStringSync(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 1,
+          'operation': 'clone',
+          'source': <String, Object?>{
+            'kind': 'native-file',
+            'path': cloneSource.path,
+            'harness': 'claude',
+          },
+          'target': <String, Object?>{
+            'harness': 'claude',
+            'output': cloneOutput,
+          },
+          'context': <String, Object?>{'workingDirectory': './'},
+        }),
+      );
+    final cloned = File(p.join(work.path, cloneOutput));
+    final cloneApply = await planAndApply('clone', cloneRequest, cloned);
+    _expect(
+      cloneApply.report['command'] == 'agent clone',
+      'Clone apply leaked another command identity.',
+      cloneApply.process,
+    );
+    _expect(
+      cloned.readAsStringSync().contains(cloneInstruction),
+      'Clone apply lost the source instructions.',
+      cloneApply.process,
     );
 
     final missingPreload = File(p.join(sandbox.path, 'missing-preload.md'))
@@ -435,6 +491,131 @@ Review.
       editApplied,
     );
 
+    final settings = File(p.join(work.path, '.claude', 'settings.json'))
+      ..createSync(recursive: true)
+      ..writeAsStringSync('''
+{
+  "model": "sonnet",
+  "unrelated": "keep-me"
+}
+''');
+    final settingsBefore = settings.readAsBytesSync();
+    const parentSource = <String, Object?>{
+      'harness': 'claude',
+      'scope': 'project',
+      'layer': 'project',
+      'file': '.claude/settings.json',
+      'adopt': true,
+    };
+    const parentChanges = <Object?>[
+      <String, Object?>{'unit': 'model', 'action': 'set', 'value': 'opus'},
+    ];
+    final parentPlanRequest = File(p.join(sandbox.path, 'parent-plan.json'))
+      ..writeAsStringSync(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 1,
+          'operation': 'plan',
+          'source': parentSource,
+          'changes': parentChanges,
+        }),
+      );
+    final parentPlanned = await run('built-parent-plan', work, [
+      'agent',
+      'config',
+      'plan',
+      '--request',
+      parentPlanRequest.path,
+      ...context,
+    ]);
+    _expect(
+      parentPlanned.exitCode == 0,
+      'Built parent planning failed.',
+      parentPlanned,
+    );
+    _expect(
+      base64Encode(settings.readAsBytesSync()) == base64Encode(settingsBefore),
+      'Parent planning wrote the settings document.',
+      parentPlanned,
+    );
+    final parentPlanData =
+        _json(parentPlanned)['data']! as Map<String, Object?>;
+    final parentApplyRequest = File(p.join(sandbox.path, 'parent-apply.json'))
+      ..writeAsStringSync(
+        jsonEncode(<String, Object?>{
+          'schemaVersion': 1,
+          'operation': 'apply',
+          'source': parentSource,
+          'changes': parentChanges,
+          'planId': parentPlanData['planId'],
+          'clientsStopped': true,
+        }),
+      );
+    final parentApplied = await run('built-parent-apply', work, [
+      'agent',
+      'config',
+      'apply',
+      '--request',
+      parentApplyRequest.path,
+      '--yes',
+      '--ack-clients-stopped',
+      ...context,
+    ]);
+    _expect(
+      parentApplied.exitCode == 0,
+      'Built parent apply failed.',
+      parentApplied,
+    );
+    final parentDecoded =
+        jsonDecode(settings.readAsStringSync()) as Map<String, Object?>;
+    _expect(
+      parentDecoded['model'] == 'opus' &&
+          parentDecoded['unrelated'] == 'keep-me',
+      'Parent patch did not preserve unrelated settings.',
+      parentApplied,
+    );
+    final settingsAfterApply = settings.readAsBytesSync();
+    final parentUnackedRequest =
+        File(p.join(sandbox.path, 'parent-unacked.json'))..writeAsStringSync(
+          jsonEncode(<String, Object?>{
+            'schemaVersion': 1,
+            'operation': 'apply',
+            'source': parentSource,
+            'changes': parentChanges,
+            'planId': parentPlanData['planId'],
+            'clientsStopped': false,
+          }),
+        );
+    final parentUnacked = await run('built-parent-refusal', work, [
+      'agent',
+      'config',
+      'apply',
+      '--request',
+      parentUnackedRequest.path,
+      '--yes',
+      ...context,
+    ]);
+    _expect(
+      parentUnacked.exitCode == 4,
+      'Parent apply without acknowledgement did not refuse with status 4.',
+      parentUnacked,
+    );
+    _expect(
+      parentUnacked.stderr.contains('stopped-client acknowledgement'),
+      'Parent acknowledgement refusal did not name the missing acknowledgement.',
+      parentUnacked,
+    );
+    _expect(
+      parentUnacked.stdout.isEmpty,
+      'Parent acknowledgement refusal emitted stdout.',
+      parentUnacked,
+    );
+    _expect(
+      base64Encode(settings.readAsBytesSync()) ==
+          base64Encode(settingsAfterApply),
+      'Parent acknowledgement refusal changed the settings document.',
+      parentUnacked,
+    );
+
     if (Platform.isWindows) {
       await _proveRestoredFailure(
         sandbox: sandbox,
@@ -462,6 +643,7 @@ Review.
         );
       }
     }
+    await _boundRoleConversion(sandbox: sandbox, home: home, run: run);
 
     final skillSource = Directory(p.join(sandbox.path, 'skill-copy'))
       ..createSync();
@@ -516,6 +698,32 @@ Replacement body.
       ...context,
     ]);
     _expect(backups.exitCode == 0, 'Skill backup listing failed.', backups);
+    final skillBackup =
+        ((_json(backups)['data']! as Map<String, Object?>)['backups']!
+                as List<Object?>)
+            .cast<Map<String, Object?>>()
+            .firstWhere(
+              (backup) => backup['installationId'] == skillId,
+              orElse: () => throw StateError(
+                'No retained backup was listed for the replaced Skill.',
+              ),
+            );
+    final restored = await run('built-skill-backup-restore', work, [
+      'skill',
+      'backup',
+      'restore',
+      skillBackup['backupId']! as String,
+      '--yes',
+      ...context,
+    ]);
+    _expect(restored.exitCode == 0, 'Skill backup restore failed.', restored);
+    _expect(
+      File(p.join(_singleEntryPath(skillInstalled), 'SKILL.md'))
+          .readAsStringSync()
+          .contains('Original body.'),
+      'Skill backup restore did not return the retained prior content.',
+      restored,
+    );
     final adopted = Directory(
       p.join(work.path, '.claude', 'skills', 'release-adopted'),
     )..createSync(recursive: true);
@@ -1011,16 +1219,7 @@ $instructions''',
         ],
       }),
     );
-  final context = <String>[
-    '--cwd',
-    '${project.path}${p.separator}',
-    '--project-root',
-    '${project.path}${p.separator}',
-    '--home',
-    '${home.path}${p.separator}',
-    '--format',
-    'json',
-  ];
+  final context = _contextArgs(project, home);
   final before = _snapshot(project);
   final planned = await run('built-convert-$source-to-$target-plan', project, [
     'agent',
@@ -1157,6 +1356,145 @@ const _conversionModels = <String, String>{
   'pi': 'kimi-coding/k3',
 };
 
+Future<void> _boundRoleConversion({
+  required Directory sandbox,
+  required Directory home,
+  required Future<CliProcessResult> Function(
+    String scenario,
+    Directory cwd,
+    List<String> arguments, {
+    String? input,
+  })
+  run,
+}) async {
+  final root = Directory(p.join(sandbox.path, 'bound-conversion'))
+    ..createSync();
+  final project = Directory(p.join(root.path, 'project'))..createSync();
+  final codex = Directory(p.join(project.path, '.codex'))..createSync();
+  final config = File(p.join(codex.path, 'config.toml'))
+    ..writeAsStringSync('''
+[agents.release-bound]
+description = "Bound role fixture."
+config_file = "roles/release-bound.toml"
+''');
+  final role = File(p.join(codex.path, 'roles', 'release-bound.toml'))
+    ..createSync(recursive: true)
+    ..writeAsStringSync(
+      'developer_instructions = "Bound role instructions."\n',
+    );
+  final configBytes = config.readAsBytesSync();
+  final roleBytes = role.readAsBytesSync();
+  final output = File(
+    p.join(project.path, '.claude', 'agents', 'release-bound.md'),
+  );
+  final request = File(p.join(root.path, 'request.json'))
+    ..writeAsStringSync(
+      jsonEncode(<String, Object?>{
+        'schemaVersion': 1,
+        'operation': 'convert',
+        'source': <String, Object?>{
+          'kind': 'codex-role',
+          'configFile': '.codex/config.toml',
+          'roleKey': 'release-bound',
+        },
+        'target': <String, Object?>{
+          'harness': 'claude',
+          'output': '.claude/agents/release-bound.md',
+        },
+        'context': <String, Object?>{'workingDirectory': './'},
+        'definition': <String, Object?>{
+          'model': 'claude-sonnet',
+          'effort': 'high',
+          'tools': <Object?>['Read'],
+        },
+        'decisions': <Object?>['map:model', 'map:effort', 'map:tools'],
+      }),
+    );
+  final context = _contextArgs(project, home);
+  final before = _snapshot(project);
+  final planned = await run('built-bound-convert-plan', project, [
+    'agent',
+    'convert',
+    request.path,
+    ...context,
+  ]);
+  _expect(
+    planned.exitCode == 0,
+    'Bound-role conversion planning failed.',
+    planned,
+  );
+  _expect(
+    _json(planned)['command'] == 'agent convert',
+    'Bound-role conversion plan used another command identity.',
+    planned,
+  );
+  _expect(
+    _snapshot(project).toString() == before.toString(),
+    'Bound-role conversion planning wrote artifacts.',
+    planned,
+  );
+  final planData = _json(planned)['data']! as Map<String, Object?>;
+  _expect(
+    planData['ready'] == true &&
+        planData['sourceForm'] == 'codex-config-bound-role',
+    'Bound-role conversion did not retain its binding provenance.',
+    planned,
+  );
+  final applied = await run('built-bound-convert-apply', project, [
+    'agent',
+    'convert',
+    request.path,
+    '--apply',
+    '--plan-id',
+    planData['planId']! as String,
+    '--yes',
+    ...context,
+  ]);
+  _expect(
+    applied.exitCode == 0,
+    'Bound-role conversion apply failed.',
+    applied,
+  );
+  _expect(
+    applied.stderr.isEmpty,
+    'Bound-role conversion apply wrote stderr.',
+    applied,
+  );
+  _expect(
+    _json(applied)['outcome'] == 'converted',
+    'Bound-role conversion apply reported an unexpected outcome.',
+    applied,
+  );
+  _expect(
+    output.existsSync() &&
+        output.readAsStringSync().contains('Bound role instructions.'),
+    'Bound-role conversion omitted its instruction text.',
+    applied,
+  );
+  _expect(
+    base64Encode(config.readAsBytesSync()) == base64Encode(configBytes) &&
+        base64Encode(role.readAsBytesSync()) == base64Encode(roleBytes),
+    'Bound-role conversion modified its declaring configuration.',
+    applied,
+  );
+  final validated = await run('built-bound-convert-validate', project, [
+    'agent',
+    'validate',
+    '.claude/agents/release-bound.md',
+    '--harness',
+    'claude',
+    '--cwd',
+    '${project.path}${p.separator}',
+    '--format',
+    'json',
+  ]);
+  _expect(
+    validated.exitCode == 0,
+    'Published bound-role conversion was invalid.',
+    validated,
+  );
+}
+
 Map<String, String> _snapshot(Directory root) {
   final entries = <String, String>{'.': 'directory'};
   void visit(Directory directory) {
@@ -1193,12 +1531,31 @@ Future<bool> _directoryLinkCapability(Directory sandbox) async {
   }
 }
 
-String _installationId(CliProcessResult result) {
-  final data = _json(result)['data']! as Map<String, Object?>;
-  final unit =
-      (data['units']! as List<Object?>).single! as Map<String, Object?>;
-  return (unit['installationIds']! as List<Object?>).single! as String;
-}
+String _installationId(CliProcessResult result) =>
+    (_singleUnit(result)['installationIds']! as List<Object?>).single!
+        as String;
+
+Map<String, Object?> _singleUnit(CliProcessResult result) =>
+    ((_json(result)['data']! as Map<String, Object?>)['units']!
+                as List<Object?>)
+            .single!
+        as Map<String, Object?>;
+
+String _singleEntryPath(CliProcessResult result) =>
+    ((_singleUnit(result)['entries']! as List<Object?>).single!
+            as Map<String, Object?>)['path']!
+        as String;
+
+List<String> _contextArgs(Directory project, Directory home) => <String>[
+  '--cwd',
+  '${project.path}${p.separator}',
+  '--project-root',
+  '${project.path}${p.separator}',
+  '--home',
+  '${home.path}${p.separator}',
+  '--format',
+  'json',
+];
 
 Map<String, Object?> _json(CliProcessResult result) {
   try {

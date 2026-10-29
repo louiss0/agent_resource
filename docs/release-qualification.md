@@ -35,13 +35,17 @@ observed true directory-symlink creation and built-production statuses 0
 through 7, including a real restored
 commit failure and committed-cleanup-pending outcome, schema-version-2 native
 Agent and Skill installation, canonical content/exposure publication, and all
-six conversion plan/apply/validate workflows. Its built-artifact blockers are
-cleared. macOS and Linux evidence must still come from their native CI jobs,
-not be inferred from Windows. Real terminal/PTY qualification and TLS
-credential-forwarding integration evidence also remain open; scripted byte
-streams and plaintext local fixtures are not substitutes. A final approval
-requires reviewing all three same-revision bundles and closing every mandatory
-blocker.
+six conversion plan/apply/validate workflows. The gate now also exercises a
+definition-only clone apply, a bound Codex role conversion with preserved
+config/role bytes, a Claude parent settings plan/apply with unrelated-sentinel
+preservation and acknowledgement refusal, a retained Skill backup restore, and
+source-qualified graph exposure evidence marked `notPerformed` for runtime
+verification. Its built-artifact blockers are cleared. macOS and Linux evidence
+must still come from their native CI jobs, not be inferred from Windows. Real
+terminal/PTY qualification and TLS credential-forwarding integration evidence
+also remain open; scripted byte streams and plaintext local fixtures are not
+substitutes. A final approval requires reviewing all three same-revision
+bundles and closing every mandatory blocker.
 
 Qualification does not authorize tags, releases, signing, distribution,
 production cutover, live accounts, or harness installation. Offline native
@@ -98,18 +102,18 @@ three-OS CI matrix plus the per-job sanitized bundle.
 | Requirement | Observable assertion and seam | Native/artifact execution |
 | --- | --- | --- |
 | AR-AUTH-001 | `agent_create_command_test.dart`: canonical positional create, native fields, privacy, no-write plan | Command; create/convert artifact workflows |
-| AR-AUTH-002 | `agent_clone_test.dart`: separate definition-only clone, source provenance/bytes, no artifacts | Command; native CI suite |
+| AR-AUTH-002 | `agent_clone_test.dart`: separate definition-only clone, source provenance/bytes, no artifacts | Command and artifact clone apply; native CI suite |
 | AR-AUTH-003 | `agent_edit_test.dart`: recorded unchanged identity and no-write managed edit | Command; lifecycle/recovery native suite |
 | AR-AUTH-004 | `agent_compose_test.dart`: ordered instructions, stable plan, validated apply | Command and artifact apply |
 | AR-AUTH-005 | `agent_authoring_service_test.dart`: conflicting selections require explicit field decisions | Operation; all native jobs |
 | AR-PLAN-001 | Compose/conversion suites: same observations give stable IDs; changed request invalidates approval | Command/operation; artifact apply |
 | AR-PLAN-002 | Planning snapshots show no target, state, locks, journals, staging, or backups | Command/operation and artifact full-project snapshots |
 | AR-PRIV-001 | Default reports omit instruction sentinels; explicit show-instructions is opt-in | Command and artifact stdout assertions; sanitized bundles |
-| AR-GRAPH-001 | `agent_graph_command_test.dart`: typed graph plus source-qualified exposure evidence | Command and built inspect graph evidence |
+| AR-GRAPH-001 | `agent_graph_command_test.dart`: typed graph plus source-qualified exposure evidence | Command and built inspect graph with source-qualified exposure notes and `runtimeVerification: notPerformed` |
 | AR-GRAPH-002 | `agent_graph_service_test.dart`: missing preload blocks, absent exclusion does not | Operation on every native OS |
 | AR-GRAPH-003 | Graph coverage/budgets fail closed; no prose/script inference or runtime probes | Native parser/graph suites; runtime verification marked `notPerformed` |
 | AR-CONV-001…006 | `agent_conversion_service_test.dart`: each Claude/Codex/Pi direction produces and publishes valid native output with exact instructions | Operation and six-direction artifact plan/apply/validate on every OS |
-| AR-CONV-007 | Bound Codex conversion retains role/config provenance and exact source bytes | Operation on every native OS |
+| AR-CONV-007 | Bound Codex conversion retains role/config provenance and exact source bytes | Operation and artifact bound-role plan/apply on every native OS |
 | AR-CONV-008 | Conversion command accounts represented/altered/omitted fields and preserves source | Command; per-field results in artifact plans |
 | AR-LIFE-001 | Existing Skill/Agent install/adopt/replace/remove/backup/recovery suites assert entries, ownership, backups, and sentinels | Existing command/operation native suite |
 | AR-INSTALL-001 | `skill_install_test.dart`, `agent_install_test.dart`, and catalog suites cover explicit unattended choices, curated TOML, full preflight, schema-v2 envelopes, and no-effect rejection | Command and built-artifact schema-v2 install scenarios |
@@ -119,8 +123,8 @@ three-OS CI matrix plus the per-job sanitized bundle.
 | AR-MIG-001 | `docs/migrate-interactive-installation.md` requires source/evidence verification, retained backups, deliberate non-atomic removal/reinstall, and source-target preservation | Documentation review; no automatic conversion or origin inference |
 | AR-TERM-001 | interact2 MultiSelect has no bulk Select All action (not required by this contract); Ctrl+C exits with status 1 rather than typed cancellation; EOF, terminal restoration, long-list/resize behavior, and cross-platform PTY behavior remain unverified | Real Windows/macOS/Linux PTY acceptance and the remaining interaction checks are mandatory evidence |
 | AR-LINK-001 | True-link entry ownership, target drift/broken targets, Windows subtype/privilege behavior | Existing native-link suite plus measured artifact-gate capability |
-| AR-PARENT-001 | Parent selected-unit patches preserve unrelated bytes/settings and require acknowledgement | Existing parent/bound-role native suite; canonical/legacy CLI aliases |
-| AR-REC-001 | Deterministic fault/restart tests assert restored, recovery-required, cleanup-pending, occupants, and corrupt evidence | Existing lifecycle/parent fault suites plus real Windows statuses 5/6 and protected journal/baseline assertions |
+| AR-PARENT-001 | Parent selected-unit patches preserve unrelated bytes/settings and require acknowledgement | Existing parent/bound-role native suite; artifact parent plan/apply with unrelated-sentinel preservation and status-4 acknowledgement refusal; canonical/legacy CLI aliases |
+| AR-REC-001 | Deterministic fault/restart tests assert restored, recovery-required, cleanup-pending, occupants, and corrupt evidence | Existing lifecycle/parent fault suites with protected journal/baseline assertions, real Windows statuses 5/6, and artifact Skill backup restore |
 | AR-STATUS-001 | Real statuses 0, 1, 2, 3, 4, and 7 use correct streams/statuses | Built artifact on every native OS |
 | AR-STATUS-002 | A read-only ledger produces real post-publication restored status 5; a read-only managed Agent produces committed-cleanup-pending status 6 while preserving its baseline | Observed on native Windows; deferred on other jobs, never replaced with injected-fault evidence |
 | AR-BOUND-001 | Existing exact/one-over parser, inventory, tree, parent, request, management, graph, and aggregate budgets | Native full suite; over-cap artifact status 3 |
