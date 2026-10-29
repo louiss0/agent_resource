@@ -94,7 +94,11 @@ agent_resource agent install <native-file> --source-kind resource --profile clau
 ```
 
 Use `--source-kind collection` with repeated `--resource <catalog-id>` or
-`--all-resources` for a curated collection instead. A direct Agent file
+`--all-resources` for a curated collection instead. Skill repositories without
+a manifest are now discovered under `skills/` and conventional harness folders,
+with bounded selected-tree fallback when those folders are absent. Use exact
+source-relative paths with `--resource` or explicitly select `--all-resources`.
+GitHub `owner/repo` and root repository URLs use Git acquisition. A direct Agent file
 requires one target consistent with its profile. Add `--format json` for the
 schema-version-2 success envelope; JSON remains unattended and requires the
 same explicit choices. Omit `--yes` only for `--dry-run`. On a usable text

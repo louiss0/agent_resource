@@ -95,12 +95,32 @@ agent_resource agent install [source]
   [--dry-run] [--yes] [--format text|json]
 ```
 
-A source can be an explicit local path, supported Git locator, direct download,
-or archive. `--ref` is Git-only; `--subpath` selects one source-relative root
-without broadening the search. `--source-kind` distinguishes a curated
-collection from an exact resource. Catalog selection repeats `--resource` or
-uses `--all-resources`. No heuristic source-tree discovery or automatic
-dependency installation occurs.
+A source can be an explicit local path, Git locator, GitHub `owner/repo`
+shorthand or root repository URL (with or without `.git`), direct download,
+or archive. `--ref` is Git-only; `--subpath` bounds discovery to one selected
+source-relative root. Existing local paths take precedence over shorthand;
+use `./` to explicitly request a local path.
+
+For Skills, repositories are acquired into a temporary inert workspace, then
+searched for exact `SKILL.md` markers. Without a catalog or exact root Skill,
+discovery recursively searches `skills/`, `.agents/skills/`, `.claude/skills/`,
+and `.codex/skills/`. If none exists, it searches the selected tree instead.
+Hidden descendants, `node_modules`, and `vendor` are skipped; links are not
+followed, and traversal stops at each Skill package. Unrelated Git symlinks
+are left unmaterialized; selected packages containing links are refused rather
+than installed incomplete. Limits are depth 16,
+2,000 directories, 20,000 entries and 1,000 Skills. Discovered selection IDs
+are source-relative directory paths, such as `skills/category/review`.
+Interactive collections show a picker; automation requires exact IDs through
+`--resource` or explicit `--all-resources`. `--yes` never selects resources.
+A present `agent-resources.toml` stays authoritative. Agents remain
+catalog/exact-file only. No automatic dependency installation occurs.
+
+```text
+dart run bin/agent_resource.dart skill install mattpocock/skills
+dart run bin/agent_resource.dart skill install https://github.com/mattpocock/skills/
+dart run bin/agent_resource.dart skill install mattpocock/skills --scope user --target codex --method canonical --all-resources --dry-run
+```
 
 Unattended and JSON invocations require an explicit source and scope, consuming
 targets, catalog selection where applicable, and `--yes` for the current final
@@ -129,7 +149,8 @@ basename is preserved at the application-owned native destination. Agent
 installation does not create links, register Codex roles, or edit parent
 configuration.
 
-A collection has an `agent-resources.toml` at its selected root. Its version-1
+A curated collection has an `agent-resources.toml` at its selected root.
+Skill collections can alternatively use the discovery conventions above. Its version-1
 TOML schema uses exact IDs and safe source-relative paths; Agent entries must
 declare their profile:
 

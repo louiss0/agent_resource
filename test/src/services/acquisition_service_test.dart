@@ -174,6 +174,62 @@ void main() {
     );
 
     test(
+      'omits Git symlinks and records their source-relative paths',
+      () async {
+        final fixture = await _GitFixture.create(sandbox);
+        File(p.join(fixture.repository.path, 'ordinary.txt'))
+            .writeAsStringSync('safe');
+        fixture.run(['add', 'ordinary.txt']);
+        final blob = fixture.run(['hash-object', '-w', 'ordinary.txt']).trim();
+        fixture.run([
+          'update-index',
+          '--add',
+          '--cacheinfo',
+          '120000,$blob,AGENTS.md',
+        ]);
+        fixture.run([
+          'update-index',
+          '--add',
+          '--cacheinfo',
+          '120000,$blob,skills/review/link',
+        ]);
+        fixture.run(['commit', '-m', 'links']);
+        fixture.publish();
+        await fixture.serve();
+        addTearDown(fixture.dispose);
+
+        final workspace = await AcquisitionService().acquire(
+          request(fixture.locator),
+        );
+        addTearDown(workspace.close);
+        expect(
+          workspace.omittedLinkPaths,
+          unorderedEquals(['AGENTS.md', 'skills/review/link']),
+        );
+        expect(
+          FileSystemEntity.typeSync(
+            p.join(workspace.selectedRoot, 'AGENTS.md'),
+            followLinks: false,
+          ),
+          FileSystemEntityType.notFound,
+        );
+        expect(
+          FileSystemEntity.typeSync(
+            p.join(workspace.selectedRoot, 'skills', 'review', 'link'),
+            followLinks: false,
+          ),
+          FileSystemEntityType.notFound,
+        );
+        expect(
+          File(p.join(workspace.selectedRoot, 'ordinary.txt'))
+              .readAsStringSync(),
+          'safe',
+        );
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
+
+    test(
       'downloads one bounded direct file with sanitized digest provenance',
       () async {
         final bytes = utf8.encode('name: review\n');
@@ -570,6 +626,76 @@ void main() {
             ),
           ),
         );
+      },
+    );
+
+    test('recognizes GitHub roots and shorthand as Git sources', () async {
+      for (final locator in [
+        'https://github.com/example/repository/',
+        'https://github.com/example/repository',
+        'example/repository',
+        'https://github.com/example/repository.git',
+        'git+https://github.com/example/repository',
+      ]) {
+        await expectLater(
+          AcquisitionService().acquire(
+            request(locator, ref: 'main', deadline: Duration.zero),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('deadline'),
+            ),
+          ),
+          reason: locator,
+        );
+      }
+    });
+
+    test(
+      'prefers existing relative paths and explicit paths over shorthand',
+      () async {
+        final local = Directory(p.join(sandbox.path, 'example', 'repository'))
+          ..createSync(recursive: true);
+        for (final locator in ['example/repository', './example/repository']) {
+          final workspace = await AcquisitionService().acquire(
+            request(locator),
+          );
+          expect(workspace.provenance.kind, AcquisitionLocatorKind.local);
+          expect(workspace.selectedRoot, local.path);
+          await workspace.close();
+        }
+        await expectLater(
+          AcquisitionService().acquire(request('./missing/repository')),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('does not exist'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'rejects GitHub tree and blob pages with repository guidance',
+      () async {
+        for (final page in ['tree', 'blob']) {
+          await expectLater(
+            AcquisitionService().acquire(
+              request('https://github.com/example/repository/$page/main/file'),
+            ),
+            throwsA(
+              isA<MambaException>().having(
+                (error) => error.message,
+                'message',
+                allOf(contains('--ref'), contains('--subpath')),
+              ),
+            ),
+          );
+        }
       },
     );
 

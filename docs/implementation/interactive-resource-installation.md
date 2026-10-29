@@ -25,7 +25,7 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 ## Architecture invariants
 
 - Separate concrete `skill install` and `agent install` commands; no root install alias, universal resource manager, second installer, or borrowed Vercel pipeline.
-- Curated `agent-resources.toml` only; exact resources are explicit. No heuristic scanning or implicit dependencies.
+- Amended after repository-discovery feedback: curated `agent-resources.toml` stays authoritative; exact resources are explicit. Skill collections without a catalog use bounded conventional-folder discovery (see spec §3); Agents remain curated/exact-file only. No implicit dependencies.
 - Existing lifecycle/state service remains the sole transaction/recovery authority.
 - Canonical skills own content plus tracked exposures; copies and source links remain distinct. Agents remain native file copies.
 - Mamba owns delivery. Successful text/JSON is returned; aggregate handled failures throw `MambaException`.

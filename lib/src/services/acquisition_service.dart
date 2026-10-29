@@ -98,12 +98,16 @@ final class AcquisitionWorkspace {
     required this.selectedRoot,
     required this.selectedFile,
     required this.provenance,
+    this.omittedLinkPaths = const [],
     this._temporaryDirectory,
   });
 
   final String selectedRoot;
   final String? selectedFile;
   final AcquisitionProvenance provenance;
+
+  /// Source-root-relative Git symlinks omitted from the materialized tree.
+  final List<String> omittedLinkPaths;
   final Directory? _temporaryDirectory;
   var _closed = false;
 
@@ -164,13 +168,44 @@ interface class AcquisitionService {
     if (locator.trim().isEmpty) {
       throw MambaException('The installation source must not be blank.');
     }
-    if (_isLocal(locator)) {
+    final shorthand = RegExp(
+      r'^[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*$',
+    ).hasMatch(locator);
+    final localExists =
+        FileSystemEntity.typeSync(
+          p.join(request.cwd, locator),
+          followLinks: false,
+        ) !=
+        FileSystemEntityType.notFound;
+    if (_isLocal(locator) && (!shorthand || localExists)) {
       if (request.ref != null) {
         throw MambaException('--ref applies only to Git sources.');
       }
       return _local(request);
     }
-    final uri = Uri.tryParse(locator);
+    final uri = Uri.tryParse(
+      shorthand ? 'https://github.com/$locator' : locator,
+    );
+    if (uri != null &&
+        uri.scheme == 'https' &&
+        uri.host.toLowerCase() == 'github.com') {
+      final segments = uri.pathSegments
+          .where((part) => part.isNotEmpty)
+          .toList();
+      if (segments.length > 2 &&
+          (segments[2] == 'tree' || segments[2] == 'blob')) {
+        throw MambaException(
+          'Use the GitHub repository root with --ref and --subpath instead of a tree or blob page.',
+          exitCode: 3,
+        );
+      }
+      if (segments.length == 2 &&
+          !uri.path.contains('//') &&
+          !uri.hasQuery &&
+          !uri.hasFragment) {
+        return _git(request, uri, clock);
+      }
+    }
     if (uri != null && _isGit(uri)) return _git(request, uri, clock);
     if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
       return _http(request, uri, clock);
@@ -187,6 +222,7 @@ interface class AcquisitionService {
     Uri uri,
     Stopwatch clock,
   ) async {
+    _remaining(clock, request.deadline);
     final temporary = await Directory.systemTemp.createTemp(
       'agent-resource-git-',
     );
@@ -244,7 +280,14 @@ interface class AcquisitionService {
         clock,
         request.deadline,
       );
-      _extractArchive(archive, checkout, clock, request.deadline);
+      final omittedLinkPaths = <String>[];
+      _extractArchive(
+        archive,
+        checkout,
+        clock,
+        request.deadline,
+        omittedLinkPaths: omittedLinkPaths,
+      );
       await File(archive).delete();
       await Directory(repository).delete(recursive: true);
       await _validateMaterializedTree(checkout, clock, request.deadline);
@@ -252,6 +295,7 @@ interface class AcquisitionService {
       return AcquisitionWorkspace(
         selectedRoot: selected,
         selectedFile: null,
+        omittedLinkPaths: List.unmodifiable(omittedLinkPaths),
         provenance: AcquisitionProvenance(
           kind: AcquisitionLocatorKind.git,
           requestedLocator: sanitizeLocator(request.locator),
@@ -487,6 +531,7 @@ void _extractArchive(
   Stopwatch clock,
   Duration deadline, {
   String? formatPath,
+  List<String>? omittedLinkPaths,
 }) {
   InputFileStream? input;
   try {
@@ -566,6 +611,10 @@ void _extractArchive(
         );
       }
       final fileType = entry.mode & 0xf000;
+      if (entry.isSymbolicLink && omittedLinkPaths != null) {
+        omittedLinkPaths.add(directoryName);
+        continue;
+      }
       if (entry.isSymbolicLink ||
           (fileType != 0 &&
               fileType != 0x8000 &&

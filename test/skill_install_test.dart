@@ -267,6 +267,336 @@ void main() {
           },
         );
 
+        test('discovers nested skills without a catalog and installs selected content', () async {
+          final repository = Directory(p.join(sandbox.path, 'repository'))
+            ..createSync();
+          for (final path in ['skills/review', 'skills/category/other']) {
+            final directory = Directory(p.join(repository.path, path))
+              ..createSync(recursive: true);
+            final name = p.basename(directory.path);
+            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: $name\ndescription: A skill.\n---\nBody.\n',
+            );
+            File(p.join(directory.path, 'reference.txt'))
+                .writeAsStringSync('Bundled reference');
+          }
+          interaction.resourceSelections.add(['skills/category/other']);
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            repository.path,
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            ...context(),
+            '--yes',
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>().having((r) => r.exitCode, 'status', 0),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          expect((result as MambaSuccessResult).output, contains('installed'));
+          expect(interaction.resourceSelections, isEmpty);
+          expect(
+            File(
+              p.join(
+                project.path,
+                '.agents',
+                'skills',
+                'other',
+                'reference.txt',
+              ),
+            ).readAsStringSync(),
+            'Bundled reference',
+          );
+          expect(
+            Directory(p.join(project.path, '.agents', 'skills', 'review'))
+                .existsSync(),
+            isFalse,
+          );
+        });
+
+        test(
+          'unattended discovery requires explicit resource selection',
+          () async {
+            final repository = Directory(p.join(sandbox.path, 'repository'))
+              ..createSync();
+            final directory = Directory(
+              p.join(repository.path, 'skills', 'review'),
+            )..createSync(recursive: true);
+            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              repository.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--dry-run',
+              '--format',
+              'json',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((r) => r.exitCode, 'status', 1)
+                  .having(
+                    (r) => r.message,
+                    'message',
+                    contains('--resource or --all-resources'),
+                  )
+                  .having((r) => r.output, 'output', isNull)
+                  .having(
+                    (r) => r.error.phase,
+                    'phase',
+                    MambaExecutionPhase.run,
+                  )
+                  .having((r) => r.error.commandPath, 'command', [
+                    'agent_resource',
+                    'skill',
+                    'install',
+                  ]),
+            );
+            expect(project.listSync(recursive: true), isEmpty);
+          },
+        );
+
+        for (final sourcePath in [
+          'skills/category/review',
+          '.agents/skills/review',
+          'packages/tools/review',
+        ]) {
+          test(
+            'discovers $sourcePath with explicit unattended selection',
+            () async {
+              final repository = Directory(p.join(sandbox.path, 'repository'))
+                ..createSync();
+              final directory = Directory(p.join(repository.path, sourcePath))
+                ..createSync(recursive: true);
+              File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
+              final result = await executor().fake().execute([
+                'skill',
+                'install',
+                repository.path,
+                '--resource',
+                sourcePath,
+                '--target',
+                'codex',
+                '--method',
+                'copy',
+                ...context(),
+                '--dry-run',
+                '--format',
+                'json',
+              ]);
+              expect(
+                result,
+                isA<MambaSuccessResult>().having(
+                  (r) => r.exitCode,
+                  'status',
+                  0,
+                ),
+                reason: result is MambaFailureResult ? result.message : null,
+              );
+              final output = jsonDecode(
+                (result as MambaSuccessResult).output!,
+              ) as Map<String, dynamic>;
+              expect(output['outcome'], 'planned');
+              expect(output['data']['units'].single['resourceId'], sourcePath);
+              expect(
+                output['data']['source'].containsKey('configDigest'),
+                isFalse,
+              );
+              expect(project.listSync(recursive: true), isEmpty);
+            },
+          );
+        }
+
+        test(
+          'curated catalog remains authoritative over discovered skills',
+          () async {
+            final repository = Directory(p.join(sandbox.path, 'repository'))
+              ..createSync();
+            final directory = Directory(
+              p.join(repository.path, 'skills', 'review'),
+            )..createSync(recursive: true);
+            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+            File(p.join(repository.path, 'agent-resources.toml'))
+                .writeAsStringSync(
+                  'schema_version = 1\n[[skills]]\nid = "curated-review"\npath = "skills/review"\n',
+                );
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              repository.path,
+              '--all-resources',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--dry-run',
+              '--format',
+              'json',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>().having((r) => r.exitCode, 'status', 0),
+            );
+            final output = jsonDecode(
+              (result as MambaSuccessResult).output!,
+            ) as Map<String, dynamic>;
+            expect(
+              output['data']['units'].single['resourceId'],
+              'curated-review',
+            );
+            expect(output['data']['source']['configDigest'], isNotEmpty);
+          },
+        );
+
+        test('discovery stops at package boundaries and skips hidden dependency trees', () async {
+          final repository = Directory(p.join(sandbox.path, 'repository'))
+            ..createSync();
+          for (final sourcePath in [
+            'skills/review',
+            'skills/review/examples/nested',
+            'skills/.hidden/hidden',
+            'skills/node_modules/dependency',
+          ]) {
+            final directory = Directory(p.join(repository.path, sourcePath))
+              ..createSync(recursive: true);
+            final name = p.basename(directory.path);
+            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+              '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
+            );
+          }
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            repository.path,
+            '--all-resources',
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            ...context(),
+            '--dry-run',
+            '--format',
+            'json',
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>().having((r) => r.exitCode, 'status', 0),
+          );
+          final output = jsonDecode(
+            (result as MambaSuccessResult).output!,
+          ) as Map<String, dynamic>;
+          expect(output['data']['units'], hasLength(1));
+          expect(output['data']['units'].single['resourceId'], 'skills/review');
+        });
+
+        test(
+          'subpath discovery cannot select Skills outside the selected root',
+          () async {
+            final repository = Directory(p.join(sandbox.path, 'repository'))
+              ..createSync();
+            for (final sourcePath in [
+              'packages/chosen/skills/review',
+              'skills/outside',
+            ]) {
+              final directory = Directory(p.join(repository.path, sourcePath))
+                ..createSync(recursive: true);
+              final name = p.basename(directory.path);
+              File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+                '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
+              );
+            }
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              repository.path,
+              '--subpath',
+              'packages/chosen',
+              '--all-resources',
+              '--source-kind',
+              'collection',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--dry-run',
+              '--format',
+              'json',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>().having((r) => r.exitCode, 'status', 0),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final output = jsonDecode(
+              (result as MambaSuccessResult).output!,
+            ) as Map<String, dynamic>;
+            expect(output['data']['units'], hasLength(1));
+            expect(
+              output['data']['units'].single['resourceId'],
+              'skills/review',
+            );
+          },
+        );
+
+        test(
+          'conventional skills folder takes precedence over fallback tree',
+          () async {
+            final repository = Directory(p.join(sandbox.path, 'repository'))
+              ..createSync();
+            for (final sourcePath in ['skills/review', 'examples/outside']) {
+              final directory = Directory(p.join(repository.path, sourcePath))
+                ..createSync(recursive: true);
+              final name = p.basename(directory.path);
+              File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
+                '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
+              );
+            }
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              repository.path,
+              '--all-resources',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--dry-run',
+              '--format',
+              'json',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>().having((r) => r.exitCode, 'status', 0),
+            );
+            final output = jsonDecode(
+              (result as MambaSuccessResult).output!,
+            ) as Map<String, dynamic>;
+            expect(output['data']['units'], hasLength(1));
+            expect(
+              output['data']['units'].single['resourceId'],
+              'skills/review',
+            );
+          },
+        );
+
         test(
           'interactive single-offering collection still requires selection',
           () async {

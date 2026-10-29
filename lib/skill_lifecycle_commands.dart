@@ -102,11 +102,12 @@ final class SkillInstallCommand extends Command {
           'resource': ['all-resources'],
         },
         longDescription:
-            'Install exact or curated Skills with canonical content and tracked '
+            'Install exact, discovered, or curated Skills with canonical content and tracked '
             'exposures (canonical), independent copies (copy), or durable local '
             'source links (source-link). Canonical content uses scope-specific '
             '.agents/skills; Codex consumes it directly and Claude receives a '
-            'managed exposure link. No heuristic scanning, implicit dependency '
+            'managed exposure link. Search skills/ and conventional harness folders '
+            'with bounded recursive fallback. No implicit dependency '
             'installation, source execution, silent link fallback, or remote '
             'source-link is performed. Interactive user scope and canonical '
             'method are disclosed defaults. JSON and unattended execution '
@@ -117,11 +118,12 @@ final class SkillInstallCommand extends Command {
 
   static final _source = NormalPositional.optional(
     'source',
-    description: 'Local path, Git locator, direct download, or archive.',
+    description:
+        'Local path, Git URL, GitHub owner/repo, download, or archive.',
   );
   static final _resources = RepeatableStringOption(
     'resource',
-    description: 'Exact catalog ID; repeat for multiple entries.',
+    description: 'Exact catalog ID or discovered relative path; repeat to select several.',
   );
   static final _targets = RepeatableChoiceOption('target', const [
     InstallationTarget.claude,
@@ -143,7 +145,7 @@ final class SkillInstallCommand extends Command {
   );
   static final _subpath = StringOption(
     'subpath',
-    description: 'Explicit source-relative root; never broadened to a scan.',
+    description: 'Source-relative root; discovery stays within this boundary.',
   );
   static final _sourceKind = ChoiceOption(
     'source-kind',
@@ -164,7 +166,7 @@ final class SkillInstallCommand extends Command {
   static final _readRoots = RepeatableFolderPathOption('read-root');
   static const _allResources = BooleanFlag(
     'all-resources',
-    description: 'Select every curated Skill entry.',
+    description: 'Select every curated or discovered Skill entry.',
   );
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
@@ -178,8 +180,7 @@ final class SkillInstallCommand extends Command {
   String get name => 'install';
 
   @override
-  String get shortDescription =>
-      'Install curated or exact Skills interactively.';
+  String get shortDescription => 'Discover and install Skills interactively.';
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
