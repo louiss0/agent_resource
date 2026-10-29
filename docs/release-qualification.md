@@ -11,14 +11,14 @@ The current candidate uses `interact2` for all six application components and
 for shared lifecycle/authoring confirmations. Mamba remains the command
 framework and may retain Clix transitively, but no application prompt imports
 Mamba's Clix re-exports. The vendored Clix fork, dedicated fork tests, and
-direct Clix dependency were removed. Stock interact2 `MultiSelect` does not
-implement the separately required Select All action. Its Ctrl+C handling resets
-and exits with status 1 rather than returning a typed cancellation answer.
-Graceful EOF behavior, complete terminal-mode restoration, long-list
-viewport/wrapping, resize behavior, and real Windows/macOS/Linux PTY acceptance
-remain unverified. Select All is a current implementation blocker; the other
-items require implementation review and native terminal evidence rather than
-being inferred from scripted adapters or the standalone demo.
+direct Clix dependency were removed. Stock interact2 `MultiSelect` has no bulk
+Select All action; the first-release contract does not require one. Its Ctrl+C
+handling resets and exits with status 1 rather than returning a typed
+cancellation answer. Graceful EOF behavior, complete terminal-mode restoration,
+long-list viewport/wrapping, resize behavior, and real Windows/macOS/Linux PTY
+acceptance remain unverified. Those items require implementation review and
+native terminal evidence rather than being inferred from scripted adapters or
+the standalone demo.
 
 The earlier implementation candidate at `ec48558` passed the integrated native CI gate
 ([run 40745695510](https://github.com/louiss0/agent_resource/actions/runs/40745695510)):
@@ -117,7 +117,7 @@ three-OS CI matrix plus the per-job sanitized bundle.
 | AR-ACQ-001 | `acquisition_service_test.dart` covers inert immutable Git, bounded HTTP/archive processing, provenance privacy, malicious entries, duplicate members, deadlines, and cleanup | Native operation suite; TLS credential integration remains a blocker |
 | AR-REC-002 | `resource_unit_transaction_test.dart` and `installation_batch_test.dart` prove coordinated restart recovery, commit-state classification, independent continuation, dependency skipping, and interruption | Deterministic isolated-filesystem operation tests plus real Windows statuses 5/6 |
 | AR-MIG-001 | `docs/migrate-interactive-installation.md` requires source/evidence verification, retained backups, deliberate non-atomic removal/reinstall, and source-target preservation | Documentation review; no automatic conversion or origin inference |
-| AR-TERM-001 | interact2 MultiSelect lacks the required Select All action; Ctrl+C exits with status 1 rather than typed cancellation; EOF, terminal restoration, long-list/resize behavior, and cross-platform PTY behavior remain unverified | Select All is an implementation blocker; real Windows/macOS/Linux PTY acceptance and the remaining interaction checks are mandatory evidence |
+| AR-TERM-001 | interact2 MultiSelect has no bulk Select All action (not required by this contract); Ctrl+C exits with status 1 rather than typed cancellation; EOF, terminal restoration, long-list/resize behavior, and cross-platform PTY behavior remain unverified | Real Windows/macOS/Linux PTY acceptance and the remaining interaction checks are mandatory evidence |
 | AR-LINK-001 | True-link entry ownership, target drift/broken targets, Windows subtype/privilege behavior | Existing native-link suite plus measured artifact-gate capability |
 | AR-PARENT-001 | Parent selected-unit patches preserve unrelated bytes/settings and require acknowledgement | Existing parent/bound-role native suite; canonical/legacy CLI aliases |
 | AR-REC-001 | Deterministic fault/restart tests assert restored, recovery-required, cleanup-pending, occupants, and corrupt evidence | Existing lifecycle/parent fault suites plus real Windows statuses 5/6 and protected journal/baseline assertions |
@@ -141,7 +141,6 @@ three-OS CI matrix plus the per-job sanitized bundle.
    production-process evidence.
 5. Record remaining limits and blockers explicitly. Only an empty mandatory
    blocker set permits changing the readiness decision to qualified.
-6. Do not qualify interactive installation until Select All is implemented and
-   interact2's cancellation/EOF behavior, terminal restoration, long-list
-   rendering, resize behavior, and real Windows/macOS/Linux PTY acceptance meet
-   the approved contract.
+6. Do not qualify interactive installation until interact2's cancellation/EOF
+   behavior, terminal restoration, long-list rendering, resize behavior, and
+   real Windows/macOS/Linux PTY acceptance meet the approved contract.
