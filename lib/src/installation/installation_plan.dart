@@ -77,6 +77,7 @@ final class InstallationEntryPlan {
     required this.action,
     this.target,
     this.linkTarget,
+    this.nativeLinkKind,
     this.nativeRoot,
     this.nativeDestination,
     this.artifactKind,
@@ -88,6 +89,7 @@ final class InstallationEntryPlan {
   final InstallationEntryAction action;
   final String? target;
   final String? linkTarget;
+  final String? nativeLinkKind;
   final String? nativeRoot;
   final String? nativeDestination;
   final OwnedArtifactKind? artifactKind;
@@ -99,6 +101,7 @@ final class InstallationEntryPlan {
     'action': action.wireName,
     if (target != null) 'target': target,
     if (linkTarget != null) 'linkTarget': linkTarget,
+    if (nativeLinkKind != null) 'nativeLinkKind': nativeLinkKind,
   };
 
   Map<String, Object?> identityJson() => <String, Object?>{
@@ -115,6 +118,7 @@ final class InstallationEntryPlan {
     action: action ?? this.action,
     target: target,
     linkTarget: linkTarget,
+    nativeLinkKind: nativeLinkKind,
     nativeRoot: nativeRoot,
     nativeDestination: nativeDestination,
     artifactKind: artifactKind,

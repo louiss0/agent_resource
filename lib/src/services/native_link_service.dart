@@ -79,7 +79,20 @@ String _windowsDirectoryKind(String path) {
   }
   final buffer = calloc<Uint8>(16384);
   final returned = calloc<Uint32>();
+  final information = calloc<Uint8>(52);
   try {
+    if (_win32.getFileInformation(handle, information) == 0) {
+      throw MambaException(
+        'Could not inspect the Windows directory-link attributes: $path',
+        exitCode: 4,
+      );
+    }
+    if (information.cast<Uint32>().value & 0x10 == 0) {
+      throw MambaException(
+        'The Windows linked entry is not a directory: $path',
+        exitCode: 4,
+      );
+    }
     final ok = _win32.deviceIoControl(
       handle,
       0x000900A8, // FSCTL_GET_REPARSE_POINT
@@ -115,6 +128,7 @@ String _windowsDirectoryKind(String path) {
     // removable; target resolution is a separate observation.
     return 'windows-directory-symlink';
   } finally {
+    calloc.free(information);
     calloc.free(returned);
     calloc.free(buffer);
     _win32.closeHandle(handle);
@@ -243,6 +257,15 @@ final class _Win32Bindings {
           }
         };
       });
+
+  late final int Function(int, Pointer<Uint8>) getFileInformation = (() {
+    final native = _library
+        .lookupFunction<
+          Int32 Function(IntPtr, Pointer<Uint8>),
+          int Function(int, Pointer<Uint8>)
+        >('GetFileInformationByHandle');
+    return native;
+  })();
 
   late final int Function(int) closeHandle = _library
       .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');

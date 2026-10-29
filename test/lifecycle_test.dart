@@ -168,6 +168,17 @@ void main() {
                   (data['units']! as List<Object?>).single!
                       as Map<String, Object?>;
               expect(unit['method'], 'source-link');
+              final entry =
+                  (unit['entries']! as List<Object?>).single!
+                      as Map<String, Object?>;
+              expect(entry['kind'], 'link');
+              expect(entry['target'], 'claude');
+              expect(entry['linkTarget'], source.path);
+              expect(
+                entry['nativeLinkKind'],
+                anyOf('posix-directory-symlink', 'windows-directory-symlink'),
+              );
+              expect(entry['path'], contains('.claude'));
               expect(
                 Directory(p.join(project.path, '.claude')).existsSync(),
                 isFalse,
@@ -177,36 +188,6 @@ void main() {
             }
           },
         );
-
-        test('adoption and restore reject a mode selector', () async {
-          for (final arguments in [
-            [
-              'skill',
-              'adopt',
-              'source${Platform.pathSeparator}',
-              '--destination',
-              'claude',
-              '--mode',
-              'link',
-            ],
-            [
-              'skill',
-              'backup',
-              'restore',
-              'bak_00000000000000000000000000000000',
-              '--mode',
-              'link',
-            ],
-          ]) {
-            final result = await createExecutor().fake().execute(arguments);
-            expect(
-              result,
-              isA<MambaFailureResult>()
-                  .having((value) => value.exitCode, 'exit code', 1)
-                  .having((value) => value.output, 'output', isNull),
-            );
-          }
-        });
 
         test(
           'unknown options and retired interactive input reject before effects',
@@ -240,6 +221,54 @@ void main() {
             );
           },
         );
+      });
+
+      group('adopt', () {
+        test('rejects a mode selector', () async {
+          final result = await createExecutor().fake().execute([
+            'skill',
+            'adopt',
+            'source${Platform.pathSeparator}',
+            '--destination',
+            'claude',
+            '--mode',
+            'link',
+          ]);
+          _failure(
+            result,
+            1,
+            '--mode',
+            phase: MambaExecutionPhase.parse,
+            commandPath: const ['agent_resource', 'skill', 'adopt'],
+          );
+        });
+      });
+
+      group('backup', () {
+        group('restore', () {
+          test('rejects a mode selector', () async {
+            final result = await createExecutor().fake().execute([
+              'skill',
+              'backup',
+              'restore',
+              'bak_00000000000000000000000000000000',
+              '--mode',
+              'link',
+            ]);
+            _failure(
+              result,
+              1,
+              '--mode',
+              phase: MambaExecutionPhase.parse,
+              commandPath: const [
+                'agent_resource',
+                'skill',
+                'backup',
+                'restore',
+              ],
+            );
+          });
+        });
       });
 
       group('recover', () {

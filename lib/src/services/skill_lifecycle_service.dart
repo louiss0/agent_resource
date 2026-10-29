@@ -811,10 +811,18 @@ interface class SkillLifecycleService implements LifecycleResource {
   }) async {
     final type = state.io.type(path, followLinks: false);
     var nativeForm = 'skill-copy';
-    if (type == FileSystemEntityType.link ||
-        (type == FileSystemEntityType.file &&
-            p.basename(path) == 'artifact-link.json')) {
+    String? nativeLinkKind;
+    String? linkTarget;
+    if (type == FileSystemEntityType.link) {
       nativeForm = 'skill-link';
+      nativeLinkKind = state.io.linkKind(path);
+      linkTarget = state.io.readLink(path);
+    } else if (type == FileSystemEntityType.file &&
+        p.basename(path) == 'artifact-link.json') {
+      nativeForm = 'skill-link';
+      final entry = state.readLinkBaseline(path).entries.single;
+      nativeLinkKind = entry.nativeKind;
+      linkTarget = entry.target;
     }
     final inspectedPath = resolveContentTarget(path);
     state.validateSkillTree(inspectedPath);
@@ -841,6 +849,9 @@ interface class SkillLifecycleService implements LifecycleResource {
       nativeForm: nativeForm,
       validatedProfiles: profiles,
       knownConsumers: const ['claude', 'codex'],
+      nativeLinkKind: nativeLinkKind,
+      linkTarget: linkTarget,
+      targetResolved: nativeForm == 'skill-link' ? inspectedPath : null,
     );
   }
 
@@ -1080,14 +1091,29 @@ final class _ProfiledSkillResource implements LifecycleResource {
       context,
       expectedName: expectedName,
     );
-    if (p.basename(path) != 'artifact-link.json') {
-      delegate.validateProfiles(delegate.resolveContentTarget(path), profiles);
-    }
+    delegate.validateProfiles(delegate.resolveContentTarget(path), profiles);
     return LifecycleCandidate(
       name: candidate.name,
       nativeForm: _kind.wireName,
       validatedProfiles: profiles,
       knownConsumers: candidate.knownConsumers,
+      nativeLinkKind:
+          candidate.nativeLinkKind ??
+          (_kind == ArtifactKind.skillLink
+              ? Platform.isWindows
+                    ? 'windows-directory-symlink'
+                    : 'posix-directory-symlink'
+              : null),
+      linkTarget:
+          candidate.linkTarget ??
+          (_kind == ArtifactKind.skillLink
+              ? delegate.resolveContentTarget(path)
+              : null),
+      targetResolved:
+          candidate.targetResolved ??
+          (_kind == ArtifactKind.skillLink
+              ? delegate.resolveContentTarget(path)
+              : null),
     );
   }
 

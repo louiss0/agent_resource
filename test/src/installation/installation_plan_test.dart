@@ -38,6 +38,7 @@ void main() {
           action: InstallationEntryAction.createLink,
           target: 'claude',
           linkTarget: '/home/.agents/skills/review',
+          nativeLinkKind: 'posix-directory-symlink',
         ),
       ],
       sourcePath: '/source/review',
@@ -112,6 +113,10 @@ void main() {
       expect(
         (entries[1]! as Map<String, Object?>)['linkTarget'],
         '/home/.agents/skills/review',
+      );
+      expect(
+        (entries[1]! as Map<String, Object?>)['nativeLinkKind'],
+        'posix-directory-symlink',
       );
       final summary = data['summary']! as Map<String, Object?>;
       expect(summary['requestedUnits'], 1);

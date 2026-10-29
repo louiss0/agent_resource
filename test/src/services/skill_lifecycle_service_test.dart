@@ -303,6 +303,83 @@ void main() {
       }
     });
     test(
+      'linked dry-run exposes entry and consumer observations without writes',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'skill-link-plan-',
+        );
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final source = Directory(p.join(sandbox.path, 'source'))
+            ..createSync();
+          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+          );
+          final result = await SkillLifecycleService().install(
+            SkillInstallInput(
+              options: LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                dryRun: true,
+              ),
+              source: source.path,
+              destination: SkillDestination.claude,
+              mode: SkillMode.link,
+            ),
+          );
+          expect(result.outcome, 'planned');
+          expect(result.data['nativeForm'], 'skill-link');
+          expect(
+            result.data['nativeLinkKind'],
+            anyOf('posix-directory-symlink', 'windows-directory-symlink'),
+          );
+          expect(result.data['linkTarget'], source.path);
+          expect(result.data['targetResolved'], source.path);
+          expect(result.data['consumerEffects'], ['claude']);
+          expect(result.data['ownership'], 'verifiedAbsent');
+          expect(
+            Directory(p.join(project.path, '.claude')).existsSync(),
+            isFalse,
+          );
+          expect(
+            Directory(p.join(project.path, '.agent-resource')).existsSync(),
+            isFalse,
+          );
+
+          final shared = await SkillLifecycleService().install(
+            SkillInstallInput(
+              options: LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                dryRun: true,
+              ),
+              source: source.path,
+              destination: SkillDestination.shared,
+              harnesses: const [SkillHarness.claude],
+              mode: SkillMode.link,
+            ),
+          );
+          expect(shared.data['validatedProfiles'], ['claude']);
+          expect(shared.data['consumerEffects'], ['claude', 'codex']);
+          expect(
+            Directory(p.join(project.path, '.agents')).existsSync(),
+            isFalse,
+          );
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
       'requested profiles add blocking reserved-name and sidecar gates',
       () async {
         final sandbox = await Directory.systemTemp.createTemp(
@@ -789,6 +866,19 @@ void main() {
           final backups = await service.backupList(options());
           final backupsData = backups.data['backups']! as List<Object?>;
           expect(backupsData, isNotEmpty);
+          final linkedReports = backupsData.where(
+            (backup) =>
+                (backup! as Map<String, Object?>)['artifactKind'] ==
+                'skill-link',
+          );
+          expect(linkedReports, isNotEmpty);
+          for (final backup in linkedReports) {
+            final report = backup! as Map<String, Object?>;
+            expect(report['targetContentHistory'], 'notSnapshot');
+            expect(report['nativeLinkKind'], 'posix-directory-symlink');
+            expect(report['linkTarget'], isNotNull);
+            expect(report['originalParent'], isNotNull);
+          }
         } finally {
           await sandbox.delete(recursive: true);
         }
@@ -810,7 +900,7 @@ void main() {
           File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
             '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
           );
-          final live = p.join(project.path, '.claude', 'skills', 'review');
+          final live = p.join(project.path, '.codex', 'skills', 'review');
           Directory(p.dirname(live)).createSync(recursive: true);
           final relative = p.relative(source.path, from: p.dirname(live));
           final io = _SimulatedLinkIO()..links[p.normalize(live)] = relative;
@@ -829,7 +919,7 @@ void main() {
             SkillInstallInput(
               options: options(),
               source: live,
-              destination: SkillDestination.claude,
+              destination: SkillDestination.codex,
             ),
           );
           final id = adopted.data['installationId']! as String;
@@ -852,6 +942,28 @@ void main() {
           source.createSync();
           File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
             '---\nname: review\ndescription: Reviews.\n---\nRecreated.\n',
+          );
+          final sidecar = File(p.join(source.path, 'agents', 'openai.yaml'))
+            ..createSync(recursive: true)
+            ..writeAsStringSync('policy: []');
+          try {
+            await service.restore(
+              LifecycleIdInput(
+                options: options(approved: true),
+                id: removed.data['backupId']! as String,
+              ),
+            );
+            fail('Normal restore bypassed current Codex profile validation.');
+          } on MambaException catch (error) {
+            expect(error.exitCode, 2);
+            expect(error.message, contains('policy'));
+          }
+          expect(
+            io.type(live, followLinks: false),
+            FileSystemEntityType.notFound,
+          );
+          sidecar.writeAsStringSync(
+            'policy:\n  allow_implicit_invocation: true\n',
           );
           final restored = await service.restore(
             LifecycleIdInput(

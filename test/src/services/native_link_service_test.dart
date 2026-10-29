@@ -67,5 +67,50 @@ void main() {
         await sandbox.delete(recursive: true);
       }
     });
+
+    test(
+      'distinguishes dangling directory and file links on Windows',
+      () async {
+        if (!Platform.isWindows) {
+          markTestSkipped('Windows reparse behavior is Windows-only');
+          return;
+        }
+        final sandbox = await Directory.systemTemp.createTemp(
+          'native-link-dangling-',
+        );
+        try {
+          const service = NativeLinkService();
+          final missingTarget = p.join(sandbox.path, 'missing-target');
+          final directoryLink = p.join(sandbox.path, 'directory-link');
+          try {
+            service.createDirectoryLink(directoryLink, missingTarget);
+          } on MambaException {
+            markTestSkipped('true directory-symlink creation is unavailable');
+            return;
+          }
+          expect(
+            service.inspectKind(directoryLink),
+            'windows-directory-symlink',
+          );
+
+          final fileLink = p.join(sandbox.path, 'file-link');
+          Link(fileLink).createSync(missingTarget);
+          expect(
+            () => service.inspectKind(fileLink),
+            throwsA(
+              isA<MambaException>()
+                  .having((error) => error.exitCode, 'exit code', 4)
+                  .having(
+                    (error) => error.message,
+                    'message',
+                    contains('not a directory'),
+                  ),
+            ),
+          );
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
   });
 }

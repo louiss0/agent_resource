@@ -262,6 +262,7 @@ interface class SkillInstallationService {
             action: InstallationEntryAction.createLink,
             target: 'claude',
             linkTarget: canonicalPath,
+            nativeLinkKind: _nativeDirectoryLinkKind,
             nativeRoot: root,
             nativeDestination: 'claude',
             artifactKind: OwnedArtifactKind.skillLink,
@@ -298,6 +299,9 @@ interface class SkillInstallationService {
             target: target.name,
             linkTarget: method == InstallationMethod.sourceLink
                 ? candidate.path
+                : null,
+            nativeLinkKind: method == InstallationMethod.sourceLink
+                ? _nativeDirectoryLinkKind
                 : null,
             nativeRoot: root,
             nativeDestination: target == InstallationTarget.claude
@@ -515,6 +519,10 @@ interface class SkillInstallationService {
     }
   }
 }
+
+String get _nativeDirectoryLinkKind => Platform.isWindows
+    ? 'windows-directory-symlink'
+    : 'posix-directory-symlink';
 
 bool _directoryHint(String path) =>
     FileSystemEntity.typeSync(path, followLinks: false) ==

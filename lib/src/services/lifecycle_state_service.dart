@@ -390,12 +390,18 @@ final class LifecycleCandidate {
     required this.nativeForm,
     this.validatedProfiles = const <String>[],
     this.knownConsumers = const <String>[],
+    this.nativeLinkKind,
+    this.linkTarget,
+    this.targetResolved,
   });
 
   final String name;
   final String nativeForm;
   final List<String> validatedProfiles;
   final List<String> knownConsumers;
+  final String? nativeLinkKind;
+  final String? linkTarget;
+  final String? targetResolved;
 }
 
 /// Native validation and uniqueness supplied by the Skill and Agent slices.
@@ -3560,6 +3566,13 @@ interface class LifecycleStateService {
               'installationId': backup.installationId,
               'transactionId': backup.transactionId,
               'location': backup.location,
+              'artifactKind': backup.kind.wireName,
+              if (backup.kind == ArtifactKind.skillLink) ...<String, Object?>{
+                'nativeLinkKind': backup.baseline.entries.single.nativeKind,
+                'linkTarget': backup.baseline.entries.single.target,
+                'originalParent': backup.baseline.entries.single.originalParent,
+                'targetContentHistory': 'notSnapshot',
+              },
               'integrity': _backupIntegrity(backup),
               'retention': backup.retention,
             },
@@ -4887,6 +4900,12 @@ interface class LifecycleStateService {
     'name': candidate.name,
     'nativeForm': candidate.nativeForm,
     'validatedProfiles': candidate.validatedProfiles,
+    'consumerEffects': _consumerEffects(context, location, candidate),
+    if (candidate.nativeLinkKind != null)
+      'nativeLinkKind': candidate.nativeLinkKind,
+    if (candidate.linkTarget != null) 'linkTarget': candidate.linkTarget,
+    if (candidate.targetResolved != null)
+      'targetResolved': candidate.targetResolved,
     'validationCoverage': 'complete',
     'uniquenessCoverage': 'complete',
     'ownership': operation == 'install'
@@ -4895,6 +4914,24 @@ interface class LifecycleStateService {
     'backupExpected': false,
     'mutationApproved': false,
   };
+
+  List<String> _consumerEffects(
+    LifecycleContext context,
+    String location,
+    LifecycleCandidate candidate,
+  ) {
+    final destinations = [
+      (root: context.claudeSkillsRoot(), consumer: 'claude'),
+      (root: context.codexSkillsRoot(), consumer: 'codex'),
+    ];
+    for (final destination in destinations) {
+      final root = p.normalize(destination.root);
+      if (p.equals(location, root) || p.isWithin(root, location)) {
+        return [destination.consumer];
+      }
+    }
+    return candidate.knownConsumers;
+  }
 
   void _prepareStaging(String nativeRoot) {
     _makePrivate(p.join(p.dirname(nativeRoot), '.agent-resource'));
