@@ -15,12 +15,12 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 ## Seven implementation slices
 
 - [x] 1. Typed inputs/catalog and parser contract.
-- [ ] 2. Local planning and Clix interactions (planning and stock-Clix wiring compile; required Select All, graceful cancellation/EOF, and terminal restoration are not provided by stock Clix 1.2.0).
+- [ ] 2. Local planning and interact2 interactions (all six application components and shared confirmations use interact2; explicit Select All remains unimplemented, and graceful cancellation/EOF, terminal restoration, long-list/resize behavior, and cross-platform PTY acceptance remain unverified).
 - [x] 3. Resource-unit publication (initial coordinated install/no-op/rollback path; restart recovery expansion remains slice 6).
 - [x] 4. Canonical lifecycle completeness.
 - [x] 5. Remote acquisition.
 - [x] 6. Batch fault/cancellation proof.
-- [ ] 7. Public migration and qualification (migration and non-interactive gates are implemented; the stock-Clix interaction contract is a release blocker).
+- [ ] 7. Public migration and qualification (migration and non-interactive gates are implemented; the remaining interact2 interaction contract and same-revision native evidence are release blockers).
 
 ## Architecture invariants
 
@@ -35,7 +35,7 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 
 - Baseline `dart test`: 317 passed, 4 pre-existing Windows permission skips.
 - `dart analyze`: no issues after slices 1–3.
-- Historical pre-removal focused Clix patch analysis: no issues. This evidence does not apply to the current stock-Clix dependency.
+- Historical pre-removal focused Clix patch analysis: no issues. This evidence does not apply to the later stock-Clix checkpoint or the current interact2 candidate.
 - Checkpoint `dart test`: 380 passed, 4 pre-existing Windows permission skips.
 - `test/cli_process_test.dart`: production streams/status/color and schema-v2 lifecycle smoke passed on Windows.
 - Real canonical directory-link creation and mid-publication rollback passed in isolated temporary filesystems.
@@ -54,9 +54,9 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 
 ### Historical stock-Clix removal and interaction blocker
 
-The vendored `third_party/clix` fork and its dedicated patch-behavior tests are removed. The application now uses hosted `clix: 1.2.0` with Mamba 1.0.0 and no dependency override. Fork-only `CliPromptCancelledException` and `CliInputClosedException` references are removed; no replacement prompt library, shim, fork, or Cancel option was introduced.
+At this historical checkpoint, the vendored `third_party/clix` fork and its dedicated patch-behavior tests had been removed. The application then used hosted `clix: 1.2.0` with Mamba 1.0.0 and no dependency override. Fork-only `CliPromptCancelledException` and `CliInputClosedException` references had been removed; no replacement prompt library, shim, fork, or Cancel option had yet been introduced. The later interact2 migration superseded this checkpoint.
 
-Application-owned prompt labels include the literal `(Ctrl+C to cancel)` hint. With stock Clix this is only guidance for an external process interrupt. It does not perform graceful cancellation, restore terminal modes, or return `InteractionAnswer.cancelled`. Stock `MultiSelect` has no Select All action, does not map Escape or Ctrl+C to typed cancellation, can continue looping on EOF, and restores echo/line modes only through its normal `finally` path. The approved interaction contract is therefore not implemented by the current stock dependency, and real PTY qualification cannot be claimed.
+Application-owned prompt labels included the literal `(Ctrl+C to cancel)` hint. With stock Clix this was only guidance for an external process interrupt. It did not perform graceful cancellation, restore terminal modes, or return `InteractionAnswer.cancelled`. Stock `MultiSelect` had no Select All action, did not map Escape or Ctrl+C to typed cancellation, could continue looping on EOF, and restored echo/line modes only through its normal `finally` path. The approved interaction contract was therefore not implemented by that stock dependency, and real PTY qualification could not be claimed.
 
 Stock-Clix removal verification: formatting and analysis passed; 56 focused installation/workflow tests passed; the full suite passed 407 tests with 4 pre-existing Windows permission skips; and the rebuilt Windows artifact gate observed statuses 0 through 7. The dedicated fork component suite was deleted. These tests use scripted interaction adapters or unattended commands and do not prove raw stock-Clix prompt safety.
 

@@ -7,14 +7,18 @@ separate claims. The native CI matrix and compiled-artifact gate are required
 evidence producers; a local green suite or a help-only executable smoke is not
 a release claim.
 
-The current candidate uses hosted stock `clix: 1.2.0` with Mamba 1.0.0 and no
-dependency override. The vendored fork and its dedicated tests were removed.
-Stock `MultiSelect` does not provide Select All or graceful Escape/Ctrl+C/EOF
-cancellation and can loop on EOF. Terminal echo/line restoration is limited to
-its normal `finally` path. Application-owned labels include `(Ctrl+C to
-cancel)`, but this denotes only an external process interrupt; it does not
-return the typed cancellation result or guarantee terminal restoration. These
-are current implementation blockers, not merely unrun PTY checks.
+The current candidate uses `interact2` for all six application components and
+for shared lifecycle/authoring confirmations. Mamba remains the command
+framework and may retain Clix transitively, but no application prompt imports
+Mamba's Clix re-exports. The vendored Clix fork, dedicated fork tests, and
+direct Clix dependency were removed. Stock interact2 `MultiSelect` does not
+implement the separately required Select All action. Its Ctrl+C handling resets
+and exits with status 1 rather than returning a typed cancellation answer.
+Graceful EOF behavior, complete terminal-mode restoration, long-list
+viewport/wrapping, resize behavior, and real Windows/macOS/Linux PTY acceptance
+remain unverified. Select All is a current implementation blocker; the other
+items require implementation review and native terminal evidence rather than
+being inferred from scripted adapters or the standalone demo.
 
 The earlier implementation candidate at `ec48558` passed the integrated native CI gate
 ([run 40745695510](https://github.com/louiss0/agent_resource/actions/runs/40745695510)):
@@ -23,11 +27,12 @@ aggregator reported `qualified: true` with no blockers, and production statuses
 0–7 were observed. This is native matrix evidence, not the final readiness
 decision below; real PTY terminal evidence and HTTPS credential/TLS Git
 integration remain open. That evidence used the removed fork and a different
-lockfile, so it does not qualify the current stock-Clix candidate. A release
+lockfile, so it does not qualify the current interact2 candidate. A release
 still requires final human approval.
 
-The current local Windows built-artifact gate observes true directory-symlink
-creation and built-production statuses 0 through 7, including a real restored
+At the interact2 migration checkpoint, the local Windows built-artifact gate
+observed true directory-symlink creation and built-production statuses 0
+through 7, including a real restored
 commit failure and committed-cleanup-pending outcome, schema-version-2 native
 Agent and Skill installation, canonical content/exposure publication, and all
 six conversion plan/apply/validate workflows. Its built-artifact blockers are
@@ -51,7 +56,7 @@ formatting/analysis, runs the complete suite, builds the production executable,
 and runs `test/support/release_gate.dart` on Windows, macOS, and Linux. Each
 job uploads only `build/release-evidence.json` through
 `actions/upload-artifact`. The gate's `qualified` field covers its native-job
-artifact scenarios; it does not exercise raw stock-Clix MultiSelect prompts
+artifact scenarios; it does not exercise raw interact2 MultiSelect prompts
 and does not clear the interaction blockers described above.
 
 Push/pull-request jobs retain evidence without claiming approval. A manual
@@ -112,7 +117,7 @@ three-OS CI matrix plus the per-job sanitized bundle.
 | AR-ACQ-001 | `acquisition_service_test.dart` covers inert immutable Git, bounded HTTP/archive processing, provenance privacy, malicious entries, duplicate members, deadlines, and cleanup | Native operation suite; TLS credential integration remains a blocker |
 | AR-REC-002 | `resource_unit_transaction_test.dart` and `installation_batch_test.dart` prove coordinated restart recovery, commit-state classification, independent continuation, dependency skipping, and interruption | Deterministic isolated-filesystem operation tests plus real Windows statuses 5/6 |
 | AR-MIG-001 | `docs/migrate-interactive-installation.md` requires source/evidence verification, retained backups, deliberate non-atomic removal/reinstall, and source-target preservation | Documentation review; no automatic conversion or origin inference |
-| AR-TERM-001 | Stock Clix 1.2.0 has no Select All or graceful Escape/Ctrl+C/EOF contract; labels only hint at external process interruption | Current implementation blocker; no cancellation, EOF-safety, Select All, or terminal-restoration claim |
+| AR-TERM-001 | interact2 MultiSelect lacks the required Select All action; Ctrl+C exits with status 1 rather than typed cancellation; EOF, terminal restoration, long-list/resize behavior, and cross-platform PTY behavior remain unverified | Select All is an implementation blocker; real Windows/macOS/Linux PTY acceptance and the remaining interaction checks are mandatory evidence |
 | AR-LINK-001 | True-link entry ownership, target drift/broken targets, Windows subtype/privilege behavior | Existing native-link suite plus measured artifact-gate capability |
 | AR-PARENT-001 | Parent selected-unit patches preserve unrelated bytes/settings and require acknowledgement | Existing parent/bound-role native suite; canonical/legacy CLI aliases |
 | AR-REC-001 | Deterministic fault/restart tests assert restored, recovery-required, cleanup-pending, occupants, and corrupt evidence | Existing lifecycle/parent fault suites plus real Windows statuses 5/6 and protected journal/baseline assertions |
@@ -136,5 +141,7 @@ three-OS CI matrix plus the per-job sanitized bundle.
    production-process evidence.
 5. Record remaining limits and blockers explicitly. Only an empty mandatory
    blocker set permits changing the readiness decision to qualified.
-6. Do not qualify interactive installation while stock Clix lacks the approved
-   Select All, graceful cancellation/EOF, and terminal-restoration contract.
+6. Do not qualify interactive installation until Select All is implemented and
+   interact2's cancellation/EOF behavior, terminal restoration, long-list
+   rendering, resize behavior, and real Windows/macOS/Linux PTY acceptance meet
+   the approved contract.

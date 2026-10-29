@@ -20,7 +20,6 @@ enum RecoveryAction { rollback, complete }
 enum _Resource { skill, agent }
 
 enum _Operation {
-  install,
   adopt,
   replace,
   remove,
@@ -61,8 +60,6 @@ final class LifecycleBackupCommand extends GroupCommand {
 
 /// One retained declaration tree for each direct lifecycle command path.
 final class LifecycleActionCommand extends Command {
-  factory LifecycleActionCommand.skillInstall(SkillLifecycleService service) =>
-      LifecycleActionCommand._skill(_Operation.install, service);
   factory LifecycleActionCommand.skillAdopt(SkillLifecycleService service) =>
       LifecycleActionCommand._skill(_Operation.adopt, service);
   factory LifecycleActionCommand.skillReplace(SkillLifecycleService service) =>
@@ -72,8 +69,6 @@ final class LifecycleActionCommand extends Command {
   factory LifecycleActionCommand.skillRecover(SkillLifecycleService service) =>
       LifecycleActionCommand._skill(_Operation.recover, service);
 
-  factory LifecycleActionCommand.agentInstall(AgentLifecycleService service) =>
-      LifecycleActionCommand._agent(_Operation.install, service);
   factory LifecycleActionCommand.agentAdopt(AgentLifecycleService service) =>
       LifecycleActionCommand._agent(_Operation.adopt, service);
   factory LifecycleActionCommand.agentReplace(AgentLifecycleService service) =>
@@ -102,9 +97,7 @@ final class LifecycleActionCommand extends Command {
     this._confirmation = _defaultConfirmation,
   ]) : super(
          mandatoryPositionals: [
-           if (_resource == _Resource.skill &&
-               (_operation == _Operation.install ||
-                   _operation == _Operation.adopt))
+           if (_resource == _Resource.skill && _operation == _Operation.adopt)
              _sourceDirectory,
            if (_resource == _Resource.skill &&
                _operation == _Operation.replace) ...[
@@ -113,8 +106,6 @@ final class LifecycleActionCommand extends Command {
            ],
            if (_resource == _Resource.skill && _operation == _Operation.remove)
              _installationId,
-           if (_resource == _Resource.agent && _operation == _Operation.install)
-             _sourceFile,
            if (_operation == _Operation.restore ||
                _operation == _Operation.cleanup)
              _backupId,
@@ -133,24 +124,17 @@ final class LifecycleActionCommand extends Command {
          ],
          options: [
            if (_resource == _Resource.skill) _skillScope else _agentScope,
-           if (_operation == _Operation.install ||
-               _operation == _Operation.adopt)
+           if (_operation == _Operation.adopt)
              if (_resource == _Resource.skill)
                _skillDestination
              else
                _agentDestination,
-           if (_resource == _Resource.agent &&
-               (_operation == _Operation.install ||
-                   _operation == _Operation.adopt))
+           if (_resource == _Resource.agent && _operation == _Operation.adopt)
              _requiredHarness,
            if (_resource == _Resource.agent && _operation == _Operation.replace)
              _harness,
-           if (_resource == _Resource.skill &&
-               (_operation == _Operation.install ||
-                   _operation == _Operation.adopt))
+           if (_resource == _Resource.skill && _operation == _Operation.adopt)
              _skillHarnesses,
-           if (_resource == _Resource.agent && _operation == _Operation.install)
-             _output,
            if (_operation == _Operation.recover) _recoveryAction,
            if (_resource == _Resource.agent &&
                (_operation == _Operation.adopt ||
@@ -169,9 +153,7 @@ final class LifecycleActionCommand extends Command {
            _codexHome,
            _stateDir,
            if (_resource == _Resource.agent) ...[_piAgentDir, _readRoots],
-           if (_resource == _Resource.skill &&
-               (_operation == _Operation.install ||
-                   _operation == _Operation.adopt))
+           if (_resource == _Resource.skill && _operation == _Operation.adopt)
              _readRoots,
          ],
          flags: [
@@ -206,11 +188,6 @@ final class LifecycleActionCommand extends Command {
   static final _replacementDirectory = FolderPathPositional(
     'source-directory',
     description: 'Ordinary replacement Skill source directory.',
-  );
-  static final _sourceFile = FilePathPositional(
-    'native-file',
-    suffixes: const ['.md', '.toml'],
-    description: 'Native regular-file Agent definition.',
   );
   static final _agentSourceFile = FilePathPositional.optional(
     'native-file',
@@ -262,11 +239,6 @@ final class LifecycleActionCommand extends Command {
     SkillHarness.values,
     unique: true,
     description: 'Additional blocking Skill compatibility profile.',
-  );
-  static final _output = FilePathOption(
-    'output',
-    suffixes: const ['.md', '.toml'],
-    description: 'Eligible Agent install output; source basename by default.',
   );
   static final _recoveryAction = ChoiceOption(
     'action',
@@ -320,7 +292,6 @@ final class LifecycleActionCommand extends Command {
 
   @override
   String get shortDescription => switch (_operation) {
-    _Operation.install => 'Install a validated local resource copy.',
     _Operation.adopt => 'Adopt an eligible existing native resource.',
     _Operation.replace => 'Replace an unchanged managed installation.',
     _Operation.remove => 'Remove an unchanged managed installation.',
@@ -386,10 +357,7 @@ final class LifecycleActionCommand extends Command {
     codexHome: valueOf(_codexHome),
     piAgentDir: _resource == _Resource.agent ? valueOf(_piAgentDir) : null,
     stateDir: valueOf(_stateDir),
-    readRoots:
-        _resource == _Resource.agent ||
-            _operation == _Operation.install ||
-            _operation == _Operation.adopt
+    readRoots: _resource == _Resource.agent || _operation == _Operation.adopt
         ? valueOf(_readRoots) ?? const <String>[]
         : const <String>[],
     dryRun: dryRun,
@@ -429,8 +397,6 @@ final class LifecycleActionCommand extends Command {
     if (_resource == _Resource.skill) {
       final service = _skill!;
       switch (_operation) {
-        case _Operation.install:
-          return service.install(_skillInstall(valueOf, options));
         case _Operation.adopt:
           return service.adopt(_skillInstall(valueOf, options));
         case _Operation.replace:
@@ -477,9 +443,6 @@ final class LifecycleActionCommand extends Command {
     }
     final service = _agent!;
     switch (_operation) {
-      case _Operation.install:
-        final source = valueOf(_sourceFile);
-        return service.install(_agentInstall(valueOf, options, source));
       case _Operation.adopt:
         final bound = valueOf(_boundRequest);
         final source = valueOf(_agentSourceFile);
@@ -642,7 +605,6 @@ final class LifecycleActionCommand extends Command {
       source: source,
       harness: harness,
       destination: valueOf(_agentDestination),
-      output: _operation == _Operation.install ? valueOf(_output) : null,
     );
   }
 

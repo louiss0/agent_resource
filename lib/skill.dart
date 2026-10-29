@@ -12,10 +12,6 @@ import 'src/services/skill_lifecycle_service.dart';
 import 'lifecycle.dart';
 import 'skill_lifecycle_commands.dart';
 
-/// The scope reported for a discovered skill occurrence.
-enum DiscoveryScope { project, user }
-
-typedef DiscoverOperation = String Function(String root, DiscoveryScope scope);
 typedef InspectOperation = String Function(String skill);
 typedef ValidateOperation = ValidationReport Function(String skill);
 
@@ -137,109 +133,6 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
       LifecycleOutputFormat.text => result.renderText(),
     };
   }
-}
-
-String discoverSkills(String root, DiscoveryScope scope) {
-  final rootPath = p.normalize(Directory(root).absolute.path);
-  _requireDiscoveryRoot(rootPath, scope);
-
-  final occurrences = <Map<String, Object>>[];
-  for (final destination in _destinations) {
-    occurrences.addAll(_discoverDestination(rootPath, destination, scope));
-  }
-
-  return jsonEncode({'occurrences': occurrences});
-}
-
-const _destinations =
-    <({String name, String harnessDirectory, String skillsDirectory})>[
-      (name: 'shared', harnessDirectory: '.agents', skillsDirectory: 'skills'),
-      (name: 'claude', harnessDirectory: '.claude', skillsDirectory: 'skills'),
-      (name: 'codex', harnessDirectory: '.codex', skillsDirectory: 'skills'),
-    ];
-
-void _requireDiscoveryRoot(String rootPath, DiscoveryScope scope) {
-  final type = skillEntityType(rootPath, followLinks: true);
-  if (type == FileSystemEntityType.directory) {
-    return;
-  }
-
-  final label = switch (scope) {
-    DiscoveryScope.project => 'Project',
-    DiscoveryScope.user => 'Home',
-  };
-  if (type == FileSystemEntityType.notFound) {
-    throw MambaException('$label directory does not exist: $rootPath');
-  }
-  throw MambaException('$label path is not a directory: $rootPath');
-}
-
-List<Map<String, Object>> _discoverDestination(
-  String rootPath,
-  ({String name, String harnessDirectory, String skillsDirectory}) destination,
-  DiscoveryScope scope,
-) {
-  final harnessPath = p.normalize(
-    p.join(rootPath, destination.harnessDirectory),
-  );
-  final harnessType = skillEntityType(harnessPath, followLinks: false);
-  if (harnessType == FileSystemEntityType.notFound ||
-      harnessType == FileSystemEntityType.link) {
-    return <Map<String, Object>>[];
-  }
-  if (harnessType != FileSystemEntityType.directory) {
-    throw MambaException(
-      'Expected a directory for ${destination.harnessDirectory}, '
-      'but found a file at $harnessPath.',
-    );
-  }
-
-  final skillsPath = p.normalize(
-    p.join(harnessPath, destination.skillsDirectory),
-  );
-  final skillsType = skillEntityType(skillsPath, followLinks: false);
-
-  if (skillsType == FileSystemEntityType.notFound ||
-      skillsType == FileSystemEntityType.link) {
-    return <Map<String, Object>>[];
-  }
-  if (skillsType != FileSystemEntityType.directory) {
-    throw MambaException(
-      'Expected a directory for ${destination.harnessDirectory}/'
-      '${destination.skillsDirectory}, but found a file at $skillsPath.',
-    );
-  }
-
-  final candidates =
-      listSkillDirectory(skillsPath)
-          .where(
-            (entity) =>
-                skillEntityType(entity.path, followLinks: false) ==
-                FileSystemEntityType.directory,
-          )
-          .toList()
-        ..sort((left, right) {
-          final leftName = p.basename(left.path);
-          final rightName = p.basename(right.path);
-          return leftName.compareTo(rightName);
-        });
-
-  final installationScope = scope.name;
-  return [
-    for (final candidate in candidates)
-      <String, Object>{
-        'path': p.normalize(candidate.absolute.path),
-        'destination': destination.name,
-        'installationScope': installationScope,
-        'hasSkillFile': _hasRegularSkillFile(candidate.path),
-      },
-  ];
-}
-
-bool _hasRegularSkillFile(String candidatePath) {
-  final skillFilePath = p.join(candidatePath, 'SKILL.md');
-  return skillEntityType(skillFilePath, followLinks: false) ==
-      FileSystemEntityType.file;
 }
 
 const _maxSkillFileBytes = 1048576;
