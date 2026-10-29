@@ -637,7 +637,7 @@ interface class AgentAuthoringService {
       'graph': graph.toJson(),
     };
     final planId =
-        'agent-plan-${sha256.convert(utf8.encode(jsonEncode(_canonicalJson(planIdentity))))}';
+        'agent-plan-${sha256.convert(utf8.encode(jsonEncode(canonicalJsonForHash(planIdentity))))}';
     final ready =
         graph.ready &&
         diagnostics.every((diagnostic) => diagnostic['severity'] != 'error') &&
@@ -848,15 +848,17 @@ interface class AgentAuthoringService {
   }
 }
 
-Object? _canonicalJson(Object? value) {
+/// Recursively key-sorts JSON-compatible values so a plan identity is stable
+/// across semantically equivalent map insertion orders.
+Object? canonicalJsonForHash(Object? value) {
   if (value is Map) {
     final keys = value.keys.cast<String>().toList()..sort();
     return <String, Object?>{
-      for (final key in keys) key: _canonicalJson(value[key]),
+      for (final key in keys) key: canonicalJsonForHash(value[key]),
     };
   }
   if (value is List) {
-    return <Object?>[for (final entry in value) _canonicalJson(entry)];
+    return <Object?>[for (final entry in value) canonicalJsonForHash(entry)];
   }
   return value;
 }

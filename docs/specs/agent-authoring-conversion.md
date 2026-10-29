@@ -108,12 +108,16 @@ bound source uses:
 
 Target model, tools, and effort/thinking mappings live in `definition` and
 also require matching `map:model`, `map:tools`, or `map:effort` decisions.
-Other altered native fields require `map:<field>`. `decisions` may instead
-contain identifiers such as `omit:tools`, `omit:effort`, `field:experimental`,
-or `inherit:model` where legal. Generic approval never substitutes for those
-decisions. `references` maps explicit
-source associations to reviewed target associations; equal names do not prove
-equivalence.
+Other altered native fields require `map:<field>`, including an explicitly
+changed `name` or `description`. `decisions` may instead contain identifiers
+such as `omit:tools`, `omit:effort`, `field:experimental`, or
+`inherit:model`/`inherit:tools` where the target natively supports deliberate
+inheritance. Generic approval never substitutes for those decisions.
+`references` maps a disclosed source association (`skill:<name>`,
+`mcp-server:<name>`, or `hook:<name>`) to a reviewed target association;
+equal names do not prove equivalence, an undisclosed mapping key is
+unresolved, and leaving a source association unmapped requires the explicit
+`reference:<kind>:<name>:remove` decision.
 
 Every relevant source field receives a typed account with source/target path,
 source profile, evidence or decision, and one of `represented`, `altered`,

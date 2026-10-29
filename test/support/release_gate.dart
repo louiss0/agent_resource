@@ -981,11 +981,7 @@ $instructions''',
   final output =
       '.${target == 'pi' ? 'pi' : target}/agents/reviewer${target == 'codex' ? '.toml' : '.md'}';
   final definition = <String, Object?>{
-    'model': switch (target) {
-      'claude' => 'claude-sonnet',
-      'codex' => 'openai/gpt-5',
-      _ => 'kimi-coding/k3',
-    },
+    'model': _conversionModels[target]!,
     switch (target) {
       'claude' => 'effort',
       'codex' => 'model_reasoning_effort',
@@ -1038,10 +1034,32 @@ $instructions''',
     planned,
   );
   final plan = _json(planned);
+  _expect(
+    plan['command'] == 'agent convert',
+    'Unexpected conversion plan envelope.',
+    planned,
+  );
   final data = plan['data']! as Map<String, Object?>;
   _expect(
     data['ready'] == true,
     'Conversion was not ready for $source to $target.',
+    planned,
+  );
+  _expect(
+    data['sourceProfile'] == _conversionProfile(source) &&
+        data['targetProfile'] == _conversionProfile(target),
+    'Conversion profiles were not identified for $source to $target.',
+    planned,
+  );
+  final fields = (data['fields']! as List<Object?>)
+      .cast<Map<String, Object?>>();
+  _expect(
+    fields.isNotEmpty &&
+        fields.every(
+          (field) => field['sourceProfile'] == _conversionProfile(source),
+        ) &&
+        fields.any((field) => field['outcome'] == 'altered'),
+    'Conversion field accounts were incomplete for $source to $target.',
     planned,
   );
   _expect(
@@ -1069,9 +1087,32 @@ $instructions''',
     'Conversion apply failed for $source to $target.',
     applied,
   );
+  _expect(applied.stderr.isEmpty, 'Conversion apply wrote stderr.', applied);
+  _expect(
+    _json(applied)['command'] == 'agent convert',
+    'Conversion apply leaked another command identity.',
+    applied,
+  );
   _expect(
     _json(applied)['outcome'] == 'converted',
     'Unexpected conversion outcome.',
+    applied,
+  );
+  final published = File(p.join(project.path, output));
+  _expect(
+    published.existsSync(),
+    'Conversion apply omitted the target.',
+    applied,
+  );
+  final publishedContent = published.readAsStringSync();
+  _expect(
+    publishedContent.contains('Review correctness.'),
+    'Conversion apply lost its instruction text.',
+    applied,
+  );
+  _expect(
+    publishedContent.contains(_conversionModels[target]!),
+    'Conversion apply lost its target model.',
     applied,
   );
   _expect(
@@ -1100,6 +1141,21 @@ $instructions''',
     validated,
   );
 }
+
+String _conversionProfile(String harness) =>
+    _conversionProfiles[harness] ?? 'pi-agent-common-v1';
+
+const _conversionProfiles = <String, String>{
+  'claude': 'claude-agent-native-v1',
+  'codex': 'codex-agent-native-v1',
+  'pi': 'pi-agent-common-v1',
+};
+
+const _conversionModels = <String, String>{
+  'claude': 'claude-sonnet',
+  'codex': 'openai/gpt-5',
+  'pi': 'kimi-coding/k3',
+};
 
 Map<String, String> _snapshot(Directory root) {
   final entries = <String, String>{'.': 'directory'};

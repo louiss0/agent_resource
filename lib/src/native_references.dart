@@ -37,8 +37,8 @@ List<String> applyNativeReferenceMappings(
       );
       continue;
     }
-    if (!_containsReference(value, sourceName) &&
-        !_containsReference(value, entry.value)) {
+    if (!containsNativeReference(value, sourceName) &&
+        !containsNativeReference(value, entry.value)) {
       errors.add(
         '${entry.key}: target $field contains neither the source nor mapped name.',
       );
@@ -49,14 +49,16 @@ List<String> applyNativeReferenceMappings(
   return errors;
 }
 
-bool _containsReference(Object? value, String name) {
+/// Whether a decoded native association value names [name] at any depth.
+bool containsNativeReference(Object? value, String name) {
   if (value is String) return value == name;
   if (value is List<Object?>) {
-    return value.any((entry) => _containsReference(entry, name));
+    return value.any((entry) => containsNativeReference(entry, name));
   }
   if (value is Map<String, Object?>) {
     return value.entries.any(
-      (entry) => entry.key == name || _containsReference(entry.value, name),
+      (entry) =>
+          entry.key == name || containsNativeReference(entry.value, name),
     );
   }
   return false;

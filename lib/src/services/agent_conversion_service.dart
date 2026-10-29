@@ -75,31 +75,34 @@ ConversionRequest parseConversionRequest(
     );
   }
   final source = _map(map['source'], 'source');
-  _known(source, const {
-    'kind',
-    'path',
-    'harness',
-    'configFile',
-    'roleKey',
-    'installationId',
-  }, 'conversion source');
   final kind = source['kind'];
   if (kind == 'native-file') {
-    if (source['path'] is! String || source['harness'] is! String) {
+    _known(source, const {'kind', 'path', 'harness'}, 'native-file source');
+    if (!_nonblankString(source['path']) ||
+        !_nonblankString(source['harness']) ||
+        AgentHarness.values.every((value) => value.name != source['harness'])) {
       throw MambaException(
-        'A native-file conversion source requires path and harness.',
+        'A native-file conversion source requires a nonblank path and a '
+        'supported claude, codex, or pi harness.',
       );
     }
   } else if (kind == 'codex-role') {
-    if (source['configFile'] is! String || source['roleKey'] is! String) {
+    _known(source, const {
+      'kind',
+      'configFile',
+      'roleKey',
+    }, 'Codex role source');
+    if (!_nonblankString(source['configFile']) ||
+        !_nonblankString(source['roleKey'])) {
       throw MambaException(
-        'A Codex role conversion source requires configFile and roleKey.',
+        'A Codex role conversion source requires nonblank configFile and roleKey.',
       );
     }
   } else if (kind == 'managed-agent') {
-    if (source['installationId'] is! String) {
+    _known(source, const {'kind', 'installationId'}, 'managed Agent source');
+    if (!_nonblankString(source['installationId'])) {
       throw MambaException(
-        'A managed conversion source requires installationId.',
+        'A managed conversion source requires a nonblank installationId.',
       );
     }
   } else {
@@ -118,6 +121,20 @@ ConversionRequest parseConversionRequest(
       'Conversion target harness must be claude, codex, or pi.',
     );
   }
+  for (final key in const ['output', 'installationId']) {
+    final value = target[key];
+    if (value != null && !_nonblankString(value)) {
+      throw MambaException('Conversion target $key must be a nonblank string.');
+    }
+  }
+  final destination = target['destination'];
+  if (destination != null &&
+      destination != 'native' &&
+      destination != 'shared') {
+    throw MambaException(
+      'Conversion target destination must be native or shared.',
+    );
+  }
   final context = _map(map['context'], 'context');
   _known(context, const {'workingDirectory'}, 'conversion context');
   if (context['workingDirectory'] is! String ||
@@ -130,6 +147,13 @@ ConversionRequest parseConversionRequest(
     map['definition'] ?? const <String, Object?>{},
     'definition',
   );
+  for (final key in definition.keys) {
+    if (key.trim().isEmpty) {
+      throw MambaException(
+        'Conversion definition field names must not be blank.',
+      );
+    }
+  }
   final rawDecisions = map['decisions'] ?? const <Object?>[];
   if (rawDecisions is! List<Object?> ||
       rawDecisions.any((value) => value is! String || (value).trim().isEmpty)) {
@@ -164,6 +188,9 @@ ConversionRequest parseConversionRequest(
     references: references,
   );
 }
+
+bool _nonblankString(Object? value) =>
+    value is String && value.trim().isNotEmpty;
 
 Map<String, Object?> _map(Object? value, String label) {
   if (value is! Map<String, Object?>) {
@@ -203,6 +230,33 @@ void _rejectCredentials(Object? value, [String path = 'definition']) {
       _rejectCredentials(value[index], '$path[$index]');
     }
   }
+}
+
+/// Native association kinds that conversion must map, replace, or remove
+/// explicitly; a model is accounted through `map:model` instead.
+const _associationKinds = <String>{'skill', 'mcp-server', 'hook'};
+
+/// Whether the proposed target still declares the source association [key].
+///
+/// A removal decision only authorizes omission; it must not publish a target
+/// that keeps the association through another field value.
+bool _targetDeclaresAssociation(
+  Map<String, Object?> fields,
+  String key,
+  AgentHarness harness,
+) {
+  final separator = key.indexOf(':');
+  if (separator <= 0) return false;
+  final kind = key.substring(0, separator);
+  final name = key.substring(separator + 1);
+  final field = switch ((kind, harness)) {
+    ('skill', AgentHarness.claude || AgentHarness.codex) => 'skills',
+    ('mcp-server', AgentHarness.claude) => 'mcpServers',
+    ('mcp-server', AgentHarness.codex) => 'mcp_servers',
+    ('hook', AgentHarness.claude) => 'hooks',
+    _ => null,
+  };
+  return field != null && containsNativeReference(fields[field], name);
 }
 
 final class ConversionPlan {
@@ -258,21 +312,23 @@ interface class AgentConversionService {
     targetFields['description'] =
         request.definition['description'] ?? sourceDescription;
     fieldResults.add(
-      _field(
+      _identityField(
         'name',
-        'name',
-        targetFields['name'] == sourceName ? 'represented' : 'altered',
-        source.profile,
+        overridden: request.definition.containsKey('name'),
+        accepted: request.decisions.contains('map:name'),
+        sourceValue: sourceName,
+        targetValue: targetFields['name'],
+        profile: source.profile,
       ),
     );
     fieldResults.add(
-      _field(
+      _identityField(
         'description',
-        'description',
-        targetFields['description'] == sourceDescription
-            ? 'represented'
-            : 'altered',
-        source.profile,
+        overridden: request.definition.containsKey('description'),
+        accepted: request.decisions.contains('map:description'),
+        sourceValue: sourceDescription,
+        targetValue: targetFields['description'],
+        profile: source.profile,
       ),
     );
     final instructions = source.instructionText;
@@ -303,19 +359,65 @@ interface class AgentConversionService {
       targetHarness,
     );
     _accountRemainingFields(request, source, fieldResults);
-    for (final entry in request.references.entries) {
-      final error = referenceErrors
-          .where((candidate) => candidate.startsWith('${entry.key}:'))
-          .firstOrNull;
+    final referenceEntries = request.references.entries.toList()
+      ..sort((left, right) => left.key.compareTo(right.key));
+    final sourceAssociations = <String, Map<String, Object?>>{
+      for (final reference in source.references)
+        if (_associationKinds.contains(reference['kind']))
+          '${reference['kind']}:${reference['name']}': reference,
+    };
+    final referenceKeys = <String>{
+      ...sourceAssociations.keys,
+      ...referenceEntries.map((entry) => entry.key),
+    }.toList()..sort();
+    for (final key in referenceKeys) {
+      final mapping = request.references[key];
+      final disclosed = sourceAssociations.containsKey(key);
+      final removed = request.decisions.contains('reference:$key:remove');
+      final error = mapping == null
+          ? null
+          : referenceErrors
+                .where((candidate) => candidate.startsWith('$key:'))
+                .firstOrNull;
+      final removalConflict =
+          removed &&
+          mapping == null &&
+          _targetDeclaresAssociation(targetFields, key, targetHarness);
+      final outcome = !disclosed
+          ? 'unresolved'
+          : removalConflict
+          ? 'unresolved'
+          : mapping == null && removed
+          ? 'omitted'
+          : mapping == null || error != null
+          ? 'unresolved'
+          : 'altered';
+      final separator = key.indexOf(':');
+      final kind = separator <= 0 ? key : key.substring(0, separator);
       fieldResults.add(<String, Object?>{
         ..._field(
-          'reference:${entry.key}',
-          'reference:${entry.value}',
-          error == null ? 'altered' : 'unresolved',
+          'reference:$key',
+          mapping == null ? null : 'reference:$kind:$mapping',
+          outcome,
           source.profile,
         ),
-        'evidence': error ?? 'Explicit reference mapping; equal names do not establish equivalent content or enforcement.',
-        'decision': 'reference:${entry.key}',
+        'evidence': !disclosed
+            ? 'No disclosed source association $key; a mapping must bind to a '
+                  'source declaration, not a guessed kind or name.'
+            : removalConflict
+            ? 'The removal decision conflicts with a target declaration that '
+                  'still carries $key.'
+            : mapping == null && removed
+            ? 'Explicit association removal; the target does not carry the '
+                  '$key source declaration.'
+            : error ??
+                  'Explicit reference mapping; equal names do not establish '
+                      'equivalent content or enforcement.',
+        'decision': mapping != null
+            ? 'reference:$key'
+            : removed
+            ? 'reference:$key:remove'
+            : null,
       });
     }
     for (final field in fieldResults.where(
@@ -365,14 +467,14 @@ interface class AgentConversionService {
           field['outcome'] == 'unrepresentable',
     );
     final planId =
-        'agent-convert-${sha256.convert(utf8.encode(jsonEncode(<String, Object?>{
+        'agent-convert-${sha256.convert(utf8.encode(jsonEncode(canonicalJsonForHash(<String, Object?>{
           'candidatePlanId': candidate.result.data['planId'],
           'source': <String, Object?>{'profile': source.profile, 'form': source.form, 'definitionFile': source.definitionFile, 'binding': source.binding, 'nativeFields': source.nativeFields, 'instructionSha256': instructions == null ? null : sha256.convert(utf8.encode(instructions)).toString()},
           'target': request.target,
           'fields': fieldResults,
           'decisions': request.decisions.toList()..sort(),
           'references': request.references,
-        })))}';
+        }))))}';
     final data = <String, Object?>{
       ...candidate.result.data,
       'planId': planId,
@@ -548,35 +650,31 @@ interface class AgentConversionService {
           decision: 'map:model',
         ),
       );
-    } else if (sourceModel != null || target == AgentHarness.pi) {
-      if (request.decisions.contains('omit:model') &&
-          target != AgentHarness.pi) {
-        outcomes.add(
-          _field(
-            'model',
-            null,
-            'omitted',
-            source.profile,
-            decision: 'omit:model',
-          ),
-        );
-      } else if (request.decisions.contains('inherit:model') &&
-          target != AgentHarness.pi &&
-          sourceModel == null) {
-        outcomes.add(
-          _field(
-            'model',
-            null,
-            'inherited',
-            source.profile,
-            decision: 'inherit:model',
-          ),
-        );
-      } else {
-        outcomes.add(_field('model', 'model', 'unresolved', source.profile));
-      }
+    } else if (target == AgentHarness.pi) {
+      outcomes.add(_field('model', 'model', 'unresolved', source.profile));
+    } else if (sourceModel != null &&
+        request.decisions.contains('omit:model')) {
+      outcomes.add(
+        _field(
+          'model',
+          null,
+          'omitted',
+          source.profile,
+          decision: 'omit:model',
+        ),
+      );
+    } else if (request.decisions.contains('inherit:model')) {
+      outcomes.add(
+        _field(
+          'model',
+          null,
+          'inherited',
+          source.profile,
+          decision: 'inherit:model',
+        ),
+      );
     } else {
-      outcomes.add(_field('model', null, 'inherited', source.profile));
+      outcomes.add(_field('model', 'model', 'unresolved', source.profile));
     }
   }
 
@@ -611,11 +709,7 @@ interface class AgentConversionService {
         _field(
           sourceKey,
           targetKey,
-          sourceValue == null
-              ? 'represented'
-              : accepted
-              ? 'altered'
-              : 'unresolved',
+          accepted ? 'altered' : 'unresolved',
           source.profile,
           decision: 'map:effort',
         ),
@@ -660,24 +754,31 @@ interface class AgentConversionService {
       );
     } else if (target == AgentHarness.pi) {
       outcomes.add(_field('tools', 'tools', 'unresolved', source.profile));
-    } else if (hasTools) {
-      if (request.decisions.contains('omit:tools')) {
-        outcomes.add(
-          _field(
-            'tools',
-            null,
-            'omitted',
-            source.profile,
-            decision: 'omit:tools',
-          ),
-        );
-      } else {
-        outcomes.add(_field('tools', 'tools', 'unresolved', source.profile));
-      }
+    } else if (hasTools && request.decisions.contains('omit:tools')) {
+      outcomes.add(
+        _field(
+          'tools',
+          null,
+          'omitted',
+          source.profile,
+          decision: 'omit:tools',
+        ),
+      );
+    } else if (request.decisions.contains('inherit:tools')) {
+      outcomes.add(
+        _field(
+          'tools',
+          null,
+          'inherited',
+          source.profile,
+          decision: 'inherit:tools',
+        ),
+      );
     } else {
-      outcomes.add(_field('tools', null, 'inherited', source.profile));
+      outcomes.add(_field('tools', 'tools', 'unresolved', source.profile));
     }
-    if (source.nativeFields.containsKey('disallowedTools')) {
+    if (source.nativeFields.containsKey('disallowedTools') ||
+        request.definition.containsKey('disallowedTools')) {
       if (request.definition.containsKey('disallowedTools')) {
         final accepted = request.decisions.contains('map:disallowedTools');
         outcomes.add(
@@ -728,35 +829,52 @@ interface class AgentConversionService {
       'model_reasoning_effort',
       'thinking',
     };
-    for (final entry in source.nativeFields.entries) {
-      if (handled.contains(entry.key)) continue;
-      if (request.definition.containsKey(entry.key)) {
-        final accepted = request.decisions.contains('map:${entry.key}');
+    final keys = <String>{
+      ...source.nativeFields.keys,
+      ...request.definition.keys,
+    }.where((key) => !handled.contains(key)).toList()..sort();
+    for (final key in keys) {
+      if (request.definition.containsKey(key)) {
+        final accepted = request.decisions.contains('map:$key');
         outcomes.add(
           _field(
-            entry.key,
-            entry.key,
+            key,
+            key,
             accepted ? 'altered' : 'unresolved',
             source.profile,
-            decision: 'map:${entry.key}',
+            decision: 'map:$key',
           ),
         );
-      } else if (request.decisions.contains('omit:${entry.key}')) {
+      } else if (request.decisions.contains('omit:$key')) {
         outcomes.add(
-          _field(
-            entry.key,
-            null,
-            'omitted',
-            source.profile,
-            decision: 'omit:${entry.key}',
-          ),
+          _field(key, null, 'omitted', source.profile, decision: 'omit:$key'),
         );
       } else {
-        outcomes.add(
-          _field(entry.key, entry.key, 'unrepresentable', source.profile),
-        );
+        outcomes.add(_field(key, key, 'unrepresentable', source.profile));
       }
     }
+  }
+
+  Map<String, Object?> _identityField(
+    String path, {
+    required bool overridden,
+    required bool accepted,
+    required Object? sourceValue,
+    required Object? targetValue,
+    required String profile,
+  }) {
+    final changed = overridden && targetValue != sourceValue;
+    return _field(
+      path,
+      path,
+      !changed
+          ? 'represented'
+          : accepted
+          ? 'altered'
+          : 'unresolved',
+      profile,
+      decision: changed ? 'map:$path' : null,
+    );
   }
 
   Map<String, Object?> _field(
