@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import '../../components/agent_profile.dart';
 import '../../components/installation_approval.dart';
 import '../../components/installation_source.dart';
@@ -68,7 +70,9 @@ final class InteractInstallationInteraction implements InstallationInteraction {
     List<CatalogOffering> offerings,
   ) => _guard(() async {
     final selected = await ResourceSelectorComponent(
-      options: [for (final offering in offerings) _offeringLabel(offering)],
+      options: [
+        for (final offering in offerings) resourceChoiceLabel(offering),
+      ],
     ).render();
     if (selected == null) return InteractionAnswer.cancelled();
     if (selected.isEmpty) return InteractionAnswer.empty();
@@ -132,13 +136,14 @@ final class InteractInstallationInteraction implements InstallationInteraction {
   ) => body();
 }
 
-String _offeringLabel(CatalogOffering offering) {
+/// A display caption only; selectors retain the full source-relative path.
+String resourceChoiceLabel(CatalogOffering offering) {
   final label = offering.label == null ? '' : ' — ${offering.label}';
   final profile = offering is AgentOffering
       ? ' [${offering.profile.wireName}]'
       : '';
-  return '${offering.id}$label ($profile${offering.path})'.replaceAll(
-    RegExp(r'[\x00-\x1F\x7F]'),
-    '?',
-  );
+  final text = offering is SkillOffering && offering.id == offering.path
+      ? '${offering.label ?? p.posix.basename(offering.path)} (${p.posix.dirname(offering.path)})'
+      : '${offering.id}$label ($profile${offering.path})';
+  return text.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '?');
 }
