@@ -27,7 +27,7 @@ interface class AgentInstallationService {
     InstallationBatch? batch,
     InstallationProgress? progress,
   }) : _lifecycle = lifecycle ?? AgentLifecycleService(),
-       _interaction = interaction ?? ClixInstallationInteraction(),
+       _interaction = interaction ?? InteractInstallationInteraction(),
        _batch = batch ?? InstallationBatch(),
        _progress = progress ?? _agentProgress;
 

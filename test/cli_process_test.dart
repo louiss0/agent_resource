@@ -316,11 +316,10 @@ void main() {
             ...contextArgs.take(contextArgs.length - 2),
           ], standardInput: 'n\n');
           expect(cancelled.exitCode, 7);
-          // Clix Confirm renders its prompt on stdout; Mamba's cancellation
-          // diagnostic remains on stderr. No resource or management mutation
-          // is permitted by declining.
-          expect(cancelled.stdout, contains('reviewed destructive operation'));
-          expect(cancelled.stdout, contains('No'));
+          // Raw-key interact2 prompts never read redirected stdin. Without a
+          // usable terminal approval fails closed after the read-only preview.
+          // No resource or management mutation is permitted by declining.
+          expect(cancelled.stdout, isEmpty);
           expect(cancelled.stderr, contains('cancelled'));
           expect(liveMarker.existsSync(), isTrue);
 

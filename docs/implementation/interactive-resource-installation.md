@@ -52,13 +52,21 @@ This file is a durable resume aid. Checkboxes mean verified implementation, not 
 - Integrated CI qualification at revision ec48558: [workflow run 40745695510](https://github.com/louiss0/agent_resource/actions/runs/40745695510). Windows, macOS, and Linux native jobs all passed with `--require-qualified`; the release-decision job passed. Its decision reports `qualified: true`, no blockers, statuses 0 through 7, and runtime activation/equivalence explicitly unverified.
 - HTTPS credential forwarding and real TLS Git integration were not exercised; local plaintext HTTP and Git-daemon fixtures covered the protocol-independent bounds and redaction logic. A public HTTPS direct-file download was exercised without credential forwarding.
 
-### Current stock-Clix removal and interaction blocker
+### Historical stock-Clix removal and interaction blocker
 
 The vendored `third_party/clix` fork and its dedicated patch-behavior tests are removed. The application now uses hosted `clix: 1.2.0` with Mamba 1.0.0 and no dependency override. Fork-only `CliPromptCancelledException` and `CliInputClosedException` references are removed; no replacement prompt library, shim, fork, or Cancel option was introduced.
 
 Application-owned prompt labels include the literal `(Ctrl+C to cancel)` hint. With stock Clix this is only guidance for an external process interrupt. It does not perform graceful cancellation, restore terminal modes, or return `InteractionAnswer.cancelled`. Stock `MultiSelect` has no Select All action, does not map Escape or Ctrl+C to typed cancellation, can continue looping on EOF, and restores echo/line modes only through its normal `finally` path. The approved interaction contract is therefore not implemented by the current stock dependency, and real PTY qualification cannot be claimed.
 
 Stock-Clix removal verification: formatting and analysis passed; 56 focused installation/workflow tests passed; the full suite passed 407 tests with 4 pre-existing Windows permission skips; and the rebuilt Windows artifact gate observed statuses 0 through 7. The dedicated fork component suite was deleted. These tests use scripted interaction adapters or unattended commands and do not prove raw stock-Clix prompt safety.
+
+### Current interact2 migration
+
+After reproducing stock Clix's Windows echo-mode cleanup failure in the standalone demo, the user verified interact2's demo and explicitly requested migration of every component. All six application components now use interact2: source, resources, consuming targets, native profile, approval, and acquisition progress. Lifecycle and authoring confirmations reuse the approval component rather than Mamba's Clix re-export. The production interaction adapter is named `InteractInstallationInteraction`. Clix is no longer a direct dependency, but Mamba still brings it transitively.
+
+The async component contracts and selection/default mappings are preserved. Approval defaults to false and waits for Enter. Without a usable terminal it fails closed without raw-key input; legacy piped `--interactive` confirmations therefore cancel after their read-only preview. Prompt exceptions reset interact2 cursor/colors best-effort without hiding the failure. Acquisition failures dispose the spinner without masking the original error. interact2 Ctrl+C exits with status 1; graceful typed cancellation and EOF handling are not implied. Long-list viewport/wrapping, explicit Select All and full cross-platform PTY qualification remain unverified, not claims established by the short demo or scripted tests.
+
+Migration validation: `dart analyze` passed; the full suite passed 436 tests with 4 existing platform skips using `dart test --concurrency=1`. The parallel attempt hit seven 20-second process-startup timeouts; the serial rerun passed those cases without widening timeouts. The rebuilt Windows executable passed the release gate with observed statuses 0 through 7, zero gate blockers, and `qualified: true`. These automated results do not establish raw-key PTY behavior for all prompts/platforms; only the standalone interact2 multiselect was user-verified interactively.
 
 ## Review findings and resolutions
 
@@ -77,4 +85,4 @@ All actionable review findings have regression coverage and were rechecked by th
 
 ## Remaining platform/release evidence
 
-The stock-Clix interaction limitations above are implementation blockers, not merely missing platform evidence. Earlier integrated native-CI results were produced with the removed fork and changed lockfile, so they do not qualify the current candidate. Real Windows/macOS/Linux PTY behavior and HTTPS/TLS credential-boundary integration remain unverified. Non-interactive built-artifact and lifecycle evidence does not establish Select All, graceful cancellation/EOF handling, or terminal restoration.
+The historical stock-Clix results above do not qualify the interact2 migration. Earlier integrated native-CI results were produced with a different dependency and lockfile, so they do not qualify the current candidate. Real Windows/macOS/Linux PTY behavior and HTTPS/TLS credential-boundary integration remain unverified. Non-interactive built-artifact and lifecycle evidence does not establish Select All, graceful cancellation/EOF handling, or terminal restoration.

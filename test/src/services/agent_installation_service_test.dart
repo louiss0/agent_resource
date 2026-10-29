@@ -30,7 +30,9 @@ void main() {
             );
           final result =
               await AgentInstallationService(
-                interaction: ClixInstallationInteraction(terminal: () => false),
+                interaction: InteractInstallationInteraction(
+                  terminal: () => false,
+                ),
               ).run(
                 InstallationWorkflowRequest(
                   source: source.path,

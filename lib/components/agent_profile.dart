@@ -1,18 +1,22 @@
-import 'package:mamba/mamba.dart';
+import 'package:interact2/interact2.dart' as interact;
+
+import 'prompt_support.dart';
 
 final class AgentProfileComponent {
   const AgentProfileComponent({
     this.label = 'Native agent profile (Ctrl+C to cancel)',
+    this.select,
   });
 
   final String label;
+  final int Function(interact.Select)? select;
 
-  Future<String?> render() =>
-      Select(
-        prompt: label,
-        options: const ['claude', 'codex', 'pi-common'],
-      ).interact().then(
-        (index) =>
-            index < 0 ? null : const ['claude', 'codex', 'pi-common'][index],
-      );
+  Future<String?> render() async {
+    const options = ['claude', 'codex', 'pi-common'];
+    final prompt = interact.Select(prompt: label, options: options);
+    final index = runPrompt(
+      () => select == null ? prompt.interact() : select!(prompt),
+    );
+    return index < 0 ? null : options[index];
+  }
 }

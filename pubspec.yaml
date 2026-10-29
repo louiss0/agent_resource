@@ -4,9 +4,9 @@ environment:
   sdk: ^3.13.2
 dependencies:
   archive: 4.0.7
-  clix: 1.2.0
   crypto: ^3.0.7
   ffi: ^2.2.0
+  interact2: ^4.0.0
   mamba: any
   path: any
   toml: ^0.18.0

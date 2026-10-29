@@ -4,6 +4,8 @@ import 'dart:io' show Directory, Platform;
 
 import 'package:mamba/mamba.dart';
 
+import 'components/installation_approval.dart';
+
 import 'src/agent_inspection.dart';
 import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/lifecycle_state_service.dart';
@@ -31,7 +33,7 @@ enum _Operation {
 typedef LifecycleConfirmation = Future<bool> Function(String prompt);
 
 Future<bool> _defaultConfirmation(String prompt) =>
-    Confirm(prompt: prompt, defaultValue: false).interact();
+    InstallationApprovalComponent(label: prompt).render();
 
 /// Shared backup group registered below both native resource groups.
 final class LifecycleBackupCommand extends GroupCommand {

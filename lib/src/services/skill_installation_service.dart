@@ -29,7 +29,7 @@ interface class SkillInstallationService {
     InstallationBatch? batch,
     InstallationProgress? progress,
   }) : _lifecycle = lifecycle ?? SkillLifecycleService(),
-       _interaction = interaction ?? ClixInstallationInteraction(),
+       _interaction = interaction ?? InteractInstallationInteraction(),
        _batch = batch ?? InstallationBatch(),
        _progress = progress ?? _defaultProgress;
 

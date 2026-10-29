@@ -107,17 +107,17 @@ Reject obsolete install `--destination`, `--harness`, `--mode` and opt-in `--int
 
 Start supported declarations using the matching Mamba generators; edit them afterward, wire generated commands and replace starter tests. Mamba components are plain async `render()` classes, not registered commands.
 
-- Source prompt: `ClixInput`.
-- Resource selection: Clix `MultiSelect`, initially unchecked, explicit Select All, map indices to the exact offered typed identities.
-- Skill target selection: Clix `MultiSelect`, detected compatible targets preselected; sole detected compatible target skips the question; zero detected starts unchecked.
+- Source prompt: interact2 `Input`; trimmed blank input cancels.
+- Resource selection: interact2 `MultiSelect`, initially unchecked, map indices to the exact offered typed identities. The separate explicit Select All acceptance requirement remains; stock interact2 does not implement it.
+- Skill target selection: interact2 `MultiSelect`, detected compatible targets preselected via a boolean mask; sole detected compatible target skips the question; zero detected starts unchecked.
 - Agents: selected explicitly profiled native definitions determine targets; no redundant harness multiselect. Explicit target filters narrow catalog offerings before selection.
-- Approval: application-rendered complete plan followed by `Confirm(defaultValue: false)`.
-- Acquisition/discovery progress: Mamba indicator wrapper around Clix spinner with guaranteed stop/cleanup on every handled exit.
+- Approval: application-rendered complete plan followed by interact2 `Confirm(defaultValue: false, waitForNewLine: true)`. Lifecycle and authoring confirmations use the same component. Without both terminal handles, decline without invoking raw-key input or reading redirected stdin; approval must never be inferred from EOF.
+- Acquisition/discovery progress: interact2 spinner, completed on success and failed/disposed on handled acquisition failure; cleanup must not mask the acquisition error.
 - Scope and method are disclosed defaults, not extra questions.
 
-The generated single-choice selector must be adapted to the selected Clix checkbox UX, not substituted for it. The adapter owns empty selection, explicit cancellation, EOF failure and identity mapping.
+The user explicitly selected interact2 after a standalone Windows multiselect succeeded and stock Clix failed. Application components import interact2 directly; Mamba remains the command parser and may retain Clix transitively. No application prompt uses Mamba's Clix re-exports. Prompt exceptions trigger best-effort interact2 reset without hiding the original exception; this restores cursor/colors, not a guarantee of complete terminal-mode restoration. interact2 handles Ctrl+C by resetting and exiting with status 1, not a typed cancellation answer. Empty option lists must not enter the library (which rejects them). Existing typed workflow cancellation remains separate from process interrupts.
 
-Resolved Clix 1.2.0 raw input limitations remain acceptance blockers. A wrapper alone cannot repair its keyboard loop. Use a verified corrected implementation/release or the necessary narrowly scoped Clix fixes, preserving licence and pinned dependency evidence. Do not edit the user's pub cache, silently replace the toolkit or assume injected CliIO answers raw prompts. Any dependency change must be inspected and tested against the resolved Mamba version before adoption.
+The adapter still owns empty selection and identity mapping. The migration is not proof of graceful EOF, Select All, viewport/wrapping, resize, or cross-platform PTY acceptance; those remain explicitly unverified requirements. Do not edit the user's pub cache or assume Executor.fake() answers raw prompts. Any dependency change must be inspected and tested against the resolved Mamba version before adoption.
 
 ## 5. Acquisition implementation and provenance
 

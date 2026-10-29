@@ -241,9 +241,8 @@ $privateInstruction
       cancelled,
     );
     _expect(
-      cancelled.stdout.contains('reviewed remove operation') &&
-          cancelled.stdout.contains('No'),
-      'Cancellation did not render the Clix confirmation.',
+      cancelled.stdout.isEmpty,
+      'Non-terminal cancellation must not render a raw-key prompt.',
       cancelled,
     );
 

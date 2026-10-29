@@ -46,8 +46,8 @@ abstract interface class InstallationInteraction {
   Future<InteractionAnswer<bool>> approve(String completePlanPreview);
 }
 
-final class ClixInstallationInteraction implements InstallationInteraction {
-  ClixInstallationInteraction({bool Function()? terminal})
+final class InteractInstallationInteraction implements InstallationInteraction {
+  InteractInstallationInteraction({bool Function()? terminal})
     : _terminal = terminal ?? (() => stdin.hasTerminal && stdout.hasTerminal);
 
   final bool Function() _terminal;

@@ -2,13 +2,15 @@ import 'dart:convert';
 
 import 'package:mamba/mamba.dart';
 
+import 'components/installation_approval.dart';
+
 import 'lifecycle.dart' show LifecycleOutputFormat;
 import 'src/services/lifecycle_state_service.dart';
 
 typedef AuthoringConfirmation = Future<bool> Function(String prompt);
 
 Future<bool> defaultAuthoringConfirmation(String prompt) =>
-    Confirm(prompt: prompt, defaultValue: false).interact();
+    InstallationApprovalComponent(label: prompt).render();
 
 String selectOperationRequest(String? positional, String? named) {
   if (positional != null && named != null) {

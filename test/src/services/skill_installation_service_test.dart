@@ -28,7 +28,9 @@ void main() {
           );
           final result =
               await SkillInstallationService(
-                interaction: ClixInstallationInteraction(terminal: () => false),
+                interaction: InteractInstallationInteraction(
+                  terminal: () => false,
+                ),
               ).run(
                 InstallationWorkflowRequest(
                   source: source.path,

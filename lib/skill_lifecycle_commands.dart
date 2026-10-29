@@ -4,6 +4,8 @@ import 'dart:io' show Directory, Platform;
 
 import 'package:mamba/mamba.dart';
 
+import 'components/installation_approval.dart';
+
 import 'installation_command_support.dart';
 import 'lifecycle.dart'
     show LifecycleConfirmation, LifecycleOutputFormat, RecoveryAction;
@@ -15,7 +17,7 @@ import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 
 Future<bool> _defaultConfirmation(String prompt) =>
-    Confirm(prompt: prompt, defaultValue: false).interact();
+    InstallationApprovalComponent(label: prompt).render();
 
 LifecycleOptions _options(
   LifecycleScope scope,

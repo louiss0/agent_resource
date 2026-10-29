@@ -79,6 +79,11 @@ asks for approval before writes. Skill scope and method default to `user` and
 `canonical`; Agent scope defaults to `project`. These defaults are not assumed
 for unattended or JSON installation.
 
+Interactive components use `interact2`; Mamba remains the command framework.
+Confirmations default to No and require Enter. Raw-key confirmations are never
+run with redirected input: without a usable terminal they decline without
+reading stdin. Use explicit unattended options and `--yes` for automation.
+
 ```text
 agent_resource skill install [source]
   [--resource <catalog-id> ... | --all-resources]
