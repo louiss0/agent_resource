@@ -103,6 +103,7 @@ MambaSuccessResult _expectSuccess(MambaExecutionResult result) {
 MambaFailureResult _expectFailure(
   MambaExecutionResult result, {
   required int exitCode,
+  required Object message,
   MambaExecutionPhase phase = MambaExecutionPhase.run,
 }) {
   expect(
@@ -118,7 +119,9 @@ MambaFailureResult _expectFailure(
           'list',
         ]),
   );
-  return result as MambaFailureResult;
+  final failure = result as MambaFailureResult;
+  expect(failure.message, message);
+  return failure;
 }
 
 Map<String, Object?> _report(MambaExecutionResult result) {
@@ -175,14 +178,17 @@ void main() {
   );
 
   group('agent_resource', () {
+    test('root help keeps agent list under the agent group', () async {
+      final output = _expectSuccess(
+        await createExecutor().fake().execute(['--help']),
+      ).output!;
+      expect(output, contains('agent'));
+      expect(output, isNot(contains('  list ')));
+    });
+
     group('agent', () {
       group('list', () {
         test('help and parser behavior use the agent group', () async {
-          final root = _expectSuccess(
-            await createExecutor().fake().execute(['--help']),
-          ).output!;
-          expect(root, contains('agent'));
-          expect(root, isNot(contains('  list ')));
           final help = _expectSuccess(await _execute(['--help'])).output!;
           for (final token in [
             '--scope',
@@ -194,16 +200,20 @@ void main() {
           ]) {
             expect(help, contains(token), reason: token);
           }
-          for (final arguments in [
-            ['unexpected'],
-            ['--scope', 'machine'],
-            ['--harness', 'other'],
-            ['--unknown'],
-            ['--cwd', 'missing-separator'],
+          for (final testCase in [
+            (arguments: ['unexpected'], diagnostic: 'unexpected'),
+            (arguments: ['--scope', 'machine'], diagnostic: '--scope'),
+            (arguments: ['--harness', 'other'], diagnostic: '--harness'),
+            (arguments: ['--unknown'], diagnostic: 'unknown'),
+            (
+              arguments: ['--cwd', 'missing-separator'],
+              diagnostic: 'Invalid path for --cwd.',
+            ),
           ]) {
             _expectFailure(
-              await _execute(arguments),
+              await _execute(testCase.arguments),
               exitCode: 1,
+              message: contains(testCase.diagnostic),
               phase: MambaExecutionPhase.parse,
             );
           }
@@ -231,7 +241,7 @@ void main() {
         test('filters and scope do not bypass explicit read-root validation', () async {
           await _withSandbox((sandbox) async {
             for (final scope in ['project', 'user']) {
-              final failure = _expectFailure(
+              _expectFailure(
                 await _execute([
                   ..._projectArgs(sandbox),
                   '--harness',
@@ -244,8 +254,8 @@ void main() {
                   '${p.join(sandbox.root.path, 'missing')}${Platform.pathSeparator}',
                 ]),
                 exitCode: 1,
+                message: contains('read root does not exist'),
               );
-              expect(failure.message, contains('read root does not exist'));
             }
           });
         });
@@ -270,53 +280,6 @@ void main() {
                 ),
               );
               expect((occurrence['binding']! as Map)['roleKey'], 'reviewer');
-              final request = _write(
-                sandbox.root,
-                'request.json',
-                jsonEncode({
-                  'schemaVersion': 1,
-                  'operation': 'inspect',
-                  'source': {
-                    'kind': 'codex-role',
-                    'configFile': p.join(
-                      sandbox.project.path,
-                      '.codex',
-                      'config.toml',
-                    ),
-                    'roleKey': 'max_threads',
-                  },
-                  'context': {'workingDirectory': sandbox.work.path},
-                }),
-              );
-              final selected = await createExecutor().fake().execute([
-                'agent',
-                'inspect',
-                '--request',
-                request.path,
-                '--format',
-                'json',
-              ]);
-              expect(
-                selected,
-                isA<MambaFailureResult>()
-                    .having((v) => v.exitCode, 'status', 1)
-                    .having(
-                      (v) => v.message,
-                      'message',
-                      contains('declares no'),
-                    )
-                    .having((v) => v.output, 'output', isNull)
-                    .having(
-                      (v) => v.error.phase,
-                      'phase',
-                      MambaExecutionPhase.run,
-                    )
-                    .having((v) => v.error.commandPath, 'path', [
-                      'agent_resource',
-                      'agent',
-                      'inspect',
-                    ]),
-              );
             });
           },
         );
@@ -329,7 +292,7 @@ void main() {
             }
             current.createSync(recursive: true);
             _write(sandbox.project, '.git', 'gitdir: elsewhere');
-            final failure = _expectFailure(
+            _expectFailure(
               await _execute([
                 '--cwd',
                 '${current.path}${Platform.pathSeparator}',
@@ -337,8 +300,8 @@ void main() {
                 'json',
               ]),
               exitCode: 3,
+              message: contains('64-step budget'),
             );
-            expect(failure.message, contains('64'));
           });
         });
 
@@ -422,6 +385,7 @@ void main() {
                   'json',
                 ]),
                 exitCode: 4,
+                message: contains('linked native'),
               );
             });
           }
@@ -477,51 +441,6 @@ void main() {
                   'incomplete',
                 );
                 expect(jsonEncode(report), isNot(contains('PRIVATE-INVALID')));
-                final request = _write(
-                  sandbox.root,
-                  'linked-request.json',
-                  jsonEncode({
-                    'schemaVersion': 1,
-                    'operation': 'inspect',
-                    'source': {
-                      'kind': 'codex-role',
-                      'configFile': p.join(
-                        sandbox.project.path,
-                        '.codex',
-                        'config.toml',
-                      ),
-                      'roleKey': 'reviewer',
-                    },
-                    'context': {'workingDirectory': sandbox.work.path},
-                  }),
-                );
-                final inspected = await createExecutor().fake().execute([
-                  'agent',
-                  'inspect',
-                  '--request',
-                  request.path,
-                ]);
-                expect(
-                  inspected,
-                  isA<MambaFailureResult>()
-                      .having((v) => v.exitCode, 'status', 4)
-                      .having(
-                        (v) => v.message,
-                        'message',
-                        contains('linked role definition'),
-                      )
-                      .having((v) => v.output, 'output', isNull)
-                      .having(
-                        (v) => v.error.phase,
-                        'phase',
-                        MambaExecutionPhase.run,
-                      )
-                      .having((v) => v.error.commandPath, 'path', [
-                        'agent_resource',
-                        'agent',
-                        'inspect',
-                      ]),
-                );
               });
             },
           );
@@ -603,7 +522,7 @@ void main() {
               '--codex-home',
               '--pi-agent-dir',
             ]) {
-              final failure = _expectFailure(
+              _expectFailure(
                 await _execute([
                   ..._projectArgs(sandbox),
                   '--harness',
@@ -612,8 +531,8 @@ void main() {
                   '${p.join(sandbox.root.path, 'missing')}${Platform.pathSeparator}',
                 ]),
                 exitCode: 1,
+                message: contains('does not exist'),
               );
-              expect(failure.message, contains('does not exist'));
             }
           });
         });
@@ -629,7 +548,7 @@ void main() {
                 markTestSkipped('directory links are unavailable');
                 return;
               }
-              final failure = _expectFailure(
+              _expectFailure(
                 await _execute([
                   ..._projectArgs(sandbox),
                   '--harness',
@@ -638,8 +557,8 @@ void main() {
                   '${linked.path}${Platform.pathSeparator}',
                 ]),
                 exitCode: 4,
+                message: contains('linked native path'),
               );
-              expect(failure.message, contains('linked native path'));
             });
           },
         );
@@ -737,29 +656,39 @@ void main() {
           },
         );
 
-        test('automatic project boundary uses a git marker', () async {
-          await _withSandbox((sandbox) async {
-            _write(sandbox.project, '.git', 'gitdir: elsewhere');
-            _write(sandbox.project, '.claude/agents/root.md', _claude('root'));
-            _write(
-              sandbox.root,
-              '.claude/agents/outside.md',
-              _claude('outside'),
-            );
-            final occurrences = _occurrences(
-              _report(
-                await _execute([
-                  '--cwd',
-                  '${sandbox.work.path}${Platform.pathSeparator}',
-                  '--format',
-                  'json',
-                ]),
-              ),
-            );
-            expect(occurrences, hasLength(1));
-            expect(occurrences.single['path'], contains('root.md'));
+        for (final markerType in ['file', 'directory']) {
+          test('automatic project boundary uses a git $markerType', () async {
+            await _withSandbox((sandbox) async {
+              if (markerType == 'file') {
+                _write(sandbox.project, '.git', 'gitdir: elsewhere');
+              } else {
+                _write(sandbox.project, '.git/keep', '');
+              }
+              _write(
+                sandbox.project,
+                '.claude/agents/root.md',
+                _claude('root'),
+              );
+              _write(
+                sandbox.root,
+                '.claude/agents/outside.md',
+                _claude('outside'),
+              );
+              final occurrences = _occurrences(
+                _report(
+                  await _execute([
+                    '--cwd',
+                    '${sandbox.work.path}${Platform.pathSeparator}',
+                    '--format',
+                    'json',
+                  ]),
+                ),
+              );
+              expect(occurrences, hasLength(1));
+              expect(occurrences.single['path'], contains('root.md'));
+            });
           });
-        });
+        }
 
         test(
           'automatic project boundary falls back to cwd without git',
@@ -1095,6 +1024,7 @@ void main() {
                   '${outside.path}${Platform.pathSeparator}',
                 ]),
                 exitCode: 1,
+                message: contains('must contain'),
               );
               _write(sandbox.project, '.claude/agents/a.md', _claude());
               final adapter = createExecutor().fake();
@@ -1146,7 +1076,11 @@ void main() {
                 if (exitCode == 0) {
                   _report(result);
                 } else {
-                  _expectFailure(result, exitCode: exitCode);
+                  _expectFailure(
+                    result,
+                    exitCode: exitCode,
+                    message: contains('64-step budget'),
+                  );
                 }
               });
             }
@@ -1176,6 +1110,7 @@ void main() {
               _expectFailure(
                 await _execute(_projectArgs(sandbox)),
                 exitCode: 3,
+                message: contains('depth-16 budget'),
               );
             });
           },
@@ -1199,6 +1134,7 @@ void main() {
               _expectFailure(
                 await _execute(_projectArgs(sandbox)),
                 exitCode: 3,
+                message: contains('2000-directory budget'),
               );
             });
             await _withSandbox((sandbox) async {
@@ -1216,6 +1152,7 @@ void main() {
               _expectFailure(
                 await _execute(_projectArgs(sandbox)),
                 exitCode: 3,
+                message: contains('20000-entry budget'),
               );
             });
           },
@@ -1249,6 +1186,7 @@ void main() {
             _expectFailure(
               await _execute([..._projectArgs(sandbox), '--harness', 'codex']),
               exitCode: 3,
+              message: contains('64 MiB metadata-read budget'),
             );
           });
         }, timeout: const Timeout(Duration(minutes: 2)));
@@ -1261,6 +1199,7 @@ void main() {
               _expectFailure(
                 await _execute(_projectArgs(sandbox)),
                 exitCode: 3,
+                message: contains('TOML'),
               );
             });
             await _withSandbox((sandbox) async {
@@ -1275,6 +1214,7 @@ void main() {
               _expectFailure(
                 await _execute(_projectArgs(sandbox)),
                 exitCode: 3,
+                message: contains('1048576-byte budget'),
               );
               file.renameSync('${file.path}.closed');
             });
@@ -1404,6 +1344,7 @@ void main() {
               _expectFailure(
                 await _execute(_projectArgs(sandbox)),
                 exitCode: 4,
+                message: contains('linked native path'),
               );
             });
           },
@@ -1468,6 +1409,7 @@ void main() {
                 _expectFailure(
                   await _execute(_projectArgs(sandbox)),
                   exitCode: 3,
+                  message: contains('definition'),
                 );
               } finally {
                 await Process.run('chmod', ['600', file.path]);
@@ -1503,8 +1445,17 @@ void main() {
                 '${p.join(sandbox.root.path, 'missing-home')}${Platform.pathSeparator}',
               ]),
               exitCode: 1,
+              message: contains('home directory does not exist'),
             );
-            _expectSuccess(await _execute(['--help']));
+            final help = _expectSuccess(await _execute(['--help'])).output!;
+            expect(
+              help,
+              allOf(
+                contains('agent list'),
+                contains('--scope'),
+                contains('--project-root'),
+              ),
+            );
             final after = _snapshot(sandbox.root);
             expect(after.keys.toSet(), before.keys.toSet());
             expect(after['sentinel.txt'], before['sentinel.txt']);
@@ -1600,6 +1551,144 @@ void main() {
           },
           timeout: const Timeout(Duration(seconds: 120)),
         );
+      });
+
+      group('inspect', () {
+        test('global Codex agents settings are not selectable roles', () async {
+          await _withSandbox((sandbox) async {
+            _write(
+              sandbox.project,
+              '.codex/config.toml',
+              '[agents]\nenabled = true\nmax_threads = 4\nmax_depth = 2\n'
+                  '[agents.reviewer]\ndescription = "Reviews."\n',
+            );
+            final request = _write(
+              sandbox.root,
+              'request.json',
+              jsonEncode({
+                'schemaVersion': 1,
+                'operation': 'inspect',
+                'source': {
+                  'kind': 'codex-role',
+                  'configFile': p.join(
+                    sandbox.project.path,
+                    '.codex',
+                    'config.toml',
+                  ),
+                  'roleKey': 'max_threads',
+                },
+                'context': {'workingDirectory': sandbox.work.path},
+              }),
+            );
+            final selected = await createExecutor().fake().execute([
+              'agent',
+              'inspect',
+              '--request',
+              request.path,
+              '--format',
+              'json',
+            ]);
+            expect(
+              selected,
+              isA<MambaFailureResult>()
+                  .having((v) => v.exitCode, 'status', 1)
+                  .having((v) => v.message, 'message', contains('declares no'))
+                  .having((v) => v.output, 'output', isNull)
+                  .having(
+                    (v) => v.error.phase,
+                    'phase',
+                    MambaExecutionPhase.run,
+                  )
+                  .having((v) => v.error.commandPath, 'path', [
+                    'agent_resource',
+                    'agent',
+                    'inspect',
+                  ]),
+            );
+          });
+        });
+
+        for (final intermediate in [false, true]) {
+          test(
+            '${intermediate ? 'intermediate' : 'file'} role definition links refuse inspection',
+            () async {
+              await _withSandbox((sandbox) async {
+                final target = _write(
+                  sandbox.root,
+                  'outside/secret.toml',
+                  'PRIVATE-INVALID',
+                );
+                _write(
+                  sandbox.project,
+                  '.codex/config.toml',
+                  '[agents.reviewer]\ndescription = "Reviews."\nconfig_file = "roles/reviewer.toml"\n',
+                );
+                final link = Link(
+                  p.join(
+                    sandbox.project.path,
+                    '.codex',
+                    'roles',
+                    intermediate ? '' : 'reviewer.toml',
+                  ),
+                );
+                link.parent.createSync(recursive: true);
+                if (!_tryLink(
+                  link,
+                  intermediate ? target.parent.path : target.path,
+                  directory: intermediate,
+                )) {
+                  markTestSkipped('symlink creation is unavailable');
+                  return;
+                }
+                final request = _write(
+                  sandbox.root,
+                  'linked-request.json',
+                  jsonEncode({
+                    'schemaVersion': 1,
+                    'operation': 'inspect',
+                    'source': {
+                      'kind': 'codex-role',
+                      'configFile': p.join(
+                        sandbox.project.path,
+                        '.codex',
+                        'config.toml',
+                      ),
+                      'roleKey': 'reviewer',
+                    },
+                    'context': {'workingDirectory': sandbox.work.path},
+                  }),
+                );
+                final inspected = await createExecutor().fake().execute([
+                  'agent',
+                  'inspect',
+                  '--request',
+                  request.path,
+                ]);
+                expect(
+                  inspected,
+                  isA<MambaFailureResult>()
+                      .having((v) => v.exitCode, 'status', 4)
+                      .having(
+                        (v) => v.message,
+                        'message',
+                        contains('linked role definition'),
+                      )
+                      .having((v) => v.output, 'output', isNull)
+                      .having(
+                        (v) => v.error.phase,
+                        'phase',
+                        MambaExecutionPhase.run,
+                      )
+                      .having((v) => v.error.commandPath, 'path', [
+                        'agent_resource',
+                        'agent',
+                        'inspect',
+                      ]),
+                );
+              });
+            },
+          );
+        }
       });
     });
   });
