@@ -41,6 +41,7 @@ final class BoundRoleRequest {
     this.output,
     this.planId,
     this.clientsStopped = false,
+    this.affected = const <String>[],
   });
 
   final BoundOperation operation;
@@ -52,6 +53,7 @@ final class BoundRoleRequest {
   final String? output;
   final String? planId;
   final bool clientsStopped;
+  final List<String> affected;
 }
 
 BoundRoleRequest parseBoundRoleRequest(
@@ -85,6 +87,7 @@ BoundRoleRequest parseBoundRoleRequest(
     'definition',
     'planId',
     'clientsStopped',
+    'affected',
   };
   for (final key in map.keys) {
     if (!allowed.contains(key)) {
@@ -160,6 +163,15 @@ BoundRoleRequest parseBoundRoleRequest(
   if (clients != null && clients is! bool) {
     throw MambaException('Bound-role clientsStopped must be a boolean.');
   }
+  final affected = map['affected'];
+  if (affected != null) {
+    if (affected is! List<Object?>) {
+      throw MambaException('Bound-role affected decisions must be an array.');
+    }
+    if (affected.any((Object? value) => value is! String)) {
+      throw MambaException('Bound-role affected decisions must be strings.');
+    }
+  }
   return BoundRoleRequest(
     operation: operations.single,
     configFile: configFile,
@@ -170,6 +182,9 @@ BoundRoleRequest parseBoundRoleRequest(
     output: optionalString('output'),
     planId: planId as String?,
     clientsStopped: clients == true,
+    affected: affected == null
+        ? const <String>[]
+        : (affected as List<Object?>).cast<String>().toList(),
   );
 }
 
@@ -209,101 +224,118 @@ final class BoundRoleService {
         exitCode: 4,
       );
     }
-    if (!request.clientsStopped) {
+    if (request.ownership != BoundOwnership.definition &&
+        !request.clientsStopped) {
       throw MambaException(
-        'The bound-role mutation requires --clients-stopped acknowledgement.',
+        'Parent-writing bound-role mutations require --clients-stopped acknowledgement.',
         exitCode: 4,
       );
     }
     final binding = _binding(request, options);
     final installationId = request.installationId;
     String? definitionId;
+    String? definitionBackupId;
     ParentResult? registration;
-    try {
-      if (request.ownership != BoundOwnership.registration) {
-        if (request.operation == BoundOperation.create) {
-          final source = request.source;
-          if (source == null) {
-            throw MambaException(
-              'Bound-role create requires a definition source.',
-            );
-          }
-          final installed = await agent.install(
-            AgentInstallInput(
-              options: options.copyWith(approved: true),
-              source: source,
-              harness: AgentHarness.codex,
-              output: request.output,
-            ),
+    agent.state.ensureLedger(LifecycleContext.resolve(options));
+    Future<void> publishDefinition() async {
+      if (request.ownership == BoundOwnership.registration) return;
+      if (request.operation == BoundOperation.create) {
+        final source = request.source;
+        if (source == null) {
+          throw MambaException(
+            'Bound-role create requires a definition source.',
           );
-          definitionId = installed.data['installationId']! as String;
-        } else if (request.operation == BoundOperation.adopt) {
-          final definition = _definitionFile(binding, request);
-          if (definition == null) {
-            throw MambaException(
-              'The bound role has no definition file to adopt.',
-            );
-          }
-          final adopted = await agent.adopt(
-            AgentInstallInput(
-              options: options,
-              source: definition,
-              harness: AgentHarness.codex,
-            ),
-          );
-          definitionId = adopted.data['installationId']! as String;
-        } else {
-          if (installationId == null) {
-            throw MambaException(
-              'Bound-role ${request.operation.name} requires a definition installationId.',
-            );
-          }
-          if (request.operation == BoundOperation.replace) {
-            final source = request.source;
-            if (source == null) {
-              throw MambaException(
-                'Bound-role replace requires a source file.',
-              );
-            }
-            final replaced = await agent.replace(
-              LifecycleReplaceInput(
-                options: options.copyWith(approved: true),
-                installationId: installationId,
-                source: source,
-              ),
-            );
-            definitionId = replaced.data['installationId']! as String;
-          } else {
-            final removed = await agent.remove(
-              LifecycleIdInput(
-                options: options.copyWith(approved: true),
-                id: installationId,
-              ),
-            );
-            definitionId = removed.data['installationId']! as String;
-          }
         }
-      }
-      if (request.ownership != BoundOwnership.definition) {
-        final parentRequest = _registrationRequest(request, options, binding);
-        final parentPlan = await parent.plan(
-          request: parentRequest,
-          options: options,
-        );
-        registration = await parent.apply(
-          request: ParentRequest(
-            operation: ParentOperation.apply,
-            harness: parentRequest.harness,
-            scope: parentRequest.scope,
-            layer: parentRequest.layer,
-            file: parentRequest.file,
-            changes: parentRequest.changes,
-            adopt: parentRequest.adopt,
-            planId: parentPlan.data['planId']! as String,
-            clientsStopped: true,
+        final installed = await agent.install(
+          AgentInstallInput(
+            options: options.copyWith(approved: true),
+            source: source,
+            harness: AgentHarness.codex,
+            output: request.output,
           ),
-          options: options.copyWith(approved: true),
         );
+        definitionId = installed.data['installationId']! as String;
+        return;
+      }
+      if (request.operation == BoundOperation.adopt) {
+        final definition = _definitionFile(binding, request);
+        if (definition == null) {
+          throw MambaException(
+            'The bound role has no definition file to adopt.',
+          );
+        }
+        final adopted = await agent.adoptBoundDefinition(
+          AgentInstallInput(
+            options: options,
+            source: definition,
+            harness: AgentHarness.codex,
+          ),
+        );
+        definitionId = adopted.data['installationId']! as String;
+        return;
+      }
+      if (installationId == null) {
+        throw MambaException(
+          'Bound-role ${request.operation.name} requires a definition installationId.',
+        );
+      }
+      if (request.operation == BoundOperation.replace) {
+        final source = request.source;
+        if (source == null) {
+          throw MambaException('Bound-role replace requires a source file.');
+        }
+        final replaced = await agent.replace(
+          LifecycleReplaceInput(
+            options: options.copyWith(approved: true),
+            installationId: installationId,
+            source: source,
+          ),
+        );
+        definitionId = replaced.data['installationId']! as String;
+        definitionBackupId = replaced.data['backupId']! as String;
+      } else {
+        final removed = await agent.remove(
+          LifecycleIdInput(
+            options: options.copyWith(approved: true),
+            id: installationId,
+          ),
+        );
+        definitionId = removed.data['installationId']! as String;
+      }
+    }
+
+    Future<void> publishRegistration() async {
+      if (request.ownership == BoundOwnership.definition) return;
+      final parentRequest = _registrationRequest(request, options, binding);
+      final parentPlan = await parent.plan(
+        request: parentRequest,
+        options: options,
+      );
+      registration = await parent.apply(
+        request: ParentRequest(
+          operation: ParentOperation.apply,
+          harness: parentRequest.harness,
+          scope: parentRequest.scope,
+          layer: parentRequest.layer,
+          file: parentRequest.file,
+          changes: parentRequest.changes,
+          adopt: parentRequest.adopt,
+          affected: parentRequest.affected,
+          planId: parentPlan.data['planId']! as String,
+          clientsStopped: true,
+        ),
+        options: options.copyWith(approved: true),
+      );
+    }
+
+    try {
+      if (request.operation == BoundOperation.create ||
+          request.operation == BoundOperation.replace) {
+        await publishDefinition();
+        await publishRegistration();
+      } else {
+        await publishRegistration();
+        await publishDefinition();
       }
       return LifecycleResult(
         command: 'agent ${request.operation.name}',
@@ -326,12 +358,69 @@ final class BoundRoleService {
         },
       );
     } catch (error) {
-      if (definitionId != null) {
+      if ((request.operation == BoundOperation.create ||
+              request.operation == BoundOperation.replace) &&
+          definitionId != null &&
+          registration == null) {
+        try {
+          if (request.operation == BoundOperation.create) {
+            await agent.remove(
+              LifecycleIdInput(
+                options: options.copyWith(approved: true),
+                id: definitionId!,
+              ),
+            );
+          } else {
+            final backup = definitionBackupId;
+            if (backup == null) {
+              throw MambaException(
+                'The definition replacement has no retained backup for recovery.',
+                exitCode: 6,
+              );
+            }
+            await agent.restore(
+              LifecycleIdInput(
+                options: options.copyWith(approved: true),
+                id: backup,
+              ),
+            );
+          }
+        } on MambaException catch (recoveryError) {
+          throw MambaException(
+            'The bound-role mutation requires recovery; definition rollback could not be proven. $recoveryError',
+            exitCode: 6,
+          );
+        }
         throw MambaException(
-          'The definition prerequisite committed as $definitionId, but the '
-          'registration step failed. It is not rolled back across operation '
-          'boundaries. $error',
-          exitCode: 6,
+          'Registration failed and the definition was restored to its prior state. $error',
+          exitCode: 5,
+        );
+      }
+      if (registration != null) {
+        final backupId = registration!.data['backupId'];
+        if (backupId is! String) {
+          throw MambaException(
+            'The combined bound-role operation failed after registration, and no registration backup is available for recovery. $error',
+            exitCode: 6,
+          );
+        }
+        try {
+          final restorePlan = parent.restorePlanId(options, backupId);
+          await parent.restore(
+            options: options.copyWith(approved: true),
+            backupId: backupId,
+            planId: restorePlan,
+            clientsStopped: true,
+          );
+        } on MambaException catch (recoveryError) {
+          throw MambaException(
+            'The combined bound-role operation requires recovery; registration rollback could not be proven. $recoveryError',
+            exitCode: 6,
+          );
+        }
+        throw MambaException(
+          'The definition step failed and registration was restored; no combined bound-role change was committed. $error',
+          exitCode: 5,
         );
       }
       rethrow;
@@ -343,6 +432,27 @@ final class BoundRoleService {
     LifecycleOptions options,
   ) async {
     final binding = _binding(request, options);
+    if ((request.operation == BoundOperation.replace ||
+            request.operation == BoundOperation.remove) &&
+        request.ownership != BoundOwnership.registration) {
+      final id = request.installationId;
+      if (id == null) {
+        throw MambaException(
+          'Bound-role ${request.operation.name} requires a definition installationId.',
+        );
+      }
+      final record = agent.state.recordById(
+        LifecycleContext.resolve(options),
+        id,
+      );
+      final referenced = _definitionFile(binding, request);
+      if (referenced == null || !p.equals(record.location, referenced)) {
+        throw MambaException(
+          'The managed definition and binding reference do not match; registration cannot be redirected implicitly.',
+          exitCode: 4,
+        );
+      }
+    }
     Map<String, Object?>? definitionPlan;
     if (request.ownership != BoundOwnership.registration) {
       final source = switch (request.operation) {
@@ -351,16 +461,33 @@ final class BoundRoleService {
         _ => request.source,
       };
       if (source != null) {
-        final planned = await agent.install(
-          AgentInstallInput(
-            options: options.copyWith(dryRun: true),
-            source: source,
-            harness: AgentHarness.codex,
-            output: request.output,
+        final planned = switch (request.operation) {
+          BoundOperation.adopt => await agent.adoptBoundDefinition(
+            AgentInstallInput(
+              options: options.copyWith(dryRun: true),
+              source: source,
+              harness: AgentHarness.codex,
+            ),
           ),
-        );
+          BoundOperation.replace => await agent.replace(
+            LifecycleReplaceInput(
+              options: options.copyWith(dryRun: true),
+              installationId: request.installationId!,
+              source: source,
+            ),
+          ),
+          _ => await agent.install(
+            AgentInstallInput(
+              options: options.copyWith(dryRun: true),
+              source: source,
+              harness: AgentHarness.codex,
+              output: request.output,
+            ),
+          ),
+        };
         definitionPlan = <String, Object?>{
           'source': source,
+          'sourceDigest': _sourceDigest(source, options),
           'location': planned.data['location'],
           'nativeForm': planned.data['nativeForm'],
         };
@@ -382,6 +509,8 @@ final class BoundRoleService {
       registrationPlan = <String, Object?>{
         'planId': planned.data['planId'],
         'units': planned.data['changes'],
+        'knownAffected': planned.data['knownAffected'],
+        'impacts': planned.data['impacts'],
       };
     }
     final id = sha256
@@ -416,7 +545,8 @@ final class BoundRoleService {
       'ownership': request.ownership.name,
       'definition': definitionPlan,
       'registration': registrationPlan,
-      'clientsStoppedAcknowledgementRequired': true,
+      'clientsStoppedAcknowledgementRequired':
+          request.ownership != BoundOwnership.definition,
       'approvalRequired': true,
     };
   }
@@ -432,28 +562,17 @@ final class BoundRoleService {
         : _definitionFile(binding, request);
     final changes = <ParentChange>[];
     if (request.operation == BoundOperation.remove) {
-      changes.addAll([
+      changes.add(
         ParentChange(
-          unit: 'agents.${request.roleKey}.config_file',
+          unit: 'agents.${request.roleKey}',
           action: ParentAction.remove,
           value: null,
         ),
-        ParentChange(
-          unit: 'agents.${request.roleKey}.description',
-          action: ParentAction.remove,
-          value: null,
-        ),
-      ]);
+      );
     } else {
       final resolvedDefinition = switch (request.operation) {
         BoundOperation.create =>
-          request.output ??
-              p.join(
-                options.projectRoot ?? Directory.current.path,
-                '.codex',
-                'agents',
-                p.basename(request.source!),
-              ),
+          request.output ?? _defaultDefinitionLocation(request, options),
         _ => definition,
       };
       if (resolvedDefinition == null) {
@@ -493,6 +612,7 @@ final class BoundRoleService {
           : ParentLayer.user,
       file: configFile,
       changes: changes,
+      affected: request.affected,
       adopt:
           request.operation == BoundOperation.adopt ||
           request.operation == BoundOperation.replace,
@@ -519,11 +639,34 @@ final class BoundRoleService {
     BoundRoleRequest request,
   ) => binding.inspectRole(request.roleKey).definitionFile;
 
+  String _defaultDefinitionLocation(
+    BoundRoleRequest request,
+    LifecycleOptions options,
+  ) {
+    final context = LifecycleContext.resolve(options);
+    final root = context.scope == LifecycleScope.project
+        ? context.codexAgentsRoot()
+        : p.join(context.codexRoot(), 'agents');
+    return p.join(root, p.basename(request.source!));
+  }
+
   LifecycleScope _scopeForConfig(String configFile, LifecycleOptions options) {
     final context = LifecycleContext.resolve(options);
     return p.isWithin(context.projectRoot, configFile)
         ? LifecycleScope.project
         : LifecycleScope.user;
+  }
+
+  String _sourceDigest(String source, LifecycleOptions options) {
+    final resolved = LifecycleContext.resolve(options).resolvePath(source);
+    final bytes = readBoundedSkillMarker(resolved, maxBytes: 1048576);
+    if (bytes.length > 1048576) {
+      throw MambaException(
+        'The bound-role definition exceeds the 1 MiB native limit.',
+        exitCode: 3,
+      );
+    }
+    return sha256.convert(bytes).toString();
   }
 
   String? _definitionDescription(String file) {

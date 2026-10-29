@@ -38,18 +38,47 @@ Future<bool> _defaultConfirmation(String prompt) =>
 final class LifecycleBackupCommand extends GroupCommand {
   LifecycleBackupCommand.skill(SkillLifecycleService service)
     : this._(_Resource.skill, service, null);
-  LifecycleBackupCommand.agent(AgentLifecycleService service)
-    : this._(_Resource.agent, null, service);
+  LifecycleBackupCommand.agent(
+    AgentLifecycleService service, {
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  }) : this._(_Resource.agent, null, service, parentConfig, boundRole);
 
   LifecycleBackupCommand._(
     _Resource resource,
     SkillLifecycleService? skill,
-    AgentLifecycleService? agent,
-  ) : super([
-        LifecycleActionCommand._(resource, _Operation.backupList, skill, agent),
-        LifecycleActionCommand._(resource, _Operation.restore, skill, agent),
-        LifecycleActionCommand._(resource, _Operation.cleanup, skill, agent),
-      ]);
+    AgentLifecycleService? agent, [
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  ]) : super([
+         LifecycleActionCommand._(
+           resource,
+           _Operation.backupList,
+           skill,
+           agent,
+           _defaultConfirmation,
+           parentConfig,
+           boundRole,
+         ),
+         LifecycleActionCommand._(
+           resource,
+           _Operation.restore,
+           skill,
+           agent,
+           _defaultConfirmation,
+           parentConfig,
+           boundRole,
+         ),
+         LifecycleActionCommand._(
+           resource,
+           _Operation.cleanup,
+           skill,
+           agent,
+           _defaultConfirmation,
+           parentConfig,
+           boundRole,
+         ),
+       ]);
 
   @override
   String get name => 'backup';
@@ -69,14 +98,46 @@ final class LifecycleActionCommand extends Command {
   factory LifecycleActionCommand.skillRecover(SkillLifecycleService service) =>
       LifecycleActionCommand._skill(_Operation.recover, service);
 
-  factory LifecycleActionCommand.agentAdopt(AgentLifecycleService service) =>
-      LifecycleActionCommand._agent(_Operation.adopt, service);
-  factory LifecycleActionCommand.agentReplace(AgentLifecycleService service) =>
-      LifecycleActionCommand._agent(_Operation.replace, service);
-  factory LifecycleActionCommand.agentRemove(AgentLifecycleService service) =>
-      LifecycleActionCommand._agent(_Operation.remove, service);
-  factory LifecycleActionCommand.agentRecover(AgentLifecycleService service) =>
-      LifecycleActionCommand._agent(_Operation.recover, service);
+  factory LifecycleActionCommand.agentAdopt(
+    AgentLifecycleService service, {
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  }) => LifecycleActionCommand._agent(
+    _Operation.adopt,
+    service,
+    parentConfig: parentConfig,
+    boundRole: boundRole,
+  );
+  factory LifecycleActionCommand.agentReplace(
+    AgentLifecycleService service, {
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  }) => LifecycleActionCommand._agent(
+    _Operation.replace,
+    service,
+    parentConfig: parentConfig,
+    boundRole: boundRole,
+  );
+  factory LifecycleActionCommand.agentRemove(
+    AgentLifecycleService service, {
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  }) => LifecycleActionCommand._agent(
+    _Operation.remove,
+    service,
+    parentConfig: parentConfig,
+    boundRole: boundRole,
+  );
+  factory LifecycleActionCommand.agentRecover(
+    AgentLifecycleService service, {
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  }) => LifecycleActionCommand._agent(
+    _Operation.recover,
+    service,
+    parentConfig: parentConfig,
+    boundRole: boundRole,
+  );
 
   LifecycleActionCommand._skill(
     _Operation operation,
@@ -87,7 +148,17 @@ final class LifecycleActionCommand extends Command {
     _Operation operation,
     AgentLifecycleService service, {
     LifecycleConfirmation confirmation = _defaultConfirmation,
-  }) : this._(_Resource.agent, operation, null, service, confirmation);
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  }) : this._(
+         _Resource.agent,
+         operation,
+         null,
+         service,
+         confirmation,
+         parentConfig ?? ParentConfigService(),
+         boundRole ?? BoundRoleService(),
+       );
 
   LifecycleActionCommand._(
     this._resource,
@@ -95,7 +166,11 @@ final class LifecycleActionCommand extends Command {
     this._skill,
     this._agent, [
     this._confirmation = _defaultConfirmation,
-  ]) : super(
+    ParentConfigService? parentConfig,
+    BoundRoleService? boundRole,
+  ]) : _parentConfig = parentConfig,
+       _boundRole = boundRole,
+       super(
          mandatoryPositionals: [
            if (_resource == _Resource.skill && _operation == _Operation.adopt)
              _sourceDirectory,
@@ -180,6 +255,8 @@ final class LifecycleActionCommand extends Command {
   final SkillLifecycleService? _skill;
   final AgentLifecycleService? _agent;
   final LifecycleConfirmation _confirmation;
+  final ParentConfigService? _parentConfig;
+  final BoundRoleService? _boundRole;
 
   static final _sourceDirectory = FolderPathPositional(
     'source-directory',
@@ -507,7 +584,7 @@ final class LifecycleActionCommand extends Command {
         );
       case _Operation.backupList:
         final result = await service.backupList(options);
-        final parent = await ParentConfigService().backupList(options);
+        final parent = await _parentConfig!.backupList(options);
         return LifecycleResult(
           command: result.command,
           outcome: result.outcome,
@@ -517,7 +594,7 @@ final class LifecycleActionCommand extends Command {
           },
         );
       case _Operation.restore:
-        final parent = ParentConfigService();
+        final parent = _parentConfig!;
         final id = _requiredId(valueOf(_backupId), 'backup');
         if (parent.hasBackup(options, id)) {
           final result = await parent.restore(
@@ -536,7 +613,7 @@ final class LifecycleActionCommand extends Command {
         }
         return service.restore(LifecycleIdInput(options: options, id: id));
       case _Operation.cleanup:
-        final parent = ParentConfigService();
+        final parent = _parentConfig!;
         final id = _requiredId(valueOf(_backupId), 'backup');
         if (parent.hasBackup(options, id)) {
           final result = await parent.cleanup(options: options, backupId: id);
@@ -581,7 +658,7 @@ final class LifecycleActionCommand extends Command {
         exitCode: 1,
       );
     }
-    return BoundRoleService().run(request, options);
+    return _boundRole!.run(request, options);
   }
 
   SkillInstallInput _skillInstall(ValueOf valueOf, LifecycleOptions options) {

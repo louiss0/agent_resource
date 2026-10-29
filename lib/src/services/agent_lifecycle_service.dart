@@ -231,6 +231,50 @@ interface class AgentLifecycleService {
     );
   }
 
+  /// Adopts an explicitly referenced Codex role definition within the selected
+  /// project or Codex-home boundary without relocating or rewriting its bytes.
+  Future<LifecycleResult> adoptBoundDefinition(AgentInstallInput input) async {
+    if (input.harness != AgentHarness.codex) {
+      throw MambaException(
+        'Bound-definition adoption is supported only for Codex roles.',
+        exitCode: 4,
+      );
+    }
+    final context = LifecycleContext.resolve(input.options);
+    _requireMutationScope(context);
+    final location = context.resolvePath(input.source);
+    final authority = _eligibleBoundDefinitionAuthority(context, location);
+    return state.adopt(
+      resource: _AgentResource(AgentHarness.codex, this),
+      context: context,
+      location: location,
+      nativeRoot: authority,
+      nativeDestination: 'codex-bound',
+    );
+  }
+
+  String _eligibleBoundDefinitionAuthority(
+    LifecycleContext context,
+    String location,
+  ) {
+    _requireExtension(location, AgentHarness.codex);
+    final root = p.normalize(
+      context.scope == LifecycleScope.project
+          ? context.projectRoot
+          : context.codexRoot(),
+    );
+    if (!p.isWithin(root, location) ||
+        p.basename(location) == 'config.toml' ||
+        p.basename(location) == 'auth.json' ||
+        p.split(location).contains('.agent-resource')) {
+      throw MambaException(
+        'The Codex bound definition is outside its eligible project/configuration boundary.',
+        exitCode: 4,
+      );
+    }
+    return root;
+  }
+
   Future<LifecycleResult> replace(
     LifecycleReplaceInput input, {
     AgentHarness? harness,
@@ -489,19 +533,19 @@ interface class AgentLifecycleService {
         exitCode: 4,
       );
     }
-    final destination = AgentDestination.values.firstWhere(
-      (value) => value.name == record.nativeDestination,
-      orElse: () => throw MambaException(
-        'Unsupported stored Agent destination.',
-        exitCode: 4,
-      ),
-    );
-    final authority = _eligibleAuthority(
-      context,
-      record.location,
-      harness,
-      destination,
-    );
+    final bound = record.nativeDestination == 'codex-bound';
+    final destination = bound
+        ? null
+        : AgentDestination.values.firstWhere(
+            (value) => value.name == record.nativeDestination,
+            orElse: () => throw MambaException(
+              'Unsupported stored Agent destination.',
+              exitCode: 4,
+            ),
+          );
+    final authority = bound
+        ? _eligibleBoundDefinitionAuthority(context, record.location)
+        : _eligibleAuthority(context, record.location, harness, destination!);
     if (!p.equals(authority, record.nativeRoot)) {
       throw MambaException(
         'Stored Agent native root is not current eligible authority.',

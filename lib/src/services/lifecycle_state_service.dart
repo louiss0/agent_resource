@@ -947,6 +947,11 @@ interface class LifecycleStateService {
   static final _inProcessLocks = <String, Future<void>>{};
   static final _random = Random.secure();
 
+  /// Ensures the native installation ledger exists alongside other management
+  /// artifacts, such as parent-unit records created earlier in the same scope.
+  void ensureLedger(LifecycleContext context) =>
+      _ensureLedger(context.stateRoot());
+
   Future<LifecycleResult> install({
     required LifecycleResource resource,
     required LifecycleContext context,

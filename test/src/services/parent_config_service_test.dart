@@ -88,6 +88,7 @@ void main() {
                 layer: ParentLayer.project,
                 file: p.join('.claude', 'settings.json'),
                 changes: changes,
+                adopt: true,
                 planId: planId,
                 clientsStopped: operation == ParentOperation.apply,
               );
@@ -159,6 +160,7 @@ void main() {
                     value: 'opus',
                   ),
                 ],
+                adopt: true,
                 planId: planId,
                 clientsStopped: operation == ParentOperation.apply,
               );
@@ -226,6 +228,7 @@ void main() {
             layer: ParentLayer.project,
             file: p.join('.codex', 'config.toml'),
             changes: changes,
+            adopt: true,
             planId: planId,
             clientsStopped: operation == ParentOperation.apply,
           );
@@ -328,6 +331,7 @@ void main() {
                     value: value,
                   ),
                 ],
+                adopt: true,
                 planId: planId,
                 clientsStopped: operation == ParentOperation.apply,
               );
@@ -397,6 +401,7 @@ void main() {
                     value: 'opus',
                   ),
                 ],
+                adopt: true,
                 planId: planId,
                 clientsStopped: operation == ParentOperation.apply,
               );
@@ -412,6 +417,25 @@ void main() {
             options: options(approved: true),
           );
           final backupId = applied.data['backupId']! as String;
+          settings.writeAsStringSync(
+            '{"model":"opus","keep":"two","later":true}\n',
+          );
+          settings.writeAsStringSync(
+            '{"model":"changed","keep":"two","later":true}\n',
+          );
+          final driftPlan = service.restorePlanId(options(), backupId);
+          try {
+            await service.restore(
+              options: options(approved: true),
+              backupId: backupId,
+              planId: driftPlan,
+              clientsStopped: true,
+            );
+            fail('Restore overwrote a selected unit that drifted.');
+          } on MambaException catch (error) {
+            expect(error.exitCode, 4);
+            expect(error.message, contains('selected unit'));
+          }
           settings.writeAsStringSync(
             '{"model":"opus","keep":"two","later":true}\n',
           );
@@ -438,5 +462,258 @@ void main() {
         }
       },
     );
+
+    test('existing unmanaged units require explicit adoption', () async {
+      final sandbox = await Directory.systemTemp.createTemp('parent-adopt-');
+      try {
+        final project = Directory(p.join(sandbox.path, 'project'))
+          ..createSync();
+        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final claude = Directory(p.join(sandbox.path, 'claude'))..createSync();
+        File(p.join(project.path, '.claude', 'settings.json'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('{"model":"sonnet"}\n');
+        final options = LifecycleOptions(
+          processWorkingDirectory: project.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+          claudeConfigDir: claude.path,
+        );
+        ParentRequest request(bool adopt) => ParentRequest(
+          operation: ParentOperation.plan,
+          harness: ParentHarness.claude,
+          scope: LifecycleScope.project,
+          layer: ParentLayer.project,
+          file: p.join('.claude', 'settings.json'),
+          changes: const [
+            ParentChange(
+              unit: 'model',
+              action: ParentAction.set,
+              value: 'opus',
+            ),
+          ],
+          adopt: adopt,
+        );
+        final service = ParentConfigService();
+        await expectLater(
+          service.plan(request: request(false), options: options),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'status', 4)
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('explicit adoption'),
+                ),
+          ),
+        );
+        final adopted = await service.plan(
+          request: request(true),
+          options: options,
+        );
+        expect(adopted.outcome, 'planned');
+      } finally {
+        await sandbox.delete(recursive: true);
+      }
+    });
+
+    test('impact decisions are specific and expose native defaults', () async {
+      final sandbox = await Directory.systemTemp.createTemp('parent-impact-');
+      try {
+        final project = Directory(p.join(sandbox.path, 'project'))
+          ..createSync();
+        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
+        final config = File(p.join(project.path, '.codex', 'config.toml'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync('approval_policy = "never"\n');
+        final options = LifecycleOptions(
+          processWorkingDirectory: project.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+          codexHome: codex.path,
+        );
+        ParentRequest request(List<String> affected) => ParentRequest(
+          operation: ParentOperation.plan,
+          harness: ParentHarness.codex,
+          scope: LifecycleScope.project,
+          layer: ParentLayer.project,
+          file: p.join('.codex', 'config.toml'),
+          changes: const [
+            ParentChange(
+              unit: 'approval_policy',
+              action: ParentAction.remove,
+              value: null,
+            ),
+          ],
+          adopt: true,
+          affected: affected,
+        );
+        final service = ParentConfigService();
+        await expectLater(
+          service.plan(request: request(const []), options: options),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'status', 4)
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('affected-association'),
+                ),
+          ),
+        );
+        final approved = await service.plan(
+          request: request(const ['approval_policy']),
+          options: options,
+        );
+        final change =
+            (approved.data['changes']! as List<Object?>).single
+                as Map<String, Object?>;
+        expect(change['exposed'], {
+          'kind': 'native-default',
+          'value': 'on-request',
+        });
+        expect(config.readAsStringSync(), 'approval_policy = "never"\n');
+      } finally {
+        await sandbox.delete(recursive: true);
+      }
+    });
+
+    test('Pi and managed sources are report-only or inspect-only', () async {
+      final sandbox = await Directory.systemTemp.createTemp('parent-readonly-');
+      try {
+        final project = Directory(p.join(sandbox.path, 'project'))
+          ..createSync();
+        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final options = LifecycleOptions(
+          processWorkingDirectory: project.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        );
+        final piFile = File(p.join(project.path, 'pi-settings.json'))
+          ..writeAsStringSync('provider-specific');
+        ParentRequest piRequest(ParentOperation operation) => ParentRequest(
+          operation: operation,
+          harness: ParentHarness.pi,
+          scope: LifecycleScope.project,
+          layer: ParentLayer.project,
+          file: piFile.path,
+          changes: const [
+            ParentChange(
+              unit: 'model',
+              action: ParentAction.set,
+              value: 'other',
+            ),
+          ],
+        );
+        final service = ParentConfigService();
+        final inspected = await service.inspect(
+          request: piRequest(ParentOperation.inspect),
+          options: options,
+        );
+        expect(inspected.data['eligibility'], 'report-only');
+        await expectLater(
+          service.plan(
+            request: piRequest(ParentOperation.plan),
+            options: options,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('report-only'),
+            ),
+          ),
+        );
+
+        final managed = File(p.join(sandbox.path, 'requirements.toml'))
+          ..writeAsStringSync('model = "managed"\n');
+        final managedRequest = ParentRequest(
+          operation: ParentOperation.inspect,
+          harness: ParentHarness.codex,
+          scope: LifecycleScope.project,
+          layer: ParentLayer.project,
+          file: managed.path,
+          changes: const [
+            ParentChange(
+              unit: 'model',
+              action: ParentAction.set,
+              value: 'other',
+            ),
+          ],
+        );
+        final managedInspection = await service.inspect(
+          request: managedRequest,
+          options: options,
+        );
+        expect(managedInspection.data['eligibility'], 'inspect-only');
+      } finally {
+        await sandbox.delete(recursive: true);
+      }
+    });
+
+    test('unsafe TOML shapes refuse without rewriting source bytes', () async {
+      final cases = <String, String>{
+        'quoted': '"model" = "gpt-5"\n',
+        'dotted': 'model.reasoning = "high"\n',
+        'inline': 'mcp_servers.github = { command = "github" }\n',
+        'array-tables': '[[mcp_servers.github]]\ncommand = "github"\n',
+        'multiline-string': 'instructions = """private"""\n',
+        'multiline-array': 'args = [\n  "serve",\n]\n',
+        'duplicate': 'model = "one"\nmodel = "two"\n',
+      };
+      for (final entry in cases.entries) {
+        final sandbox = await Directory.systemTemp.createTemp(
+          'parent-toml-${entry.key}-',
+        );
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
+          final config = File(p.join(project.path, '.codex', 'config.toml'))
+            ..createSync(recursive: true)
+            ..writeAsStringSync(entry.value);
+          final original = config.readAsBytesSync();
+          final options = LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            codexHome: codex.path,
+          );
+          final request = ParentRequest(
+            operation: ParentOperation.plan,
+            harness: ParentHarness.codex,
+            scope: LifecycleScope.project,
+            layer: ParentLayer.project,
+            file: p.join('.codex', 'config.toml'),
+            changes: const [
+              ParentChange(
+                unit: 'model',
+                action: ParentAction.set,
+                value: 'gpt-6',
+              ),
+            ],
+            adopt: true,
+          );
+          await expectLater(
+            ParentConfigService().plan(request: request, options: options),
+            throwsA(isA<MambaException>()),
+            reason: entry.key,
+          );
+          expect(config.readAsBytesSync(), original, reason: entry.key);
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      }
+    });
   });
 }

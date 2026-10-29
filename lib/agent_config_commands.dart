@@ -36,8 +36,8 @@ String _render(ParentResult result, LifecycleOutputFormat format) =>
       LifecycleOutputFormat.text => result.renderText(),
     };
 
-abstract base class _ConfigCommand extends Command {
-  _ConfigCommand(this._service, this._operation, {bool apply = false})
+final class AgentConfigInspectCommand extends Command {
+  AgentConfigInspectCommand(this._service)
     : super(
         options: [
           _request,
@@ -50,13 +50,170 @@ abstract base class _ConfigCommand extends Command {
           _state,
           _scope,
         ],
-        flags: apply
-            ? const [_yes, _ackClientsStopped, _clientsStopped]
-            : const [],
       );
 
   final ParentConfigService _service;
-  final ParentOperation _operation;
+
+  static final _request = FilePathOption.required(
+    'request',
+    suffixes: const ['.json'],
+  );
+  static final _format = ChoiceOption.withDefault(
+    'format',
+    choices: LifecycleOutputFormat.values,
+    defaultValue: LifecycleOutputFormat.text,
+  );
+  static final _cwd = FolderPathOption('cwd');
+  static final _projectRoot = FolderPathOption('project-root');
+  static final _home = FolderPathOption('home');
+  static final _claude = FolderPathOption('claude-config-dir');
+  static final _codex = FolderPathOption('codex-home');
+  static final _state = FolderPathOption('state-dir');
+  static final _scope = ChoiceOption.required(
+    'scope',
+    choices: const [LifecycleScope.user, LifecycleScope.project],
+  );
+
+  @override
+  String get name => 'inspect';
+
+  @override
+  String get shortDescription => 'Inspect selected native parent units.';
+
+  @override
+  Future<String> run(ValueOf valueOf, List<String> args) async {
+    final format = valueOf(_format);
+    final scope = valueOf(_scope);
+    final options = _options(
+      valueOf,
+      _cwd,
+      _projectRoot,
+      _home,
+      _claude,
+      _codex,
+      _state,
+      scope,
+      approved: false,
+    );
+    final request = parseParentRequest(
+      valueOf(_request),
+      options.cwd ?? options.processWorkingDirectory,
+    );
+    if (request.operation != ParentOperation.inspect) {
+      throw MambaException(
+        'The request operation must match the selected command (inspect).',
+        exitCode: 1,
+      );
+    }
+    if (request.scope != scope) {
+      throw MambaException(
+        'The request scope must match --scope.',
+        exitCode: 4,
+      );
+    }
+    final result = await _service.inspect(request: request, options: options);
+    return _render(result, format);
+  }
+}
+
+final class AgentConfigPlanCommand extends Command {
+  AgentConfigPlanCommand(this._service)
+    : super(
+        options: [
+          _request,
+          _format,
+          _cwd,
+          _projectRoot,
+          _home,
+          _claude,
+          _codex,
+          _state,
+          _scope,
+        ],
+      );
+
+  final ParentConfigService _service;
+
+  static final _request = FilePathOption.required(
+    'request',
+    suffixes: const ['.json'],
+  );
+  static final _format = ChoiceOption.withDefault(
+    'format',
+    choices: LifecycleOutputFormat.values,
+    defaultValue: LifecycleOutputFormat.text,
+  );
+  static final _cwd = FolderPathOption('cwd');
+  static final _projectRoot = FolderPathOption('project-root');
+  static final _home = FolderPathOption('home');
+  static final _claude = FolderPathOption('claude-config-dir');
+  static final _codex = FolderPathOption('codex-home');
+  static final _state = FolderPathOption('state-dir');
+  static final _scope = ChoiceOption.required(
+    'scope',
+    choices: const [LifecycleScope.user, LifecycleScope.project],
+  );
+
+  @override
+  String get name => 'plan';
+
+  @override
+  String get shortDescription => 'Plan a source-preserving parent change.';
+
+  @override
+  Future<String> run(ValueOf valueOf, List<String> args) async {
+    final format = valueOf(_format);
+    final scope = valueOf(_scope);
+    final options = _options(
+      valueOf,
+      _cwd,
+      _projectRoot,
+      _home,
+      _claude,
+      _codex,
+      _state,
+      scope,
+      approved: false,
+    );
+    final request = parseParentRequest(
+      valueOf(_request),
+      options.cwd ?? options.processWorkingDirectory,
+    );
+    if (request.operation != ParentOperation.plan) {
+      throw MambaException(
+        'The request operation must match the selected command (plan).',
+        exitCode: 1,
+      );
+    }
+    if (request.scope != scope) {
+      throw MambaException(
+        'The request scope must match --scope.',
+        exitCode: 4,
+      );
+    }
+    final result = await _service.plan(request: request, options: options);
+    return _render(result, format);
+  }
+}
+
+final class AgentConfigApplyCommand extends Command {
+  AgentConfigApplyCommand(this._service)
+    : super(
+        options: [
+          _request,
+          _format,
+          _cwd,
+          _projectRoot,
+          _home,
+          _claude,
+          _codex,
+          _state,
+          _scope,
+        ],
+        flags: const [_yes, _ackClientsStopped, _clientsStopped],
+      );
+
+  final ParentConfigService _service;
 
   static final _request = FilePathOption.required(
     'request',
@@ -88,10 +245,15 @@ abstract base class _ConfigCommand extends Command {
   );
 
   @override
+  String get name => 'apply';
+
+  @override
+  String get shortDescription => 'Apply an approved parent-unit plan.';
+
+  @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(_format);
     final scope = valueOf(_scope);
-    final apply = _operation == ParentOperation.apply;
     final options = _options(
       valueOf,
       _cwd,
@@ -101,15 +263,15 @@ abstract base class _ConfigCommand extends Command {
       _codex,
       _state,
       scope,
-      approved: apply && valueOf(_yes),
+      approved: valueOf(_yes),
     );
     final request = parseParentRequest(
       valueOf(_request),
       options.cwd ?? options.processWorkingDirectory,
     );
-    if (request.operation != _operation) {
+    if (request.operation != ParentOperation.apply) {
       throw MambaException(
-        'The request operation must match the selected command (${_operation.name}).',
+        'The request operation must match the selected command (apply).',
         exitCode: 1,
       );
     }
@@ -119,56 +281,16 @@ abstract base class _ConfigCommand extends Command {
         exitCode: 4,
       );
     }
-    if (_operation == ParentOperation.apply) {
-      if ((!valueOf(_ackClientsStopped) && !valueOf(_clientsStopped)) ||
-          !request.clientsStopped) {
-        throw MambaException(
-          'Parent apply requires the stopped-client acknowledgement.',
-          exitCode: 4,
-        );
-      }
+    if ((!valueOf(_ackClientsStopped) && !valueOf(_clientsStopped)) ||
+        !request.clientsStopped) {
+      throw MambaException(
+        'Parent apply requires the stopped-client acknowledgement.',
+        exitCode: 4,
+      );
     }
-    final result = switch (_operation) {
-      ParentOperation.inspect => await _service.inspect(
-        request: request,
-        options: options,
-      ),
-      ParentOperation.plan => await _service.plan(
-        request: request,
-        options: options,
-      ),
-      ParentOperation.apply => await _service.apply(
-        request: request,
-        options: options,
-      ),
-    };
+    final result = await _service.apply(request: request, options: options);
     return _render(result, format);
   }
-}
-
-final class AgentConfigInspectCommand extends _ConfigCommand {
-  new(ParentConfigService service) : super(service, ParentOperation.inspect);
-  @override
-  String get name => 'inspect';
-  @override
-  String get shortDescription => 'Inspect selected native parent units.';
-}
-
-final class AgentConfigPlanCommand extends _ConfigCommand {
-  new(ParentConfigService service) : super(service, ParentOperation.plan);
-  @override
-  String get name => 'plan';
-  @override
-  String get shortDescription => 'Plan a source-preserving parent change.';
-}
-
-final class AgentConfigApplyCommand extends _ConfigCommand {
-  new(ParentConfigService service)
-    : super(service, ParentOperation.apply, apply: true);
-  @override
-  String get name => 'apply';
-  @override
-  String get shortDescription => 'Apply an approved parent-unit plan.';
 }
 
 final class AgentConfigCommand extends GroupCommand {
@@ -181,6 +303,7 @@ final class AgentConfigCommand extends GroupCommand {
 
   @override
   String get name => 'config';
+
   @override
   String get shortDescription => 'Inspect, plan, and apply parent settings.';
 }

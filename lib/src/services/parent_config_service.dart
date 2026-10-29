@@ -16,7 +16,7 @@ const parentNodeLimit = 100000;
 const parentPlanFileLimit = 16;
 const parentPlanAggregateLimit = 32 * 1024 * 1024;
 
-enum ParentHarness { claude, codex }
+enum ParentHarness { claude, codex, pi }
 
 enum ParentLayer { user, project, profile }
 
@@ -115,7 +115,7 @@ final class ParentResult {
   }
 }
 
-final class ParentConfigService {
+interface class ParentConfigService {
   ParentConfigService({this.io = const LifecycleIO()});
 
   final LifecycleIO io;
@@ -127,6 +127,26 @@ final class ParentConfigService {
   }) async {
     final context = _ParentContext.resolve(request, options);
     final source = _readSource(context);
+    if (context.harness == ParentHarness.pi) {
+      return ParentResult(
+        command: 'agent config inspect',
+        outcome: 'inspected',
+        data: <String, Object?>{
+          'harness': context.harness.name,
+          'scope': context.scope.name,
+          'layer': context.layer.name,
+          'file': context.file,
+          'exists': source != null,
+          'eligibility': 'report-only',
+          'authority': 'provider-specific',
+          'fingerprint': source?.digest,
+          'selectedUnits': const <Object?>[],
+          'runtime': 'notVerified',
+          'writes': false,
+        },
+      );
+    }
+    final authority = _inspectionAuthority(context.file);
     final selected = <Map<String, Object?>>[];
     for (final change in request.changes) {
       _validateChange(context.harness, change);
@@ -146,8 +166,10 @@ final class ParentConfigService {
         'profile': context.profile,
         'file': context.file,
         'exists': source != null,
-        'eligibility': 'eligible',
-        'authority': 'ordinary-user-file',
+        'eligibility': authority == 'ordinary-user-file'
+            ? 'eligible'
+            : 'inspect-only',
+        'authority': authority,
         'fingerprint': source?.digest,
         'selectedUnits': selected,
         'runtime': 'notVerified',
@@ -163,6 +185,12 @@ final class ParentConfigService {
     if (request.changes.isEmpty) {
       throw MambaException('A parent plan requires at least one change.');
     }
+    if (request.harness == ParentHarness.pi) {
+      throw MambaException(
+        'Common Pi parent settings are report-only; no parent writes are supported.',
+        exitCode: 4,
+      );
+    }
     final context = _ParentContext.resolve(request, options);
     final source = _readSource(context);
     final records = _readRecords(context.stateRoot);
@@ -172,6 +200,15 @@ final class ParentConfigService {
     for (final change in request.changes) {
       _validateChange(context.harness, change);
       final before = _selectedUnit(context, source, change.unit);
+      if (before != null &&
+          !request.adopt &&
+          !_currentlyOwned(records, context, change.unit)) {
+        throw MambaException(
+          'Existing unit ${change.unit} requires explicit adoption before management.',
+          exitCode: 4,
+        );
+      }
+      _requireImpactDecision(request, change);
       final after = _applyIntent(before, change, context);
       planned.add(<String, Object?>{
         'unit': change.unit,
@@ -179,6 +216,8 @@ final class ParentConfigService {
         'before': _redactedUnit(change.unit, before),
         'after': _redactedUnit(change.unit, after),
         'ownership': request.adopt ? 'adopt' : 'managed',
+        if (change.action == ParentAction.remove)
+          'exposed': _exposedAfterRemoval(context.harness, change.unit),
         'conflict': false,
       });
       proposed[change.unit] = after;
@@ -213,6 +252,12 @@ final class ParentConfigService {
     required ParentRequest request,
     required LifecycleOptions options,
   }) async {
+    if (request.harness == ParentHarness.pi) {
+      throw MambaException(
+        'Common Pi parent settings are report-only; no parent writes are supported.',
+        exitCode: 4,
+      );
+    }
     if (!request.clientsStopped) {
       throw MambaException(
         'Parent configuration apply requires --clients-stopped acknowledgement.',
@@ -553,6 +598,13 @@ final class ParentConfigService {
       adopt: true,
     );
     final resolved = _ParentContext.resolve(contextRequest, options);
+    if (currentSource == null) {
+      throw MambaException(
+        'The managed parent document is missing; restore cannot verify selected units.',
+        exitCode: 4,
+      );
+    }
+    _verifyCurrentManagedUnits(resolved, currentSource, record, changes);
     final candidate = _patch(
       resolved,
       currentSource,
@@ -575,24 +627,22 @@ final class ParentConfigService {
       );
     }
     return _serialized(context.stateRoot, () async {
-      if (_readPath(file)?.digest != currentSource?.digest) {
+      if (_readPath(file)?.digest != currentSource.digest) {
         throw MambaException(
           'The parent document changed before restore.',
           exitCode: 4,
         );
       }
-      final outgoing = currentSource == null
-          ? null
-          : _createBackup(
-              resolved,
-              currentSource,
-              contextRequest,
-              currentUnits: _unitEvidence(
-                resolved,
-                currentSource,
-                changes.map((change) => change.unit).toSet(),
-              ),
-            );
+      final outgoing = _createBackup(
+        resolved,
+        currentSource,
+        contextRequest,
+        currentUnits: _unitEvidence(
+          resolved,
+          currentSource,
+          changes.map((change) => change.unit).toSet(),
+        ),
+      );
       final transactionId = _newId('ptr');
       final staged = _stagingPath(resolved, transactionId);
       final transaction = p.join(
@@ -609,14 +659,12 @@ final class ParentConfigService {
         'operation': 'config-restore',
         'file': file,
         'backupId': backupId,
-        'sourceFingerprint': currentSource?.digest,
+        'sourceFingerprint': currentSource.digest,
         'phase': 'prepared',
       });
       final quarantine = _quarantinePath(resolved, transactionId);
-      if (currentSource != null) {
-        _privateDirectory(p.dirname(quarantine));
-        io.rename(file, quarantine);
-      }
+      _privateDirectory(p.dirname(quarantine));
+      io.rename(file, quarantine);
       io.createDirectory(p.dirname(file));
       io.rename(staged, file);
       _advance(transaction, 'published');
@@ -630,7 +678,7 @@ final class ParentConfigService {
       );
       record['backupIds'] = <String>{
         ...(record['backupIds']! as List<Object?>).cast<String>(),
-        if (outgoing != null) outgoing.backupId,
+        outgoing.backupId,
       }.toList();
       _upsertRecord(context.stateRoot, record);
       _advance(transaction, 'committedCleanupPending');
@@ -644,7 +692,7 @@ final class ParentConfigService {
         outcome: 'restored',
         data: <String, Object?>{
           'backupId': backupId,
-          'outgoingBackupId': outgoing?.backupId,
+          'outgoingBackupId': outgoing.backupId,
           'parentId': record['parentId'],
           'file': file,
           'clientsStopped': true,
@@ -719,7 +767,32 @@ final class ParentConfigService {
 
   // --- Reading, planning, patching ---------------------------------------
 
-  ParentSource? _readSource(_ParentContext context) => _readPath(context.file);
+  ParentSource? _readSource(_ParentContext context) {
+    if (context.harness == ParentHarness.pi) {
+      return _readOpaquePath(context.file);
+    }
+    return _readPath(context.file);
+  }
+
+  ParentSource? _readOpaquePath(String file) {
+    final type = io.type(file, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return null;
+    if (type != FileSystemEntityType.file) {
+      throw MambaException(
+        'The parent source is not a regular file.',
+        exitCode: 4,
+      );
+    }
+    final bytes = io.read(file, parentDocumentLimit);
+    if (bytes.length > parentDocumentLimit) {
+      throw MambaException('The parent document exceeds 8 MiB.', exitCode: 3);
+    }
+    return ParentSource(
+      bytes: bytes,
+      text: '',
+      digest: sha256.convert(bytes).toString(),
+    );
+  }
 
   ParentSource? _readPath(String file) {
     final type = io.type(file, followLinks: false);
@@ -798,7 +871,7 @@ final class ParentConfigService {
       final document = _JsonDocument.parse(utf8.decode(bytes));
       return document.valueAt(unit.split('.'));
     }
-    final map = TomlDocument.parse(utf8.decode(bytes)).toMap();
+    final map = _parseTomlDocument(utf8.decode(bytes)).toMap();
     return _tomlValueAt(map, unit.split('.'));
   }
 
@@ -819,7 +892,6 @@ final class ParentConfigService {
         _validateUnitValue(context.harness, change.unit, change.value);
         return change.value;
       case ParentAction.add:
-      case ParentAction.remove:
         if (!isArray) {
           throw MambaException(
             'Unit ${change.unit} does not support membership actions.',
@@ -835,11 +907,20 @@ final class ParentConfigService {
         final current = before is List
             ? before.cast<Object?>().toList()
             : <Object?>[];
-        if (change.action == ParentAction.add) {
-          if (!current.contains(change.value)) current.add(change.value);
-        } else {
-          current.remove(change.value);
+        if (!current.contains(change.value)) current.add(change.value);
+        return current;
+      case ParentAction.remove:
+        if (!isArray) return null;
+        if (change.value == null || change.value is! String) {
+          throw MambaException(
+            'Membership changes require a string value.',
+            exitCode: 4,
+          );
         }
+        final current = before is List
+            ? before.cast<Object?>().toList()
+            : <Object?>[];
+        current.remove(change.value);
         return current;
     }
   }
@@ -894,7 +975,7 @@ final class ParentConfigService {
         }
       }
     } else {
-      final map = TomlDocument.parse(text).toMap();
+      final map = _parseTomlDocument(text).toMap();
       for (final entry in proposed.entries) {
         final actual = _tomlValueAt(map, entry.key.split('.'));
         if (jsonEncode(actual) != jsonEncode(entry.value)) {
@@ -914,6 +995,15 @@ final class ParentConfigService {
       throw MambaException('A parent unit must be a concrete dotted key.');
     }
     _validateUnitName(harness, unit);
+    if (harness == ParentHarness.codex &&
+        unit.startsWith('agents.') &&
+        unit.split('.').length == 2 &&
+        change.action != ParentAction.remove) {
+      throw MambaException(
+        'A whole Codex role entry supports only reviewed removal.',
+        exitCode: 4,
+      );
+    }
     if (!_isMembershipUnit(harness, unit) &&
         change.action != ParentAction.set &&
         change.action != ParentAction.remove) {
@@ -985,6 +1075,7 @@ final class ParentConfigService {
         _validateCodexMcpUnit(parts);
         return;
       }
+      if (unit.startsWith('agents.') && parts.length == 2) return;
       if (unit.startsWith('agents.') &&
           parts.length == 3 &&
           (parts[2] == 'description' || parts[2] == 'config_file')) {
@@ -1244,6 +1335,101 @@ final class ParentConfigService {
     return result;
   }
 
+  void _verifyCurrentManagedUnits(
+    _ParentContext context,
+    ParentSource? source,
+    Map<String, Object?> record,
+    List<ParentChange> changes,
+  ) {
+    final expected = <String, Map<String, Object?>>{
+      for (final unit
+          in (record['units']! as List<Object?>).cast<Map<String, Object?>>())
+        unit['unit']! as String: unit,
+    };
+    for (final change in changes) {
+      final current = _unitEvidence(context, source!, {change.unit}).single;
+      final prior = expected[change.unit];
+      if (prior == null ||
+          current['present'] != prior['present'] ||
+          current['digest'] != prior['digest']) {
+        throw MambaException(
+          'The selected unit ${change.unit} changed after its managed baseline; restore refuses to overwrite it.',
+          exitCode: 4,
+        );
+      }
+    }
+  }
+
+  bool _currentlyOwned(
+    List<Map<String, Object?>> records,
+    _ParentContext context,
+    String selected,
+  ) {
+    for (final record in records) {
+      if (record['file'] != context.file ||
+          record['parentId'] != _matchingParentId(context)) {
+        continue;
+      }
+      final units = (record['units']! as List<Object?>)
+          .cast<Map<String, Object?>>();
+      if (units.any(
+        (unit) =>
+            unit['unit'] == selected ||
+            (unit['unit']! as String).startsWith('$selected.'),
+      )) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _requireImpactDecision(ParentRequest request, ParentChange change) {
+    final impactful =
+        const {
+          'approval_policy',
+          'sandbox_mode',
+          'default_permissions',
+        }.contains(change.unit) ||
+        (change.action == ParentAction.remove &&
+            change.unit.startsWith('agents.'));
+    if (impactful && !request.affected.contains(change.unit)) {
+      throw MambaException(
+        'The ${change.unit} change requires a specific affected-association decision.',
+        exitCode: 4,
+      );
+    }
+  }
+
+  Map<String, Object?> _exposedAfterRemoval(
+    ParentHarness harness,
+    String unit,
+  ) {
+    final defaults = <String, Object?>{
+      'approval_policy': 'on-request',
+      'sandbox_mode': 'read-only',
+      'permissions.defaultMode': 'default',
+    };
+    final fallback = defaults[unit];
+    return fallback == null
+        ? <String, Object?>{
+            'kind': 'lower-layer-or-default',
+            'status': 'unverified',
+          }
+        : <String, Object?>{'kind': 'native-default', 'value': fallback};
+  }
+
+  String _inspectionAuthority(String file) {
+    final normalized = p.normalize(file).toLowerCase();
+    if (p.basename(normalized) == 'auth.json' ||
+        p.basename(normalized) == 'requirements.toml' ||
+        normalized.contains('managed') ||
+        normalized.contains('program files') ||
+        normalized.startsWith('/etc/')) {
+      return 'managed-system-or-session';
+    }
+    return 'ordinary-user-file';
+  }
+
   void _checkOwnership(
     _ParentContext context,
     List<Map<String, Object?>> records,
@@ -1271,16 +1457,26 @@ final class ParentConfigService {
             );
           }
           if (request.adopt && !exact) {
-            throw MambaException(
-              'Adoption must select an exact existing unit, not an overlapping parent/child.',
-              exitCode: 4,
-            );
+            final reviewedContainerRemoval =
+                change.action == ParentAction.remove &&
+                other.startsWith('${change.unit}.');
+            if (!reviewedContainerRemoval) {
+              throw MambaException(
+                'Adoption must select an exact existing unit, not an overlapping parent/child.',
+                exitCode: 4,
+              );
+            }
           }
           if (!request.adopt && !exact) {
-            throw MambaException(
-              'Units ${change.unit} and $other overlap within one document.',
-              exitCode: 4,
-            );
+            final reviewedContainerRemoval =
+                change.action == ParentAction.remove &&
+                other.startsWith('${change.unit}.');
+            if (!reviewedContainerRemoval) {
+              throw MambaException(
+                'Units ${change.unit} and $other overlap within one document.',
+                exitCode: 4,
+              );
+            }
           }
         }
       }
@@ -1686,7 +1882,9 @@ ParentRequest parseParentRequest(String requestFile, String workingDirectory) {
   ParentHarness harnessFrom(String? value) {
     final matches = ParentHarness.values.where((item) => item.name == value);
     if (matches.length != 1) {
-      throw MambaException('Parent source harness must be claude or codex.');
+      throw MambaException(
+        'Parent source harness must be claude, codex, or pi.',
+      );
     }
     return matches.single;
   }
@@ -1826,6 +2024,33 @@ final class _ParentContext {
     final codexRoot = lifecycle.codexRoot();
     final projectRoot = lifecycle.projectRoot;
     final home = lifecycle.requireHome();
+    if (request.operation == ParentOperation.inspect) {
+      final reserved = <String>[
+        p.join(projectRoot, '.agent-resource'),
+        p.join(home, '.agent-resource'),
+      ];
+      if (reserved.any(
+        (path) => p.equals(path, file) || p.isWithin(path, file),
+      )) {
+        throw MambaException(
+          'Reserved management state cannot be inspected as parent configuration.',
+          exitCode: 4,
+        );
+      }
+      return _ParentContext(
+        harness: request.harness,
+        scope: request.scope,
+        layer: request.layer,
+        profile: request.profile,
+        file: file,
+        stateRoot: lifecycle.stateRoot(),
+        cwd: lifecycle.cwd,
+        projectRoot: projectRoot,
+        home: home,
+        claudeRoot: claudeRoot,
+        codexRoot: codexRoot,
+      );
+    }
     final inferred = _inferLayer(
       request,
       file,
@@ -1967,6 +2192,19 @@ void _requireEligible(
         );
       }
     }
+  }
+}
+
+TomlDocument _parseTomlDocument(String text) {
+  try {
+    final document = TomlDocument.parse(text);
+    document.toMap();
+    return document;
+  } on Object catch (error) {
+    throw MambaException(
+      'The TOML parent document is invalid: $error',
+      exitCode: 2,
+    );
   }
 }
 
@@ -2499,11 +2737,19 @@ final class _TomlEditor {
   final String text;
 
   String apply(List<ParentChange> changes, Map<String, Object?> proposed) {
+    _parseTomlDocument(text);
+    _rejectUnsupportedToml(text);
     var result = text;
     final newline = result.contains('\r\n') ? '\r\n' : '\n';
     if (result.isEmpty) result = '';
     for (final change in changes) {
       final parts = change.unit.split('.');
+      if (parts.length == 2 &&
+          parts[0] == 'agents' &&
+          change.action == ParentAction.remove) {
+        result = _removeTomlSection(result, parts);
+        continue;
+      }
       final value = proposed[change.unit];
       final section = parts.length == 1
           ? null
@@ -2534,6 +2780,22 @@ final class _TomlEditor {
     return result;
   }
 
+  String _removeTomlSection(String source, List<String> parts) {
+    final marker = '[${parts.join('.')}]';
+    var offset = 0;
+    var start = -1;
+    for (final line in source.split('\n')) {
+      final trimmed = line.trim();
+      if (start < 0 && trimmed == marker) {
+        start = offset;
+      } else if (start >= 0 && trimmed.startsWith('[')) {
+        return '${source.substring(0, start)}${source.substring(offset)}';
+      }
+      offset += line.length + 1;
+    }
+    return start < 0 ? source : source.substring(0, start);
+  }
+
   // (lineStart,lineEnd,valueStart,valueEnd) for an existing key assignment.
   (int, int, int, int)? _findKey(
     String source,
@@ -2542,6 +2804,7 @@ final class _TomlEditor {
   ) {
     var currentSection = <String>[];
     var offset = 0;
+    (int, int, int, int)? found;
     for (final line in source.split('\n')) {
       final raw = line.endsWith('\r')
           ? line.substring(0, line.length - 1)
@@ -2572,13 +2835,19 @@ final class _TomlEditor {
             while (valueEnd > valueStart && raw[valueEnd - offset - 1] == ' ') {
               valueEnd--;
             }
-            return (lineStart, lineEnd, valueStart, valueEnd);
+            if (found != null) {
+              throw MambaException(
+                'The TOML unit ${section?.join('.') ?? ''}.$key is ambiguous.',
+                exitCode: 4,
+              );
+            }
+            found = (lineStart, lineEnd, valueStart, valueEnd);
           }
         }
       }
       offset += line.length + 1;
     }
-    return null;
+    return found;
   }
 
   (int, bool) _sectionInsertion(
@@ -2601,6 +2870,63 @@ final class _TomlEditor {
     );
     final end = next < 0 ? source.length : next;
     return (end, false);
+  }
+}
+
+void _rejectUnsupportedToml(String text) {
+  if (text.contains("'''") || text.contains(r'"""')) {
+    throw MambaException(
+      'Multiline TOML strings are not eligible for narrow editing.',
+      exitCode: 4,
+    );
+  }
+  for (final line in text.split('\n')) {
+    final raw = line.endsWith('\r') ? line.substring(0, line.length - 1) : line;
+    final trimmed = raw.trim();
+    if (trimmed.startsWith('[[')) {
+      throw MambaException(
+        'TOML arrays of tables are not eligible for narrow editing.',
+        exitCode: 4,
+      );
+    }
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      final header = trimmed.substring(1, trimmed.length - 1);
+      if (header.contains('"') || header.contains("'")) {
+        throw MambaException(
+          'Quoted TOML section keys are not eligible for narrow editing.',
+          exitCode: 4,
+        );
+      }
+      continue;
+    }
+    if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
+    final equals = raw.indexOf('=');
+    if (equals <= 0) continue;
+    final rawKey = raw.substring(0, equals).trim();
+    if (rawKey.contains('.') ||
+        rawKey.startsWith('"') ||
+        rawKey.startsWith("'")) {
+      throw MambaException(
+        'Quoted or dotted TOML keys are not eligible for narrow editing.',
+        exitCode: 4,
+      );
+    }
+    final comment = _tomlCommentStart(raw, equals + 1);
+    final value = raw
+        .substring(equals + 1, comment < 0 ? raw.length : comment)
+        .trim();
+    if (value.startsWith('{')) {
+      throw MambaException(
+        'Inline TOML tables are not eligible for narrow editing.',
+        exitCode: 4,
+      );
+    }
+    if (value.startsWith('[') && !value.endsWith(']')) {
+      throw MambaException(
+        'Multiline TOML arrays are not eligible for narrow editing.',
+        exitCode: 4,
+      );
+    }
   }
 }
 
