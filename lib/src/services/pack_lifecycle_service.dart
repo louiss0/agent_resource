@@ -495,6 +495,7 @@ interface class PackLifecycleService {
           }
         } on MambaException catch (error) {
           failures.add('${candidate.name}: ${error.message}');
+          results.add(_result(request, candidate.name, 'failed'));
           if (error.exitCode == 6 || error.exitCode == 4) break;
         }
       }
