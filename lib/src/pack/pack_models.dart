@@ -1,3 +1,7 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+
 enum const PackProcessStatus(final int code) {
   success(0),
   failure(1),
@@ -42,6 +46,171 @@ final class const PackResourceResult({
   };
 }
 
+final class const PackPolicyChange({
+  required final String? bump,
+  required final bool includePrerelease,
+  required final bool save,
+}) {
+  Map<String, Object?> toJson() => {
+    if (bump != null) 'bump': bump,
+    'includePrerelease': includePrerelease,
+    'save': save,
+  };
+
+  String renderText() {
+    final pieces = <String>[
+      if (bump != null) 'bump=$bump',
+      'includePrerelease=$includePrerelease',
+      'save=$save',
+    ];
+    return pieces.join(' ');
+  }
+}
+
+final class const PackResourcePlan({
+  required final String type,
+  required final String name,
+  required final String action,
+  final String? method,
+  final List<String> targets = const <String>[],
+  final String? previousSnapshot,
+  final String? snapshot,
+  final String? localEdit,
+  final bool linkOnly = false,
+  final List<PackChangedPath> changedPaths = const <PackChangedPath>[],
+  final List<String> blockers = const <String>[],
+}) {
+  Map<String, Object?> toJson() => {
+    'type': type,
+    'name': name,
+    'action': action,
+    if (method != null) 'method': method,
+    'targets': targets,
+    if (previousSnapshot != null) 'previousSnapshot': previousSnapshot,
+    if (snapshot != null) 'snapshot': snapshot,
+    if (localEdit != null) 'localEdit': localEdit,
+    'linkOnly': linkOnly,
+    'changedPaths': [for (final path in changedPaths) path.toJson()],
+    'blockers': blockers,
+  };
+
+  List<String> renderText() {
+    final lines = <String>[
+      '$type $name: $action'
+          '${method == null ? '' : ' method=$method'}'
+          '${targets.isEmpty ? '' : ' targets=${targets.join(',')}'}',
+    ];
+    if (previousSnapshot != null || snapshot != null) {
+      lines.add(
+        '  snapshot: ${previousSnapshot ?? '-'} -> ${snapshot ?? 'pending'}',
+      );
+    }
+    if (localEdit != null) lines.add('  local edit: $localEdit');
+    if (linkOnly) lines.add('  ownership: link-only');
+    for (final path in changedPaths) {
+      final marker = switch (path.change) {
+        'added' => '+',
+        'removed' => '-',
+        _ => '~',
+      };
+      lines.add('  $marker ${path.path}');
+    }
+    for (final blocker in blockers) {
+      lines.add('  blocker: $blocker');
+    }
+    return lines;
+  }
+}
+
+final class PackPlan {
+  const PackPlan._({
+    required this.planId,
+    required this.operation,
+    required this.context,
+    required this.source,
+    required this.resources,
+    required this.warnings,
+    this.policy,
+    this.cleanupRefs = const <String>[],
+  });
+
+  factory PackPlan.create({
+    required String operation,
+    required Map<String, Object?> context,
+    required Map<String, Object?> source,
+    required List<PackResourcePlan> resources,
+    List<PackWarning> warnings = const <PackWarning>[],
+    PackPolicyChange? policy,
+    List<String> cleanupRefs = const <String>[],
+  }) {
+    final identity = <String, Object?>{
+      'planVersion': 1,
+      'operation': operation,
+      'context': context,
+      'source': source,
+      'resources': [for (final resource in resources) resource.toJson()],
+      'warnings': [for (final warning in warnings) warning.toJson()],
+      if (policy != null) 'policy': policy.toJson(),
+      'cleanupRefs': cleanupRefs,
+    };
+    final digest = sha256.convert(utf8.encode(jsonEncode(identity))).toString();
+    return PackPlan._(
+      planId: 'plan_v1_$digest',
+      operation: operation,
+      context: Map<String, Object?>.unmodifiable(context),
+      source: Map<String, Object?>.unmodifiable(source),
+      resources: List<PackResourcePlan>.unmodifiable(resources),
+      warnings: List<PackWarning>.unmodifiable(warnings),
+      policy: policy,
+      cleanupRefs: List<String>.unmodifiable(cleanupRefs),
+    );
+  }
+
+  final String planId;
+  final String operation;
+  final Map<String, Object?> context;
+  final Map<String, Object?> source;
+  final List<PackResourcePlan> resources;
+  final List<PackWarning> warnings;
+  final PackPolicyChange? policy;
+  final List<String> cleanupRefs;
+
+  Map<String, Object?> toJson() => {
+    'planId': planId,
+    'operation': operation,
+    'context': context,
+    'source': source,
+    'resources': [for (final resource in resources) resource.toJson()],
+    'warnings': [for (final warning in warnings) warning.toJson()],
+    if (policy != null) 'policy': policy!.toJson(),
+    if (cleanupRefs.isNotEmpty) 'cleanupRefs': cleanupRefs,
+  };
+
+  String renderText() {
+    final lines = <String>[
+      'review plan $planId',
+      '  operation: $operation',
+      '  context: ${_renderMap(context)}',
+      '  source: ${_renderMap(source)}',
+    ];
+    if (policy != null) lines.add('  policy: ${policy!.renderText()}');
+    if (cleanupRefs.isNotEmpty) {
+      lines.add('  cleanup: ${cleanupRefs.join(', ')}');
+    }
+    for (final resource in resources) {
+      lines.addAll(resource.renderText());
+    }
+    for (final warning in warnings) {
+      lines.add('  warning[${warning.id}]: ${warning.message}');
+    }
+    return lines.join('\n');
+  }
+
+  static String _renderMap(Map<String, Object?> value) => value.entries
+      .map((entry) => '${entry.key}=${entry.value ?? '-'}')
+      .join(' ');
+}
+
 final class const PackOperationResult({
   required final String operation,
   required final String outcome,
@@ -50,6 +219,7 @@ final class const PackOperationResult({
   required final List<PackResourceResult> resources,
   final List<PackWarning> warnings = const <PackWarning>[],
   final bool dryRun = false,
+  final PackPlan? plan,
 }) {
   Map<String, Object?> envelope() => {
     'schemaVersion': 1,
@@ -61,6 +231,7 @@ final class const PackOperationResult({
     'warnings': [for (final warning in warnings) warning.toJson()],
     'summary': summary,
     'dryRun': dryRun,
+    if (plan != null) 'plan': plan!.toJson(),
   };
 
   Map<String, Object?> get summary {
@@ -82,24 +253,40 @@ final class const PackOperationResult({
 
   String renderText() {
     final lines = <String>['$operation: $outcome'];
-    for (final warning in warnings) {
-      lines.add('warning[${warning.id}]: ${warning.message}');
-    }
-    for (final resource in resources) {
-      final snapshot = resource.snapshot == null
-          ? ''
-          : ' snapshot=${resource.snapshot}';
-      final link = resource.linkOnly ? ' link-only' : '';
-      lines.add(
-        '${resource.type} ${resource.name}: ${resource.disposition}$snapshot$link',
-      );
-      for (final path in resource.changedPaths) {
-        final marker = switch (path.change) {
-          'added' => '+',
-          'removed' => '-',
-          _ => '~',
-        };
-        lines.add('  $marker ${path.path}');
+    if (plan != null) {
+      lines.add(plan!.renderText());
+      if (resources.isNotEmpty) lines.add('outcomes:');
+      for (final resource in resources) {
+        final snapshot = resource.snapshot == null
+            ? ''
+            : ' snapshot=${resource.snapshot}';
+        final link = resource.linkOnly ? ' link-only' : '';
+        lines.add(
+          '  ${resource.type} ${resource.name}: ${resource.disposition}'
+          '$snapshot$link',
+        );
+      }
+    } else {
+      for (final warning in warnings) {
+        lines.add('warning[${warning.id}]: ${warning.message}');
+      }
+      for (final resource in resources) {
+        final snapshot = resource.snapshot == null
+            ? ''
+            : ' snapshot=${resource.snapshot}';
+        final link = resource.linkOnly ? ' link-only' : '';
+        lines.add(
+          '${resource.type} ${resource.name}: ${resource.disposition}'
+          '$snapshot$link',
+        );
+        for (final path in resource.changedPaths) {
+          final marker = switch (path.change) {
+            'added' => '+',
+            'removed' => '-',
+            _ => '~',
+          };
+          lines.add('  $marker ${path.path}');
+        }
       }
     }
     lines.add('summary: ${summary['total']} resource(s)');

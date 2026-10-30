@@ -18,6 +18,57 @@ void main() {
     });
   });
 
+  group('PackPlan', () {
+    test('binds review evidence and renders policy, cleanup, and paths', () {
+      final plan = PackPlan.create(
+        operation: 'skills.update',
+        context: const {'scope': 'project'},
+        source: const {
+          'pack': 'owner/repository',
+          'requestedLocator': 'https://github.com/owner/repository',
+        },
+        resources: const [
+          PackResourcePlan(
+            type: 'skill',
+            name: 'reviewer',
+            action: 'update',
+            method: 'copy',
+            targets: ['codex'],
+            previousSnapshot: 'old',
+            snapshot: 'new',
+            localEdit: 'changed',
+            changedPaths: [
+              PackChangedPath(path: 'SKILL.md', change: 'modified'),
+            ],
+          ),
+        ],
+        policy: const PackPolicyChange(
+          bump: 'minor',
+          includePrerelease: true,
+          save: true,
+        ),
+        cleanupRefs: const ['expired'],
+      );
+
+      expect(plan.planId, startsWith('plan_v1_'));
+      expect(plan.toJson()['source'], {
+        'pack': 'owner/repository',
+        'requestedLocator': 'https://github.com/owner/repository',
+      });
+      expect(
+        plan.renderText(),
+        allOf(
+          contains('review plan ${plan.planId}'),
+          contains('policy: bump=minor includePrerelease=true save=true'),
+          contains('cleanup: expired'),
+          contains('snapshot: old -> new'),
+          contains('local edit: changed'),
+          contains('~ SKILL.md'),
+        ),
+      );
+    });
+  });
+
   group('PackOperationResult', () {
     test('emits the versioned success envelope and summary counts', () {
       final result = PackOperationResult(

@@ -271,19 +271,164 @@ interface class PackLifecycleService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
-      await _confirm(request, request.operation.name);
-
+      final actions = <String, String>{};
+      final installMethods = <String, SkillInstallMethod?>{};
+      final installTargets = <String, List<String>>{};
+      final planResources = <PackResourcePlan>[];
       for (final candidate in selected) {
         final records = existing
             .where((record) => record.name == candidate.name)
             .toList();
-        try {
-          if (records.length > 1) {
-            throw MambaException(
-              'Duplicate managed installations for ${candidate.name}; select an unambiguous target.',
-              exitCode: PackProcessStatus.invalidInput.code,
-            );
+        if (records.length > 1) {
+          throw MambaException(
+            'Duplicate managed installations for ${candidate.name}; select an unambiguous target.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        final record = records.isEmpty ? null : records.single;
+        final changedPaths = record == null
+            ? _changes(null, _candidateBaseline(candidate))
+            : record.kind == ArtifactKind.skillLink
+            ? const <PackChangedPath>[]
+            : _changes(record.baseline, _candidateBaseline(candidate));
+        if (record == null) {
+          if (request.operation == PackOperation.update &&
+              !request.only.contains(candidate.name)) {
+            if (request.skipNew) {
+              actions[candidate.name] = 'skipped';
+              continue;
+            }
+            final includeNew =
+                request.interactive &&
+                !request.yes &&
+                await _promptYesNo(
+                  '${candidate.name} is new upstream. Include it?',
+                );
+            if (!includeNew) {
+              actions[candidate.name] = 'observed';
+              warnings.add(
+                PackWarning(
+                  id: 'new-resource-unselected',
+                  message:
+                      '${candidate.name} is new and was not selected; use --only to review inclusion.',
+                ),
+              );
+              planResources.add(
+                PackResourcePlan(
+                  type: request.resourceType.name,
+                  name: candidate.name,
+                  action: 'observed',
+                  changedPaths: changedPaths,
+                ),
+              );
+              continue;
+            }
           }
+          final targets = _targets(
+            request,
+            pack,
+            configuration,
+            candidate,
+            null,
+          );
+          final method = await _method(
+            request,
+            pack,
+            configuration,
+            candidate,
+            null,
+          );
+          actions[candidate.name] = 'install';
+          installTargets[candidate.name] = targets;
+          installMethods[candidate.name] = method;
+          planResources.add(
+            PackResourcePlan(
+              type: request.resourceType.name,
+              name: candidate.name,
+              action: 'install',
+              method: method?.name,
+              targets: targets,
+              changedPaths: changedPaths,
+              blockers: request.dryRun ? const <String>[] : const <String>[],
+            ),
+          );
+          continue;
+        }
+        final modification = _lifecycleState.verify(record);
+        final sameBytes = record.kind == ArtifactKind.skillLink
+            ? record.origin['contentDigest'] == candidate.digest
+            : candidate.digest == record.baseline.digest;
+        final action = request.operation == PackOperation.install
+            ? 'unchanged'
+            : record.kind == ArtifactKind.skillLink &&
+                  modification == ModificationStatus.unchanged
+            ? 'observed'
+            : sameBytes && modification == ModificationStatus.unchanged
+            ? 'unchanged'
+            : modification != ModificationStatus.unchanged &&
+                  request.keepLocal.contains(record.name)
+            ? 'keptLocal'
+            : modification != ModificationStatus.unchanged
+            ? 'replaceLocal'
+            : 'update';
+        actions[candidate.name] = action;
+        final previousSnapshot = _currentSnapshotRef(context, record);
+        planResources.add(
+          PackResourcePlan(
+            type: request.resourceType.name,
+            name: candidate.name,
+            action: action,
+            method: _recordMethod(record.kind),
+            targets: record.validatedProfiles,
+            previousSnapshot: previousSnapshot,
+            snapshot:
+                action == 'unchanged' ||
+                    action == 'observed' ||
+                    action == 'keptLocal'
+                ? previousSnapshot
+                : null,
+            localEdit: modification == ModificationStatus.unchanged
+                ? null
+                : modification.name,
+            linkOnly: record.kind == ArtifactKind.skillLink,
+            changedPaths: record.kind == ArtifactKind.skillLink
+                ? const <PackChangedPath>[]
+                : changedPaths,
+          ),
+        );
+      }
+      for (final record in absent) {
+        actions[record.name] = 'remove';
+        planResources.add(
+          PackResourcePlan(
+            type: request.resourceType.name,
+            name: record.name,
+            action: 'remove',
+            method: _recordMethod(record.kind),
+            targets: record.validatedProfiles,
+            previousSnapshot: _currentSnapshotRef(context, record),
+            changedPaths: _changes(record.baseline, null),
+            linkOnly: record.kind == ArtifactKind.skillLink,
+          ),
+        );
+      }
+      final plan = PackPlan.create(
+        operation: '${request.resourceType.name}s.${request.operation.name}',
+        context: _contextJson(request, context, configuration),
+        source: _sourceJson(pack, workspace.provenance),
+        resources: planResources,
+        warnings: warnings,
+        policy: _policyChange(request, pack),
+      );
+      await _confirmPlan(request, plan);
+
+      for (final candidate in selected) {
+        final action = actions[candidate.name];
+        final records = existing
+            .where((record) => record.name == candidate.name)
+            .toList();
+        try {
+          if (action == null || action == 'skipped') continue;
           final record = records.isEmpty ? null : records.single;
           final changedPaths = record == null
               ? _changes(null, _candidateBaseline(candidate))
@@ -291,33 +436,16 @@ interface class PackLifecycleService {
               ? const <PackChangedPath>[]
               : _changes(record.baseline, _candidateBaseline(candidate));
           if (record == null) {
-            if (request.operation == PackOperation.update &&
-                !request.only.contains(candidate.name)) {
-              if (request.skipNew) continue;
-              final includeNew =
-                  request.interactive &&
-                  !request.yes &&
-                  await _promptYesNo(
-                    '${candidate.name} is new upstream. Include it?',
-                  );
-              if (!includeNew) {
-                results.add(
-                  _result(
-                    request,
-                    candidate.name,
-                    'observed',
-                    changedPaths: changedPaths,
-                  ),
-                );
-                warnings.add(
-                  PackWarning(
-                    id: 'new-resource-unselected',
-                    message:
-                        '${candidate.name} is new and was not selected; use --only to review inclusion.',
-                  ),
-                );
-                continue;
-              }
+            if (action == 'observed') {
+              results.add(
+                _result(
+                  request,
+                  candidate.name,
+                  'observed',
+                  changedPaths: changedPaths,
+                ),
+              );
+              continue;
             }
             final outcome = await _installCandidate(
               request,
@@ -325,6 +453,8 @@ interface class PackLifecycleService {
               pack,
               candidate,
               configuration,
+              targets: installTargets[candidate.name]!,
+              method: installMethods[candidate.name],
             );
             final snapshot = request.dryRun
                 ? null
@@ -409,6 +539,7 @@ interface class PackLifecycleService {
         resources: results,
         warnings: warnings,
         dryRun: request.dryRun,
+        plan: plan,
       );
     } finally {
       await workspace.close();
@@ -495,26 +626,50 @@ interface class PackLifecycleService {
         return null;
       }
     }
+    final source = <String, Object?>{
+      'pack': pack.key,
+      'track': _trackJson(pack.update.track),
+      'exactLockReplay': true,
+    };
+    final snapshotRefs = {
+      for (final record in selected)
+        record.name: _currentSnapshotRef(context, record),
+    };
+    final plan = PackPlan.create(
+      operation: '${request.resourceType.name}s.install',
+      context: _contextJson(request, context, configuration),
+      source: source,
+      resources: [
+        for (final record in selected)
+          PackResourcePlan(
+            type: request.resourceType.name,
+            name: record.name,
+            action: 'unchanged',
+            method: _recordMethod(record.kind),
+            targets: record.validatedProfiles,
+            previousSnapshot: snapshotRefs[record.name],
+            snapshot: snapshotRefs[record.name],
+            linkOnly: record.kind == ArtifactKind.skillLink,
+          ),
+      ],
+    );
     return PackOperationResult(
       operation: '${request.resourceType.name}s.install',
       outcome: 'no-op',
       context: _contextJson(request, context, configuration),
-      source: {
-        'pack': pack.key,
-        'track': _trackJson(pack.update.track),
-        'exactLockReplay': true,
-      },
+      source: source,
       resources: [
         for (final record in selected)
           _result(
             request,
             record.name,
             'unchanged',
-            snapshot: _currentSnapshotRef(context, record),
+            snapshot: snapshotRefs[record.name],
             linkOnly: record.kind == ArtifactKind.skillLink,
           ),
       ],
       dryRun: request.dryRun,
+      plan: plan,
     );
   }
 
@@ -530,10 +685,10 @@ interface class PackLifecycleService {
     LifecycleContext context,
     PackDefinition pack,
     _PackCandidate candidate,
-    PackConfiguration configuration,
-  ) async {
-    final targets = _targets(request, pack, configuration, candidate, null);
-    final method = await _method(request, pack, configuration, candidate, null);
+    PackConfiguration configuration, {
+    required List<String> targets,
+    required SkillInstallMethod? method,
+  }) async {
     if (request.dryRun) return 'installed';
     final unit = _installationUnit(
       context,
@@ -696,7 +851,26 @@ interface class PackLifecycleService {
           );
         }
       }
-      await _confirm(request, 'source association');
+      final plan = PackPlan.create(
+        operation:
+            '${request.resourceType.name}s.source.${changing ? 'change' : 'associate'}',
+        context: _contextJson(request, context, configuration),
+        source: _sourceJson(destination, workspace.provenance),
+        resources: [
+          for (final record in records)
+            PackResourcePlan(
+              type: request.resourceType.name,
+              name: record.name,
+              action: changing ? 'sourceChange' : 'sourceAssociate',
+              method: _recordMethod(record.kind),
+              targets: record.validatedProfiles,
+              previousSnapshot: _currentSnapshotRef(context, record),
+              snapshot: _currentSnapshotRef(context, record),
+              linkOnly: record.kind == ArtifactKind.skillLink,
+            ),
+        ],
+      );
+      await _confirmPlan(request, plan);
       final results = <PackResourceResult>[];
       for (final record in records) {
         final candidate = byName[record.name]!;
@@ -716,6 +890,7 @@ interface class PackLifecycleService {
         source: _sourceJson(destination, workspace.provenance),
         resources: results,
         dryRun: request.dryRun,
+        plan: plan,
       );
     } finally {
       await workspace.close();
@@ -793,6 +968,35 @@ interface class PackLifecycleService {
       );
     }
     final modification = _lifecycleState.verify(record);
+    final rollbackChanges = _changes(
+      record.baseline,
+      ArtifactBaseline.fromJson(snapshot.baseline),
+    );
+    final plan = PackPlan.create(
+      operation: '${request.resourceType.name}s.rollback',
+      context: _contextJson(request, context, configuration),
+      source: {'pack': pack.key, 'snapshot': snapshot.ref},
+      resources: [
+        PackResourcePlan(
+          type: request.resourceType.name,
+          name: name,
+          action: modification == ModificationStatus.unchanged
+              ? 'rollback'
+              : request.keepLocal.contains(name)
+              ? 'keptLocal'
+              : 'replaceLocalAndRollback',
+          method: _recordMethod(record.kind),
+          targets: record.validatedProfiles,
+          previousSnapshot: previousRef,
+          snapshot: snapshot.ref,
+          localEdit: modification == ModificationStatus.unchanged
+              ? null
+              : modification.name,
+          linkOnly: record.kind == ArtifactKind.skillLink,
+          changedPaths: rollbackChanges,
+        ),
+      ],
+    );
     if (modification != ModificationStatus.unchanged) {
       if (request.keepLocal.contains(name)) {
         return PackOperationResult(
@@ -802,6 +1006,7 @@ interface class PackLifecycleService {
           source: {'pack': pack.key, 'snapshot': snapshot.ref},
           resources: [_result(request, name, 'keptLocal')],
           dryRun: request.dryRun,
+          plan: plan,
         );
       }
       if (!request.replaceLocal.contains(name)) {
@@ -877,7 +1082,7 @@ interface class PackLifecycleService {
       extraFolders: extras,
       origin: origin,
     );
-    await _confirm(request, 'rollback');
+    await _confirmPlan(request, plan);
     if (!request.dryRun) {
       if (modification != ModificationStatus.unchanged) {
         _recordEditedSnapshot(context, record);
@@ -909,13 +1114,11 @@ interface class PackLifecycleService {
           previousSnapshot: previousRef,
           snapshot: resultingRef,
           linkOnly: record.kind == ArtifactKind.skillLink,
-          changedPaths: _changes(
-            record.baseline,
-            ArtifactBaseline.fromJson(snapshot.baseline),
-          ),
+          changedPaths: rollbackChanges,
         ),
       ],
       dryRun: request.dryRun,
+      plan: plan,
     );
   }
 
@@ -951,12 +1154,32 @@ interface class PackLifecycleService {
       installationIds: installationIds,
       dryRun: true,
     );
-    if (!request.dryRun) {
-      await _confirm(
-        request,
-        'cleanup of ${eligible.length} eligible snapshot ref(s)',
-      );
-    }
+    final warnings = <PackWarning>[
+      if (request.localEdits)
+        const PackWarning(
+          id: 'local-edit-cleanup',
+          message: 'Explicitly selected locally edited backups are unrecoverable after cleanup.',
+        ),
+    ];
+    final plan = PackPlan.create(
+      operation: '${request.resourceType.name}s.cleanup',
+      context: _contextJson(request, context, configuration),
+      source: {'pack': pack.key},
+      resources: [
+        for (final record in records)
+          PackResourcePlan(
+            type: request.resourceType.name,
+            name: record.name,
+            action: 'cleanup',
+            method: _recordMethod(record.kind),
+            targets: record.validatedProfiles,
+            linkOnly: record.kind == ArtifactKind.skillLink,
+          ),
+      ],
+      warnings: warnings,
+      cleanupRefs: eligible,
+    );
+    if (!request.dryRun) await _confirmPlan(request, plan);
     final pruned = request.dryRun
         ? eligible
         : state.cleanup(
@@ -989,14 +1212,9 @@ interface class PackLifecycleService {
       context: _contextJson(request, context, configuration),
       source: {'pack': pack.key, 'prunedSnapshotRefs': pruned},
       resources: results,
-      warnings: [
-        if (request.localEdits)
-          const PackWarning(
-            id: 'local-edit-cleanup',
-            message: 'Explicitly selected locally edited backups are unrecoverable after cleanup.',
-          ),
-      ],
+      warnings: warnings,
       dryRun: request.dryRun,
+      plan: plan,
     );
   }
 
@@ -1021,7 +1239,25 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    await _confirm(request, 'removal');
+    final plan = PackPlan.create(
+      operation: '${request.resourceType.name}s.remove',
+      context: _contextJson(request, context, configuration),
+      source: {'pack': pack.key},
+      resources: [
+        for (final record in records)
+          PackResourcePlan(
+            type: request.resourceType.name,
+            name: record.name,
+            action: 'remove',
+            method: _recordMethod(record.kind),
+            targets: record.validatedProfiles,
+            previousSnapshot: _currentSnapshotRef(context, record),
+            linkOnly: record.kind == ArtifactKind.skillLink,
+            changedPaths: _changes(record.baseline, null),
+          ),
+      ],
+    );
+    await _confirmPlan(request, plan);
     final results = <PackResourceResult>[];
     for (final record in records) {
       if (!request.dryRun) {
@@ -1045,6 +1281,7 @@ interface class PackLifecycleService {
       source: {'pack': pack.key},
       resources: results,
       dryRun: request.dryRun,
+      plan: plan,
     );
   }
 
@@ -1780,10 +2017,11 @@ interface class PackLifecycleService {
         ),
       );
 
-  Future<void> _confirm(PackLifecycleRequest request, String operation) async {
+  Future<void> _confirmPlan(PackLifecycleRequest request, PackPlan plan) async {
     if (!request.interactive || request.yes || request.dryRun) return;
+    stdout.writeln(plan.renderText());
     final approved = await InstallationApprovalComponent(
-      label: 'Apply this reviewed pack $operation?',
+      label: 'Apply this reviewed pack ${request.operation.name}?',
     ).render();
     if (!approved) {
       throw MambaException(
@@ -1791,6 +2029,30 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.cancelled.code,
       );
     }
+  }
+
+  String _recordMethod(ArtifactKind kind) => switch (kind) {
+    ArtifactKind.skillCanonical => 'canonical',
+    ArtifactKind.skillLink => 'source-link',
+    _ => 'copy',
+  };
+
+  PackPolicyChange? _policyChange(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+  ) {
+    if (request.operation != PackOperation.update ||
+        !request.savePolicy ||
+        request.noSave ||
+        pack.update.track is! ReleaseTrack) {
+      return null;
+    }
+    if (request.bump == null && !request.includePrerelease) return null;
+    return PackPolicyChange(
+      bump: request.bump,
+      includePrerelease: request.includePrerelease,
+      save: true,
+    );
   }
 
   List<String> _targets(

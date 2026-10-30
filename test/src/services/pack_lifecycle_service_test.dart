@@ -216,6 +216,14 @@ track = { kind = "local" }
 
       expect(result.outcome, 'preview');
       expect(result.dryRun, isTrue);
+      expect(result.plan, isNotNull);
+      expect(result.plan!.planId, startsWith('plan_v1_'));
+      expect(result.plan!.source['pack'], 'local/demo');
+      expect(result.plan!.resources.single.action, 'install');
+      expect(
+        result.plan!.resources.single.changedPaths.map((path) => path.path),
+        contains('SKILL.md'),
+      );
       expect(
         result.resources.single.changedPaths.map((path) => path.path),
         contains('SKILL.md'),
@@ -517,6 +525,11 @@ track = { kind = "local" }
 
       expect(rolledBack.resources.single.disposition, 'rolledBack');
       expect(rolledBack.resources.single.snapshot, firstRef);
+      expect(rolledBack.plan!.resources.single.action, 'rollback');
+      expect(
+        rolledBack.plan!.resources.single.changedPaths.map((path) => path.path),
+        contains('SKILL.md'),
+      );
       expect(
         File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
             .readAsStringSync(),
@@ -774,6 +787,7 @@ description: Writes docs.
           request(PackOperation.cleanup, PackResourceType.skill),
         );
         expect(cleaned.outcome, 'completed');
+        expect(cleaned.plan!.cleanupRefs, contains(firstRef));
         expect(artifact.existsSync(), isFalse);
         final after =
             jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
@@ -1023,6 +1037,9 @@ track = { kind = "release", artifact = "archive" }
         );
 
         expect(updated.resources.single.disposition, 'updated');
+        expect(updated.plan!.policy, isNotNull);
+        expect(updated.plan!.policy!.bump, 'minor');
+        expect(updated.plan!.policy!.includePrerelease, isTrue);
         final configuration = File(p.join(project.path, 'agent-resources.toml'))
             .readAsStringSync();
         expect(configuration, contains('bump = "minor"'));
