@@ -274,6 +274,13 @@ track = { kind = "local" }
         request(PackOperation.update, PackResourceType.skill),
       );
       expect(updated.resources.single.disposition, 'updated');
+      final lock = jsonDecode(
+        File(p.join(project.path, '.agent-resource', 'installations.json'))
+            .readAsStringSync(),
+      ) as Map<String, Object?>;
+      expect(lock['approvals'], isNotEmpty);
+      expect(lock['selections'], isNotEmpty);
+      expect(lock['operations'], isNotEmpty);
     });
 
     test(

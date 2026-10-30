@@ -515,6 +515,18 @@ interface class PackLifecycleService {
         );
       }
 
+      if (!request.dryRun) {
+        _persistPackOperation(
+          context: context,
+          plan: plan,
+          results: results,
+          outcome: failures.isEmpty ? 'completed' : 'failed',
+          packKey: pack.key,
+          type: request.resourceType,
+          provenance: workspace.provenance,
+          candidates: candidates,
+        );
+      }
       if (failures.isNotEmpty) {
         throw MambaException(
           'Pack operation completed with resource failures: ${failures.join(' | ')}',
@@ -882,6 +894,18 @@ interface class PackLifecycleService {
         );
         results.add(_result(request, record.name, 'updated'));
       }
+      if (!request.dryRun) {
+        _persistPackOperation(
+          context: context,
+          plan: plan,
+          results: results,
+          outcome: 'completed',
+          packKey: destination.key,
+          type: request.resourceType,
+          provenance: workspace.provenance,
+          candidates: candidates,
+        );
+      }
       return PackOperationResult(
         operation:
             '${request.resourceType.name}s.source.${changing ? 'change' : 'associate'}',
@@ -1101,22 +1125,33 @@ interface class PackLifecycleService {
             context,
             _lifecycleState.recordById(context, record.installationId),
           ).ref;
+    final results = [
+      _result(
+        request,
+        name,
+        'rolledBack',
+        previousSnapshot: previousRef,
+        snapshot: resultingRef,
+        linkOnly: record.kind == ArtifactKind.skillLink,
+        changedPaths: rollbackChanges,
+      ),
+    ];
+    if (!request.dryRun) {
+      _persistPackOperation(
+        context: context,
+        plan: plan,
+        results: results,
+        outcome: 'completed',
+        packKey: pack.key,
+        type: request.resourceType,
+      );
+    }
     return PackOperationResult(
       operation: '${request.resourceType.name}s.rollback',
       outcome: request.dryRun ? 'preview' : 'completed',
       context: _contextJson(request, context, configuration),
       source: {'pack': pack.key, 'snapshot': snapshot.ref},
-      resources: [
-        _result(
-          request,
-          name,
-          'rolledBack',
-          previousSnapshot: previousRef,
-          snapshot: resultingRef,
-          linkOnly: record.kind == ArtifactKind.skillLink,
-          changedPaths: rollbackChanges,
-        ),
-      ],
+      resources: results,
       dryRun: request.dryRun,
       plan: plan,
     );
@@ -1202,6 +1237,16 @@ interface class PackLifecycleService {
         );
       }
     }
+    if (!request.dryRun) {
+      _persistPackOperation(
+        context: context,
+        plan: plan,
+        results: results,
+        outcome: pruned.isEmpty ? 'no-op' : 'completed',
+        packKey: pack.key,
+        type: request.resourceType,
+      );
+    }
     return PackOperationResult(
       operation: '${request.resourceType.name}s.cleanup',
       outcome: request.dryRun
@@ -1272,6 +1317,16 @@ interface class PackLifecycleService {
           'removed',
           changedPaths: _changes(record.baseline, null),
         ),
+      );
+    }
+    if (!request.dryRun) {
+      _persistPackOperation(
+        context: context,
+        plan: plan,
+        results: results,
+        outcome: 'completed',
+        packKey: pack.key,
+        type: request.resourceType,
       );
     }
     return PackOperationResult(
@@ -2460,6 +2515,82 @@ interface class PackLifecycleService {
     (record) =>
         record.name == candidate.name && record.kind == ArtifactKind.skillLink,
   );
+
+  void _persistPackOperation({
+    required LifecycleContext context,
+    required PackPlan plan,
+    required List<PackResourceResult> results,
+    required String outcome,
+    required String packKey,
+    required PackResourceType type,
+    AcquisitionProvenance? provenance,
+    List<_PackCandidate> candidates = const <_PackCandidate>[],
+  }) {
+    final state = PackState(stateDirectory: context.stateRoot());
+    final recorded = DateTime.now().toUtc().toIso8601String();
+    state.recordOperation({
+      'operationId': plan.planId,
+      'operation': plan.operation,
+      'outcome': outcome,
+      'scope': context.scope.name,
+      'packKey': packKey,
+      'context': plan.context,
+      'source': plan.source,
+      'resources': [for (final result in results) result.toJson()],
+      'warnings': [for (final warning in plan.warnings) warning.toJson()],
+      'recordedAt': recorded,
+    });
+    for (final result in results) {
+      state.recordSelections([
+        {
+          'packKey': packKey,
+          'resourceType': type.name,
+          'resourceName': result.name,
+          'scope': context.scope.name,
+          'selected': !const {
+            'removed',
+            'observed',
+            'notAttempted',
+          }.contains(result.disposition),
+          'reason': result.disposition,
+          'updatedAt': recorded,
+        },
+      ]);
+    }
+    final live = _packRecords(
+      context,
+      packKey,
+      type,
+    ).where((record) => record.lifecycle == 'live');
+    for (final candidate in candidates) {
+      if (candidate.extraFolders.isEmpty) continue;
+      for (final record in live.where(
+        (record) => record.name == candidate.name,
+      )) {
+        for (final folder in candidate.extraFolders) {
+          state.recordApprovals([
+            {
+              'packKey': packKey,
+              'resourceType': type.name,
+              'resourceName': candidate.name,
+              'scope': context.scope.name,
+              'destination': record.nativeDestination,
+              'folder': folder,
+              'sourceRequested':
+                  provenance?.requestedLocator ??
+                  plan.source['requestedLocator'] ??
+                  packKey,
+              'sourceResolved':
+                  provenance?.resolvedLocator ??
+                  plan.source['resolvedLocator'] ??
+                  packKey,
+              'approvedAt': recorded,
+            },
+          ]);
+        }
+      }
+    }
+  }
 
   ArtifactBaseline _candidateBaseline(_PackCandidate candidate) =>
       _lifecycleState.baselineFor(

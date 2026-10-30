@@ -233,6 +233,66 @@ final class PackState {
     retentionClass: snapshot.retentionClass,
   );
 
+  void recordApprovals(Iterable<Map<String, Object?>> approvals) {
+    updateRecordGroups(
+      approvals: _merge(read().approvals, approvals, const [
+        'packKey',
+        'resourceType',
+        'resourceName',
+        'scope',
+        'destination',
+        'folder',
+        'sourceRequested',
+        'sourceResolved',
+      ]),
+    );
+  }
+
+  void recordSelections(Iterable<Map<String, Object?>> selections) {
+    updateRecordGroups(
+      selections: _merge(read().selections, selections, const [
+        'packKey',
+        'resourceType',
+        'resourceName',
+        'scope',
+      ]),
+    );
+  }
+
+  void recordOperation(Map<String, Object?> operation) {
+    updateRecordGroups(
+      operations: _merge(read().operations, [operation], const ['operationId']),
+    );
+  }
+
+  List<Map<String, Object?>> _merge(
+    List<Map<String, Object?>> existing,
+    Iterable<Map<String, Object?>> additions,
+    List<String> identity,
+  ) {
+    final merged = <String, Map<String, Object?>>{};
+    for (final record in existing) {
+      merged[_identity(record, identity)] = record;
+    }
+    for (final record in additions) {
+      for (final key in identity) {
+        if (record[key] == null) {
+          throw ArgumentError.value(key, 'record', 'Missing identity field.');
+        }
+      }
+      merged[_identity(record, identity)] = Map<String, Object?>.unmodifiable(
+        record,
+      );
+    }
+    final keys = merged.keys.toList()..sort();
+    final values = [for (final key in keys) merged[key]!];
+    if (values.length <= 1000) return values;
+    return values.sublist(values.length - 1000);
+  }
+
+  String _identity(Map<String, Object?> record, List<String> keys) =>
+      jsonEncode([for (final key in keys) record[key]]);
+
   void markInstallationNoncurrent(String installationId) {
     final document = read();
     final timestamp = _timestamp(_clock());

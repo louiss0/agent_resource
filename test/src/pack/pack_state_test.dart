@@ -22,6 +22,60 @@ void main() {
       jsonDecode(ledger.readAsStringSync()) as Map<String, Object?>;
 
   group(PackState, () {
+    test(
+      'upserts approvals, selections, and operations as separate groups',
+      () {
+        final stateStore = PackState(stateDirectory: state.path);
+        stateStore.recordApprovals([
+          {
+            'packKey': 'owner/repo',
+            'resourceType': 'skill',
+            'resourceName': 'reviewer',
+            'scope': 'project',
+            'destination': 'shared',
+            'folder': 'rules',
+            'sourceRequested': '/source',
+            'sourceResolved': '/source',
+            'approvedAt': 'first',
+          },
+        ]);
+        stateStore.recordApprovals([
+          {
+            'packKey': 'owner/repo',
+            'resourceType': 'skill',
+            'resourceName': 'reviewer',
+            'scope': 'project',
+            'destination': 'shared',
+            'folder': 'rules',
+            'sourceRequested': '/source',
+            'sourceResolved': '/source',
+            'approvedAt': 'second',
+          },
+        ]);
+        stateStore.recordSelections([
+          {
+            'packKey': 'owner/repo',
+            'resourceType': 'skill',
+            'resourceName': 'reviewer',
+            'scope': 'project',
+            'selected': true,
+          },
+        ]);
+        stateStore.recordOperation({
+          'operationId': 'plan_v1_test',
+          'operation': 'skills.install',
+          'outcome': 'completed',
+        });
+
+        final document = stateStore.read();
+        expect(document.approvals, hasLength(1));
+        expect(document.approvals.single['approvedAt'], 'second');
+        expect(document.selections.single['selected'], isTrue);
+        expect(document.operations.single['operationId'], 'plan_v1_test');
+        expect(document.installations, isEmpty);
+      },
+    );
+
     test('reads bounded record groups without creating or changing a lock', () {
       ledger.writeAsStringSync(
         jsonEncode({
