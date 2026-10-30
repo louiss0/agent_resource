@@ -414,6 +414,7 @@ abstract interface class LifecycleResource {
     String path,
     LifecycleContext context, {
     String? expectedName,
+    bool restoringBaseline = false,
   });
 
   Future<void> checkUnique(
@@ -1251,7 +1252,11 @@ interface class LifecycleStateService {
       }
 
       for (final entry in unit.entries) {
-        final existing = _findRecord(state, location: entry.path);
+        final existing = _findRecord(
+          state,
+          location: entry.path,
+          liveOnly: true,
+        );
         if (existing != null) existingByPath[entry.path] = existing;
         if (entry.action == InstallationEntryAction.unchanged &&
             entry.kind != InstallationEntryKind.consumer) {
@@ -1777,10 +1782,32 @@ interface class LifecycleStateService {
     required LifecycleContext context,
     required String installationId,
     required String source,
+    Map<String, Object?>? origin,
+    bool allowModified = false,
   }) async {
-    final initial = recordById(context, installationId);
+    var initial = recordById(context, installationId);
     _requireReplacementResource(initial, resource, context);
-    _requireUnchanged(initial);
+    final recordedBaseline = initial.baseline;
+    if (allowModified) {
+      initial = initial.copyWith(
+        baseline: _manifest(initial.location, initial.kind),
+      );
+    }
+    void requireObserved(InstallationRecord record) {
+      if (allowModified) {
+        if (_manifest(record.location, record.kind).digest !=
+            record.baseline.digest) {
+          throw MambaException(
+            'The reviewed local edits changed before replacement: ${record.location}',
+            exitCode: 4,
+          );
+        }
+      } else {
+        _requireUnchanged(record);
+      }
+    }
+
+    requireObserved(initial);
     final candidate = await resource.inspect(
       source,
       context,
@@ -1823,14 +1850,19 @@ interface class LifecycleStateService {
     _requireApproval(context, 'replacement');
     final state = context.stateRoot();
     return _serialized(context, initial.location, () async {
-      final record = recordById(context, installationId);
-      if (record.baseline.digest != initial.baseline.digest) {
+      var record = recordById(context, installationId);
+      if (record.baseline.digest != recordedBaseline.digest) {
         throw MambaException(
           'The managed baseline changed before replacement.',
           exitCode: 4,
         );
       }
-      _requireUnchanged(record);
+      if (allowModified) {
+        record = record.copyWith(
+          baseline: _manifest(record.location, record.kind),
+        );
+      }
+      requireObserved(record);
       final rechecked = await resource.inspect(
         source,
         context,
@@ -1906,7 +1938,7 @@ interface class LifecycleStateService {
             exitCode: 4,
           );
         }
-        _requireUnchanged(record);
+        requireObserved(record);
         final backup = _createBackup(state, record, transactionId);
         backupId = backup.backupId;
         _writeTransaction(transactionPath, <String, Object?>{
@@ -1939,6 +1971,7 @@ interface class LifecycleStateService {
           kind: resource.kind,
           nativeForm: candidate.nativeForm,
           baseline: newBaseline,
+          origin: origin,
           backupIds: [...record.backupIds, backup.backupId],
           clearTransaction: true,
         );
@@ -2002,10 +2035,31 @@ interface class LifecycleStateService {
     required LifecycleResource resource,
     required LifecycleContext context,
     required String installationId,
+    bool allowModified = false,
   }) async {
-    final initial = recordById(context, installationId);
+    var initial = recordById(context, installationId);
     _requireResource(initial, resource, context, live: true);
-    _requireUnchanged(initial);
+    final recordedBaseline = initial.baseline;
+    if (allowModified) {
+      initial = initial.copyWith(
+        baseline: _manifest(initial.location, initial.kind),
+      );
+    }
+    void requireObserved(InstallationRecord record) {
+      if (allowModified) {
+        if (_manifest(record.location, record.kind).digest !=
+            record.baseline.digest) {
+          throw MambaException(
+            'The reviewed local edits changed before removal: ${record.location}',
+            exitCode: 4,
+          );
+        }
+      } else {
+        _requireUnchanged(record);
+      }
+    }
+
+    requireObserved(initial);
     if (context.dryRun) {
       return LifecycleResult(
         command: '${_resourceLabel(resource.kind)} remove',
@@ -2029,8 +2083,19 @@ interface class LifecycleStateService {
     _requireApproval(context, 'removal');
     final state = context.stateRoot();
     return _serialized(context, initial.location, () async {
-      final record = recordById(context, installationId);
-      _requireUnchanged(record);
+      var record = recordById(context, installationId);
+      if (record.baseline.digest != recordedBaseline.digest) {
+        throw MambaException(
+          'The managed baseline changed before removal.',
+          exitCode: 4,
+        );
+      }
+      if (allowModified) {
+        record = record.copyWith(
+          baseline: _manifest(record.location, record.kind),
+        );
+      }
+      requireObserved(record);
       _blockPendingAcrossScopes(context, record.location);
       final transactionId = _newId('trx');
       final transactionPath = p.join(
@@ -3345,6 +3410,7 @@ interface class LifecycleStateService {
       backup.artifactPath,
       context,
       expectedName: initial.name,
+      restoringBaseline: resource.kind != ArtifactKind.skillLink,
     );
     if (candidate.nativeForm != initial.nativeForm) {
       throw MambaException(
@@ -3417,6 +3483,7 @@ interface class LifecycleStateService {
           resource.kind == ArtifactKind.skillLink ? linkTarget! : stage,
           context,
           expectedName: record.name,
+          restoringBaseline: resource.kind != ArtifactKind.skillLink,
         );
         _sameCandidate(candidate, stagedCandidate);
         final newBaseline = resource.kind == ArtifactKind.skillLink
@@ -3717,8 +3784,39 @@ interface class LifecycleStateService {
 
   ArtifactBaseline readLinkBaseline(String path) => _linkBaseline(path);
 
-  void validateSkillTree(String path) {
-    _manifest(path, ArtifactKind.skillCopy);
+  void validateSkillTree(
+    String path, {
+    bool restoringBaseline = false,
+    Set<String> allowedExtraFolders = const <String>{},
+  }) {
+    final baseline = _manifest(path, ArtifactKind.skillCopy);
+    if (restoringBaseline) return;
+    for (final entry in baseline.entries.where(
+      (entry) => p.dirname(entry.path) == '.',
+    )) {
+      final name = entry.path;
+      if (!const {
+            'SKILL.md',
+            'references',
+            'scripts',
+            'assets',
+            'agents',
+          }.contains(name) &&
+          !(allowedExtraFolders.contains(name) && entry.type == 'directory')) {
+        throw MambaException(
+          'Unsupported Skill root entry: $name. Only SKILL.md, native support '
+          'directories, and explicitly approved extra directories are permitted.',
+          exitCode: 2,
+        );
+      }
+      final expected = name == 'SKILL.md' ? 'file' : 'directory';
+      if (entry.type != expected) {
+        throw MambaException(
+          'Skill root entry $name must be ${name == 'SKILL.md' ? 'a regular file' : 'a directory'}.',
+          exitCode: 2,
+        );
+      }
+    }
   }
 
   String contentDigest(String path, ArtifactKind kind) =>
@@ -3726,6 +3824,35 @@ interface class LifecycleStateService {
 
   List<InstallationRecord> records(LifecycleContext context) =>
       _readRecords(context.stateRoot());
+
+  Future<void> updateOrigin({
+    required LifecycleContext context,
+    required String installationId,
+    required Map<String, Object?> expectedOrigin,
+    required Map<String, Object?> origin,
+  }) async {
+    final initial = recordById(context, installationId);
+    if (jsonEncode(initial.origin) != jsonEncode(expectedOrigin)) {
+      throw MambaException(
+        'The reviewed Resource origin changed before association.',
+        exitCode: 4,
+      );
+    }
+    if (context.dryRun) return;
+    _requireApproval(context, 'Resource origin association');
+    await _serialized(context, initial.location, () async {
+      final current = recordById(context, installationId);
+      if (jsonEncode(current.origin) != jsonEncode(expectedOrigin)) {
+        throw MambaException(
+          'The reviewed Resource origin changed before association.',
+          exitCode: 4,
+        );
+      }
+      _commitRecords(context.stateRoot(), [
+        current.copyWith(origin: origin),
+      ], const <String, Object?>{});
+    });
+  }
 
   ArtifactKind artifactKindForBackup(
     LifecycleContext context,
@@ -3791,6 +3918,12 @@ interface class LifecycleStateService {
       return false;
     }
   }
+
+  ArtifactBaseline observeBaseline(InstallationRecord record) =>
+      _manifest(record.location, record.kind);
+
+  ArtifactBaseline baselineFor(String path, ArtifactKind kind) =>
+      _manifest(path, kind);
 
   ModificationStatus verify(InstallationRecord record) {
     try {
@@ -4588,6 +4721,10 @@ interface class LifecycleStateService {
       if (io.type(state, followLinks: false) == FileSystemEntityType.notFound) {
         return <InstallationRecord>[];
       }
+      final unexpected = io
+          .list(state)
+          .where((entry) => p.basename(entry.path) != 'coordination');
+      if (unexpected.isEmpty) return <InstallationRecord>[];
       throw MambaException(
         'Installation ownership evidence is missing: $path',
         exitCode: 4,
@@ -4606,7 +4743,9 @@ interface class LifecycleStateService {
     }
     if (map['schemaVersion'] != managementSchemaVersion) {
       throw MambaException(
-        'Unsupported installation ledger schema: $path',
+        'Unsupported installation ledger schema: $path. Use a compatible '
+        'previous Agent Resource CLI to recover or remove this state; it was '
+        'not modified.',
         exitCode: 4,
       );
     }
@@ -4678,11 +4817,13 @@ interface class LifecycleStateService {
     String state, {
     String? installationId,
     String? location,
+    bool liveOnly = false,
   }) {
     final matches = _readRecords(state).where(
       (record) =>
           (installationId == null || record.installationId == installationId) &&
-          (location == null || p.equals(record.location, location)),
+          (location == null || p.equals(record.location, location)) &&
+          (!liveOnly || record.lifecycle == 'live'),
     );
     if (matches.length > 1) {
       throw MambaException(
@@ -4726,7 +4867,12 @@ interface class LifecycleStateService {
       (left, right) => left.installationId.compareTo(right.installationId),
     );
     final path = p.join(state, 'installations.json');
+    final existing =
+        io.type(path, followLinks: false) == FileSystemEntityType.notFound
+        ? const <String, Object?>{}
+        : _object(_readManagementJson(path), 'installation ledger');
     _writeManagementJson(path, <String, Object?>{
+      ...existing,
       'schemaVersion': 1,
       'installations': [for (final record in records) record.toJson()],
     });

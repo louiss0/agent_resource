@@ -1,8 +1,12 @@
 import 'package:mamba/mamba.dart';
 
 import 'agent.dart';
+import 'agents.dart';
+import 'config.dart';
 import 'skill.dart';
+import 'skills.dart';
 import 'src/services/agent_installation_service.dart';
+import 'src/services/pack_lifecycle_service.dart';
 import 'src/services/skill_installation_service.dart';
 
 /// Creates a fresh executor for the Agent Resource command-line application.
@@ -12,6 +16,7 @@ import 'src/services/skill_installation_service.dart';
 Executor createExecutor({
   SkillInstallationService? skillInstallation,
   AgentInstallationService? agentInstallation,
+  PackLifecycleService? packLifecycle,
 }) => Executor(
   'agent_resource',
   'Manage resources consumed by AI coding harnesses.',
@@ -19,5 +24,8 @@ Executor createExecutor({
   [
     SkillCommand(installation: skillInstallation),
     AgentCommand(installation: agentInstallation),
+    SkillsCommand(service: packLifecycle),
+    AgentsCommand(service: packLifecycle),
+    ConfigCommand(service: packLifecycle),
   ],
 );

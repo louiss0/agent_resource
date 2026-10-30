@@ -69,8 +69,196 @@ final class _SimulatedLinkIO extends LifecycleIO {
   }
 }
 
+// Simulates records created before the current installation-layout policy.
+final class _LegacySkillResource implements LifecycleResource {
+  final delegate = SkillLifecycleService();
+  @override
+  ArtifactKind get kind => ArtifactKind.skillCopy;
+  @override
+  void validateAuthority(InstallationRecord record, LifecycleContext context) =>
+      delegate.validateAuthority(record, context);
+  @override
+  Future<LifecycleCandidate> inspect(
+    String path,
+    LifecycleContext context, {
+    String? expectedName,
+    bool restoringBaseline = false,
+  }) => delegate.inspect(
+    path,
+    context,
+    expectedName: expectedName,
+    restoringBaseline: true,
+  );
+  @override
+  Future<void> checkUnique(
+    LifecycleContext context,
+    String name, {
+    required String nativeDestination,
+    String? excludeInstallationId,
+    String? excludePath,
+    Set<String> allowedPaths = const <String>{},
+  }) => delegate.checkUnique(
+    context,
+    name,
+    nativeDestination: nativeDestination,
+    excludeInstallationId: excludeInstallationId,
+    excludePath: excludePath,
+    allowedPaths: allowedPaths,
+  );
+}
+
 void main() {
   group('SkillLifecycleService', () {
+    test(
+      'legacy recorded trees can be removed, restored, and cleaned',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp('skill-legacy-');
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final source = Directory(p.join(sandbox.path, 'source'))
+            ..createSync();
+          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Legacy.\n---\nBody.\n',
+          );
+          File(p.join(source.path, 'README.md'))
+              .writeAsStringSync('legacy bytes');
+          LifecycleOptions options({bool approved = false}) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            approved: approved,
+          );
+          final root = p.join(project.path, '.agents', 'skills');
+          final installed = await LifecycleStateService().install(
+            resource: _LegacySkillResource(),
+            context: LifecycleContext.resolve(options()),
+            source: source.path,
+            location: p.join(root, 'review'),
+            nativeRoot: root,
+            nativeDestination: 'shared',
+          );
+          final service = SkillLifecycleService();
+          final id = installed.data['installationId']! as String;
+          final removed = await service.remove(
+            LifecycleIdInput(options: options(approved: true), id: id),
+          );
+          final backup = removed.data['backupId']! as String;
+          final restored = await service.restore(
+            LifecycleIdInput(options: options(approved: true), id: backup),
+          );
+          expect(restored.outcome, 'restored');
+          expect(
+            File(
+              p.join(project.path, '.agents', 'skills', 'review', 'README.md'),
+            ).readAsStringSync(),
+            'legacy bytes',
+          );
+          expect(
+            (await service.cleanup(
+              LifecycleIdInput(options: options(approved: true), id: backup),
+            )).outcome,
+            'cleaned',
+          );
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
+      'adoption and replacement reject unsupported root entries before writes',
+      () async {
+        final sandbox = await Directory.systemTemp.createTemp('skill-layout-');
+        try {
+          final project = Directory(p.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final source = Directory(p.join(sandbox.path, 'source'))
+            ..createSync();
+          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Valid.\n---\nBody.\n',
+          );
+          LifecycleOptions options({bool approved = false}) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            approved: approved,
+          );
+          final service = SkillLifecycleService();
+          final adoptedPath = Directory(
+            p.join(project.path, '.agents', 'skills', 'adopt'),
+          )..createSync(recursive: true);
+          File(p.join(adoptedPath.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: adopt\ndescription: Valid.\n---\nBody.\n',
+          );
+          Directory(p.join(adoptedPath.path, 'rules')).createSync();
+          await expectLater(
+            service.adopt(
+              SkillInstallInput(
+                options: options(),
+                source: adoptedPath.path,
+                destination: SkillDestination.shared,
+              ),
+            ),
+            throwsA(
+              isA<MambaException>().having(
+                (e) => e.message,
+                'message',
+                contains('Unsupported Skill root entry: rules'),
+              ),
+            ),
+          );
+          expect(
+            Directory(p.join(project.path, '.agent-resource')).existsSync(),
+            isFalse,
+          );
+          final installed = await service.install(
+            SkillInstallInput(
+              options: options(),
+              source: source.path,
+              destination: SkillDestination.claude,
+            ),
+          );
+          final id = installed.data['installationId']! as String;
+          File(p.join(source.path, 'README.md'))
+              .writeAsStringSync('unsupported');
+          await expectLater(
+            service.replace(
+              LifecycleReplaceInput(
+                options: options(approved: true),
+                installationId: id,
+                source: source.path,
+              ),
+            ),
+            throwsA(
+              isA<MambaException>().having(
+                (e) => e.message,
+                'message',
+                contains('Unsupported Skill root entry: README.md'),
+              ),
+            ),
+          );
+          expect(
+            File(
+              p.join(project.path, '.claude', 'skills', 'review', 'README.md'),
+            ).existsSync(),
+            isFalse,
+          );
+          expect(
+            (await service.backupList(options())).data['backups'],
+            isEmpty,
+          );
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
     test(
       'install copies the complete tree and records an unchanged baseline',
       () async {
@@ -422,7 +610,7 @@ void main() {
                 source: source('sidecar', 'review').path,
                 destination: SkillDestination.codex,
               ),
-              'policy',
+              'Codex policy must be a mapping',
             ),
           ]) {
             if (input.destination == SkillDestination.codex) {
@@ -956,15 +1144,13 @@ void main() {
             fail('Normal restore bypassed current Codex profile validation.');
           } on MambaException catch (error) {
             expect(error.exitCode, 2);
-            expect(error.message, contains('policy'));
+            expect(error.message, contains('Codex policy must be a mapping'));
           }
           expect(
             io.type(live, followLinks: false),
             FileSystemEntityType.notFound,
           );
-          sidecar.writeAsStringSync(
-            'policy:\n  allow_implicit_invocation: true\n',
-          );
+          sidecar.parent.deleteSync(recursive: true);
           final restored = await service.restore(
             LifecycleIdInput(
               options: options(approved: true),

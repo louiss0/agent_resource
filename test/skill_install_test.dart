@@ -77,6 +77,257 @@ void main() {
           '${p.join(sandbox.path, 'state')}${Platform.pathSeparator}',
         ];
 
+        for (final entry in [
+          'AGENTS.md',
+          'README.md',
+          'metadata.json',
+          'rules',
+        ]) {
+          test('rejects unsupported root entry $entry before writes', () async {
+            final source = skill('source');
+            if (entry.contains('.')) {
+              File(p.join(source.path, entry)).writeAsStringSync('extra');
+            } else {
+              Directory(p.join(source.path, entry)).createSync();
+            }
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((r) => r.exitCode, 'status', 2)
+                  .having(
+                    (r) => r.message,
+                    'message',
+                    contains('Unsupported Skill root entry: $entry'),
+                  ),
+            );
+            expect(project.listSync(recursive: true), isEmpty);
+            expect(
+              Directory(p.join(sandbox.path, 'state')).existsSync(),
+              isFalse,
+            );
+          });
+        }
+
+        test('canonical preflight rejects README without writes', () async {
+          final source = skill('source');
+          File(p.join(source.path, 'README.md')).writeAsStringSync('extra');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--target',
+            'codex',
+            '--method',
+            'canonical',
+            ...context(),
+            '--yes',
+          ]);
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((r) => r.exitCode, 'status', 2)
+                .having(
+                  (r) => r.message,
+                  'message',
+                  contains('Unsupported Skill root entry: README.md'),
+                ),
+          );
+          expect(project.listSync(recursive: true), isEmpty);
+          expect(
+            Directory(p.join(sandbox.path, 'state')).existsSync(),
+            isFalse,
+          );
+        });
+
+        test(
+          'mixed discovered batch rejects rules before any writes',
+          () async {
+            final repository = Directory(p.join(sandbox.path, 'repository'))
+              ..createSync();
+            for (final name in ['valid', 'invalid']) {
+              final dir = Directory(p.join(repository.path, 'skills', name))
+                ..createSync(recursive: true);
+              File(p.join(dir.path, 'SKILL.md')).writeAsStringSync(
+                '---\nname: $name\ndescription: Valid.\n---\nBody.\n',
+              );
+              if (name == 'invalid') {
+                Directory(p.join(dir.path, 'rules')).createSync();
+              }
+            }
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              repository.path,
+              '--all-resources',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((r) => r.exitCode, 'status', 2)
+                  .having(
+                    (r) => r.message,
+                    'message',
+                    contains('Unsupported Skill root entry: rules'),
+                  ),
+            );
+            expect(project.listSync(recursive: true), isEmpty);
+            expect(
+              Directory(p.join(sandbox.path, 'state')).existsSync(),
+              isFalse,
+            );
+          },
+        );
+
+        test(
+          'accepts permitted resource directories and their nested files',
+          () async {
+            final source = skill('source');
+            for (final name in ['references', 'scripts', 'assets']) {
+              final nested = Directory(p.join(source.path, name, 'nested'))
+                ..createSync(recursive: true);
+              File(p.join(nested.path, 'content')).writeAsStringSync('content');
+            }
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>().having((r) => r.exitCode, 'status', 0),
+            );
+            for (final name in ['references', 'scripts', 'assets']) {
+              expect(
+                File(
+                  p.join(
+                    project.path,
+                    '.agents',
+                    'skills',
+                    'review',
+                    name,
+                    'nested',
+                    'content',
+                  ),
+                ).existsSync(),
+                isTrue,
+              );
+            }
+          },
+        );
+
+        test('rejects a file in place of a permitted directory', () async {
+          final source = skill('source');
+          File(p.join(source.path, 'scripts'))
+              .writeAsStringSync('not a directory');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            ...context(),
+            '--yes',
+          ]);
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((r) => r.exitCode, 'status', 2)
+                .having(
+                  (r) => r.message,
+                  'message',
+                  contains('scripts must be a directory'),
+                ),
+          );
+          expect(project.listSync(recursive: true), isEmpty);
+        });
+
+        test('initializes user state containing only coordination', () async {
+          final source = skill('source');
+          final coordination = Directory(
+            p.join(sandbox.path, 'state', 'coordination'),
+          )..createSync(recursive: true);
+          final lock = File(p.join(coordination.path, 'lifecycle.lock'))
+            ..writeAsStringSync('');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--target',
+            'codex',
+            '--method',
+            'canonical',
+            ...context(scope: 'user'),
+            '--yes',
+          ]);
+          expect(result, isA<MambaSuccessResult>());
+          expect(
+            File(p.join(home.path, '.agents', 'skills', 'review', 'SKILL.md'))
+                .existsSync(),
+            isTrue,
+          );
+          expect(
+            File(p.join(sandbox.path, 'state', 'installations.json'))
+                .existsSync(),
+            isTrue,
+          );
+          expect(lock.existsSync(), isTrue);
+        });
+
+        test('refuses missing ledger when other state entries exist', () async {
+          final source = skill('source');
+          final state = Directory(p.join(sandbox.path, 'state'))..createSync();
+          final sentinel = File(p.join(state.path, 'sentinel'))
+            ..writeAsStringSync('preserve');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--target',
+            'codex',
+            '--method',
+            'canonical',
+            ...context(scope: 'user'),
+            '--yes',
+          ]);
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((result) => result.exitCode, 'status', 4)
+                .having(
+                  (result) => result.message,
+                  'message',
+                  contains('Installation ownership evidence is missing'),
+                ),
+          );
+          expect(sentinel.readAsStringSync(), 'preserve');
+          expect(Directory(p.join(home.path, '.agents')).existsSync(), isFalse);
+        });
+
         test('help and parser conflicts cause no acquisition or filesystem effects', () async {
           final help = await executor().fake().execute([
             'skill',
@@ -277,7 +528,8 @@ void main() {
             File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
               '---\nname: $name\ndescription: A skill.\n---\nBody.\n',
             );
-            File(p.join(directory.path, 'reference.txt'))
+            Directory(p.join(directory.path, 'references')).createSync();
+            File(p.join(directory.path, 'references', 'reference.txt'))
                 .writeAsStringSync('Bundled reference');
           }
           interaction.resourceSelections.add(['skills/category/other']);
@@ -306,6 +558,7 @@ void main() {
                 '.agents',
                 'skills',
                 'other',
+                'references',
                 'reference.txt',
               ),
             ).readAsStringSync(),
@@ -469,7 +722,7 @@ void main() {
             ..createSync();
           for (final sourcePath in [
             'skills/review',
-            'skills/review/examples/nested',
+            'skills/review/references/nested',
             'skills/.hidden/hidden',
             'skills/node_modules/dependency',
           ]) {

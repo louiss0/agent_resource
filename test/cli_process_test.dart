@@ -356,6 +356,117 @@ void main() {
       timeout: const Timeout(Duration(minutes: 2)),
     );
 
+    test(
+      'production pack lifecycle qualifies JSON, statuses, and dry-run',
+      () async {
+        await _withSandbox((sandbox) async {
+          final separator = Platform.pathSeparator;
+          final source = Directory(p.join(sandbox.root.path, 'pack'))
+            ..createSync();
+          File(p.join(source.path, 'agent-resources.toml'))
+              .writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/review"
+''');
+          final skill = Directory(p.join(source.path, 'skills', 'review'))
+            ..createSync(recursive: true);
+          File(p.join(skill.path, 'SKILL.md')).writeAsStringSync(
+            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+          );
+          final project = p.join(sandbox.work.path, 'project');
+          Directory(project).createSync();
+          File(p.join(project, 'agent-resources.toml')).writeAsStringSync('''
+schema_version = 1
+[cli.install]
+targets = ["codex"]
+skill_method = "copy"
+[packs."local/demo".source]
+kind = "local"
+path = "../../pack"
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+          final context = [
+            '--scope',
+            'project',
+            '--cwd',
+            '$project$separator',
+            '--project-root',
+            '$project$separator',
+            '--home',
+            '${sandbox.home.path}$separator',
+          ];
+          final before = sandbox.snapshot();
+
+          final validated = await _runCli(sandbox, [
+            'config',
+            'validate',
+            ...context,
+            '--format',
+            'json',
+          ]);
+          expect(validated.exitCode, 0, reason: validated.stderr);
+          expect(validated.stderr, isEmpty);
+          final validation =
+              jsonDecode(validated.stdout) as Map<String, Object?>;
+          expect(validation['schemaVersion'], 1);
+          expect(validation['operation'], 'config.validate');
+          expect(validation['outcome'], 'valid');
+
+          final dryRun = await _runCli(sandbox, [
+            'skills',
+            'install',
+            'local/demo',
+            ...context,
+            '--dry-run',
+            '--format',
+            'json',
+          ]);
+          expect(dryRun.exitCode, 0, reason: dryRun.stderr);
+          expect(dryRun.stderr, isEmpty);
+          final preview = jsonDecode(dryRun.stdout) as Map<String, Object?>;
+          expect(preview['outcome'], 'preview');
+          expect(preview['dryRun'], isTrue);
+
+          final missingScope = await _runCli(sandbox, [
+            'skills',
+            'install',
+            'local/demo',
+            '--cwd',
+            '$project$separator',
+            '--project-root',
+            '$project$separator',
+            '--home',
+            '${sandbox.home.path}$separator',
+            '--format',
+            'json',
+          ]);
+          expect(missingScope.exitCode, 2);
+          expect(missingScope.stdout, isEmpty);
+          expect(missingScope.stderr, contains('--scope'));
+
+          final rejected = await _runCli(sandbox, [
+            'skills',
+            'install',
+            'local/demo',
+            ...context,
+            '--only',
+            'missing',
+            '--yes',
+            '--format',
+            'json',
+          ]);
+          expect(rejected.exitCode, 2);
+          expect(rejected.stdout, isEmpty);
+          expect(rejected.stderr, contains('missing'));
+
+          expect(sandbox.snapshot(), equals(before));
+        });
+      },
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
+
     test('timeout kills the child, drains streams, and permits cleanup', () async {
       late String rootPath;
       await _withSandbox((sandbox) async {

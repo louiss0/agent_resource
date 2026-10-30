@@ -425,7 +425,8 @@ interface class SkillLifecycleService implements LifecycleResource {
   LifecycleResource installationResource({
     required List<String> targets,
     required ArtifactKind kind,
-  }) => _ProfiledSkillResource(this, targets, kind);
+    Set<String> allowedExtraFolders = const <String>{},
+  }) => _ProfiledSkillResource(this, targets, kind, allowedExtraFolders);
 
   Future<LifecycleResult> install(SkillInstallInput input) async {
     final context = LifecycleContext.resolve(input.options);
@@ -808,6 +809,8 @@ interface class SkillLifecycleService implements LifecycleResource {
     String path,
     LifecycleContext context, {
     String? expectedName,
+    bool restoringBaseline = false,
+    Set<String> allowedExtraFolders = const <String>{},
   }) async {
     final type = state.io.type(path, followLinks: false);
     var nativeForm = 'skill-copy';
@@ -825,7 +828,11 @@ interface class SkillLifecycleService implements LifecycleResource {
       linkTarget = entry.target;
     }
     final inspectedPath = resolveContentTarget(path);
-    state.validateSkillTree(inspectedPath);
+    state.validateSkillTree(
+      inspectedPath,
+      restoringBaseline: restoringBaseline,
+      allowedExtraFolders: allowedExtraFolders,
+    );
     final declaredName = readDeclaredSkillName(inspectedPath);
     if (expectedName != null && declaredName != expectedName) {
       throw MambaException(
@@ -1067,11 +1074,13 @@ final class _ProfiledSkillResource implements LifecycleResource {
     this.delegate,
     this.profiles, [
     this._kind = ArtifactKind.skillCopy,
+    this.allowedExtraFolders = const <String>{},
   ]);
 
   final SkillLifecycleService delegate;
   final List<String> profiles;
   final ArtifactKind _kind;
+  final Set<String> allowedExtraFolders;
 
   @override
   ArtifactKind get kind => _kind;
@@ -1085,11 +1094,14 @@ final class _ProfiledSkillResource implements LifecycleResource {
     String path,
     LifecycleContext context, {
     String? expectedName,
+    bool restoringBaseline = false,
   }) async {
     final candidate = await delegate.inspect(
       path,
       context,
       expectedName: expectedName,
+      restoringBaseline: restoringBaseline,
+      allowedExtraFolders: allowedExtraFolders,
     );
     delegate.validateProfiles(delegate.resolveContentTarget(path), profiles);
     return LifecycleCandidate(
