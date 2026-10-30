@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
+import 'package:zema/zema.dart';
 
 import '../installation/resource_catalog.dart' show NativeAgentProfile;
 
@@ -412,7 +413,9 @@ final class PackConfiguration {
         PackConfigurationIssue('syntax', 'invalid TOML value'),
       ], configPath: configPath);
     }
-    return _Parser(configPath, inheritedPreferences).parse(document, scope);
+    final parser = _Parser(configPath, inheritedPreferences)
+      ..issues.addAll(_shapeIssues(document));
+    return parser.parse(document, scope);
   }
 
   static String _readConfig(String path) {
@@ -428,6 +431,107 @@ final class PackConfiguration {
       ], configPath: path);
     }
   }
+}
+
+final _stringArray = z.array(z.string());
+final _sourceSchema = z.union<Map<String, dynamic>>([
+  z.object({
+    'kind': z.literal('github'),
+    'host': z.string().optional(),
+    'repository': z.string(),
+    'subpath': z.string().optional(),
+  }),
+  z.object({
+    'kind': z.literal('git'),
+    'url': z.string(),
+    'subpath': z.string().optional(),
+  }),
+  z.object({
+    'kind': z.literal('local'),
+    'path': z.string(),
+    'subpath': z.string().optional(),
+  }),
+  z.object({
+    'kind': z.literal('download'),
+    'url': z.string(),
+    'subpath': z.string().optional(),
+  }),
+]);
+final _trackSchema = z.union<Map<String, dynamic>>([
+  z.object({'kind': z.literal('branch'), 'name': z.string()}),
+  z.object({'kind': z.literal('tag'), 'name': z.string()}),
+  z.object({'kind': z.literal('commit'), 'commit': z.string()}),
+  z.object({
+    'kind': z.literal('release'),
+    'artifact': z.string().oneOf(['archive', 'attachment']),
+    'attachment': z.string().optional(),
+  }),
+  z.object({'kind': z.literal('local')}),
+  z.object({'kind': z.literal('download')}),
+]);
+final _installSchema = z.object({
+  'targets': _stringArray.optional(),
+  'skill_method': z.string().optional(),
+});
+final _updateSchema = z.object({
+  'track': _trackSchema.optional(),
+  'bump': z.string().optional(),
+  'include_prerelease': z.boolean().optional(),
+});
+final _rulesSchema = z.object({
+  'exclude': z.array(z.object({'name': z.string()})).optional(),
+  'overrides': z
+      .array(
+        z.object({
+          'name': z.string(),
+          'extra_folders': _stringArray.optional(),
+        }),
+      )
+      .optional(),
+});
+final _packSchema = z.object({
+  'source': _sourceSchema.optional(),
+  'install': _installSchema.optional(),
+  'update': _updateSchema.optional(),
+  'resources': z.object({
+    'skills': _rulesSchema.optional(),
+    'agents': _rulesSchema.optional(),
+  }).optional(),
+});
+final _catalogSchema = z.object({
+  'skills': z.array(z.object({'path': z.string()})).optional(),
+  'agents': z
+      .array(z.object({'path': z.string(), 'profile': z.string()}))
+      .optional(),
+});
+final _packConfigurationSchema = z.object({
+  'schema_version': z.integer(),
+  'cli': z.object({
+    'install': _installSchema.optional(),
+    'retention': z.object({
+      'snapshot_days': z.integer().gte(1).lte(36500).optional(),
+    }).optional(),
+  }).optional(),
+  'packs': z.map(z.string(), _packSchema).optional(),
+  'catalog': _catalogSchema.optional(),
+});
+
+/// Declarative shape gate. The semantic pass remains authoritative for
+/// unknown fields, cross-field meaning, duplicates, credentials, and safe
+/// paths so diagnostics stay aggregated and actionable.
+List<PackConfigurationIssue> _shapeIssues(Object? document) {
+  if (document is! Map<String, dynamic>) {
+    return const [PackConfigurationIssue('configuration', 'must be a table')];
+  }
+  final result = _packConfigurationSchema.safeParse(document);
+  if (result.isSuccess) return const <PackConfigurationIssue>[];
+  return [
+    for (final issue in result.errors)
+      PackConfigurationIssue(
+        issue.pathString == 'root' ? 'configuration' : issue.pathString,
+        '${issue.code}: ${issue.message}',
+      ),
+  ];
 }
 
 final class _Parser {

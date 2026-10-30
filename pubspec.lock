@@ -529,5 +529,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.0"
+  zema:
+    dependency: "direct main"
+    description:
+      name: zema
+      sha256: b34553349be9f1f981df0b5f1cb2de843a1f2b1e34f7320727ff24c594c60383
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.6.0"
 sdks:
   dart: ">=3.13.2 <4.0.0"

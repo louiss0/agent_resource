@@ -339,6 +339,52 @@ profile = "claude"
       );
     });
 
+    test('uses zema shape validation for wrong types and bounds', () {
+      final error = _parseError(r'''
+schema_version = 1
+[cli.retention]
+snapshot_days = "thirty"
+[packs."owner/repo".source]
+kind = "github"
+repository = "owner/repo"
+[packs."owner/repo".install]
+targets = "codex"
+''');
+
+      expect(
+        error.issues,
+        contains(
+          isA<PackConfigurationIssue>()
+              .having(
+                (issue) => issue.keyPath,
+                'path',
+                'cli.retention.snapshot_days',
+              )
+              .having(
+                (issue) => issue.message,
+                'message',
+                contains('invalid_type'),
+              ),
+        ),
+      );
+      expect(
+        error.issues,
+        contains(
+          isA<PackConfigurationIssue>()
+              .having(
+                (issue) => issue.keyPath,
+                'path',
+                contains('install.targets'),
+              )
+              .having(
+                (issue) => issue.message,
+                'message',
+                contains('invalid_type'),
+              ),
+        ),
+      );
+    });
+
     test('parses tag, commit, and archive release tracks exactly', () {
       final configuration = PackConfiguration.parse(r'''
 schema_version = 1
