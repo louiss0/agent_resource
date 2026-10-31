@@ -151,8 +151,8 @@ track = { kind = "local" }
         request(PackOperation.install, PackResourceType.agent),
       );
 
-      expect(skills.resources.single.disposition, 'installed');
-      expect(agents.resources.single.disposition, 'installed');
+      expect(skills.resources.single.disposition.wireName, 'installed');
+      expect(agents.resources.single.disposition.wireName, 'installed');
       expect(
         File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
             .existsSync(),
@@ -190,7 +190,7 @@ track = { kind = "local" }
         );
 
         expect(replay.outcome, 'no-op');
-        expect(replay.resources.single.disposition, 'unchanged');
+        expect(replay.resources.single.disposition.wireName, 'unchanged');
         expect(replay.source['exactLockReplay'], isTrue);
       },
     );
@@ -201,7 +201,7 @@ track = { kind = "local" }
         final result = await PackLifecycleService().execute(
           request(PackOperation.install, PackResourceType.skill, noSave: true),
         );
-        expect(result.resources.single.disposition, 'installed');
+        expect(result.resources.single.disposition.wireName, 'installed');
         final lock = jsonDecode(
           File(p.join(project.path, '.agent-resource', 'installations.json'))
               .readAsStringSync(),
@@ -319,7 +319,7 @@ track = { kind = "local" }
           allowFolder: const ['reviewer:rules'],
         ),
       );
-      expect(result.resources.single.disposition, 'installed');
+      expect(result.resources.single.disposition.wireName, 'installed');
       expect(
         Directory(
           p.join(project.path, '.agents', 'skills', 'reviewer', 'rules'),
@@ -345,7 +345,7 @@ track = { kind = "local" }
       final updated = await PackLifecycleService().execute(
         request(PackOperation.update, PackResourceType.skill),
       );
-      expect(updated.resources.single.disposition, 'updated');
+      expect(updated.resources.single.disposition.wireName, 'updated');
       final lock =
           jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
       expect(lock['approvals'], isNotEmpty);
@@ -381,7 +381,7 @@ track = { kind = "local" }
             ),
           );
 
-      expect(result.resources.single.disposition, 'installed');
+      expect(result.resources.single.disposition.wireName, 'installed');
       expect(prompts, contains(contains('Skill target')));
       expect(
         File(p.join(project.path, '.claude', 'skills', 'reviewer', 'SKILL.md'))
@@ -422,7 +422,7 @@ extra_folders = ["rules"]
             );
 
         expect(prompts, contains(contains('requests extra root folder rules')));
-        expect(result.resources.single.disposition, 'installed');
+        expect(result.resources.single.disposition.wireName, 'installed');
         final lock = jsonDecode(
           File(p.join(project.path, '.agent-resource', 'installations.json'))
               .readAsStringSync(),
@@ -455,7 +455,7 @@ extra_folders = ["rules"]
         );
 
         expect(replay.outcome, 'no-op');
-        expect(replay.resources.single.disposition, 'unchanged');
+        expect(replay.resources.single.disposition.wireName, 'unchanged');
         final live = File(
           p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
         );
@@ -464,7 +464,7 @@ extra_folders = ["rules"]
         final updated = await service.execute(
           request(PackOperation.update, PackResourceType.skill),
         );
-        expect(updated.resources.single.disposition, 'updated');
+        expect(updated.resources.single.disposition.wireName, 'updated');
         expect(live.readAsStringSync(), contains('Upstream edit.'));
       },
     );
@@ -508,7 +508,7 @@ extra_folders = ["rules"]
             keepLocal: const ['reviewer'],
           ),
         );
-        expect(kept.resources.single.disposition, 'keptLocal');
+        expect(kept.resources.single.disposition.wireName, 'keptLocal');
         expect(live.readAsStringSync(), contains('Local edit.'));
         expect(live.readAsStringSync(), isNot(contains('Upstream edit.')));
       },
@@ -540,7 +540,7 @@ extra_folders = ["rules"]
           ),
         );
 
-        expect(result.resources.single.disposition, 'updated');
+        expect(result.resources.single.disposition.wireName, 'updated');
         expect(live.readAsStringSync(), contains('Upstream edit.'));
         expect(live.readAsStringSync(), isNot(contains('Local edit.')));
         final lock = jsonDecode(
@@ -643,7 +643,7 @@ extra_folders = ["rules"]
         ),
       );
 
-      expect(result.resources.single.disposition, 'updated');
+      expect(result.resources.single.disposition.wireName, 'updated');
       final lock = jsonDecode(
         File(p.join(project.path, '.agent-resource', 'installations.json'))
             .readAsStringSync(),
@@ -683,7 +683,7 @@ extra_folders = ["rules"]
         ),
       );
 
-      expect(rolledBack.resources.single.disposition, 'rolledBack');
+      expect(rolledBack.resources.single.disposition.wireName, 'rolledBack');
       expect(rolledBack.resources.single.snapshot, firstRef);
       expect(rolledBack.plan!.resources.single.action, 'rollback');
       expect(
@@ -738,7 +738,7 @@ extra_folders = ["rules"]
           ),
         );
 
-        expect(observed.resources.single.disposition, 'observed');
+        expect(observed.resources.single.disposition.wireName, 'observed');
         expect(observed.resources.single.linkOnly, isTrue);
         expect(target.readAsStringSync(), contains('Target edit.'));
         expect(live.targetSync(), p.join(source.path, 'skills', 'reviewer'));
@@ -784,7 +784,7 @@ extra_folders = ["rules"]
           request(PackOperation.install, PackResourceType.skill),
         );
 
-        expect(reinstalled.resources.single.disposition, 'installed');
+        expect(reinstalled.resources.single.disposition.wireName, 'installed');
         final lock = jsonDecode(
           File(p.join(project.path, '.agent-resource', 'installations.json'))
               .readAsStringSync(),
@@ -799,7 +799,7 @@ extra_folders = ["rules"]
           ).existsSync(),
           isTrue,
         );
-        expect(installed.resources.single.disposition, 'installed');
+        expect(installed.resources.single.disposition.wireName, 'installed');
       },
     );
 
@@ -830,7 +830,8 @@ description: Writes docs.
         expect(
           ordinary.resources
               .singleWhere((result) => result.name == 'writer')
-              .disposition,
+              .disposition
+              .wireName,
           'observed',
         );
         expect(
@@ -850,7 +851,7 @@ description: Writes docs.
             only: const ['writer'],
           ),
         );
-        expect(selected.resources.single.disposition, 'installed');
+        expect(selected.resources.single.disposition.wireName, 'installed');
         expect(
           File(p.join(project.path, '.agents', 'skills', 'writer', 'SKILL.md'))
               .existsSync(),
@@ -863,7 +864,8 @@ description: Writes docs.
         expect(
           next.resources
               .singleWhere((result) => result.name == 'writer')
-              .disposition,
+              .disposition
+              .wireName,
           'unchanged',
         );
       },
@@ -922,7 +924,7 @@ description: Writes docs.
           ),
         );
 
-        expect(rolledBack.resources.single.disposition, 'rolledBack');
+        expect(rolledBack.resources.single.disposition.wireName, 'rolledBack');
         expect(exposure.existsSync(), isTrue);
         expect(File(p.join(exposure.path, 'SKILL.md')).existsSync(), isTrue);
         final after =
@@ -965,7 +967,7 @@ description: Writes docs.
         ),
       );
 
-      expect(rolledBack.resources.single.disposition, 'rolledBack');
+      expect(rolledBack.resources.single.disposition.wireName, 'rolledBack');
       expect(rolledBack.resources.single.linkOnly, isTrue);
       expect(link.targetSync(), originalTarget);
       expect(target.readAsStringSync(), contains('Edited target.'));
@@ -1189,7 +1191,7 @@ track = { kind = "release", artifact = "archive" }
         releaseResolver: _FakeReleases(),
       ).execute(request(release: 'v1.2.0'));
 
-      expect(result.resources.single.disposition, 'installed');
+      expect(result.resources.single.disposition.wireName, 'installed');
       final lock = jsonDecode(
         File(p.join(project.path, '.agent-resource', 'installations.json'))
             .readAsStringSync(),
@@ -1345,7 +1347,7 @@ track = { kind = "release", artifact = "archive" }
           ),
         );
 
-        expect(updated.resources.single.disposition, 'updated');
+        expect(updated.resources.single.disposition.wireName, 'updated');
         expect(updated.plan!.policy, isNotNull);
         expect(updated.plan!.policy!.bump, 'minor');
         expect(updated.plan!.policy!.includePrerelease, isTrue);

@@ -10,6 +10,7 @@ import '../agent_inspection.dart';
 import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
 import '../pack/github_release_resolver.dart';
+import '../pack/pack_change_set.dart';
 import '../pack/pack_configuration.dart';
 import '../pack/pack_models.dart';
 import '../pack/pack_state.dart';
@@ -21,6 +22,8 @@ import 'acquisition_service.dart';
 import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
 import 'skill_lifecycle_service.dart';
+
+const _legacyRecoveryExitCode = 6;
 
 enum PackResourceType { skill, agent }
 
@@ -80,7 +83,8 @@ interface class PackLifecycleService {
       _state = null,
       _admission = const SkillAdmission(),
       _releaseResolver = null,
-      prompts = const PackPrompts();
+      prompts = const PackPrompts(),
+      operatingSystem = Platform.operatingSystem;
 
   PackLifecycleService.withDependencies({
     this._acquisition = const AcquisitionService(),
@@ -88,6 +92,7 @@ interface class PackLifecycleService {
     this._admission = const SkillAdmission(),
     this._releaseResolver = const GithubReleaseResolver(),
     this.prompts = const PackPrompts(),
+    this.operatingSystem,
   });
 
   final AcquisitionService? _acquisition;
@@ -95,6 +100,7 @@ interface class PackLifecycleService {
   final SkillAdmission _admission;
   final GithubReleaseResolver? _releaseResolver;
   final PackPrompts prompts;
+  final String? operatingSystem;
 
   late final LifecycleStateService _lifecycleState =
       _state ?? LifecycleStateService();
@@ -337,10 +343,13 @@ interface class PackLifecycleService {
         }
         final record = records.isEmpty ? null : records.single;
         final changedPaths = record == null
-            ? _changes(null, _candidateBaseline(candidate))
+            ? PackChangeSet.between(null, _candidateBaseline(candidate))
             : record.kind == ArtifactKind.skillLink
             ? const <PackChangedPath>[]
-            : _changes(record.baseline, _candidateBaseline(candidate));
+            : PackChangeSet.between(
+                record.baseline,
+                _candidateBaseline(candidate),
+              );
         if (record == null) {
           if (request.operation == PackOperation.update &&
               !request.only.contains(candidate.name) &&
@@ -468,7 +477,7 @@ interface class PackLifecycleService {
             method: _recordMethod(record.kind),
             targets: record.validatedProfiles,
             previousSnapshot: _currentSnapshotRef(context, record),
-            changedPaths: _changes(record.baseline, null),
+            changedPaths: PackChangeSet.between(record.baseline, null),
             linkOnly: record.kind == ArtifactKind.skillLink,
           ),
         );
@@ -492,10 +501,13 @@ interface class PackLifecycleService {
           if (action == null || action == 'skipped') continue;
           final record = records.isEmpty ? null : records.single;
           final changedPaths = record == null
-              ? _changes(null, _candidateBaseline(candidate))
+              ? PackChangeSet.between(null, _candidateBaseline(candidate))
               : record.kind == ArtifactKind.skillLink
               ? const <PackChangedPath>[]
-              : _changes(record.baseline, _candidateBaseline(candidate));
+              : PackChangeSet.between(
+                  record.baseline,
+                  _candidateBaseline(candidate),
+                );
           if (record == null) {
             if (action == 'observed') {
               results.add(
@@ -557,7 +569,10 @@ interface class PackLifecycleService {
         } on MambaException catch (error) {
           failures.add('${candidate.name}: ${error.message}');
           results.add(_result(request, candidate.name, 'failed'));
-          if (error.exitCode == 6 || error.exitCode == 4) break;
+          if (error.exitCode == _legacyRecoveryExitCode ||
+              error.exitCode == PackProcessStatus.recoveryRequired.code) {
+            break;
+          }
         }
       }
 
@@ -572,7 +587,7 @@ interface class PackLifecycleService {
             request,
             record.name,
             'removed',
-            changedPaths: _changes(record.baseline, null),
+            changedPaths: PackChangeSet.between(record.baseline, null),
           ),
         );
       }
@@ -606,7 +621,9 @@ interface class PackLifecycleService {
         operation: '${request.resourceType.name}s.${request.operation.name}',
         outcome: request.dryRun
             ? 'preview'
-            : results.every((result) => result.disposition == 'unchanged')
+            : results.every(
+                (result) => result.disposition == PackDisposition.unchanged,
+              )
             ? 'no-op'
             : 'completed',
         context: _contextJson(request, context, configuration),
@@ -1056,7 +1073,7 @@ interface class PackLifecycleService {
       );
     }
     final modification = _lifecycleState.verify(record);
-    final rollbackChanges = _changes(
+    final rollbackChanges = PackChangeSet.between(
       record.baseline,
       ArtifactBaseline.fromJson(snapshot.baseline),
     );
@@ -1367,7 +1384,7 @@ interface class PackLifecycleService {
             targets: record.validatedProfiles,
             previousSnapshot: _currentSnapshotRef(context, record),
             linkOnly: record.kind == ArtifactKind.skillLink,
-            changedPaths: _changes(record.baseline, null),
+            changedPaths: PackChangeSet.between(record.baseline, null),
           ),
       ],
     );
@@ -1384,7 +1401,7 @@ interface class PackLifecycleService {
           request,
           record.name,
           'removed',
-          changedPaths: _changes(record.baseline, null),
+          changedPaths: PackChangeSet.between(record.baseline, null),
         ),
       );
     }
@@ -2729,14 +2746,14 @@ interface class PackLifecycleService {
               'observed',
               'notAttempted',
               'failed',
-            }.contains(result.disposition),
+            }.contains(result.disposition.wireName),
             'excluded': false,
-            'membership': switch (result.disposition) {
+            'membership': switch (result.disposition.wireName) {
               'removed' => 'removed',
               'observed' => 'known',
               _ => 'selected',
             },
-            'reason': result.disposition,
+            'reason': result.disposition.wireName,
             'updatedAt': recorded,
           },
         ]);
@@ -2785,43 +2802,6 @@ interface class PackLifecycleService {
             : ArtifactKind.skillCopy,
       );
 
-  List<PackChangedPath> _changes(
-    ArtifactBaseline? before,
-    ArtifactBaseline? after,
-  ) {
-    final previous = <String, BaselineEntry>{
-      for (final entry in before?.entries ?? const <BaselineEntry>[])
-        if (entry.type != 'directory') entry.path: entry,
-    };
-    final next = <String, BaselineEntry>{
-      for (final entry in after?.entries ?? const <BaselineEntry>[])
-        if (entry.type != 'directory') entry.path: entry,
-    };
-    final changes = <PackChangedPath>[];
-    for (final path in {...previous.keys, ...next.keys}.toList()..sort()) {
-      final old = previous[path];
-      final current = next[path];
-      if (old == null) {
-        changes.add(PackChangedPath(path: path, change: 'added'));
-        continue;
-      }
-      if (current == null) {
-        changes.add(PackChangedPath(path: path, change: 'removed'));
-        continue;
-      }
-      if (old.type != current.type ||
-          old.length != current.length ||
-          old.sha256 != current.sha256 ||
-          old.executable != current.executable ||
-          old.readOnly != current.readOnly ||
-          old.target != current.target ||
-          old.nativeKind != current.nativeKind) {
-        changes.add(PackChangedPath(path: path, change: 'modified'));
-      }
-    }
-    return List<PackChangedPath>.unmodifiable(changes);
-  }
-
   PackResourceResult _result(
     PackLifecycleRequest request,
     String name,
@@ -2833,7 +2813,7 @@ interface class PackLifecycleService {
   }) => PackResourceResult(
     type: request.resourceType.name,
     name: name,
-    disposition: disposition,
+    disposition: PackDisposition.parse(disposition),
     previousSnapshot: previousSnapshot,
     snapshot: snapshot,
     linkOnly: linkOnly,
@@ -2849,7 +2829,8 @@ interface class PackLifecycleService {
   String _methodName(String value) =>
       value == 'source-link' ? 'sourceLink' : value;
 
-  String get _nativeDirectoryLinkKind => Platform.isWindows
+  String get _nativeDirectoryLinkKind =>
+      (operatingSystem ?? Platform.operatingSystem) == 'windows'
       ? 'windows-directory-symlink'
       : 'posix-directory-symlink';
 

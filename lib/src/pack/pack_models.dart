@@ -25,10 +25,50 @@ final class const PackChangedPath({
   Map<String, Object?> toJson() => {'path': path, 'change': change};
 }
 
+final class const PackDisposition(final String wireName) {
+  static const installed = PackDisposition('installed');
+  static const updated = PackDisposition('updated');
+  static const observed = PackDisposition('observed');
+  static const unchanged = PackDisposition('unchanged');
+  static const keptLocal = PackDisposition('keptLocal');
+  static const removed = PackDisposition('removed');
+  static const rolledBack = PackDisposition('rolledBack');
+  static const notAttempted = PackDisposition('notAttempted');
+  static const failed = PackDisposition('failed');
+
+  static const values = <PackDisposition>[
+    installed,
+    updated,
+    observed,
+    unchanged,
+    keptLocal,
+    removed,
+    rolledBack,
+    notAttempted,
+    failed,
+  ];
+
+  static PackDisposition parse(String value) => values.firstWhere(
+    (disposition) => disposition.wireName == value,
+    orElse: () => throw ArgumentError.value(value, 'disposition'),
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is PackDisposition && other.wireName == wireName ||
+      other is String && other == wireName;
+
+  @override
+  int get hashCode => wireName.hashCode;
+
+  @override
+  String toString() => wireName;
+}
+
 final class const PackResourceResult({
   required final String type,
   required final String name,
-  required final String disposition,
+  required final PackDisposition disposition,
   final String? previousSnapshot,
   final String? snapshot,
   final bool linkOnly = false,
@@ -37,7 +77,7 @@ final class const PackResourceResult({
   Map<String, Object?> toJson() => {
     'type': type,
     'name': name,
-    'disposition': disposition,
+    'disposition': disposition.wireName,
     if (previousSnapshot != null) 'previousSnapshot': previousSnapshot,
     if (snapshot != null) 'snapshot': snapshot,
     'linkOnly': linkOnly,
@@ -238,7 +278,7 @@ final class const PackOperationResult({
     final counts = <String, int>{};
     for (final resource in resources) {
       counts.update(
-        resource.disposition,
+        resource.disposition.wireName,
         (count) => count + 1,
         ifAbsent: () => 1,
       );
@@ -262,7 +302,7 @@ final class const PackOperationResult({
             : ' snapshot=${resource.snapshot}';
         final link = resource.linkOnly ? ' link-only' : '';
         lines.add(
-          '  ${resource.type} ${resource.name}: ${resource.disposition}'
+          '  ${resource.type} ${resource.name}: ${resource.disposition.wireName}'
           '$snapshot$link',
         );
       }
@@ -276,7 +316,7 @@ final class const PackOperationResult({
             : ' snapshot=${resource.snapshot}';
         final link = resource.linkOnly ? ' link-only' : '';
         lines.add(
-          '${resource.type} ${resource.name}: ${resource.disposition}'
+          '${resource.type} ${resource.name}: ${resource.disposition.wireName}'
           '$snapshot$link',
         );
         for (final path in resource.changedPaths) {

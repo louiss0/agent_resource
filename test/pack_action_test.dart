@@ -12,6 +12,9 @@ final class RecordingPackService implements PackLifecycleService {
   PackPrompts get prompts => const PackPrompts();
 
   @override
+  String? get operatingSystem => null;
+
+  @override
   Future<PackOperationResult> execute(PackLifecycleRequest request) async {
     requests.add(request);
     return PackOperationResult(
@@ -23,7 +26,7 @@ final class RecordingPackService implements PackLifecycleService {
         PackResourceResult(
           type: 'skill',
           name: 'reviewer',
-          disposition: 'observed',
+          disposition: PackDisposition.observed,
         ),
       ],
       dryRun: request.dryRun,

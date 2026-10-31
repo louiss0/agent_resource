@@ -88,14 +88,14 @@ void main() {
           PackResourceResult(
             type: 'skill',
             name: 'reviewer',
-            disposition: 'updated',
+            disposition: PackDisposition.updated,
             previousSnapshot: 'old',
             snapshot: 'new',
           ),
           PackResourceResult(
             type: 'skill',
             name: 'local',
-            disposition: 'keptLocal',
+            disposition: PackDisposition.keptLocal,
           ),
         ],
         warnings: const [

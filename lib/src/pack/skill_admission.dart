@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../skill_files.dart';
 import '../skill_validation.dart';
+import 'pack_models.dart';
 
 final class SkillAdmissionReport {
   const SkillAdmissionReport({
@@ -38,7 +39,7 @@ final class const SkillAdmission() {
           _supportedFolders.contains(folder)) {
         throw MambaException(
           'An extra-folder approval must name one non-native root folder: $folder',
-          exitCode: 2,
+          exitCode: PackProcessStatus.invalidInput.code,
         );
       }
     }
@@ -46,7 +47,7 @@ final class const SkillAdmission() {
         FileSystemEntityType.directory) {
       throw MambaException(
         'A Skill pack entry must be a real directory: $path',
-        exitCode: 2,
+        exitCode: PackProcessStatus.invalidInput.code,
       );
     }
 
@@ -58,7 +59,7 @@ final class const SkillAdmission() {
         if (type != FileSystemEntityType.file) {
           throw MambaException(
             'Skill root entry SKILL.md must be a regular file.',
-            exitCode: 2,
+            exitCode: PackProcessStatus.invalidInput.code,
           );
         }
         continue;
@@ -66,20 +67,20 @@ final class const SkillAdmission() {
       if (type == FileSystemEntityType.file) {
         throw MambaException(
           'Unexpected loose Skill root file $name; the complete Skill is rejected.',
-          exitCode: 2,
+          exitCode: PackProcessStatus.invalidInput.code,
         );
       }
       if (type != FileSystemEntityType.directory) {
         throw MambaException(
           'Unsupported or linked Skill root entry: $name',
-          exitCode: 2,
+          exitCode: PackProcessStatus.invalidInput.code,
         );
       }
       if (!_supportedFolders.contains(name) &&
           !approvedExtraFolders.contains(name)) {
         throw MambaException(
           'Skill root folder $name requires approval for this managed installation.',
-          exitCode: 2,
+          exitCode: PackProcessStatus.invalidInput.code,
         );
       }
       if (!_supportedFolders.contains(name)) extras.add(name);
@@ -98,7 +99,7 @@ final class const SkillAdmission() {
       if (depth > 32) {
         throw MambaException(
           'The Skill tree exceeds the depth-32 budget.',
-          exitCode: 2,
+          exitCode: PackProcessStatus.invalidInput.code,
         );
       }
       for (final entity in listSkillDirectory(path)) {
@@ -106,14 +107,14 @@ final class const SkillAdmission() {
         if (count > 10000) {
           throw MambaException(
             'The Skill tree exceeds the 10,000-entry budget.',
-            exitCode: 2,
+            exitCode: PackProcessStatus.invalidInput.code,
           );
         }
         final type = skillEntityType(entity.path, followLinks: false);
         if (type == FileSystemEntityType.link) {
           throw MambaException(
             'Linked Skill entries are not admitted: ${p.relative(entity.path, from: root)}',
-            exitCode: 2,
+            exitCode: PackProcessStatus.invalidInput.code,
           );
         }
         if (type == FileSystemEntityType.directory) {
@@ -121,7 +122,7 @@ final class const SkillAdmission() {
         } else if (type != FileSystemEntityType.file) {
           throw MambaException(
             'Unsupported Skill entry: ${p.relative(entity.path, from: root)}',
-            exitCode: 2,
+            exitCode: PackProcessStatus.invalidInput.code,
           );
         }
       }
