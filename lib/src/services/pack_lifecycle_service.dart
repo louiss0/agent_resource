@@ -137,25 +137,53 @@ interface class PackLifecycleService {
       );
     }
     _validateModeConflicts(request, pack);
-    return switch (request.operation) {
-      PackOperation.install || PackOperation.update => _installOrUpdate(
-        request,
-        context,
-        configuration,
-        pack,
-      ),
-      PackOperation.remove => _remove(request, context, configuration, pack),
-      PackOperation.sourceAssociate || PackOperation.sourceChange =>
-        _associateSource(request, context, configuration, pack),
-      PackOperation.rollback => _rollback(
-        request,
-        context,
-        configuration,
-        pack,
-      ),
-      PackOperation.cleanup => _cleanup(request, context, configuration, pack),
-      PackOperation.configValidate => throw StateError('Handled above.'),
-    };
+    try {
+      return await switch (request.operation) {
+        PackOperation.install || PackOperation.update => _installOrUpdate(
+          request,
+          context,
+          configuration,
+          pack,
+        ),
+        PackOperation.remove => _remove(request, context, configuration, pack),
+        PackOperation.sourceAssociate || PackOperation.sourceChange =>
+          _associateSource(request, context, configuration, pack),
+        PackOperation.rollback => _rollback(
+          request,
+          context,
+          configuration,
+          pack,
+        ),
+        PackOperation.cleanup => _cleanup(
+          request,
+          context,
+          configuration,
+          pack,
+        ),
+        PackOperation.configValidate => throw StateError('Handled above.'),
+      };
+    } on MambaException catch (error) {
+      if (!request.dryRun) rethrow;
+      final names = request.only.isEmpty ? <String>[pack.key] : request.only;
+      final plan = PackPlan.create(
+        operation: '${request.resourceType.name}s.${request.operation.name}',
+        context: _contextJson(request, context, configuration),
+        source: {'pack': pack.key, 'track': _trackJson(pack.update.track)},
+        resources: [
+          for (final name in names)
+            PackResourcePlan(
+              type: request.resourceType.name,
+              name: name,
+              action: 'blocked',
+              blockers: [error.message],
+            ),
+        ],
+      );
+      throw MambaException(
+        'Dry-run is blocked; no managed state was published.\n${plan.renderText()}',
+        exitCode: error.exitCode,
+      );
+    }
   }
 
   Future<PackOperationResult> _validateConfiguration(

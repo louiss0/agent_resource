@@ -258,6 +258,41 @@ track = { kind = "local" }
       expect(Directory(p.join(project.path, '.agents')).existsSync(), isFalse);
     });
 
+    test('blocked dry-run fails with a review plan and no writes', () async {
+      Directory(p.join(source.path, 'skills', 'reviewer', 'rules'))
+          .createSync();
+      final before = Directory(project.path).listSync(recursive: true).length;
+
+      expect(
+        () => PackLifecycleService().execute(
+          request(PackOperation.install, PackResourceType.skill, dryRun: true),
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having(
+                (error) => error.message,
+                'message',
+                allOf(
+                  contains('Dry-run is blocked'),
+                  contains('review plan plan_v1_'),
+                  contains('blocker:'),
+                  contains('rules'),
+                ),
+              )
+              .having(
+                (error) => error.exitCode,
+                'exitCode',
+                PackProcessStatus.invalidInput.code,
+              ),
+        ),
+      );
+      expect(Directory(project.path).listSync(recursive: true).length, before);
+      expect(
+        Directory(p.join(project.path, '.agent-resource')).existsSync(),
+        isFalse,
+      );
+    });
+
     test('requires bounded approval for an extra Skill root folder', () async {
       Directory(p.join(source.path, 'skills', 'reviewer', 'rules'))
           .createSync();
