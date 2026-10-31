@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:agent_resource/src/pack/github_release_resolver.dart';
 import 'package:agent_resource/src/pack/pack_configuration.dart';
+import 'package:agent_resource/src/pack/pack_models.dart';
 import 'package:agent_resource/src/pack/release_policy.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
@@ -77,6 +78,8 @@ track = { kind = "local" }
       String? snapshot,
       String? method,
       bool localEdits = false,
+      bool yes = true,
+      bool interactive = false,
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: type,
@@ -102,7 +105,8 @@ track = { kind = "local" }
       snapshot: snapshot,
       localEdits: localEdits,
       dryRun: dryRun,
-      yes: true,
+      yes: yes,
+      interactive: interactive,
     );
 
     test(
@@ -282,6 +286,52 @@ track = { kind = "local" }
       expect(lock['selections'], isNotEmpty);
       expect(lock['operations'], isNotEmpty);
     });
+
+    test(
+      'configured extra folders drive the interactive review prompt',
+      () async {
+        Directory(p.join(source.path, 'skills', 'reviewer', 'rules'))
+            .createSync();
+        final config = File(p.join(project.path, 'agent-resources.toml'));
+        config.writeAsStringSync('''
+${config.readAsStringSync()}
+[packs."local/demo".resources.skills]
+[[packs."local/demo".resources.skills.overrides]]
+name = "reviewer"
+extra_folders = ["rules"]
+''');
+        final prompts = <String>[];
+        final result =
+            await PackLifecycleService.withDependencies(
+              prompts: PackPrompts(
+                confirmation: (label) async {
+                  prompts.add(label);
+                  return true;
+                },
+              ),
+            ).execute(
+              request(
+                PackOperation.install,
+                PackResourceType.skill,
+                yes: false,
+                interactive: true,
+              ),
+            );
+
+        expect(prompts, contains(contains('requests extra root folder rules')));
+        expect(result.resources.single.disposition, 'installed');
+        final lock = jsonDecode(
+          File(p.join(project.path, '.agent-resource', 'installations.json'))
+              .readAsStringSync(),
+        ) as Map<String, Object?>;
+        expect(
+          (lock['approvals']! as List<Object?>)
+              .map((value) => value! as Map<String, Object?>)
+              .where((value) => value['folder'] == 'rules'),
+          isNotEmpty,
+        );
+      },
+    );
 
     test(
       'ordinary install replays the lock instead of advancing changed source',
@@ -913,6 +963,8 @@ track = { kind = "release", artifact = "archive" }
       String? bump,
       bool includePrerelease = false,
       bool savePolicy = false,
+      bool yes = true,
+      bool interactive = false,
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: PackResourceType.skill,
@@ -931,7 +983,8 @@ track = { kind = "release", artifact = "archive" }
       bump: bump,
       includePrerelease: includePrerelease,
       savePolicy: savePolicy,
-      yes: true,
+      yes: yes,
+      interactive: interactive,
     );
 
     test('first release install requires an exact literal tag', () async {
@@ -1017,6 +1070,75 @@ track = { kind = "release", artifact = "archive" }
             'message',
             contains('--release and --bump'),
           ),
+        ),
+      );
+    });
+
+    test('changed attachment bytes require injected live acceptance', () async {
+      final config = File(p.join(project.path, 'agent-resources.toml'));
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'artifact = "archive"',
+          'artifact = "attachment", attachment = "bundle.zip"',
+        ),
+      );
+      final releases = _AttachmentReleases('old-digest');
+      final prompts = <String>[];
+      final service = PackLifecycleService.withDependencies(
+        acquisition: _LocalAcquisition(source.path),
+        releaseResolver: releases,
+        prompts: PackPrompts(
+          confirmation: (label) async {
+            prompts.add(label);
+            return true;
+          },
+        ),
+      );
+      await service.execute(request(release: 'v1.2.0'));
+
+      releases.digest = 'new-digest';
+      final updated = await service.execute(
+        request(
+          operation: PackOperation.update,
+          bump: 'minor',
+          yes: false,
+          interactive: true,
+        ),
+      );
+
+      expect(prompts, contains(contains('changed or unverified bytes')));
+      expect(updated.outcome, 'no-op');
+
+      releases.digest = 'declined-digest';
+      final declined = PackLifecycleService.withDependencies(
+        acquisition: _LocalAcquisition(source.path),
+        releaseResolver: releases,
+        prompts: PackPrompts(
+          confirmation: (label) async =>
+              !label.contains('changed or unverified'),
+        ),
+      );
+      expect(
+        () => declined.execute(
+          request(
+            operation: PackOperation.update,
+            bump: 'minor',
+            yes: false,
+            interactive: true,
+          ),
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having(
+                (error) => error.message,
+                'message',
+                contains('Changed attachment review cancelled'),
+              )
+              .having(
+                (error) => error.exitCode,
+                'exitCode',
+                PackProcessStatus.cancelled.code,
+              ),
         ),
       );
     });
@@ -1157,4 +1279,67 @@ final class _FakeReleases implements GithubReleaseResolver {
       ),
     );
   }
+}
+
+final class _AttachmentReleases implements GithubReleaseResolver {
+  _AttachmentReleases(this.digest);
+
+  String digest;
+
+  static final _download = Uri.parse(
+    'https://github.com/owner/demo/releases/download/v1.2.0/bundle.zip',
+  );
+
+  @override
+  Future<GithubReleaseInventory> inspect({
+    required GitHubPackSource source,
+  }) async => GithubReleaseInventory(
+    repository: const GithubRepositoryIdentity(
+      host: 'github.com',
+      repository: 'owner/demo',
+      id: 42,
+    ),
+    releases: const [
+      GithubReleaseEvidence(
+        repository: GithubRepositoryIdentity(
+          host: 'github.com',
+          repository: 'owner/demo',
+          id: 42,
+        ),
+        id: 100,
+        literalTag: 'v1.2.0',
+        isDraft: false,
+        isPrerelease: false,
+      ),
+    ],
+  );
+
+  @override
+  Future<GithubReleaseResolution> resolve({
+    required GitHubPackSource source,
+    required ReleaseTrack track,
+    required ReleasePolicy policy,
+    ReleaseCandidate? current,
+    String? exactTag,
+  }) async => GithubReleaseResolution(
+    release: const GithubReleaseEvidence(
+      repository: GithubRepositoryIdentity(
+        host: 'github.com',
+        repository: 'owner/demo',
+        id: 42,
+      ),
+      id: 100,
+      literalTag: 'v1.2.0',
+      isDraft: false,
+      isPrerelease: false,
+      commit: '0123456789012345678901234567890123456789',
+    ),
+    acquisition: GithubAttachmentAcquisition(
+      id: 7,
+      name: 'bundle.zip',
+      downloadUri: _download,
+      size: 1,
+      digest: digest,
+    ),
+  );
 }

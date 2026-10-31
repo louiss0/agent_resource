@@ -35,6 +35,11 @@ enum PackOperation {
   configValidate,
 }
 
+final class const PackPrompts({
+  final Future<bool> Function(String label)? confirmation,
+  final Future<String?> Function(String label, List<String> choices)? choice,
+});
+
 final class const PackLifecycleRequest({
   required final PackOperation operation,
   required final PackResourceType resourceType,
@@ -74,19 +79,22 @@ interface class PackLifecycleService {
     : _acquisition = null,
       _state = null,
       _admission = const SkillAdmission(),
-      _releaseResolver = null;
+      _releaseResolver = null,
+      prompts = const PackPrompts();
 
   PackLifecycleService.withDependencies({
     this._acquisition = const AcquisitionService(),
     this._state,
     this._admission = const SkillAdmission(),
     this._releaseResolver = const GithubReleaseResolver(),
+    this.prompts = const PackPrompts(),
   });
 
   final AcquisitionService? _acquisition;
   final LifecycleStateService? _state;
   final SkillAdmission _admission;
   final GithubReleaseResolver? _releaseResolver;
+  final PackPrompts prompts;
 
   late final LifecycleStateService _lifecycleState =
       _state ?? LifecycleStateService();
@@ -1587,6 +1595,13 @@ interface class PackLifecycleService {
         ? catalog.skills.map((entry) => (entry.path, null)).toList()
         : catalog.agents.map((entry) => (entry.path, entry.profile)).toList();
     final folderApprovals = _folderApprovals(request.allowFolder);
+    final rules = request.resourceType == PackResourceType.skill
+        ? pack.resources.skills
+        : pack.resources.agents;
+    final requestedFolders = <String, Set<String>>{
+      for (final override in rules.overrides)
+        override.name: override.extraFolders.toSet(),
+    };
     final result = <_PackCandidate>[];
     final names = <String, String>{};
     for (final (relative, profile) in paths) {
@@ -1601,6 +1616,7 @@ interface class PackLifecycleService {
           path,
           name,
           extraFolders,
+          requestedFolders: requestedFolders[name] ?? const <String>{},
         );
         _admission.inspect(path, approvedExtraFolders: extraFolders);
       } else {
@@ -1780,7 +1796,7 @@ interface class PackLifecycleService {
           );
         }
       }
-      final bump = requestedBump ?? _promptReleaseBump(request);
+      final bump = requestedBump ?? await _promptReleaseBump(request);
       try {
         final resolution = await _releases.resolve(
           source: source,
@@ -1853,23 +1869,30 @@ interface class PackLifecycleService {
     PackLifecycleRequest request,
     String path,
     String name,
-    Set<String> approved,
-  ) async {
+    Set<String> approved, {
+    Set<String> requestedFolders = const <String>{},
+  }) async {
     if (!request.interactive || request.yes) return approved;
     final result = {...approved};
-    for (final entity in listSkillDirectory(path)) {
-      final folder = p.basename(entity.path);
+    final actual = <String>{
+      for (final entity in listSkillDirectory(path))
+        if (skillEntityType(entity.path, followLinks: false) ==
+            FileSystemEntityType.directory)
+          p.basename(entity.path),
+    };
+    final folders = {...actual, ...requestedFolders}.toList()..sort();
+    for (final folder in folders) {
       if (folder == 'SKILL.md' ||
           _nativeSkillFolders.contains(folder) ||
-          result.contains(folder)) {
+          result.contains(folder) ||
+          !actual.contains(folder)) {
         continue;
       }
-      if (skillEntityType(entity.path, followLinks: false) !=
-          FileSystemEntityType.directory) {
-        continue;
-      }
+      final requested = requestedFolders.contains(folder);
       if (await _promptYesNo(
-        'Skill $name has unexpected root folder $folder. Allow it?',
+        requested
+            ? 'Skill $name requests extra root folder $folder. Allow it?'
+            : 'Skill $name has unexpected root folder $folder. Allow it?',
       )) {
         result.add(folder);
       }
@@ -1878,12 +1901,14 @@ interface class PackLifecycleService {
   }
 
   Future<bool> _promptYesNo(String label) async {
-    final approved = await InstallationApprovalComponent(label: label).render();
-    if (!approved) return false;
-    return true;
+    final injected = prompts.confirmation;
+    if (injected != null) return injected(label);
+    return InstallationApprovalComponent(label: label).render();
   }
 
-  String? _promptChoice(String label, List<String> choices) {
+  Future<String?> _promptChoice(String label, List<String> choices) async {
+    final injected = prompts.choice;
+    if (injected != null) return injected(label, choices);
     while (true) {
       stdout.write('$label ');
       final answer = stdin.readLineSync()?.trim().toLowerCase();
@@ -1892,21 +1917,19 @@ interface class PackLifecycleService {
     }
   }
 
-  String? _promptReleaseBump(PackLifecycleRequest request) {
+  Future<String?> _promptReleaseBump(PackLifecycleRequest request) async {
     if (!request.interactive || request.yes) return null;
-    while (true) {
-      stdout.write('Release bump [patch/minor/major]: ');
-      final answer = stdin.readLineSync()?.trim().toLowerCase();
-      if (answer == 'patch' || answer == 'minor' || answer == 'major') {
-        return answer;
-      }
-      if (answer == null || answer.isEmpty) {
-        throw MambaException(
-          'Release update cancelled; no implicit bump was selected.',
-          exitCode: PackProcessStatus.cancelled.code,
-        );
-      }
+    final answer = await _promptChoice(
+      'Release bump [patch/minor/major]:',
+      const ['patch', 'minor', 'major'],
+    );
+    if (answer == null) {
+      throw MambaException(
+        'Release update cancelled; no implicit bump was selected.',
+        exitCode: PackProcessStatus.cancelled.code,
+      );
     }
+    return answer;
   }
 
   Future<void> _requireAttachmentIdentity(
@@ -1933,10 +1956,9 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    final accepted = await InstallationApprovalComponent(
-      label:
-          'The same release attachment ${attachment.name} has changed or unverified bytes. Accept this exact candidate?',
-    ).render();
+    final accepted = await _promptYesNo(
+      'The same release attachment ${attachment.name} has changed or unverified bytes. Accept this exact candidate?',
+    );
     if (!accepted) {
       throw MambaException(
         'Changed attachment review cancelled; no resource was published.',
@@ -2076,9 +2098,9 @@ interface class PackLifecycleService {
   Future<void> _confirmPlan(PackLifecycleRequest request, PackPlan plan) async {
     if (!request.interactive || request.yes || request.dryRun) return;
     stdout.writeln(plan.renderText());
-    final approved = await InstallationApprovalComponent(
-      label: 'Apply this reviewed pack ${request.operation.name}?',
-    ).render();
+    final approved = await _promptYesNo(
+      'Apply this reviewed pack ${request.operation.name}?',
+    );
     if (!approved) {
       throw MambaException(
         'Operation cancelled; no pack or installation state was published.',
@@ -2172,7 +2194,7 @@ interface class PackLifecycleService {
       };
     }
     if (method == null && request.interactive && !request.yes) {
-      final answer = _promptChoice(
+      final answer = await _promptChoice(
         'Skill method [canonical/copy/source-link]:',
         const ['canonical', 'copy', 'source-link'],
       );
@@ -2838,6 +2860,7 @@ final class _ReleaseEvidence {
     if (attachmentId != null)
       'attachment': {
         'id': attachmentId,
+        'releaseId': id,
         'name': attachmentName,
         'digest': attachmentDigest,
       },

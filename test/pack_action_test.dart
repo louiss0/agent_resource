@@ -9,6 +9,9 @@ final class RecordingPackService implements PackLifecycleService {
   final requests = <PackLifecycleRequest>[];
 
   @override
+  PackPrompts get prompts => const PackPrompts();
+
+  @override
   Future<PackOperationResult> execute(PackLifecycleRequest request) async {
     requests.add(request);
     return PackOperationResult(
