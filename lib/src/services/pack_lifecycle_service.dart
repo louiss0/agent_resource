@@ -225,6 +225,9 @@ interface class PackLifecycleService {
     try {
       final catalog = _readSourceCatalog(workspace);
       final reusableFolders = _reusableFolderApprovals(
+        request,
+        context,
+        configuration,
         existing,
         pack,
         workspace.provenance,
@@ -239,7 +242,18 @@ interface class PackLifecycleService {
         reusableFolders: reusableFolders,
       );
       _requireAcceptedSource(pack, workspace.provenance, existing);
-      final selected = _selectCandidates(request, pack, candidates, existing);
+      final selectionDecisions = _selectionDecisions(
+        context,
+        pack.key,
+        request.resourceType,
+      );
+      final selected = _selectCandidates(
+        request,
+        pack,
+        candidates,
+        existing,
+        selectionDecisions,
+      );
       _preflightRecords(request, selected, existing);
       final warnings = _modeWarnings(request, pack);
       final results = <PackResourceResult>[];
@@ -301,7 +315,8 @@ interface class PackLifecycleService {
             : _changes(record.baseline, _candidateBaseline(candidate));
         if (record == null) {
           if (request.operation == PackOperation.update &&
-              !request.only.contains(candidate.name)) {
+              !request.only.contains(candidate.name) &&
+              selectionDecisions[candidate.name] != true) {
             if (request.skipNew) {
               actions[candidate.name] = 'skipped';
               continue;
@@ -313,6 +328,16 @@ interface class PackLifecycleService {
                   '${candidate.name} is new upstream. Include it?',
                 );
             if (!includeNew) {
+              if (!request.dryRun && !request.noSave) {
+                _recordSelectionChoice(
+                  context,
+                  pack.key,
+                  request.resourceType,
+                  candidate.name,
+                  selected: false,
+                  reason: 'declined',
+                );
+              }
               actions[candidate.name] = 'observed';
               warnings.add(
                 PackWarning(
@@ -534,6 +559,7 @@ interface class PackLifecycleService {
           type: request.resourceType,
           provenance: workspace.provenance,
           candidates: candidates,
+          noSave: request.noSave,
         );
       }
       if (failures.isNotEmpty) {
@@ -913,6 +939,7 @@ interface class PackLifecycleService {
           type: request.resourceType,
           provenance: workspace.provenance,
           candidates: candidates,
+          noSave: request.noSave,
         );
       }
       return PackOperationResult(
@@ -1153,6 +1180,7 @@ interface class PackLifecycleService {
         outcome: 'completed',
         packKey: pack.key,
         type: request.resourceType,
+        noSave: request.noSave,
       );
     }
     return PackOperationResult(
@@ -1254,6 +1282,7 @@ interface class PackLifecycleService {
         outcome: pruned.isEmpty ? 'no-op' : 'completed',
         packKey: pack.key,
         type: request.resourceType,
+        noSave: request.noSave,
       );
     }
     return PackOperationResult(
@@ -1336,6 +1365,7 @@ interface class PackLifecycleService {
         outcome: 'completed',
         packKey: pack.key,
         type: request.resourceType,
+        noSave: request.noSave,
       );
     }
     return PackOperationResult(
@@ -1672,6 +1702,7 @@ interface class PackLifecycleService {
     PackDefinition pack,
     List<_PackCandidate> candidates,
     List<InstallationRecord> existing,
+    Map<String, bool> selectionDecisions,
   ) {
     final rules = request.resourceType == PackResourceType.skill
         ? pack.resources.skills
@@ -1695,10 +1726,11 @@ interface class PackLifecycleService {
           .toList();
     }
     return candidates.where((candidate) {
-      if (rules.exclusions.contains(candidate.name) &&
-          !request.only.contains(candidate.name)) {
+      if (rules.exclusions.contains(candidate.name) ||
+          selectionDecisions[candidate.name] == false) {
         return false;
       }
+      if (selectionDecisions[candidate.name] == true) return true;
       if (request.operation == PackOperation.update &&
           existing.every((record) => record.name != candidate.name)) {
         return true;
@@ -1708,29 +1740,100 @@ interface class PackLifecycleService {
   }
 
   Map<String, Set<String>> _reusableFolderApprovals(
+    PackLifecycleRequest request,
+    LifecycleContext context,
+    PackConfiguration configuration,
     List<InstallationRecord> records,
     PackDefinition pack,
     AcquisitionProvenance provenance,
   ) {
+    final approvals = PackState(stateDirectory: context.stateRoot())
+        .read()
+        .approvals
+        .where((approval) {
+          return approval['packKey'] == pack.key &&
+              approval['resourceType'] == request.resourceType.name &&
+              approval['scope'] == context.scope.name &&
+              approval['sourceRequested'] == provenance.requestedLocator &&
+              approval['sourceResolved'] == provenance.resolvedLocator;
+        })
+        .toList();
     final result = <String, Set<String>>{};
-    for (final record in records) {
-      if (jsonEncode(record.origin['track']) !=
-              jsonEncode(_trackJson(pack.update.track)) ||
-          record.origin['packKey'] != pack.key) {
+    for (final approval in approvals) {
+      final name = approval['resourceName'];
+      final folder = approval['folder'];
+      if (name is! String || folder is! String) continue;
+      final matchingRecords = records
+          .where((record) => record.name == name)
+          .toList();
+      final requestedTargets = request.target != null
+          ? <String>{request.target!}
+          : pack.install.targets.isNotEmpty
+          ? pack.install.targets.toSet()
+          : configuration.cli.install.targets.toSet();
+      final destinationMatches = matchingRecords.isEmpty
+          ? requestedTargets.contains(approval['destination']) ||
+                (requestedTargets.contains('codex') &&
+                    const {
+                      'shared',
+                      'canonical',
+                    }.contains(approval['destination']))
+          : matchingRecords.any(
+              (record) => record.nativeDestination == approval['destination'],
+            );
+      if (!destinationMatches) continue;
+      result.putIfAbsent(name, () => <String>{}).add(folder);
+    }
+    return result;
+  }
+
+  Map<String, bool> _selectionDecisions(
+    LifecycleContext context,
+    String packKey,
+    PackResourceType type,
+  ) {
+    final result = <String, bool>{};
+    for (final selection in PackState(
+      stateDirectory: context.stateRoot(),
+    ).read().selections) {
+      if (selection['packKey'] != packKey ||
+          selection['resourceType'] != type.name ||
+          selection['scope'] != context.scope.name ||
+          selection['resourceName'] is! String) {
         continue;
       }
-      final source = record.origin['source'];
-      if (source is! Map<String, Object?> ||
-          source['requestedLocator'] != provenance.requestedLocator ||
-          source['resolvedLocator'] != provenance.resolvedLocator) {
-        continue;
-      }
-      final approved = record.origin['approvedExtraFolders'];
-      if (approved is List && approved.isNotEmpty) {
-        result[record.name] = approved.whereType<String>().toSet();
+      final name = selection['resourceName']! as String;
+      if (selection['excluded'] == true ||
+          (selection['reason'] == 'declined' &&
+              selection['selected'] == false)) {
+        result[name] = false;
+      } else if (selection['selected'] == true) {
+        result[name] = true;
       }
     }
     return result;
+  }
+
+  void _recordSelectionChoice(
+    LifecycleContext context,
+    String packKey,
+    PackResourceType type,
+    String name, {
+    required bool selected,
+    required String reason,
+  }) {
+    PackState(stateDirectory: context.stateRoot()).recordSelections([
+      {
+        'packKey': packKey,
+        'resourceType': type.name,
+        'resourceName': name,
+        'scope': context.scope.name,
+        'selected': selected,
+        'reason': reason,
+        'excluded': !selected,
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    ]);
   }
 
   List<InstallationRecord> _packRecords(
@@ -2548,6 +2651,7 @@ interface class PackLifecycleService {
     required PackResourceType type,
     AcquisitionProvenance? provenance,
     List<_PackCandidate> candidates = const <_PackCandidate>[],
+    bool noSave = false,
   }) {
     final state = PackState(stateDirectory: context.stateRoot());
     final recorded = DateTime.now().toUtc().toIso8601String();
@@ -2563,22 +2667,31 @@ interface class PackLifecycleService {
       'warnings': [for (final warning in plan.warnings) warning.toJson()],
       'recordedAt': recorded,
     });
-    for (final result in results) {
-      state.recordSelections([
-        {
-          'packKey': packKey,
-          'resourceType': type.name,
-          'resourceName': result.name,
-          'scope': context.scope.name,
-          'selected': !const {
-            'removed',
-            'observed',
-            'notAttempted',
-          }.contains(result.disposition),
-          'reason': result.disposition,
-          'updatedAt': recorded,
-        },
-      ]);
+    if (!noSave) {
+      for (final result in results) {
+        state.recordSelections([
+          {
+            'packKey': packKey,
+            'resourceType': type.name,
+            'resourceName': result.name,
+            'scope': context.scope.name,
+            'selected': !const {
+              'removed',
+              'observed',
+              'notAttempted',
+              'failed',
+            }.contains(result.disposition),
+            'excluded': false,
+            'membership': switch (result.disposition) {
+              'removed' => 'removed',
+              'observed' => 'known',
+              _ => 'selected',
+            },
+            'reason': result.disposition,
+            'updatedAt': recorded,
+          },
+        ]);
+      }
     }
     final live = _packRecords(
       context,

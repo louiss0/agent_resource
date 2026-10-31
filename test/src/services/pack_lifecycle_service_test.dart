@@ -80,6 +80,7 @@ track = { kind = "local" }
       bool localEdits = false,
       bool yes = true,
       bool interactive = false,
+      bool noSave = false,
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: type,
@@ -104,6 +105,7 @@ track = { kind = "local" }
       to: to,
       snapshot: snapshot,
       localEdits: localEdits,
+      noSave: noSave,
       dryRun: dryRun,
       yes: yes,
       interactive: interactive,
@@ -186,6 +188,22 @@ track = { kind = "local" }
         expect(replay.outcome, 'no-op');
         expect(replay.resources.single.disposition, 'unchanged');
         expect(replay.source['exactLockReplay'], isTrue);
+      },
+    );
+
+    test(
+      'no-save suppresses selection persistence but not operation evidence',
+      () async {
+        final result = await PackLifecycleService().execute(
+          request(PackOperation.install, PackResourceType.skill, noSave: true),
+        );
+        expect(result.resources.single.disposition, 'installed');
+        final lock = jsonDecode(
+          File(p.join(project.path, '.agent-resource', 'installations.json'))
+              .readAsStringSync(),
+        ) as Map<String, Object?>;
+        expect(lock['selections'], isEmpty);
+        expect(lock['operations'], isNotEmpty);
       },
     );
 
@@ -274,14 +292,23 @@ track = { kind = "local" }
         p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
       );
       upstream.writeAsStringSync('${upstream.readAsStringSync()}\nSecond.\n');
+      final lockFile = File(
+        p.join(project.path, '.agent-resource', 'installations.json'),
+      );
+      final before =
+          jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
+      for (final value in before['installations']! as List<Object?>) {
+        final origin =
+            (value! as Map<String, Object?>)['origin']! as Map<String, Object?>;
+        origin.remove('approvedExtraFolders');
+      }
+      lockFile.writeAsStringSync(jsonEncode(before));
       final updated = await PackLifecycleService().execute(
         request(PackOperation.update, PackResourceType.skill),
       );
       expect(updated.resources.single.disposition, 'updated');
-      final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
-            .readAsStringSync(),
-      ) as Map<String, Object?>;
+      final lock =
+          jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
       expect(lock['approvals'], isNotEmpty);
       expect(lock['selections'], isNotEmpty);
       expect(lock['operations'], isNotEmpty);
@@ -752,6 +779,16 @@ description: Writes docs.
           File(p.join(project.path, '.agents', 'skills', 'writer', 'SKILL.md'))
               .existsSync(),
           isTrue,
+        );
+
+        final next = await service.execute(
+          request(PackOperation.update, PackResourceType.skill),
+        );
+        expect(
+          next.resources
+              .singleWhere((result) => result.name == 'writer')
+              .disposition,
+          'unchanged',
         );
       },
     );
