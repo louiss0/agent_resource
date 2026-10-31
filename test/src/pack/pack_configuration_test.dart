@@ -140,6 +140,44 @@ profile = "claude"
       },
     );
 
+    test('rejects native Skill roots as extra-folder approvals', () {
+      for (final folder in [
+        'references',
+        'scripts',
+        'assets',
+        'agents',
+        'SKILL.md',
+      ]) {
+        final error = _parseError('''
+schema_version = 1
+[packs."local".source]
+kind = "local"
+path = "pack"
+[[packs."local".resources.skills.overrides]]
+name = "example"
+extra_folders = ["$folder"]
+''');
+
+        expect(
+          error.issues,
+          contains(
+            isA<PackConfigurationIssue>()
+                .having(
+                  (issue) => issue.keyPath,
+                  'key path',
+                  'packs."local".resources.skills.overrides[0].extra_folders[0]',
+                )
+                .having(
+                  (issue) => issue.message,
+                  'message',
+                  contains('non-native'),
+                ),
+          ),
+          reason: folder,
+        );
+      }
+    });
+
     test(
       'loads the selected project file and inherits only user preferences',
       () {

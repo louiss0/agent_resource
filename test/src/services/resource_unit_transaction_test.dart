@@ -18,6 +18,7 @@ final class _SkillUnitResource implements LifecycleResource {
     String path,
     LifecycleContext context, {
     String? expectedName,
+    bool restoringBaseline = false,
   }) async {
     final marker = File(p.join(path, 'SKILL.md')).readAsStringSync();
     final name = RegExp(

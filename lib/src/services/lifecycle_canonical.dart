@@ -10,9 +10,15 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     List<ExposureRecord>? exposures,
     List<String>? knownConsumers,
     List<String>? validatedProfiles,
+    bool allowModified = false,
   }) async {
-    final initial = recordById(context, installationId);
+    var initial = recordById(context, installationId);
     _requireResource(initial, resource, context, live: true);
+    if (allowModified) {
+      initial = initial.copyWith(
+        baseline: _manifest(initial.location, initial.kind),
+      );
+    }
     _requireCanonicalUnchanged(initial);
     final candidate = await resource.inspect(
       source,
@@ -45,6 +51,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       initial: initial,
       desired: desired,
       source: source,
+      allowModified: allowModified,
     );
   }
 
@@ -194,6 +201,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     required InstallationRecord desired,
     String? source,
     String? backupId,
+    bool allowModified = false,
   }) async {
     final changes = _canonicalChanges(initial, desired);
     if (context.dryRun) {
@@ -219,7 +227,12 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     _requireApproval(context, operation);
     final state = context.stateRoot();
     return _serialized(context, initial.location, () async {
-      final current = recordById(context, initial.installationId);
+      var current = recordById(context, initial.installationId);
+      if (allowModified && current.lifecycle == 'live') {
+        current = current.copyWith(
+          baseline: _manifest(current.location, current.kind),
+        );
+      }
       if (jsonEncode(current.toJson()) != jsonEncode(initial.toJson())) {
         throw MambaException(
           'The reviewed canonical record changed before $operation.',

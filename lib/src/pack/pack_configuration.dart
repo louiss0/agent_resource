@@ -1020,7 +1020,19 @@ final class _Parser {
                   _error(folderPath, 'must be one safe root-folder name');
                   continue;
                 }
-                if (folders.contains(folder)) {
+                if (const {
+                  'references',
+                  'scripts',
+                  'assets',
+                  'agents',
+                  'SKILL.md',
+                }.contains(folder)) {
+                  _error(
+                    folderPath,
+                    'must name a non-native extra folder; native Skill roots need no approval',
+                  );
+                  continue;
+                }                if (folders.contains(folder)) {
                   _error(
                     folderPath,
                     'duplicates extra folder ${_quote(folder)}',

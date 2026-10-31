@@ -323,6 +323,38 @@ void main() {
       );
     });
 
+    test('different attachment id with equal digest needs live review', () {
+      final reuploaded = GithubReleaseResolution(
+        release: candidate.release,
+        acquisition: GithubAttachmentAcquisition(
+          id: 100,
+          name: 'pack.zip',
+          downloadUri: downloadUri,
+          size: 123,
+          digest: 'sha256:old',
+        ),
+      );
+      expect(
+        () => GithubReleaseResolver.requireAcceptedAttachmentChange(
+          previous: previous,
+          candidate: reuploaded,
+          interactive: true,
+          accepted: true,
+        ),
+        returnsNormally,
+      );
+      expect(
+        () => GithubReleaseResolver.requireAcceptedAttachmentChange(
+          previous: previous,
+          candidate: reuploaded,
+          interactive: true,
+          accepted: true,
+          yes: true,
+        ),
+        throwsA(isA<GithubReleaseResolverException>()),
+      );
+    });
+
     test('equal evidence needs no review and reupload needs live review', () {
       final same = GithubReleaseResolution(
         release: candidate.release,

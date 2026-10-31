@@ -74,6 +74,7 @@ track = { kind = "local" }
       List<String> allowFolder = const [],
       List<String> keepLocal = const [],
       List<String> replaceLocal = const [],
+      List<String> approveRemoval = const [],
       String? to,
       String? snapshot,
       String? method,
@@ -106,6 +107,7 @@ track = { kind = "local" }
       allowFolder: allowFolder,
       keepLocal: keepLocal,
       replaceLocal: replaceLocal,
+      approveRemoval: approveRemoval,
       to: to,
       snapshot: snapshot,
       localEdits: localEdits,
@@ -469,6 +471,60 @@ extra_folders = ["rules"]
       },
     );
 
+    test('target selects one same-name Skill installation', () async {
+      final config = File(p.join(project.path, 'agent-resources.toml'));
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["claude", "codex"]',
+        ),
+      );
+      final service = PackLifecycleService();
+      await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          useDefaultTarget: false,
+        ),
+      );
+      final upstream = File(
+        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      );
+      upstream.writeAsStringSync('${upstream.readAsStringSync()}\nUpdate.\n');
+
+      final result = await service.execute(
+        request(PackOperation.update, PackResourceType.skill, target: 'codex'),
+      );
+
+      expect(result.resources.single.disposition.wireName, 'updated');
+      expect(
+        File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
+            .readAsStringSync(),
+        contains('Update.'),
+      );
+      expect(
+        File(p.join(project.path, '.claude', 'skills', 'reviewer', 'SKILL.md'))
+            .readAsStringSync(),
+        isNot(contains('Update.')),
+      );
+
+      final rolledBack = await service.execute(
+        request(
+          PackOperation.rollback,
+          PackResourceType.skill,
+          only: const ['reviewer'],
+          snapshot: result.resources.single.previousSnapshot,
+          target: 'codex',
+        ),
+      );
+      expect(rolledBack.resources.single.disposition.wireName, 'rolledBack');
+      expect(
+        File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
+            .readAsStringSync(),
+        isNot(contains('Update.')),
+      );
+    });
+
     test(
       'update requires an explicit whole-resource local-edit choice',
       () async {
@@ -566,6 +622,62 @@ extra_folders = ["rules"]
       },
     );
 
+    test('canonical replace-local preserves edits before updating', () async {
+      final service = PackLifecycleService();
+      await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          method: 'canonical',
+        ),
+      );
+      final upstream = File(
+        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      );
+      upstream.writeAsStringSync('${upstream.readAsStringSync()}\nUpstream.\n');
+      final live = File(
+        p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+      );
+      live.writeAsStringSync('${live.readAsStringSync()}\nLocal edit.\n');
+
+      final result = await service.execute(
+        request(
+          PackOperation.update,
+          PackResourceType.skill,
+          replaceLocal: const ['reviewer'],
+        ),
+      );
+
+      expect(result.resources.single.disposition.wireName, 'updated');
+      expect(live.readAsStringSync(), contains('Upstream.'));
+      expect(live.readAsStringSync(), isNot(contains('Local edit.')));
+      final lock = jsonDecode(
+        File(p.join(project.path, '.agent-resource', 'installations.json'))
+            .readAsStringSync(),
+      ) as Map<String, Object?>;
+      expect(
+        (lock['snapshots']! as List<Object?>).any(
+          (value) =>
+              (value! as Map<String, Object?>)['retentionClass'] == 'localEdit',
+        ),
+        isTrue,
+      );
+
+      live.writeAsStringSync('${live.readAsStringSync()}\nRollback edit.\n');
+      final rolledBack = await service.execute(
+        request(
+          PackOperation.rollback,
+          PackResourceType.skill,
+          only: const ['reviewer'],
+          snapshot: result.resources.single.previousSnapshot,
+          replaceLocal: const ['reviewer'],
+        ),
+      );
+      expect(rolledBack.resources.single.disposition.wireName, 'rolledBack');
+      expect(live.readAsStringSync(), isNot(contains('Upstream.')));
+      expect(live.readAsStringSync(), isNot(contains('Rollback edit.')));
+    });
+
     test(
       'changed source configuration requires reviewed source change',
       () async {
@@ -635,6 +747,22 @@ extra_folders = ["rules"]
         ),
       );
 
+      final lockFile = File(
+        p.join(project.path, '.agent-resource', 'installations.json'),
+      );
+      final beforePreview = lockFile.readAsBytesSync();
+      final preview = await PackLifecycleService().execute(
+        request(
+          PackOperation.sourceAssociate,
+          PackResourceType.skill,
+          only: const ['reviewer'],
+          dryRun: true,
+        ),
+      );
+
+      expect(preview.outcome, 'preview');
+      expect(lockFile.readAsBytesSync(), beforePreview);
+
       final result = await PackLifecycleService().execute(
         request(
           PackOperation.sourceAssociate,
@@ -644,16 +772,69 @@ extra_folders = ["rules"]
       );
 
       expect(result.resources.single.disposition.wireName, 'updated');
-      final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
-            .readAsStringSync(),
-      ) as Map<String, Object?>;
+      final lock =
+          jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
       final installation =
           (lock['installations']! as List<Object?>).single!
               as Map<String, Object?>;
       expect(
         (installation['origin']! as Map<String, Object?>)['packKey'],
         'local/demo',
+      );
+    });
+
+    test('recovery failure stops removals and preserves its status', () async {
+      final writer = Directory(p.join(source.path, 'skills', 'writer'))
+        ..createSync(recursive: true);
+      File(p.join(writer.path, 'SKILL.md')).writeAsStringSync('''---
+name: writer
+description: Writes docs.
+---
+# Writer
+''');
+      final catalog = File(p.join(source.path, 'agent-resources.toml'));
+      catalog.writeAsStringSync(
+        '${catalog.readAsStringSync()}\n'
+        '[[catalog.skills]]\npath = "skills/writer"\n',
+      );
+      await PackLifecycleService().execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final upstream = File(
+        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      );
+      upstream.writeAsStringSync('${upstream.readAsStringSync()}\nUpdate.\n');
+      writer.deleteSync(recursive: true);
+      catalog.writeAsStringSync(
+        catalog.readAsStringSync().replaceFirst(
+          '\n[[catalog.skills]]\npath = "skills/writer"\n',
+          '',
+        ),
+      );
+      final service = PackLifecycleService.withDependencies(
+        state: LifecycleStateService(io: _RecoveryRequiredIO()),
+      );
+
+      await expectLater(
+        () => service.execute(
+          request(
+            PackOperation.update,
+            PackResourceType.skill,
+            approveRemoval: const ['writer'],
+          ),
+        ),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.exitCode,
+            'exitCode',
+            PackProcessStatus.recoveryRequired.code,
+          ),
+        ),
+      );
+      expect(
+        File(p.join(project.path, '.agents', 'skills', 'writer', 'SKILL.md'))
+            .existsSync(),
+        isTrue,
       );
     });
 
@@ -871,6 +1052,51 @@ description: Writes docs.
       },
     );
 
+    test('cancelling review does not persist a declined addition', () async {
+      final service = PackLifecycleService.withDependencies(
+        prompts: PackPrompts(confirmation: (label) async => false),
+      );
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final second = Directory(p.join(source.path, 'skills', 'writer'))
+        ..createSync(recursive: true);
+      File(p.join(second.path, 'SKILL.md')).writeAsStringSync('''---
+name: writer
+description: Writes docs.
+---
+# Writer
+''');
+      final catalog = File(p.join(source.path, 'agent-resources.toml'));
+      catalog.writeAsStringSync(
+        '${catalog.readAsStringSync()}\n'
+        '[[catalog.skills]]\npath = "skills/writer"\n',
+      );
+      final lockFile = File(
+        p.join(project.path, '.agent-resource', 'installations.json'),
+      );
+      final beforeReview = lockFile.readAsBytesSync();
+
+      await expectLater(
+        () => service.execute(
+          request(
+            PackOperation.update,
+            PackResourceType.skill,
+            yes: false,
+            interactive: true,
+          ),
+        ),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.exitCode,
+            'exitCode',
+            PackProcessStatus.cancelled.code,
+          ),
+        ),
+      );
+      expect(lockFile.readAsBytesSync(), beforeReview);
+    });
+
     test(
       'canonical rollback restores historical exposures and consumers',
       () async {
@@ -921,6 +1147,7 @@ description: Writes docs.
             PackResourceType.skill,
             only: const ['reviewer'],
             snapshot: firstRef,
+            useDefaultTarget: false,
           ),
         );
 
@@ -1140,6 +1367,7 @@ track = { kind = "release", artifact = "archive" }
     });
 
     PackLifecycleRequest request({
+      String pack = 'owner/demo',
       String? release,
       PackOperation operation = PackOperation.install,
       String? bump,
@@ -1150,7 +1378,7 @@ track = { kind = "release", artifact = "archive" }
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: PackResourceType.skill,
-      pack: 'owner/demo',
+      pack: pack,
       processWorkingDirectory: project.path,
       environment: {
         'HOME': home.path,
@@ -1212,6 +1440,41 @@ track = { kind = "release", artifact = "archive" }
       expect((origin['source']! as Map<String, Object?>)['kind'], 'local');
     });
 
+    test('records the verified enterprise provider host', () async {
+      final config = File(p.join(project.path, 'agent-resources.toml'));
+      config.writeAsStringSync(
+        config
+            .readAsStringSync()
+            .replaceAll(
+              'packs."owner/demo"',
+              'packs."github.example.test/owner/demo"',
+            )
+            .replaceFirst(
+              'repository = "owner/demo"',
+              'repository = "owner/demo"\nhost = "github.example.test"',
+            ),
+      );
+      await PackLifecycleService.withDependencies(
+        acquisition: _LocalAcquisition(source.path),
+        releaseResolver: _FakeReleases(host: 'github.example.test'),
+      ).execute(
+        request(pack: 'github.example.test/owner/demo', release: 'v1.2.0'),
+      );
+
+      final lock = jsonDecode(
+        File(p.join(project.path, '.agent-resource', 'installations.json'))
+            .readAsStringSync(),
+      ) as Map<String, Object?>;
+      final installation =
+          (lock['installations']! as List<Object?>).single!
+              as Map<String, Object?>;
+      final origin = installation['origin']! as Map<String, Object?>;
+      expect(origin['provider'], {
+        'host': 'github.example.test',
+        'repositoryId': 42,
+      });
+    });
+
     test('release update requires an explicit or saved bump', () async {
       final service = PackLifecycleService.withDependencies(
         acquisition: _LocalAcquisition(source.path),
@@ -1256,6 +1519,75 @@ track = { kind = "release", artifact = "archive" }
       );
     });
 
+    test('a new release does not require same-attachment acceptance', () async {
+      final config = File(p.join(project.path, 'agent-resources.toml'));
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'artifact = "archive"',
+          'artifact = "attachment", attachment = "bundle.zip"',
+        ),
+      );
+      final releases = _AttachmentReleases('old-digest', advanceOnBump: true);
+      final service = PackLifecycleService.withDependencies(
+        acquisition: _LocalAcquisition(source.path),
+        releaseResolver: releases,
+      );
+      await service.execute(request(release: 'v1.2.0'));
+
+      releases.digest = 'new-digest';
+      final updated = await service.execute(
+        request(operation: PackOperation.update, bump: 'minor'),
+      );
+
+      expect(updated.outcome, 'completed');
+      expect(updated.resources.single.disposition.wireName, 'updated');
+      final lock = jsonDecode(
+        File(p.join(project.path, '.agent-resource', 'installations.json'))
+            .readAsStringSync(),
+      ) as Map<String, Object?>;
+      final installation =
+          (lock['installations']! as List<Object?>).single!
+              as Map<String, Object?>;
+      final origin = installation['origin']! as Map<String, Object?>;
+      expect((origin['release']! as Map<String, Object?>)['id'], 101);
+      expect(
+        (origin['source']! as Map<String, Object?>)['requestedLocator'],
+        contains('/v1.3.0/'),
+      );
+    });
+
+    test(
+      'rejects attachment bytes that disagree with provider evidence',
+      () async {
+        final config = File(p.join(project.path, 'agent-resources.toml'));
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst(
+            'artifact = "archive"',
+            'artifact = "attachment", attachment = "bundle.zip"',
+          ),
+        );
+        final service = PackLifecycleService.withDependencies(
+          acquisition: _LocalAcquisition(source.path, downloadDigest: 'actual'),
+          releaseResolver: _AttachmentReleases('sha256:expected'),
+        );
+
+        await expectLater(
+          () => service.execute(request(release: 'v1.2.0')),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('digest'),
+            ),
+          ),
+        );
+        expect(
+          Directory(p.join(project.path, '.agent-resource')).existsSync(),
+          isFalse,
+        );
+      },
+    );
+
     test('changed attachment bytes require injected live acceptance', () async {
       final config = File(p.join(project.path, 'agent-resources.toml'));
       config.writeAsStringSync(
@@ -1289,7 +1621,8 @@ track = { kind = "release", artifact = "archive" }
       );
 
       expect(prompts, contains(contains('changed or unverified bytes')));
-      expect(updated.outcome, 'no-op');
+      expect(updated.outcome, 'completed');
+      expect(updated.resources.single.disposition.wireName, 'updated');
 
       releases.digest = 'declined-digest';
       final declined = PackLifecycleService.withDependencies(
@@ -1375,10 +1708,30 @@ track = { kind = "release", artifact = "archive" }
   });
 }
 
+final class _RecoveryRequiredIO extends LifecycleIO {
+  var _publicationFailed = false;
+
+  @override
+  void write(String path, List<int> bytes) {
+    if (path.contains('transactions')) {
+      final text = String.fromCharCodes(bytes);
+      if (!_publicationFailed && text.contains('"phase":"published"')) {
+        _publicationFailed = true;
+        throw const FileSystemException('Injected publication failure');
+      }
+      if (text.contains('"phase":"failedRestored"')) {
+        throw const FileSystemException('Injected terminal journal failure');
+      }
+    }
+    super.write(path, bytes);
+  }
+}
+
 final class _LocalAcquisition implements AcquisitionService {
-  _LocalAcquisition(this.path);
+  _LocalAcquisition(this.path, {this.downloadDigest});
 
   final String path;
+  final String? downloadDigest;
 
   @override
   Future<AcquisitionWorkspace> acquire(AcquisitionRequest request) async {
@@ -1395,25 +1748,30 @@ final class _LocalAcquisition implements AcquisitionService {
         durableLocalDirectory: true,
         requestedRef: request.ref,
         resolvedCommit: '0123456789012345678901234567890123456789',
+        downloadDigest: downloadDigest,
       ),
     );
   }
 }
 
 final class _FakeReleases implements GithubReleaseResolver {
+  _FakeReleases({this.host = 'github.com'});
+
+  final String host;
+
   @override
   Future<GithubReleaseInventory> inspect({
     required GitHubPackSource source,
-  }) async => const GithubReleaseInventory(
+  }) async => GithubReleaseInventory(
     repository: GithubRepositoryIdentity(
-      host: 'github.com',
+      host: host,
       repository: 'owner/demo',
       id: 42,
     ),
     releases: [
       GithubReleaseEvidence(
         repository: GithubRepositoryIdentity(
-          host: 'github.com',
+          host: host,
           repository: 'owner/demo',
           id: 42,
         ),
@@ -1443,8 +1801,8 @@ final class _FakeReleases implements GithubReleaseResolver {
     );
     return GithubReleaseResolution(
       release: GithubReleaseEvidence(
-        repository: const GithubRepositoryIdentity(
-          host: 'github.com',
+        repository: GithubRepositoryIdentity(
+          host: host,
           repository: 'owner/demo',
           id: 42,
         ),
@@ -1464,9 +1822,10 @@ final class _FakeReleases implements GithubReleaseResolver {
 }
 
 final class _AttachmentReleases implements GithubReleaseResolver {
-  _AttachmentReleases(this.digest);
+  _AttachmentReleases(this.digest, {this.advanceOnBump = false});
 
   String digest;
+  final bool advanceOnBump;
 
   static final _download = Uri.parse(
     'https://github.com/owner/demo/releases/download/v1.2.0/bundle.zip',
@@ -1503,25 +1862,44 @@ final class _AttachmentReleases implements GithubReleaseResolver {
     required ReleasePolicy policy,
     ReleaseCandidate? current,
     String? exactTag,
-  }) async => GithubReleaseResolution(
-    release: const GithubReleaseEvidence(
-      repository: GithubRepositoryIdentity(
-        host: 'github.com',
-        repository: 'owner/demo',
-        id: 42,
+  }) async {
+    final selected = advanceOnBump
+        ? policy.select(
+            candidates: const [
+              ReleaseCandidate(literalTag: 'v1.2.0', id: '100'),
+              ReleaseCandidate(literalTag: 'v1.3.0', id: '101'),
+            ],
+            current: current,
+            exactTag: exactTag,
+          )
+        : null;
+    final releaseId = selected == null ? 100 : int.parse(selected.id!);
+    final literalTag = selected?.literalTag ?? 'v1.2.0';
+    return GithubReleaseResolution(
+      release: GithubReleaseEvidence(
+        repository: const GithubRepositoryIdentity(
+          host: 'github.com',
+          repository: 'owner/demo',
+          id: 42,
+        ),
+        id: releaseId,
+        literalTag: literalTag,
+        isDraft: false,
+        isPrerelease: false,
+        commit: '0123456789012345678901234567890123456789',
       ),
-      id: 100,
-      literalTag: 'v1.2.0',
-      isDraft: false,
-      isPrerelease: false,
-      commit: '0123456789012345678901234567890123456789',
-    ),
-    acquisition: GithubAttachmentAcquisition(
-      id: 7,
-      name: 'bundle.zip',
-      downloadUri: _download,
-      size: 1,
-      digest: digest,
-    ),
-  );
+      acquisition: GithubAttachmentAcquisition(
+        id: 7,
+        name: 'bundle.zip',
+        downloadUri: advanceOnBump
+            ? Uri.parse(
+                'https://github.com/owner/demo/releases/download/'
+                '$literalTag/bundle.zip',
+              )
+            : _download,
+        size: 1,
+        digest: digest,
+      ),
+    );
+  }
 }

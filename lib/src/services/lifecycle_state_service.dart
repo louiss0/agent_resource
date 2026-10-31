@@ -1784,6 +1784,7 @@ interface class LifecycleStateService {
     required String source,
     Map<String, Object?>? origin,
     bool allowModified = false,
+    Set<String> allowedPaths = const <String>{},
   }) async {
     var initial = recordById(context, installationId);
     _requireReplacementResource(initial, resource, context);
@@ -1834,6 +1835,7 @@ interface class LifecycleStateService {
       nativeDestination: initial.nativeDestination,
       excludeInstallationId: installationId,
       excludePath: initial.location,
+      allowedPaths: allowedPaths,
     );
     if (context.dryRun) {
       return LifecycleResult(
@@ -1879,6 +1881,7 @@ interface class LifecycleStateService {
         nativeDestination: record.nativeDestination,
         excludeInstallationId: installationId,
         excludePath: record.location,
+        allowedPaths: allowedPaths,
       );
       _blockPendingAcrossScopes(context, record.location);
       final transactionId = _newId('trx');

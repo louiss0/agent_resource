@@ -257,7 +257,11 @@ interface class GithubReleaseResolver {
       );
     }
     final digest = acquisition.digest;
-    if (digest != null && digest == previous.digest) return;
+    if (previous.attachmentId == acquisition.id &&
+        digest != null &&
+        digest == previous.digest) {
+      return;
+    }
     if (yes || !interactive || !accepted) {
       throw const GithubReleaseResolverException(
         'Changed or unverified attachment bytes require live interactive '

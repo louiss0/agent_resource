@@ -615,6 +615,7 @@ final class _AgentResource implements LifecycleResource {
     String path,
     LifecycleContext context, {
     String? expectedName,
+    bool restoringBaseline = false,
   }) async {
     final type = skillEntityType(path, followLinks: false);
     if (type == FileSystemEntityType.link) {

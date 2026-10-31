@@ -46,6 +46,7 @@ final class const PackPrompts({
 final class const PackLifecycleRequest({
   required final PackOperation operation,
   required final PackResourceType resourceType,
+
   required final String processWorkingDirectory,
   final Map<String, String> environment = const <String, String>{},
   final String? pack,
@@ -234,10 +235,9 @@ interface class PackLifecycleService {
     PackConfiguration configuration,
     PackDefinition pack,
   ) async {
-    final existing = _packRecords(
-      context,
-      pack.key,
-      request.resourceType,
+    final existing = _targetedRecords(
+      request,
+      _packRecords(context, pack.key, request.resourceType),
     ).where((record) => record.lifecycle == 'live').toList();
     if (request.operation == PackOperation.install) {
       final replay = _exactLockReplay(
@@ -275,7 +275,12 @@ interface class PackLifecycleService {
         acquired.release,
         reusableFolders: reusableFolders,
       );
-      _requireAcceptedSource(pack, workspace.provenance, existing);
+      _requireAcceptedSource(
+        pack,
+        workspace.provenance,
+        existing,
+        acquired.release,
+      );
       final selectionDecisions = _selectionDecisions(
         context,
         pack.key,
@@ -330,6 +335,7 @@ interface class PackLifecycleService {
       final actions = <String, String>{};
       final installMethods = <String, SkillInstallMethod?>{};
       final installTargets = <String, List<String>>{};
+      final declinedCandidates = <_PackCandidate>[];
       final planResources = <PackResourcePlan>[];
       for (final candidate in selected) {
         final records = existing
@@ -365,16 +371,7 @@ interface class PackLifecycleService {
                   '${candidate.name} is new upstream. Include it?',
                 );
             if (!includeNew) {
-              if (!request.dryRun && !request.noSave) {
-                _recordSelectionChoice(
-                  context,
-                  pack.key,
-                  request.resourceType,
-                  candidate.name,
-                  selected: false,
-                  reason: 'declined',
-                );
-              }
+              declinedCandidates.add(candidate);
               actions[candidate.name] = 'observed';
               warnings.add(
                 PackWarning(
@@ -428,12 +425,16 @@ interface class PackLifecycleService {
         final sameBytes = record.kind == ArtifactKind.skillLink
             ? record.origin['contentDigest'] == candidate.digest
             : candidate.digest == record.baseline.digest;
+        final originChanged =
+            jsonEncode(record.origin) != jsonEncode(candidate.origin);
         final action = request.operation == PackOperation.install
             ? 'unchanged'
             : record.kind == ArtifactKind.skillLink &&
                   modification == ModificationStatus.unchanged
             ? 'observed'
-            : sameBytes && modification == ModificationStatus.unchanged
+            : sameBytes &&
+                  modification == ModificationStatus.unchanged &&
+                  !originChanged
             ? 'unchanged'
             : modification != ModificationStatus.unchanged &&
                   request.keepLocal.contains(record.name)
@@ -491,8 +492,25 @@ interface class PackLifecycleService {
         policy: _policyChange(request, pack),
       );
       await _confirmPlan(request, plan);
+      if (!request.dryRun && !request.noSave) {
+        for (final candidate in declinedCandidates) {
+          _recordSelectionChoice(
+            context,
+            pack.key,
+            request.resourceType,
+            candidate.name,
+            selected: false,
+            reason: 'declined',
+          );
+        }
+      }
 
+      var recoveryRequired = false;
       for (final candidate in selected) {
+        if (recoveryRequired) {
+          results.add(_result(request, candidate.name, 'notAttempted'));
+          continue;
+        }
         final action = actions[candidate.name];
         final records = existing
             .where((record) => record.name == candidate.name)
@@ -571,12 +589,16 @@ interface class PackLifecycleService {
           results.add(_result(request, candidate.name, 'failed'));
           if (error.exitCode == _legacyRecoveryExitCode ||
               error.exitCode == PackProcessStatus.recoveryRequired.code) {
-            break;
+            recoveryRequired = true;
           }
         }
       }
 
       for (final record in absent) {
+        if (recoveryRequired) {
+          results.add(_result(request, record.name, 'notAttempted'));
+          continue;
+        }
         if (!request.dryRun) {
           await _removeRecord(request, context, record);
           PackState(stateDirectory: context.stateRoot())
@@ -608,7 +630,9 @@ interface class PackLifecycleService {
       if (failures.isNotEmpty) {
         throw MambaException(
           'Pack operation completed with resource failures: ${failures.join(' | ')}',
-          exitCode: PackProcessStatus.failure.code,
+          exitCode: recoveryRequired
+              ? PackProcessStatus.recoveryRequired.code
+              : PackProcessStatus.failure.code,
         );
       }
       if (!request.dryRun &&
@@ -827,11 +851,14 @@ interface class PackLifecycleService {
       }
       return 'unchanged';
     }
+    final modification = _lifecycleState.verify(record);
+    final originChanged =
+        jsonEncode(record.origin) != jsonEncode(candidate.origin);
     if (sameBytes &&
-        _lifecycleState.verify(record) == ModificationStatus.unchanged) {
+        modification == ModificationStatus.unchanged &&
+        !originChanged) {
       return 'unchanged';
     }
-    final modification = _lifecycleState.verify(record);
     if (record.kind == ArtifactKind.skillLink &&
         modification == ModificationStatus.unchanged) {
       if (!request.dryRun) {
@@ -849,6 +876,17 @@ interface class PackLifecycleService {
         );
       }
       return 'observed';
+    }
+    if (sameBytes && modification == ModificationStatus.unchanged) {
+      if (!request.dryRun) {
+        await _lifecycleState.updateOrigin(
+          context: context,
+          installationId: record.installationId,
+          expectedOrigin: record.origin,
+          origin: candidate.origin,
+        );
+      }
+      return 'updated';
     }
     if (modification != ModificationStatus.unchanged) {
       if (request.keepLocal.contains(record.name)) return 'keptLocal';
@@ -1006,15 +1044,32 @@ interface class PackLifecycleService {
     PackDefinition pack,
     AcquisitionProvenance provenance,
     List<InstallationRecord> records,
+    _ReleaseEvidence? release,
   ) {
     for (final record in records) {
       final source = record.origin['source'];
       final acceptedLocator = source is Map<String, Object?>
           ? source['requestedLocator']
           : null;
+      final acceptedSource = switch (pack.update.track) {
+        ReleaseTrack() => () {
+          final configured = pack.source;
+          final provider = record.origin['provider'];
+          return configured is GitHubPackSource &&
+              release != null &&
+              configured.host.toLowerCase() ==
+                  release.repositoryHost.toLowerCase() &&
+              configured.repository.toLowerCase() ==
+                  release.repositoryName.toLowerCase() &&
+              provider is Map<String, Object?> &&
+              provider['host'] == release.repositoryHost &&
+              provider['repositoryId'] == release.repositoryId;
+        }(),
+        _ => acceptedLocator == provenance.requestedLocator,
+      };
       if (jsonEncode(record.origin['track']) !=
               jsonEncode(_trackJson(pack.update.track)) ||
-          acceptedLocator != provenance.requestedLocator) {
+          !acceptedSource) {
         throw MambaException(
           'Configured source or track differs from the accepted lock for ${record.name}; use source change.',
           exitCode: PackProcessStatus.invalidInput.code,
@@ -1038,9 +1093,15 @@ interface class PackLifecycleService {
     PackDefinition pack,
   ) async {
     final name = request.only.single;
-    final records = _packRecords(context, pack.key, request.resourceType)
-        .where((record) => record.name == name && record.lifecycle == 'live')
-        .toList();
+    final records =
+        _targetedRecords(
+              request,
+              _packRecords(context, pack.key, request.resourceType),
+            )
+            .where(
+              (record) => record.name == name && record.lifecycle == 'live',
+            )
+            .toList();
     if (records.length != 1) {
       throw MambaException(
         'Rollback requires one unambiguous managed installation for $name.',
@@ -1469,6 +1530,8 @@ interface class PackLifecycleService {
         exposures: candidate.historicalInstallation?.exposures,
         knownConsumers: candidate.historicalInstallation?.knownConsumers,
         validatedProfiles: candidate.historicalInstallation?.validatedProfiles,
+        allowModified:
+            _lifecycleState.verify(record) != ModificationStatus.unchanged,
       );
     } else {
       await _lifecycleState.replace(
@@ -1479,6 +1542,17 @@ interface class PackLifecycleService {
         origin: candidate.origin,
         allowModified:
             _lifecycleState.verify(record) != ModificationStatus.unchanged,
+        allowedPaths: {
+          for (final other in _packRecords(
+            context,
+            record.origin['packKey']! as String,
+            request.resourceType,
+          ))
+            if (other.installationId != record.installationId &&
+                other.lifecycle == 'live' &&
+                other.name == record.name)
+              other.location,
+        },
       );
     }
   }
@@ -1889,6 +1963,19 @@ interface class PackLifecycleService {
     ]);
   }
 
+  List<InstallationRecord> _targetedRecords(
+    PackLifecycleRequest request,
+    Iterable<InstallationRecord> records,
+  ) {
+    final target = request.target;
+    if (target == null) return records.toList();
+    return records.where((record) {
+      return record.validatedProfiles.contains(target) ||
+          record.nativeDestination == target ||
+          target == 'codex' && record.nativeDestination == 'shared';
+    }).toList();
+  }
+
   List<InstallationRecord> _packRecords(
     LifecycleContext context,
     String packKey,
@@ -2011,6 +2098,17 @@ interface class PackLifecycleService {
         subpath: source.subpath,
       ),
     );
+    final expectedDigest = release?.attachmentDigest;
+    final actualDigest = workspace.provenance.downloadDigest;
+    if (expectedDigest != null &&
+        actualDigest != null &&
+        expectedDigest != 'sha256:$actualDigest') {
+      await workspace.close();
+      throw MambaException(
+        'Downloaded attachment bytes do not match the provider digest.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
     return _AcquiredSource(workspace, release);
   }
 
@@ -2101,9 +2199,9 @@ interface class PackLifecycleService {
         .toList();
     if (previous.isEmpty) return;
     final recorded = previous.first;
+    if (recorded['releaseId'] != release.id) return;
     final same =
         recorded['digest'] == attachment.digest &&
-        recorded['releaseId'] == release.id &&
         recorded['id'] == attachment.id;
     if (same) return;
     if (!request.interactive || request.yes) {
@@ -2856,6 +2954,7 @@ interface class PackLifecycleService {
   }
 
   void _validateRequest(PackLifecycleRequest request) {
+
     void unique(Iterable<String> values, String option) {
       final seen = <String>{};
       if (values.any((value) => value.trim().isEmpty || !seen.add(value))) {
@@ -2945,6 +3044,8 @@ final class _AcquiredSource {
 
 final class _ReleaseEvidence {
   const _ReleaseEvidence({
+    required this.repositoryHost,
+    required this.repositoryName,
     required this.repositoryId,
     required this.id,
     required this.literalTag,
@@ -2960,6 +3061,8 @@ final class _ReleaseEvidence {
     final release = resolution.release;
     final acquisition = resolution.acquisition;
     return _ReleaseEvidence(
+      repositoryHost: release.repository.host,
+      repositoryName: release.repository.repository,
       repositoryId: release.repository.id,
       id: release.id,
       literalTag: release.literalTag,
@@ -2981,6 +3084,8 @@ final class _ReleaseEvidence {
     );
   }
 
+  final String repositoryHost;
+  final String repositoryName;
   final int repositoryId;
   final int id;
   final String literalTag;
@@ -2992,7 +3097,7 @@ final class _ReleaseEvidence {
   final String? attachmentDigest;
 
   Map<String, Object?> toEvidenceJson() => {
-    'provider': {'host': 'github.com', 'repositoryId': repositoryId},
+    'provider': {'host': repositoryHost, 'repositoryId': repositoryId},
     'release': {
       'id': id,
       'literalTag': literalTag,
