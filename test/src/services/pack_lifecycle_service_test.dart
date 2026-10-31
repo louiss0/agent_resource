@@ -82,6 +82,7 @@ track = { kind = "local" }
       bool yes = true,
       bool interactive = false,
       bool noSave = false,
+      bool useDefaultTarget = true,
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: type,
@@ -99,7 +100,9 @@ track = { kind = "local" }
       home: home.path,
       only: only,
       method: type == PackResourceType.skill ? method ?? 'copy' : null,
-      target: type == PackResourceType.skill ? target ?? 'codex' : null,
+      target: type == PackResourceType.skill && useDefaultTarget
+          ? target ?? 'codex'
+          : target,
       allowFolder: allowFolder,
       keepLocal: keepLocal,
       replaceLocal: replaceLocal,
@@ -348,6 +351,43 @@ track = { kind = "local" }
       expect(lock['approvals'], isNotEmpty);
       expect(lock['selections'], isNotEmpty);
       expect(lock['operations'], isNotEmpty);
+    });
+
+    test('interactive install prompts for a missing Skill target', () async {
+      final config = File(p.join(project.path, 'agent-resources.toml'));
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst('targets = ["codex"]\n', ''),
+      );
+      final prompts = <String>[];
+      final result =
+          await PackLifecycleService.withDependencies(
+            prompts: PackPrompts(
+              confirmation: (label) async {
+                prompts.add(label);
+                return true;
+              },
+              choice: (label, choices) async {
+                prompts.add(label);
+                return 'claude';
+              },
+            ),
+          ).execute(
+            request(
+              PackOperation.install,
+              PackResourceType.skill,
+              yes: false,
+              interactive: true,
+              useDefaultTarget: false,
+            ),
+          );
+
+      expect(result.resources.single.disposition, 'installed');
+      expect(prompts, contains(contains('Skill target')));
+      expect(
+        File(p.join(project.path, '.claude', 'skills', 'reviewer', 'SKILL.md'))
+            .existsSync(),
+        isTrue,
+      );
     });
 
     test(

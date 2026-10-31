@@ -385,7 +385,7 @@ interface class PackLifecycleService {
               continue;
             }
           }
-          final targets = _targets(
+          final targets = await _targets(
             request,
             pack,
             configuration,
@@ -2272,13 +2272,13 @@ interface class PackLifecycleService {
     );
   }
 
-  List<String> _targets(
+  Future<List<String>> _targets(
     PackLifecycleRequest request,
     PackDefinition pack,
     PackConfiguration configuration,
     _PackCandidate candidate,
     InstallationRecord? record,
-  ) {
+  ) async {
     if (candidate.type == PackResourceType.agent) {
       final target = _harness(candidate.profile!).name;
       if (request.target != null && request.target != target) {
@@ -2295,6 +2295,19 @@ interface class PackLifecycleService {
         ? pack.install.targets
         : configuration.cli.install.targets;
     if (targets.isEmpty && record != null) return record.validatedProfiles;
+    if (targets.isEmpty && request.interactive && !request.yes) {
+      final target = await _promptChoice('Skill target [claude/codex]:', const [
+        'claude',
+        'codex',
+      ]);
+      if (target == null) {
+        throw MambaException(
+          'Skill target selection was cancelled; no resource was published.',
+          exitCode: PackProcessStatus.cancelled.code,
+        );
+      }
+      return [target];
+    }
     if (targets.isEmpty ||
         targets.any(
           (target) => !const {'claude', 'codex', 'shared'}.contains(target),
