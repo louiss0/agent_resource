@@ -77,6 +77,7 @@ track = { kind = "local" }
       String? to,
       String? snapshot,
       String? method,
+      String? target,
       bool localEdits = false,
       bool yes = true,
       bool interactive = false,
@@ -98,7 +99,7 @@ track = { kind = "local" }
       home: home.path,
       only: only,
       method: type == PackResourceType.skill ? method ?? 'copy' : null,
-      target: type == PackResourceType.skill ? 'codex' : null,
+      target: type == PackResourceType.skill ? target ?? 'codex' : null,
       allowFolder: allowFolder,
       keepLocal: keepLocal,
       replaceLocal: replaceLocal,
@@ -825,6 +826,73 @@ description: Writes docs.
               .disposition,
           'unchanged',
         );
+      },
+    );
+
+    test(
+      'canonical rollback restores historical exposures and consumers',
+      () async {
+        final service = PackLifecycleService();
+        final installed = await service.execute(
+          request(
+            PackOperation.install,
+            PackResourceType.skill,
+            method: 'canonical',
+            target: 'claude',
+          ),
+        );
+        final firstRef = installed.resources.single.snapshot!;
+        final exposure = Link(
+          p.join(project.path, '.claude', 'skills', 'reviewer'),
+        );
+        expect(exposure.existsSync(), isTrue);
+        final lockFile = File(
+          p.join(project.path, '.agent-resource', 'installations.json'),
+        );
+        final lock =
+            jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
+        final id =
+            (lock['installations']! as List<Object?>)
+                    .map((value) => value! as Map<String, Object?>)
+                    .singleWhere(
+                      (record) => record['artifactKind'] == 'skill-canonical',
+                    )['installationId']!
+                as String;
+        await SkillLifecycleService().remove(
+          LifecycleIdInput(
+            options: LifecycleOptions(
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              projectRoot: project.path,
+              home: home.path,
+              approved: true,
+            ),
+            id: id,
+          ),
+          target: SkillHarness.claude,
+        );
+        expect(exposure.existsSync(), isFalse);
+
+        final rolledBack = await service.execute(
+          request(
+            PackOperation.rollback,
+            PackResourceType.skill,
+            only: const ['reviewer'],
+            snapshot: firstRef,
+          ),
+        );
+
+        expect(rolledBack.resources.single.disposition, 'rolledBack');
+        expect(exposure.existsSync(), isTrue);
+        expect(File(p.join(exposure.path, 'SKILL.md')).existsSync(), isTrue);
+        final after =
+            jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
+        final canonical = (after['installations']! as List<Object?>)
+            .map((value) => value! as Map<String, Object?>)
+            .singleWhere(
+              (record) => record['artifactKind'] == 'skill-canonical',
+            );
+        expect(canonical['knownConsumers'], contains('claude'));
       },
     );
 

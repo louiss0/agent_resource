@@ -7,6 +7,9 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     required String installationId,
     required String source,
     required Map<String, Object?> origin,
+    List<ExposureRecord>? exposures,
+    List<String>? knownConsumers,
+    List<String>? validatedProfiles,
   }) async {
     final initial = recordById(context, installationId);
     _requireResource(initial, resource, context, live: true);
@@ -17,7 +20,13 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       expectedName: initial.name,
     );
     final baseline = _manifest(source, ArtifactKind.skillCanonical);
-    final desired = initial.copyWith(baseline: baseline, origin: origin);
+    final desired = initial.copyWith(
+      baseline: baseline,
+      origin: origin,
+      exposures: exposures,
+      knownConsumers: knownConsumers,
+      validatedProfiles: validatedProfiles,
+    );
     await resource.checkUnique(
       context,
       candidate.name,
@@ -26,6 +35,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       allowedPaths: {
         initial.location,
         for (final exposure in initial.exposures) exposure.path,
+        for (final exposure in desired.exposures) exposure.path,
       },
     );
     return _canonicalTransition(

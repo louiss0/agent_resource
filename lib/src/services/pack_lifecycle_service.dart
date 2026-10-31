@@ -1115,16 +1115,18 @@ interface class PackLifecycleService {
         ? Map<String, Object?>.unmodifiable(evidenceSource)
         : snapshot.sourceEvidence;
     final historical = snapshot.sourceEvidence['installation'];
-    if (record.kind == ArtifactKind.skillCanonical &&
-        historical is Map<String, Object?> &&
-        jsonEncode(historical['exposures'] ?? const <Object?>[]) !=
-            jsonEncode([
-              for (final exposure in record.exposures) exposure.toJson(),
-            ])) {
+    final historicalRecord =
+        record.kind == ArtifactKind.skillCanonical &&
+            historical is Map<String, Object?>
+        ? InstallationRecord.fromJson(historical)
+        : null;
+    if (historicalRecord != null &&
+        (historicalRecord.installationId != record.installationId ||
+            historicalRecord.location != record.location ||
+            historicalRecord.nativeRoot != record.nativeRoot)) {
       throw MambaException(
-        'Rollback cannot silently preserve different canonical exposure state; '
-        'review the historical snapshot through a compatible installation operation.',
-        exitCode: PackProcessStatus.failure.code,
+        'Recorded canonical snapshot belongs to different installation authority.',
+        exitCode: PackProcessStatus.recoveryRequired.code,
       );
     }
     final extras = origin['approvedExtraFolders'] is List
@@ -1169,6 +1171,7 @@ interface class PackLifecycleService {
       digest: record.baseline.digest,
       extraFolders: extras,
       origin: origin,
+      historicalInstallation: historicalRecord,
     );
     await _confirmPlan(request, plan);
     if (!request.dryRun) {
@@ -1446,6 +1449,9 @@ interface class PackLifecycleService {
         installationId: record.installationId,
         source: candidate.path,
         origin: candidate.origin,
+        exposures: candidate.historicalInstallation?.exposures,
+        knownConsumers: candidate.historicalInstallation?.knownConsumers,
+        validatedProfiles: candidate.historicalInstallation?.validatedProfiles,
       );
     } else {
       await _lifecycleState.replace(
@@ -1620,7 +1626,9 @@ interface class PackLifecycleService {
       );
     }
     return _skills.installationResource(
-      targets: record.validatedProfiles,
+      targets:
+          candidate.historicalInstallation?.validatedProfiles ??
+          record.validatedProfiles,
       kind: record.kind,
       allowedExtraFolders: candidate.extraFolders,
     );
@@ -3017,6 +3025,7 @@ final class _PackCandidate {
     required this.digest,
     required this.extraFolders,
     required this.origin,
+    this.historicalInstallation,
   });
 
   final PackResourceType type;
@@ -3026,4 +3035,5 @@ final class _PackCandidate {
   final String digest;
   final Set<String> extraFolders;
   final Map<String, Object?> origin;
+  final InstallationRecord? historicalInstallation;
 }
