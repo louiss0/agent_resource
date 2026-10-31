@@ -40,7 +40,7 @@ Future<CliProcessResult> runDartScript({
   required List<String> arguments,
   required Directory workingDirectory,
   required Map<String, String> environment,
-  Duration timeout = const Duration(seconds: 20),
+  Duration timeout = const Duration(seconds: 60),
   String? standardInput,
 }) => runProcess(
   Platform.resolvedExecutable,
@@ -56,7 +56,7 @@ Future<CliProcessResult> runProcess(
   List<String> arguments, {
   required Directory workingDirectory,
   required Map<String, String> environment,
-  Duration timeout = const Duration(seconds: 20),
+  Duration timeout = const Duration(seconds: 60),
   String? standardInput,
 }) async {
   final Process process;

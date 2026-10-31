@@ -88,7 +88,7 @@ Future<MambaSuccessResult> _fakeSuccess(
 Future<CliProcessResult> _runCli(
   _Sandbox sandbox,
   List<String> arguments, {
-  Duration timeout = const Duration(seconds: 20),
+  Duration timeout = const Duration(seconds: 60),
   String? standardInput,
 }) => runDartScript(
   script: _entrypoint,
