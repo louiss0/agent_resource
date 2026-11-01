@@ -36,7 +36,14 @@ final class PackConfigurationIssue {
 
 final class PackConfigurationException extends FormatException {
   PackConfigurationException(this.issues, {this.configPath})
-    : super(issues.map((issue) => issue.toString()).join('\n'));
+    : super(
+        ValidationDiagnostics.flatten(
+          issues.map(
+            (issue) =>
+                (path: issue.keyPath, code: issue.code, message: issue.message),
+          ),
+        ).join('\n'),
+      );
 
   final List<PackConfigurationIssue> issues;
   final String? configPath;

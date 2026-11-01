@@ -128,8 +128,13 @@ final class const SharedAgentValidationResult._(
 
   bool get valid => agent != null;
 
-  String get formattedIssues =>
-      issues.map((issue) => issue.toString()).join('\n');
+  List<String> get flatIssues => ValidationDiagnostics.flatten(
+    issues.map(
+      (issue) => (path: issue.path, code: issue.code, message: issue.message),
+    ),
+  );
+
+  String get formattedIssues => flatIssues.join('\n');
 }
 
 final class const SharedAgentValidationIssue(

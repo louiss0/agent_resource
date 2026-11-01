@@ -3,6 +3,15 @@ final class const ValidationDiagnostics() {
   static String format(String path, String code, String message) =>
       '[${escape(code)}] ${escape(path)}: ${escape(message)}';
 
+  static List<String> flatten(
+    Iterable<({String path, String code, String message})> diagnostics,
+  ) => List.unmodifiable(
+    diagnostics.map(
+      (diagnostic) =>
+          format(diagnostic.path, diagnostic.code, diagnostic.message),
+    ),
+  );
+
   /// Prevents attacker-controlled field names from controlling a terminal.
   static String escape(String value) {
     final output = StringBuffer();
