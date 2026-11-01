@@ -89,11 +89,6 @@ profile = "pi-common"
       expect(skills.offerings.last.path, '.');
     });
 
-    test('accepts absent and explicitly empty catalogs', () {
-      expect(load('schema_version = 1\n').offerings, isEmpty);
-      expect(load('schema_version = 1\nskills = []\n').offerings, isEmpty);
-    });
-
     test('accepts boundary IDs and cross-type ID reuse', () {
       final one = 'a';
       final longest = 'a${'b' * 63}';

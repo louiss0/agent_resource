@@ -85,8 +85,7 @@ final class ResourceCatalog {
       document = TomlDocument.parse(source).toMap();
     } on TomlParserException catch (error) {
       throw MambaException(
-        'Invalid $sourceConfigFileName at ${error.line}:${error.column}: '
-        '${error.message}.',
+        'Invalid $sourceConfigFileName at ${error.line}:${error.column}.',
         exitCode: 1,
       );
     } on TomlRedefinitionException catch (error) {
@@ -94,9 +93,9 @@ final class ResourceCatalog {
         'Invalid $sourceConfigFileName: duplicate key or table ${error.name}.',
         exitCode: 1,
       );
-    } on FormatException catch (error) {
+    } on FormatException {
       throw MambaException(
-        'Invalid $sourceConfigFileName: ${error.message}.',
+        'Invalid $sourceConfigFileName syntax.',
         exitCode: 1,
       );
     } on TomlException {
@@ -276,6 +275,12 @@ List<CatalogOffering> _validateOfferings(
   if (value is! List) {
     throw MambaException(
       '$sourceConfigFileName $section must be an array of entry tables.',
+      exitCode: 1,
+    );
+  }
+  if (value.isEmpty) {
+    throw MambaException(
+      '$sourceConfigFileName $section must contain at least one entry when present.',
       exitCode: 1,
     );
   }

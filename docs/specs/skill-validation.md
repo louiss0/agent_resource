@@ -1,8 +1,10 @@
-# Skill validation: agentskills-core-ascii-v1
+# Skill validation: agentskills-core-strict-ascii-v1
+
+> **Strict-profile amendment — current conversation.** This decision supersedes the earlier unknown-field advisory policy and the old `agentskills-core-ascii-v1` identity. Production validation now uses `agentskills-core-strict-ascii-v1`: unknown top-level string keys are blocking **product** errors, not universal upstream errors. The pinned baseline, six core fields plus the recognized `disable-model-invocation` harness extension, ASCII product restriction, scalar counting, stable diagnostic codes/order, read budgets, inert parsing, and exit/report contracts remain in force. The extension is product policy, not part of the pinned core specification; accepting it does not convert a Skill into a Prompt or add Prompt lifecycle behavior. Historical references below to advisory unknown fields are superseded by this amendment.
 
 > **Research-audit amendment — current command tree and scope.** This amendment supersedes the earlier root-level action-command hierarchy and stale direct invocation examples in this specification. Production exposes `skill` and `agent` groups under `agent_resource`. The `skill` group has `discover`, `inspect`, and `validate` children and no root-level aliases. Invoke this feature as `agent_resource skill validate --skill ...`; root help lists both groups, while `agent_resource skill --help` lists the child commands. Existing tests stay in `test/` and assert the command path `agent_resource` → `skill` → `validate`; process-isolation snapshots initialize all working, home, configuration, and temporary directories before comparison. Compare names, types, and bytes, not access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.
 >
-> The approved `agentskills-core-ascii-v1` profile and its pinned baseline are unchanged. Validation reports are bounded observations, not native harness acceptance, precedence, runtime visibility, or safety claims. The `.agents/skills`/`.claude/skills`/`.codex/skills` labels remain product search conventions; `.agents/skills` is not a universal multi-harness guarantee and `.codex/skills` is a legacy compatibility scan, not the current documented universal Codex root. The supported assumption is a trusted, stable local root, not hostile concurrent-race resistance.
+> The approved `agentskills-core-strict-ascii-v1` profile and its pinned baseline are unchanged. Validation reports are bounded observations, not native harness acceptance, precedence, runtime visibility, or safety claims. The `.agents/skills`/`.claude/skills`/`.codex/skills` labels remain product search conventions; `.agents/skills` is not a universal multi-harness guarantee and `.codex/skills` is a legacy compatibility scan, not the current documented universal Codex root. The supported assumption is a trusted, stable local root, not hostile concurrent-race resistance.
 
 ## Problem Statement
 
@@ -10,7 +12,7 @@ Discovery identifies candidates and inspection returns text, but neither tells a
 
 ## Solution
 
-Add skill validate --skill <directory> using the named agentskills-core-ascii-v1 validation profile. Identify the pinned documentation baseline in every report. Distinguish specification errors, explicit product restrictions, and advisory warnings. Produce machine-readable reports with meaningful exit statuses. This is bounded static validation, not a safety certificate, universal compliance claim, lint suite, or runtime compatibility check.
+Add skill validate --skill <directory> using the named agentskills-core-strict-ascii-v1 validation profile. Identify the pinned documentation baseline in every report. Distinguish specification errors, explicit product restrictions, and advisory warnings. Produce machine-readable reports with meaningful exit statuses. This is bounded static validation, not a safety certificate, universal compliance claim, lint suite, or runtime compatibility check.
 
 ## User Stories
 
@@ -23,7 +25,7 @@ Add skill validate --skill <directory> using the named agentskills-core-ascii-v1
 7. As a developer, I want required name and description checks, so that essential metadata is usable.
 8. As a developer, I want literal name/directory agreement checked, so that location and declared identity are consistent.
 9. As a developer, I want optional-field types and documented limits checked, so that malformed metadata is not silently coerced.
-10. As a developer, I want unknown fields warned about but retained as nonblocking evidence, so that extensions are not universally declared invalid.
+10. As a developer, I want unknown fields rejected as product-policy errors, so that validation has one explicit closed frontmatter contract.
 11. As a developer, I want independent metadata errors accumulated, so that one edit cycle can address several problems.
 12. As a developer, I want bodies left uninterpreted, so that arbitrary Markdown is not rejected by invented requirements.
 13. As a script author, I want stable JSON fields and diagnostic codes, so that automation need not parse human prose.
@@ -38,7 +40,7 @@ Add skill validate --skill <directory> using the named agentskills-core-ascii-v1
 ### Evidence and approved profile
 
 - Use the recovered Agent Skills baseline research and filesystem-safety research as primary project evidence. The authoritative upstream snapshot is 69ef37e9424c0a7ea9dd2293b559e43ec8176379. Do not silently substitute current rolling web content or copy the demonstration validator's differences as normative requirements.
-- Profile identifier: agentskills-core-ascii-v1. The user approved the bounded core profile, Unicode scalar-value length counting, literal directory/name matching, an explicitly product-specific ASCII name restriction, and nonblocking warnings for unknown fields.
+- Profile identifier: agentskills-core-strict-ascii-v1. The user approved the bounded core profile, Unicode scalar-value length counting, literal directory/name matching, an explicitly product-specific ASCII name restriction, and blocking product errors for unknown fields.
 - This profile does not resolve every ambiguity in the upstream prose. A passing result means valid for this identified profile only, not all-client acceptance, runtime verification, security, or complete semantic conformance.
 
 ### Command, report, and delivery
@@ -49,7 +51,7 @@ Add skill validate --skill <directory> using the named agentskills-core-ascii-v1
 - Disable ANSI color on Mamba's exported Chalk instance at the executable boundary so status-2 stderr is directly parseable JSON. Retain create() delivery, not a replacement adapter or custom parser; do not strip styling in report tests.
 - Report has exactly path (normalized absolute lexical selected directory), profile (identifier), baseline (upstream commit), valid (boolean), diagnostics (array). No installation scope, destination, management ownership, or compatibility inference.
 - Each diagnostic has exactly code (stable string), category (specification, product, advisory), severity (error or warning), field (string or null), message (human-readable string). valid is true exactly when no error diagnostic exists; warnings alone are successful.
-- Preserve deterministic report ordering: structural/read gates first; then fields name, description, license, compatibility, metadata, allowed-tools; then unknown top-level keys in lexical order. Accumulate independent field errors after a usable mapping is available. Avoid cascades from missing/wrong-type fields. Do not require exact human message punctuation as a wire contract.
+- Preserve deterministic report ordering: structural/read gates first; then fields name, description, license, compatibility, metadata, allowed-tools, disable-model-invocation; then unknown top-level keys in lexical order. Accumulate independent field errors after a usable mapping is available. Avoid cascades from missing/wrong-type fields. Do not require exact human message punctuation as a wire contract.
 
 ### Read and parse boundaries
 
@@ -69,7 +71,8 @@ Add skill validate --skill <directory> using the named agentskills-core-ascii-v1
 - compatibility, when present, must be a string (COMPATIBILITY_TYPE) of 1–500 scalar values (COMPATIBILITY_LENGTH). Do not invent an additional whitespace/nonblank rule.
 - metadata, when present, must be a map (METADATA_TYPE) with string keys and string values (METADATA_ENTRY_TYPE). No required author/version fields, coercion, nested-object support, or mandatory namespace convention.
 - allowed-tools, when present, must be a string (ALLOWED_TOOLS_TYPE). Do not execute tools, parse a universal permission grammar, or require nonempty text without a documented rule.
-- Unknown top-level string keys yield advisory warning UNKNOWN_FIELD, one per key sorted lexically. Do not invalidate merely because the pinned demonstration validator rejects those fields.
+- disable-model-invocation, when present, must be a boolean (DISABLE_MODEL_INVOCATION_TYPE, product category). Explicit null and nonboolean values reject; both false and true pass. This is a recognized harness extension, not a seventh field in the pinned core specification, and validation makes no Prompt conversion or lifecycle claim.
+- Unknown top-level string keys yield product error UNKNOWN_FIELD, one per key sorted lexically. This is an explicit product policy, not a claim that the upstream prose universally forbids extensions.
 - Optional directories and arbitrary additional contents are permitted; no required body, scripts, references, assets, heading, line count, tokenizer budget, or body-link validation in this profile.
 
 ## Testing Decisions
@@ -92,7 +95,7 @@ These are 15 acceptance checks per feature area (60 checks total), not 60 mandat
 10. Invalid input yields failure variant, status 2, JSON diagnostic message, and no retained success output.
 11. Report has exactly the five specified keys and identified baseline/profile.
 12. Diagnostic objects have exactly the five specified fields/types/categories.
-13. Warnings alone leave valid true and status 0.
+13. The current strict profile emits no advisory unknown-field warnings; any warning-only behavior belongs to a separately named profile.
 14. Reused-adapter valid/invalid/valid results do not retain stale diagnostics.
 15. Production valid/invalid/operational invocations use stdout0/stderr2/stderr1 respectively, with no partial JSON on the wrong stream.
 
@@ -129,8 +132,8 @@ These are 15 acceptance checks per feature area (60 checks total), not 60 mandat
 11. Compatibility uses scalar counts rather than bytes or UTF-16 units.
 12. Metadata string-to-string map passes; nonmap fails.
 13. Nonstring metadata keys/values, including nested maps/lists, fail without coercion.
-14. Allowed-tools string passes; nonstring fails, without permission interpretation.
-15. Unknown keys produce deterministically ordered nonblocking warnings; recognized optional fields are not warned about.
+14. Allowed-tools string passes; nonstring fails without permission interpretation. disable-model-invocation accepts booleans and rejects explicit null/nonboolean values as a harness extension.
+15. Unknown keys produce deterministically ordered blocking product errors; recognized optional fields are accepted under their declared contracts.
 
 ### Feature 4: Bounded, inert filesystem behavior — 15 checks
 

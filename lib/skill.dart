@@ -227,11 +227,11 @@ final class ValidateCommand(final ValidateOperation _validate) extends Command {
         options: [_validateSkill],
         longDescription:
             'Validate one explicit skill directory against the pinned '
-            'agentskills-core-ascii-v1 profile. Reads only immediate SKILL.md '
+            'agentskills-core-strict-ascii-v1 profile. Reads only immediate SKILL.md '
             'as strict UTF-8, up to 1,048,576 bytes with at most 65,536 '
             'frontmatter bytes. Linked markers are rejected. The ASCII-only '
-            'name rule is product policy, not a universal specification rule; '
-            'unknown fields are advisory warnings. Passing this profile is '
+            'name rule and rejection of unknown fields are product policy, not '
+            'universal specification rules. Passing this profile is '
             'not universal compliance, security, or harness compatibility. '
             'The report is JSON. A valid '
             'report is written to stdout with status 0; an invalid report is '

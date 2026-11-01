@@ -5,6 +5,7 @@ import 'package:toml/toml.dart';
 import 'package:zema/zema.dart';
 
 import '../installation/resource_catalog.dart' show NativeAgentProfile;
+import '../validation/validation_diagnostics.dart';
 
 export '../installation/resource_catalog.dart' show NativeAgentProfile;
 
@@ -19,13 +20,18 @@ enum ReleaseBump { patch, minor, major }
 enum ReleaseArtifact { archive, attachment }
 
 final class PackConfigurationIssue {
-  const PackConfigurationIssue(this.keyPath, this.message);
+  const PackConfigurationIssue(
+    this.keyPath,
+    this.message, [
+    this.code = 'invalid_value',
+  ]);
 
   final String keyPath;
   final String message;
+  final String code;
 
   @override
-  String toString() => keyPath.isEmpty ? message : '$keyPath: $message';
+  String toString() => ValidationDiagnostics.format(keyPath, code, message);
 }
 
 final class PackConfigurationException extends FormatException {
@@ -394,7 +400,7 @@ final class PackConfiguration {
       throw PackConfigurationException([
         PackConfigurationIssue(
           'syntax',
-          'invalid TOML at ${error.line}:${error.column}: ${error.message}',
+          'invalid TOML at ${error.line}:${error.column}',
         ),
       ], configPath: configPath);
     } on TomlRedefinitionException catch (error) {
@@ -404,9 +410,9 @@ final class PackConfiguration {
           'duplicate TOML key or table declaration',
         ),
       ], configPath: configPath);
-    } on FormatException catch (error) {
+    } on FormatException {
       throw PackConfigurationException([
-        PackConfigurationIssue('syntax', error.message),
+        const PackConfigurationIssue('syntax', 'invalid TOML syntax'),
       ], configPath: configPath);
     } on TomlException {
       throw PackConfigurationException(const [
@@ -433,105 +439,224 @@ final class PackConfiguration {
   }
 }
 
-final _stringArray = z.array(z.string());
+final _stringArray = z.array(z.string()).min(1);
 final _sourceSchema = z.union<Map<String, dynamic>>([
   z.object({
     'kind': z.literal('github'),
     'host': z.string().optional(),
     'repository': z.string(),
     'subpath': z.string().optional(),
-  }),
+  }).makeStrict(),
   z.object({
     'kind': z.literal('git'),
     'url': z.string(),
     'subpath': z.string().optional(),
-  }),
+  }).makeStrict(),
   z.object({
     'kind': z.literal('local'),
     'path': z.string(),
     'subpath': z.string().optional(),
-  }),
+  }).makeStrict(),
   z.object({
     'kind': z.literal('download'),
     'url': z.string(),
     'subpath': z.string().optional(),
-  }),
+  }).makeStrict(),
 ]);
 final _trackSchema = z.union<Map<String, dynamic>>([
-  z.object({'kind': z.literal('branch'), 'name': z.string()}),
-  z.object({'kind': z.literal('tag'), 'name': z.string()}),
-  z.object({'kind': z.literal('commit'), 'commit': z.string()}),
+  z.object({'kind': z.literal('branch'), 'name': z.string()}).makeStrict(),
+  z.object({'kind': z.literal('tag'), 'name': z.string()}).makeStrict(),
+  z.object({'kind': z.literal('commit'), 'commit': z.string()}).makeStrict(),
   z.object({
     'kind': z.literal('release'),
     'artifact': z.string().oneOf(['archive', 'attachment']),
     'attachment': z.string().optional(),
-  }),
-  z.object({'kind': z.literal('local')}),
-  z.object({'kind': z.literal('download')}),
+  }).makeStrict(),
+  z.object({'kind': z.literal('local')}).makeStrict(),
+  z.object({'kind': z.literal('download')}).makeStrict(),
 ]);
 final _installSchema = z.object({
   'targets': _stringArray.optional(),
-  'skill_method': z.string().optional(),
-});
+  'skill_method': z.string().oneOf([
+    'canonical',
+    'copy',
+    'source-link',
+  ]).optional(),
+}).makeStrict();
 final _updateSchema = z.object({
   'track': _trackSchema.optional(),
-  'bump': z.string().optional(),
+  'bump': z.string().oneOf(['patch', 'minor', 'major']).optional(),
   'include_prerelease': z.boolean().optional(),
-});
+}).makeStrict();
 final _rulesSchema = z.object({
-  'exclude': z.array(z.object({'name': z.string()})).optional(),
+  'exclude': z
+      .array(z.object({'name': z.string()}).makeStrict())
+      .min(1)
+      .optional(),
   'overrides': z
       .array(
         z.object({
           'name': z.string(),
           'extra_folders': _stringArray.optional(),
-        }),
+        }).makeStrict(),
       )
+      .min(1)
       .optional(),
-});
+}).makeStrict();
 final _packSchema = z.object({
   'source': _sourceSchema.optional(),
   'install': _installSchema.optional(),
   'update': _updateSchema.optional(),
-  'resources': z.object({
-    'skills': _rulesSchema.optional(),
-    'agents': _rulesSchema.optional(),
-  }).optional(),
-});
-final _catalogSchema = z.object({
-  'skills': z.array(z.object({'path': z.string()})).optional(),
-  'agents': z
-      .array(z.object({'path': z.string(), 'profile': z.string()}))
+  'discovery': z
+      .object({
+        'skills_directory': z.string().optional(),
+        'agents_directory': z.string().optional(),
+      })
+      .makeStrict()
       .optional(),
-});
+  'resources': z
+      .object({
+        'skills': _rulesSchema.optional(),
+        'agents': _rulesSchema.optional(),
+      })
+      .makeStrict()
+      .optional(),
+}).makeStrict();
+final _catalogSchema = z.object({
+  'skills': z
+      .array(z.object({'path': z.string()}).makeStrict())
+      .min(1)
+      .optional(),
+  'agents': z
+      .array(
+        z.object({
+          'path': z.string(),
+          'profile': z.string().oneOf(['claude', 'codex', 'pi-common']),
+        }).makeStrict(),
+      )
+      .min(1)
+      .optional(),
+}).makeStrict();
 final _packConfigurationSchema = z.object({
-  'schema_version': z.integer(),
-  'cli': z.object({
-    'install': _installSchema.optional(),
-    'retention': z.object({
-      'snapshot_days': z.integer().gte(1).lte(36500).optional(),
-    }).optional(),
-  }).optional(),
+  'schema_version': z.literal(1),
+  'cli': z
+      .object({
+        'install': _installSchema.optional(),
+        'retention': z
+            .object({'snapshot_days': z.integer().gte(1).lte(36500).optional()})
+            .makeStrict()
+            .optional(),
+      })
+      .makeStrict()
+      .optional(),
   'packs': z.map(z.string(), _packSchema).optional(),
   'catalog': _catalogSchema.optional(),
-});
+}).makeStrict();
 
 /// Declarative shape gate. The semantic pass remains authoritative for
 /// unknown fields, cross-field meaning, duplicates, credentials, and safe
 /// paths so diagnostics stay aggregated and actionable.
 List<PackConfigurationIssue> _shapeIssues(Object? document) {
   if (document is! Map<String, dynamic>) {
-    return const [PackConfigurationIssue('configuration', 'must be a table')];
-  }
-  final result = _packConfigurationSchema.safeParse(document);
-  if (result.isSuccess) return const <PackConfigurationIssue>[];
-  return [
-    for (final issue in result.errors)
+    return const [
       PackConfigurationIssue(
-        issue.pathString == 'root' ? 'configuration' : issue.pathString,
-        '${issue.code}: ${issue.message}',
+        'configuration',
+        'must be a table',
+        'invalid_type',
       ),
-  ];
+    ];
+  }
+  final nullPaths = <String>{};
+  final issues = <PackConfigurationIssue>[];
+  void findNulls(Object? value, List<Object?> path) {
+    if (value is Map) {
+      for (final entry in value.entries) {
+        final next = [...path, entry.key];
+        if (entry.value == null) {
+          final keyPath = _schemaPath(next);
+          nullPaths.add(keyPath);
+          issues.add(
+            PackConfigurationIssue(
+              keyPath,
+              'must not be null when present',
+              'invalid_type',
+            ),
+          );
+        } else {
+          findNulls(entry.value, next);
+        }
+      }
+    } else if (value is List) {
+      for (var index = 0; index < value.length; index++) {
+        findNulls(value[index], [...path, index]);
+      }
+    }
+  }
+
+  findNulls(document, const []);
+  final result = _packConfigurationSchema.safeParse(document);
+  if (result.isSuccess) return issues;
+  for (final issue in result.errors) {
+    // The semantic pass already reports unknown fields with its established
+    // pack-aware paths. Strict Zema objects remain the recursive shape gate.
+    if (issue.code == 'unknown_key') continue;
+    final rawPath = issue.path;
+    final keyPath = rawPath.isEmpty ? 'configuration' : _schemaPath(rawPath);
+    if (nullPaths.contains(keyPath)) continue;
+    // Source/track semantics report the discriminator and selected branch
+    // precisely; Zema's root-level union summary would only duplicate them.
+    if (issue.code == 'invalid_union') continue;
+    final received = _valueAtPath(document, rawPath);
+    issues.add(
+      PackConfigurationIssue(
+        keyPath,
+        issue.code == 'too_small' && received is List
+            ? 'Must contain at least one item when present.'
+            : issue.message,
+        issue.code,
+      ),
+    );
+  }
+  return issues;
+}
+
+Object? _valueAtPath(Object? document, Iterable<Object?> path) {
+  var current = document;
+  for (final segment in path) {
+    if (segment is String && current is Map) {
+      current = current[segment];
+    } else if (segment is int && current is List && segment < current.length) {
+      current = current[segment];
+    } else {
+      return null;
+    }
+  }
+  return current;
+}
+
+String _schemaPath(Iterable<Object?> segments) {
+  final path = StringBuffer();
+  for (final segment in segments) {
+    if (segment is int) {
+      path.write('[$segment]');
+      continue;
+    }
+    final key = segment.toString();
+    if (path.isNotEmpty) path.write('.');
+    final quote =
+        key.isEmpty ||
+        key.runes.any(
+          (rune) =>
+              rune < 0x20 ||
+              rune == 0x7f ||
+              rune == 0x2e ||
+              rune == 0x2f ||
+              rune == 0x22 ||
+              rune == 0x5c,
+        );
+    path.write(quote ? ValidationDiagnostics.key(key) : key);
+  }
+  return path.toString();
 }
 
 final class _Parser {
@@ -704,7 +829,11 @@ final class _Parser {
       _ => const <String>{},
     };
     if (allowed.isEmpty) {
-      _error('$path.kind', 'must be github, git, local, or download');
+      _error(
+        '$path.kind',
+        'must be github, git, local, or download',
+        'invalid_discriminator',
+      );
       return null;
     }
     _unknown(source, path, allowed);
@@ -858,7 +987,11 @@ final class _Parser {
       _ => const <String>{},
     };
     if (allowed.isEmpty) {
-      _error('$path.kind', 'has an unsupported track kind');
+      _error(
+        '$path.kind',
+        'has an unsupported track kind',
+        'invalid_discriminator',
+      );
       return null;
     }
     _unknown(track, path, allowed);
@@ -1246,8 +1379,8 @@ final class _Parser {
     }
   }
 
-  void _error(String path, String message) {
-    issues.add(PackConfigurationIssue(path, message));
+  void _error(String path, String message, [String code = 'invalid_value']) {
+    issues.add(PackConfigurationIssue(path, message, code));
   }
 
   Never _throw() {

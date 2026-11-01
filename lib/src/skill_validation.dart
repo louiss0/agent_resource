@@ -4,11 +4,13 @@ import 'dart:io';
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
+import 'package:zema/zema.dart';
 
 import 'skill_files.dart';
+import 'validation/validation_diagnostics.dart';
 
 /// The profile implemented by [validateSkill].
-const skillValidationProfile = 'agentskills-core-ascii-v1';
+const skillValidationProfile = 'agentskills-core-strict-ascii-v1';
 
 /// The upstream Agent Skills snapshot used by [skillValidationProfile].
 const skillValidationBaseline = '69ef37e9424c0a7ea9dd2293b559e43ec8176379';
@@ -240,18 +242,12 @@ ValidationReport validateSkill(String skill, {String? expectedDirectoryName}) {
     }
   }
 
-  _validateName(
+  _validateFrontmatter(
     frontmatterMap,
     selectedPath,
     diagnostics,
     expectedDirectoryName: expectedDirectoryName,
   );
-  _validateDescription(frontmatterMap, diagnostics);
-  _validateLicense(frontmatterMap, diagnostics);
-  _validateCompatibility(frontmatterMap, diagnostics);
-  _validateMetadata(frontmatterMap, diagnostics);
-  _validateAllowedTools(frontmatterMap, diagnostics);
-  _warnUnknownFields(frontmatterMap, diagnostics);
 
   return _report(selectedPath, diagnostics);
 }
@@ -366,59 +362,190 @@ String _lineText(String content, int start, int end) {
   return content.substring(start, hasCarriageReturn ? end - 1 : end);
 }
 
-void _validateName(
+final _skillFrontmatterSchema = z.object({
+  'name': z
+      .string()
+      .min(1)
+      .refine(
+        (value) => value.runes.length <= 64,
+        code: 'too_big',
+        message: 'name must contain at most 64 Unicode scalar values.',
+      ),
+  'description': z
+      .string()
+      .min(1)
+      .refine(
+        (value) => value.runes.length <= 1024,
+        code: 'too_big',
+        message: 'description must contain at most 1024 Unicode scalar values.',
+      ),
+  'license': z.string().optional(),
+  'compatibility': z
+      .string()
+      .min(1)
+      .refine(
+        (value) => value.runes.length <= 500,
+        code: 'too_big',
+        message:
+            'compatibility must contain at most 500 Unicode scalar values.',
+      )
+      .optional(),
+  'metadata': z.map(z.string(), z.string()).optional(),
+  'allowed-tools': z.string().optional(),
+  'disable-model-invocation': z.boolean().optional(),
+}).makeStrict();
+
+const _skillFields = <String>[
+  'name',
+  'description',
+  'license',
+  'compatibility',
+  'metadata',
+  'allowed-tools',
+  'disable-model-invocation',
+];
+
+void _validateFrontmatter(
   Map<Object?, Object?> map,
   String selectedPath,
   List<ValidationDiagnostic> diagnostics, {
   String? expectedDirectoryName,
 }) {
-  if (!map.containsKey('name')) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'NAME_REQUIRED',
-        category: DiagnosticCategory.specification,
-        field: 'name',
-        message: 'Frontmatter requires a name string.',
-      ),
+  final result = _skillFrontmatterSchema.safeParse(map);
+  final issues = result.isSuccess ? const <ZemaIssue>[] : result.errors;
+  for (final field in _skillFields) {
+    final fieldIssues = issues.where(
+      (issue) => issue.path.isNotEmpty && issue.path.first == field,
     );
-    return;
+    if (map.containsKey(field) && map[field] == null && fieldIssues.isEmpty) {
+      final code = switch (field) {
+        'license' => 'LICENSE_TYPE',
+        'compatibility' => 'COMPATIBILITY_TYPE',
+        'metadata' => 'METADATA_TYPE',
+        'allowed-tools' => 'ALLOWED_TOOLS_TYPE',
+        'disable-model-invocation' => 'DISABLE_MODEL_INVOCATION_TYPE',
+        _ => 'FIELD_TYPE',
+      };
+      diagnostics.add(
+        _diagnostic(
+          code: code,
+          category: field == 'disable-model-invocation'
+              ? DiagnosticCategory.product
+              : DiagnosticCategory.specification,
+          field: field,
+          message: _skillFieldMessage(field, code),
+        ),
+      );
+    }
+    for (final issue in fieldIssues) {
+      final code = switch ((field, issue.code)) {
+        ('name', 'invalid_type') =>
+          map.containsKey(field) ? 'NAME_TYPE' : 'NAME_REQUIRED',
+        ('name', 'too_small') => 'NAME_EMPTY',
+        ('name', 'too_big') => 'NAME_LENGTH',
+        ('description', 'invalid_type') =>
+          map.containsKey(field) ? 'DESCRIPTION_TYPE' : 'DESCRIPTION_REQUIRED',
+        ('description', 'too_small') => 'DESCRIPTION_EMPTY',
+        ('description', 'too_big') => 'DESCRIPTION_LENGTH',
+        ('license', _) => 'LICENSE_TYPE',
+        ('compatibility', 'invalid_type') => 'COMPATIBILITY_TYPE',
+        ('compatibility', _) => 'COMPATIBILITY_LENGTH',
+        ('metadata', 'invalid_type') when issue.path.length == 1 =>
+          'METADATA_TYPE',
+        ('metadata', _) => 'METADATA_ENTRY_TYPE',
+        ('allowed-tools', _) => 'ALLOWED_TOOLS_TYPE',
+        ('disable-model-invocation', _) => 'DISABLE_MODEL_INVOCATION_TYPE',
+        _ => 'FIELD_TYPE',
+      };
+      diagnostics.add(
+        _diagnostic(
+          code: code,
+          category: field == 'disable-model-invocation'
+              ? DiagnosticCategory.product
+              : DiagnosticCategory.specification,
+          field: field,
+          message: _skillFieldMessage(field, code),
+        ),
+      );
+    }
+    if (field == 'name') {
+      _validateNameSemantics(
+        map,
+        selectedPath,
+        diagnostics,
+        expectedDirectoryName: expectedDirectoryName,
+      );
+    } else if (field == 'description') {
+      final value = map[field];
+      if (value is String && value.isNotEmpty && value.trim().isEmpty) {
+        diagnostics.add(
+          _diagnostic(
+            code: 'DESCRIPTION_EMPTY',
+            category: DiagnosticCategory.specification,
+            field: field,
+            message: _skillFieldMessage(field, 'DESCRIPTION_EMPTY'),
+          ),
+        );
+      }
+    }
   }
 
+  final unknown = <String>[
+    for (final key in map.keys)
+      if (key is String && !_skillFields.contains(key)) key,
+  ]..sort();
+  for (final key in unknown) {
+    diagnostics.add(
+      _diagnostic(
+        code: 'UNKNOWN_FIELD',
+        category: DiagnosticCategory.product,
+        field: ValidationDiagnostics.escape(key),
+        message: 'Unknown top-level fields are forbidden by this profile.',
+      ),
+    );
+  }
+}
+
+String _skillFieldMessage(String field, String code) => switch (code) {
+  'NAME_REQUIRED' ||
+  'DESCRIPTION_REQUIRED' => 'Frontmatter requires a $field string.',
+  'NAME_TYPE' || 'DESCRIPTION_TYPE' => '$field must be a string.',
+  'NAME_EMPTY' ||
+  'DESCRIPTION_EMPTY' => '$field must not be empty or whitespace-only.',
+  'NAME_LENGTH' => 'name must contain 1–64 Unicode scalar values.',
+  'DESCRIPTION_LENGTH' =>
+    'description must contain 1–1024 Unicode scalar values.',
+  'LICENSE_TYPE' => 'license must be a string when present.',
+  'COMPATIBILITY_TYPE' => 'compatibility must be a string when present.',
+  'COMPATIBILITY_LENGTH' =>
+    'compatibility must contain 1–500 Unicode scalar values.',
+  'METADATA_TYPE' => 'metadata must be a map when present.',
+  'METADATA_ENTRY_TYPE' => 'metadata keys and values must be strings.',
+  'ALLOWED_TOOLS_TYPE' => 'allowed-tools must be a string when present.',
+  'DISABLE_MODEL_INVOCATION_TYPE' =>
+    'disable-model-invocation must be a boolean when present.',
+  _ => '$field has an invalid value.',
+};
+
+void _validateNameSemantics(
+  Map<Object?, Object?> map,
+  String selectedPath,
+  List<ValidationDiagnostic> diagnostics, {
+  String? expectedDirectoryName,
+}) {
   final value = map['name'];
-  if (value is! String) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'NAME_TYPE',
-        category: DiagnosticCategory.specification,
-        field: 'name',
-        message: 'name must be a string.',
-      ),
-    );
-    return;
-  }
-
-  final length = value.runes.length;
+  if (value is! String) return;
   final empty = value.isEmpty || value.trim().isEmpty;
-  if (empty) {
+  if (value.isNotEmpty && value.trim().isEmpty) {
     diagnostics.add(
       _diagnostic(
         code: 'NAME_EMPTY',
         category: DiagnosticCategory.specification,
         field: 'name',
-        message: 'name must not be empty or whitespace-only.',
-      ),
-    );
-  } else if (length > 64) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'NAME_LENGTH',
-        category: DiagnosticCategory.specification,
-        field: 'name',
-        message: 'name must contain 1–64 Unicode scalar values.',
+        message: _skillFieldMessage('name', 'NAME_EMPTY'),
       ),
     );
   }
-
   if ((expectedDirectoryName ?? p.basename(selectedPath)) != value) {
     diagnostics.add(
       _diagnostic(
@@ -429,10 +556,7 @@ void _validateName(
       ),
     );
   }
-
-  if (empty) {
-    return;
-  }
+  if (empty) return;
   if (value.runes.any((rune) => rune > 0x7F)) {
     diagnostics.add(
       _diagnostic(
@@ -451,185 +575,6 @@ void _validateName(
         category: DiagnosticCategory.specification,
         field: 'name',
         message: 'name must use lowercase ASCII letters, digits, and single hyphens.',
-      ),
-    );
-  }
-}
-
-void _validateDescription(
-  Map<Object?, Object?> map,
-  List<ValidationDiagnostic> diagnostics,
-) {
-  if (!map.containsKey('description')) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'DESCRIPTION_REQUIRED',
-        category: DiagnosticCategory.specification,
-        field: 'description',
-        message: 'Frontmatter requires a description string.',
-      ),
-    );
-    return;
-  }
-
-  final value = map['description'];
-  if (value is! String) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'DESCRIPTION_TYPE',
-        category: DiagnosticCategory.specification,
-        field: 'description',
-        message: 'description must be a string.',
-      ),
-    );
-    return;
-  }
-
-  final empty = value.isEmpty || value.trim().isEmpty;
-  if (empty) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'DESCRIPTION_EMPTY',
-        category: DiagnosticCategory.specification,
-        field: 'description',
-        message: 'description must not be empty or whitespace-only.',
-      ),
-    );
-  }
-  if (value.runes.length > 1024) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'DESCRIPTION_LENGTH',
-        category: DiagnosticCategory.specification,
-        field: 'description',
-        message: 'description must contain 1–1024 Unicode scalar values.',
-      ),
-    );
-  }
-}
-
-void _validateLicense(
-  Map<Object?, Object?> map,
-  List<ValidationDiagnostic> diagnostics,
-) {
-  if (map.containsKey('license') && map['license'] is! String) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'LICENSE_TYPE',
-        category: DiagnosticCategory.specification,
-        field: 'license',
-        message: 'license must be a string when present.',
-      ),
-    );
-  }
-}
-
-void _validateCompatibility(
-  Map<Object?, Object?> map,
-  List<ValidationDiagnostic> diagnostics,
-) {
-  if (!map.containsKey('compatibility')) {
-    return;
-  }
-  final value = map['compatibility'];
-  if (value is! String) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'COMPATIBILITY_TYPE',
-        category: DiagnosticCategory.specification,
-        field: 'compatibility',
-        message: 'compatibility must be a string when present.',
-      ),
-    );
-    return;
-  }
-  final length = value.runes.length;
-  if (length < 1 || length > 500) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'COMPATIBILITY_LENGTH',
-        category: DiagnosticCategory.specification,
-        field: 'compatibility',
-        message: 'compatibility must contain 1–500 Unicode scalar values.',
-      ),
-    );
-  }
-}
-
-void _validateMetadata(
-  Map<Object?, Object?> map,
-  List<ValidationDiagnostic> diagnostics,
-) {
-  if (!map.containsKey('metadata')) {
-    return;
-  }
-  final value = map['metadata'];
-  if (value is! Map) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'METADATA_TYPE',
-        category: DiagnosticCategory.specification,
-        field: 'metadata',
-        message: 'metadata must be a map when present.',
-      ),
-    );
-    return;
-  }
-  for (final entry in value.entries) {
-    if (entry.key is! String || entry.value is! String) {
-      diagnostics.add(
-        _diagnostic(
-          code: 'METADATA_ENTRY_TYPE',
-          category: DiagnosticCategory.specification,
-          field: 'metadata',
-          message: 'metadata keys and values must be strings.',
-        ),
-      );
-    }
-  }
-}
-
-void _validateAllowedTools(
-  Map<Object?, Object?> map,
-  List<ValidationDiagnostic> diagnostics,
-) {
-  if (map.containsKey('allowed-tools') && map['allowed-tools'] is! String) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'ALLOWED_TOOLS_TYPE',
-        category: DiagnosticCategory.specification,
-        field: 'allowed-tools',
-        message: 'allowed-tools must be a string when present.',
-      ),
-    );
-  }
-}
-
-void _warnUnknownFields(
-  Map<Object?, Object?> map,
-  List<ValidationDiagnostic> diagnostics,
-) {
-  const known = <String>{
-    'name',
-    'description',
-    'license',
-    'compatibility',
-    'metadata',
-    'allowed-tools',
-  };
-  final unknown = <String>[
-    for (final key in map.keys)
-      if (key is String && !known.contains(key)) key,
-  ]..sort();
-
-  for (final key in unknown) {
-    diagnostics.add(
-      _diagnostic(
-        code: 'UNKNOWN_FIELD',
-        category: DiagnosticCategory.advisory,
-        field: key,
-        message: 'Unknown top-level field: $key.',
-        severity: DiagnosticSeverity.warning,
       ),
     );
   }

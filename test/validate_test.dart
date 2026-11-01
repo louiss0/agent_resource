@@ -10,7 +10,7 @@ import 'support/process_test_support.dart';
 
 const _markerSizeLimit = 1048576;
 const _frontmatterSizeLimit = 65536;
-const _profile = 'agentskills-core-ascii-v1';
+const _profile = 'agentskills-core-strict-ascii-v1';
 const _baseline = '69ef37e9424c0a7ea9dd2293b559e43ec8176379';
 
 late final String _entrypoint;
@@ -1039,51 +1039,6 @@ allowed-tools: Read Bash(git:*)
             );
           });
         }
-
-        test('unknown top-level fields are sorted advisory warnings', () async {
-          await _withSkill(
-            (skill) async {
-              final report = _reportFromSuccess(
-                _expectSuccess(await _execute(['--skill', skill.path])),
-              );
-              _expectReportShape(
-                report,
-                path: _absoluteLexical(skill.path),
-                valid: true,
-              );
-              final diagnostics = _diagnostics(report);
-              expect(
-                diagnostics.map((value) => value['code']),
-                everyElement('UNKNOWN_FIELD'),
-              );
-              expect(diagnostics.map((value) => value['field']), [
-                'aaa',
-                'zzz',
-              ]);
-              expect(
-                diagnostics,
-                everyElement(
-                  allOf(
-                    isA<Map<String, Object?>>(),
-                    predicate<Map<String, Object?>>(
-                      (value) => value['category'] == 'advisory',
-                    ),
-                    predicate<Map<String, Object?>>(
-                      (value) => value['severity'] == 'warning',
-                    ),
-                  ),
-                ),
-              );
-            },
-            marker: '''---
-name: valid-skill
-description: valid
-zzz: later
-aaa: first
----
-''',
-          );
-        });
 
         test('missing root is text failure with status one', () async {
           await _withRoot((root) async {
