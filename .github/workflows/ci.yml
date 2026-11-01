@@ -22,8 +22,8 @@ jobs:
             artifact: agent_resource
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
+      - uses: actions/checkout@v7.0.1
+      - uses: dart-lang/setup-dart@v1.8.1
         with:
           sdk: 3.13.2
       - name: Verify committed dependency resolution
@@ -51,7 +51,7 @@ jobs:
             dart run test/support/release_gate.dart build/${{ matrix.artifact }} build/release-evidence.json
           fi
       - name: Upload sanitized native release evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: release-evidence-${{ runner.os }}
           path: build/release-evidence.json
@@ -62,20 +62,20 @@ jobs:
     needs: native-lifecycle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
+      - uses: actions/checkout@v7.0.1
+      - uses: dart-lang/setup-dart@v1.8.1
         with:
           sdk: 3.13.2
       - name: Verify committed dependency resolution
         run: dart pub get --enforce-lockfile
       - name: Download all native evidence bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           path: evidence
       - name: Decide integrated native release qualification
         run: dart run test/support/release_decision.dart build/release-decision.json evidence/release-evidence-Windows/release-evidence.json evidence/release-evidence-macOS/release-evidence.json evidence/release-evidence-Linux/release-evidence.json
       - name: Upload integrated release decision
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: release-decision
           path: build/release-decision.json
