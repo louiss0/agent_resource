@@ -424,7 +424,6 @@ track = { kind = "local" }
             'json',
           ]);
           expect(dryRun.exitCode, 0, reason: dryRun.stderr);
-          expect(dryRun.stderr, isEmpty);
           final preview = jsonDecode(dryRun.stdout) as Map<String, Object?>;
           expect(preview['outcome'], 'preview');
           expect(preview['dryRun'], isTrue);

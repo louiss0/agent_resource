@@ -4,6 +4,7 @@ import 'agent.dart';
 import 'agents.dart';
 import 'config.dart';
 import 'skill.dart';
+import 'pack.dart';
 import 'skills.dart';
 import 'src/services/agent_installation_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
@@ -17,6 +18,7 @@ Executor createExecutor({
   SkillInstallationService? skillInstallation,
   AgentInstallationService? agentInstallation,
   PackLifecycleService? packLifecycle,
+  void Function(String)? deprecationWarning,
 }) => Executor(
   'agent_resource',
   'Manage resources consumed by AI coding harnesses.',
@@ -24,8 +26,9 @@ Executor createExecutor({
   [
     SkillCommand(installation: skillInstallation),
     AgentCommand(installation: agentInstallation),
-    SkillsCommand(service: packLifecycle),
-    AgentsCommand(service: packLifecycle),
+    PackCommand(service: packLifecycle),
+    SkillsCommand(service: packLifecycle, warning: deprecationWarning),
+    AgentsCommand(service: packLifecycle, warning: deprecationWarning),
     ConfigCommand(service: packLifecycle),
   ],
 );

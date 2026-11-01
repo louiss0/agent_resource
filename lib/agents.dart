@@ -5,19 +5,22 @@ import 'source.dart';
 import 'src/services/pack_lifecycle_service.dart';
 
 final class AgentsCommand extends GroupCommand {
-  new({PackLifecycleService? service})
-    : this._(service ?? PackLifecycleService());
+  new({PackLifecycleService? service, void Function(String)? warning})
+    : this._(service ?? PackLifecycleService(), warning);
 
-  AgentsCommand._(PackLifecycleService service)
+  AgentsCommand._(PackLifecycleService service, void Function(String)? warning)
     : super([
-        ...packLifecycleCommands(PackResourceType.agent, service),
-        PackSourceCommand(PackResourceType.agent, service),
+        ...packLifecycleCommands(
+          PackResourceType.agent,
+          service,
+          warning: warning,
+        ),
+        PackSourceCommand(PackResourceType.agent, service, warning: warning),
       ]);
 
   @override
   String get name => 'agents';
 
   @override
-  String get shortDescription =>
-      'Manage source-aware native Agent collections.';
+  String get shortDescription => 'Deprecated: use pack --type agent.';
 }

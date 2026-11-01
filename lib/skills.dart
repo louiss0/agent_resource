@@ -5,18 +5,22 @@ import 'source.dart';
 import 'src/services/pack_lifecycle_service.dart';
 
 final class SkillsCommand extends GroupCommand {
-  new({PackLifecycleService? service})
-    : this._(service ?? PackLifecycleService());
+  new({PackLifecycleService? service, void Function(String)? warning})
+    : this._(service ?? PackLifecycleService(), warning);
 
-  SkillsCommand._(PackLifecycleService service)
+  SkillsCommand._(PackLifecycleService service, void Function(String)? warning)
     : super([
-        ...packLifecycleCommands(PackResourceType.skill, service),
-        PackSourceCommand(PackResourceType.skill, service),
+        ...packLifecycleCommands(
+          PackResourceType.skill,
+          service,
+          warning: warning,
+        ),
+        PackSourceCommand(PackResourceType.skill, service, warning: warning),
       ]);
 
   @override
   String get name => 'skills';
 
   @override
-  String get shortDescription => 'Manage source-aware Skill packs.';
+  String get shortDescription => 'Deprecated: use pack --type skill.';
 }

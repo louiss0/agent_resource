@@ -9,53 +9,73 @@ import 'src/services/pack_lifecycle_service.dart';
 
 List<Command> packLifecycleCommands(
   PackResourceType resourceType,
-  PackLifecycleService service,
-) => [
-  for (final operation in const [
+  PackLifecycleService service, {
+  bool canonical = false,
+  void Function(String)? warning,
+}) => [
+  for (final operation in [
     PackOperation.install,
     PackOperation.update,
     PackOperation.remove,
     PackOperation.rollback,
     PackOperation.cleanup,
+    if (canonical) PackOperation.validate,
   ])
-    PackActionCommand(resourceType, operation, service),
+    PackActionCommand(
+      resourceType,
+      operation,
+      service,
+      canonical: canonical,
+      warning: warning,
+    ),
 ];
 
 final class PackActionCommand extends Command {
-  PackActionCommand(this._resourceType, this._operation, this._service)
-    : super(
-        mandatoryPositionals: [_pack],
-        options: [
-          _scope,
-          _cwd,
-          _projectRoot,
-          _home,
-          _state,
-          _config,
-          _target,
-          _only,
-          _method,
-          _release,
-          _bump,
-          _keepLocal,
-          _replaceLocal,
-          _approveRemoval,
-          _allowFolder,
-          _to,
-          _snapshot,
-          _format,
-        ],
-        flags: const [
-          _includePrerelease,
-          _savePolicy,
-          _noSave,
-          _skipNew,
-          _localEdits,
-          _dryRun,
-          _yes,
-        ],
-      );
+  PackActionCommand(
+    this._resourceType,
+    this._operation,
+    this._service, {
+    bool canonical = false,
+    void Function(String)? warning,
+  }) : _canonical = canonical,
+       _warning = warning ?? stderr.writeln,
+       super(
+         mandatoryPositionals: [_pack],
+         options: [
+           _scope,
+           _cwd,
+           _projectRoot,
+           _home,
+           _state,
+           _config,
+           _target,
+           _only,
+           if (canonical) _type,
+           _method,
+           _release,
+           _bump,
+           _keepLocal,
+           _replaceLocal,
+           _approveRemoval,
+           _allowFolder,
+           _to,
+           _snapshot,
+           _format,
+         ],
+         flags: const [
+           _includePrerelease,
+           _savePolicy,
+           _noSave,
+           _skipNew,
+           _includeNew,
+           _localEdits,
+           _dryRun,
+           _yes,
+         ],
+       );
 
+  final bool _canonical;
+  final void Function(String) _warning;
   final PackResourceType _resourceType;
   final PackOperation _operation;
   final PackLifecycleService _service;
@@ -74,7 +94,16 @@ final class PackActionCommand extends Command {
   static final _state = FolderPathOption('state-dir');
   static final _config = FilePathOption('config');
   static final _target = StringOption('target');
-  static final _only = RepeatableStringOption('only');
+  static final _only = RepeatableStringOption(
+    'only',
+    description: 'Filter by native item name.',
+  );
+  static final _type = RepeatableChoiceOption(
+    'type',
+    PackResourceType.values,
+    unique: true,
+    description: 'Select resource kinds; defaults to skill and agent.',
+  );
   static final _method = StringOption(
     'method',
     regex: RegExp(r'^(canonical|copy|source-link)$'),
@@ -99,6 +128,10 @@ final class PackActionCommand extends Command {
   static const _savePolicy = BooleanFlag('save-policy');
   static const _noSave = BooleanFlag('no-save');
   static const _skipNew = BooleanFlag('skip-new');
+  static const _includeNew = BooleanFlag(
+    'include-new',
+    description: 'Include newly discovered resources.',
+  );
   static const _localEdits = BooleanFlag('local-edits');
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
@@ -112,6 +145,7 @@ final class PackActionCommand extends Command {
     PackOperation.remove => 'remove',
     PackOperation.rollback => 'rollback',
     PackOperation.cleanup => 'cleanup',
+    PackOperation.validate => 'validate',
     PackOperation.configValidate => throw StateError('Not a pack action.'),
   };
 
@@ -127,16 +161,29 @@ final class PackActionCommand extends Command {
       'Remove explicitly selected managed pack resources.',
     PackOperation.rollback => 'Restore one resource by Recorded snapshot ref.',
     PackOperation.cleanup => 'Review and prune eligible retained pack content.',
+    PackOperation.validate => 'Validate a configured pack.',
     PackOperation.configValidate => throw StateError('Not a pack action.'),
   };
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    if (valueOf(_includeNew) && valueOf(_skipNew)) {
+      throw MambaException('--include-new and --skip-new cannot be combined.');
+    }
+    if (!_canonical) {
+      _warning(
+        'Warning: ${_resourceType.name}s commands are deprecated; use pack with --type ${_resourceType.name}.',
+      );
+    }
     final format = valueOf(_format);
     final result = await _service.execute(
       PackLifecycleRequest(
         operation: _operation,
         resourceType: _resourceType,
+        resourceTypes: _canonical
+            ? (valueOf(_type) ?? PackResourceType.values)
+            : [_resourceType],
+        includeNew: valueOf(_includeNew),
         pack: valueOf(_pack),
         processWorkingDirectory: Directory.current.path,
         environment: Map<String, String>.unmodifiable(Platform.environment),

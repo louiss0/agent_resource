@@ -29,6 +29,7 @@ final class const PackDisposition(final String wireName) {
   static const installed = PackDisposition('installed');
   static const updated = PackDisposition('updated');
   static const observed = PackDisposition('observed');
+  static const validated = PackDisposition('validated');
   static const unchanged = PackDisposition('unchanged');
   static const keptLocal = PackDisposition('keptLocal');
   static const removed = PackDisposition('removed');
@@ -40,6 +41,7 @@ final class const PackDisposition(final String wireName) {
     installed,
     updated,
     observed,
+    validated,
     unchanged,
     keptLocal,
     removed,

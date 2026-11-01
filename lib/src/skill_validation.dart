@@ -441,11 +441,11 @@ void _validateFrontmatter(
       final code = switch ((field, issue.code)) {
         ('name', 'invalid_type') =>
           map.containsKey(field) ? 'NAME_TYPE' : 'NAME_REQUIRED',
-        ('name', 'too_small') => 'NAME_EMPTY',
+        ('name', 'too_small' || 'too_short') => 'NAME_EMPTY',
         ('name', 'too_big') => 'NAME_LENGTH',
         ('description', 'invalid_type') =>
           map.containsKey(field) ? 'DESCRIPTION_TYPE' : 'DESCRIPTION_REQUIRED',
-        ('description', 'too_small') => 'DESCRIPTION_EMPTY',
+        ('description', 'too_small' || 'too_short') => 'DESCRIPTION_EMPTY',
         ('description', 'too_big') => 'DESCRIPTION_LENGTH',
         ('license', _) => 'LICENSE_TYPE',
         ('compatibility', 'invalid_type') => 'COMPATIBILITY_TYPE',

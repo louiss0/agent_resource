@@ -4,7 +4,8 @@ import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 import 'package:zema/zema.dart';
 
-import '../installation/resource_catalog.dart' show NativeAgentProfile;
+import '../installation/resource_catalog.dart'
+    show CatalogResourceType, NativeAgentProfile;
 import '../validation/validation_diagnostics.dart';
 
 export '../installation/resource_catalog.dart' show NativeAgentProfile;
@@ -204,6 +205,7 @@ final class PackDefinition {
     required this.install,
     required this.update,
     required this.resources,
+    this.discovery = PackDiscovery.defaults,
   });
 
   final String key;
@@ -211,6 +213,7 @@ final class PackDefinition {
   final PackInstall install;
   final PackUpdate update;
   final PackResources resources;
+  final PackDiscovery discovery;
 }
 
 final class SkillCatalogEntry {
@@ -227,7 +230,11 @@ final class AgentCatalogEntry {
 }
 
 final class SourceCatalog {
-  const SourceCatalog({required this.skills, required this.agents});
+  const SourceCatalog({
+    required this.skills,
+    required this.agents,
+    this.declared = false,
+  });
 
   static const empty = SourceCatalog(
     skills: <SkillCatalogEntry>[],
@@ -236,6 +243,7 @@ final class SourceCatalog {
 
   final List<SkillCatalogEntry> skills;
   final List<AgentCatalogEntry> agents;
+  final bool declared;
 }
 
 final class PackConfiguration {
@@ -252,12 +260,14 @@ final class PackConfiguration {
     String source, {
     String configPath = packConfigurationFileName,
     PackConfigurationScope scope = PackConfigurationScope.project,
+    CatalogResourceType? catalogType,
   }) {
     return _parse(
       source,
       configPath: configPath,
       scope: scope,
       inheritedPreferences: CliPreferences.defaults,
+      catalogType: catalogType,
     );
   }
 
@@ -399,6 +409,7 @@ final class PackConfiguration {
     required String configPath,
     required PackConfigurationScope scope,
     required CliPreferences inheritedPreferences,
+    CatalogResourceType? catalogType,
   }) {
     final Map<String, dynamic> document;
     try {
@@ -427,8 +438,8 @@ final class PackConfiguration {
       ], configPath: configPath);
     }
     final parser = _Parser(configPath, inheritedPreferences)
-      ..issues.addAll(_shapeIssues(document));
-    return parser.parse(document, scope);
+      ..issues.addAll(_shapeIssues(document, catalogType: catalogType));
+    return parser.parse(document, scope, catalogType: catalogType);
   }
 
   static String _readConfig(String path) {
@@ -563,7 +574,10 @@ final _packConfigurationSchema = z.object({
 /// Declarative shape gate. The semantic pass remains authoritative for
 /// unknown fields, cross-field meaning, duplicates, credentials, and safe
 /// paths so diagnostics stay aggregated and actionable.
-List<PackConfigurationIssue> _shapeIssues(Object? document) {
+List<PackConfigurationIssue> _shapeIssues(
+  Object? document, {
+  CatalogResourceType? catalogType,
+}) {
   if (document is! Map<String, dynamic>) {
     return const [
       PackConfigurationIssue(
@@ -601,15 +615,21 @@ List<PackConfigurationIssue> _shapeIssues(Object? document) {
   }
 
   findNulls(document, const []);
+  bool excluded(String path) => switch (catalogType) {
+    CatalogResourceType.skill => path.startsWith('catalog.agents'),
+    CatalogResourceType.agent => path.startsWith('catalog.skills'),
+    null => false,
+  };
+  final retained = issues.where((issue) => !excluded(issue.keyPath)).toList();
   final result = _packConfigurationSchema.safeParse(document);
-  if (result.isSuccess) return issues;
+  if (result.isSuccess) return retained;
   for (final issue in result.errors) {
     // The semantic pass already reports unknown fields with its established
     // pack-aware paths. Strict Zema objects remain the recursive shape gate.
     if (issue.code == 'unknown_key') continue;
     final rawPath = issue.path;
     final keyPath = rawPath.isEmpty ? 'configuration' : _schemaPath(rawPath);
-    if (nullPaths.contains(keyPath)) continue;
+    if (excluded(keyPath) || nullPaths.contains(keyPath)) continue;
     // Source/track semantics report the discriminator and selected branch
     // precisely; Zema's root-level union summary would only duplicate them.
     if (issue.code == 'invalid_union') continue;
@@ -675,8 +695,9 @@ final class _Parser {
 
   PackConfiguration parse(
     Map<String, dynamic> document,
-    PackConfigurationScope scope,
-  ) {
+    PackConfigurationScope scope, {
+    CatalogResourceType? catalogType,
+  }) {
     final root = _map(document, 'configuration');
     if (root == null) _throw();
     _unknown(root, 'configuration', const {
@@ -692,7 +713,11 @@ final class _Parser {
 
     final cli = _parseCli(root['cli'], root.containsKey('cli'));
     final packs = _parsePacks(root['packs'], root.containsKey('packs'));
-    final catalog = _parseCatalog(root['catalog'], root.containsKey('catalog'));
+    final catalog = _parseCatalog(
+      root['catalog'],
+      root.containsKey('catalog'),
+      catalogType: catalogType,
+    );
     if (issues.isNotEmpty) _throw();
     return PackConfiguration._(
       schemaVersion: 1,
@@ -781,7 +806,13 @@ final class _Parser {
       }
       final body = _map(entry.value, path);
       if (body == null) continue;
-      _unknown(body, path, const {'source', 'install', 'update', 'resources'});
+      _unknown(body, path, const {
+        'source',
+        'install',
+        'update',
+        'resources',
+        'discovery',
+      });
       final source = _parseSource(body['source'], '$path.source', key);
       final install = _parseInstall(body['install'], '$path.install');
       final update = _parseUpdate(
@@ -791,6 +822,7 @@ final class _Parser {
         source,
       );
       final resources = _parseResources(body['resources'], '$path.resources');
+      final discovery = _parseDiscovery(body['discovery'], '$path.discovery');
       if (source == null || update == null) continue;
       if (install.skillMethod == SkillInstallMethod.sourceLink &&
           source is! LocalPackSource) {
@@ -818,6 +850,7 @@ final class _Parser {
           install: install,
           update: update,
           resources: resources,
+          discovery: discovery,
         ),
       );
     }
@@ -1075,6 +1108,31 @@ final class _Parser {
     return null;
   }
 
+  PackDiscovery _parseDiscovery(Object? value, String path) {
+    if (value == null) return PackDiscovery.defaults;
+    final discovery = _map(value, path);
+    if (discovery == null) return PackDiscovery.defaults;
+    _unknown(discovery, path, const {'skills_directory', 'agents_directory'});
+    return PackDiscovery(
+      skillsDirectory: discovery.containsKey('skills_directory')
+          ? _safeRelativeString(
+                  discovery['skills_directory'],
+                  '$path.skills_directory',
+                  allowRoot: true,
+                ) ??
+                'skills'
+          : 'skills',
+      agentsDirectory: discovery.containsKey('agents_directory')
+          ? _safeRelativeString(
+                  discovery['agents_directory'],
+                  '$path.agents_directory',
+                  allowRoot: true,
+                ) ??
+                'agents'
+          : 'agents',
+    );
+  }
+
   PackResources _parseResources(Object? value, String path) {
     if (value == null) return PackResources.empty;
     final resources = _map(value, path);
@@ -1172,7 +1230,8 @@ final class _Parser {
                     'must name a non-native extra folder; native Skill roots need no approval',
                   );
                   continue;
-                }                if (folders.contains(folder)) {
+                }
+                if (folders.contains(folder)) {
                   _error(
                     folderPath,
                     'duplicates extra folder ${_quote(folder)}',
@@ -1198,14 +1257,23 @@ final class _Parser {
     );
   }
 
-  SourceCatalog _parseCatalog(Object? value, bool present) {
+  SourceCatalog _parseCatalog(
+    Object? value,
+    bool present, {
+    CatalogResourceType? catalogType,
+  }) {
     if (!present) return SourceCatalog.empty;
     final catalog = _map(value, 'catalog');
     if (catalog == null) return SourceCatalog.empty;
     _unknown(catalog, 'catalog', const {'skills', 'agents'});
     return SourceCatalog(
-      skills: List.unmodifiable(_parseSkillCatalog(catalog['skills'])),
-      agents: List.unmodifiable(_parseAgentCatalog(catalog['agents'])),
+      declared: true,
+      skills: catalogType == CatalogResourceType.agent
+          ? const []
+          : List.unmodifiable(_parseSkillCatalog(catalog['skills'])),
+      agents: catalogType == CatalogResourceType.skill
+          ? const []
+          : List.unmodifiable(_parseAgentCatalog(catalog['agents'])),
     );
   }
 
@@ -1353,7 +1421,7 @@ final class _Parser {
   }) {
     final string = _string(value, path, required: true);
     if (string == null) return null;
-    if (!_safeRelative(string, allowRoot: allowRoot)) {
+    if (string.trim().isEmpty || !_safeRelative(string, allowRoot: allowRoot)) {
       _error(path, 'must be a safe forward-slash source-relative path');
       return null;
     }
@@ -1487,3 +1555,15 @@ bool _hasControl(String value) =>
     value.runes.any((rune) => rune < 0x20 || rune == 0x7f);
 
 String _quote(String value) => '"${value.replaceAll('"', r'\"')}"';
+
+final class PackDiscovery {
+  const PackDiscovery({
+    this.skillsDirectory = 'skills',
+    this.agentsDirectory = 'agents',
+  });
+
+  static const defaults = PackDiscovery();
+
+  final String skillsDirectory;
+  final String agentsDirectory;
+}

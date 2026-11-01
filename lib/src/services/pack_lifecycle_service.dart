@@ -18,6 +18,7 @@ import '../pack/release_policy.dart' as release_policy;
 import '../pack/skill_admission.dart';
 import '../skill_files.dart';
 import '../skill_validation.dart';
+import '../validation/validation_diagnostics.dart';
 import 'acquisition_service.dart';
 import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
@@ -35,6 +36,7 @@ enum PackOperation {
   remove,
   rollback,
   cleanup,
+  validate,
   configValidate,
 }
 
@@ -46,7 +48,8 @@ final class const PackPrompts({
 final class const PackLifecycleRequest({
   required final PackOperation operation,
   required final PackResourceType resourceType,
-
+  final List<PackResourceType> resourceTypes = const <PackResourceType>[],
+  final bool includeNew = false,
   required final String processWorkingDirectory,
   final Map<String, String> environment = const <String, String>{},
   final String? pack,
@@ -123,6 +126,16 @@ interface class PackLifecycleService {
     if (request.operation == PackOperation.configValidate) {
       return _validateConfiguration(request, configuration);
     }
+    final pack = configuration.findPack(request.pack!);
+    if (pack == null) {
+      throw MambaException(
+        'No configured pack matches ${request.pack} in ${configuration.configPath}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    if (request.operation == PackOperation.validate) {
+      return _validatePack(request, context, configuration, pack);
+    }
     if (request.scope == null && !request.interactive) {
       throw MambaException(
         'Noninteractive mutations require explicit --scope project|user.',
@@ -136,13 +149,6 @@ interface class PackLifecycleService {
       );
     }
 
-    final pack = configuration.findPack(request.pack!);
-    if (pack == null) {
-      throw MambaException(
-        'No configured pack matches ${request.pack} in ${configuration.configPath}.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
     _validateModeConflicts(request, pack);
     try {
       return await switch (request.operation) {
@@ -167,6 +173,7 @@ interface class PackLifecycleService {
           configuration,
           pack,
         ),
+        PackOperation.validate ||
         PackOperation.configValidate => throw StateError('Handled above.'),
       };
     } on MambaException catch (error) {
@@ -190,6 +197,66 @@ interface class PackLifecycleService {
         'Dry-run is blocked; no managed state was published.\n${plan.renderText()}',
         exitCode: error.exitCode,
       );
+    }
+  }
+
+  Future<PackOperationResult> _validatePack(
+    PackLifecycleRequest request,
+    LifecycleContext context,
+    PackConfiguration configuration,
+    PackDefinition pack,
+  ) async {
+    final acquired = await _acquire(pack, configuration, request: request);
+    final workspace = acquired.workspace;
+    try {
+      final inspected = <_InspectedPackResource>[];
+      for (final type in _requestResourceTypes(request)) {
+        for (final candidate in await _validationCandidates(
+          workspace,
+          pack,
+          type,
+        )) {
+          inspected.add(_inspectPackResource(candidate, pack));
+        }
+      }
+      _requireUniqueValidationNames(inspected, pack);
+      final selected = _selectValidatedResources(request, pack, inspected);
+      final failures = <String>[
+        for (final resource in selected)
+          ...resource.failures.map((failure) => '${resource.label}: $failure'),
+      ];
+      if (failures.isNotEmpty) {
+        throw MambaException(
+          'Pack validation failed for ${pack.key}; no managed state was changed.\n'
+          '${failures.map((failure) => '- $failure').join('\n')}',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      return PackOperationResult(
+        operation: 'pack.validate',
+        outcome: 'valid',
+        context: _contextJson(request, context, configuration),
+        source: _sourceJson(pack, workspace.provenance),
+        resources: [
+          for (final resource in selected)
+            PackResourceResult(
+              type: resource.candidate.type.name,
+              name: resource.name!,
+              disposition: PackDisposition.validated,
+            ),
+        ],
+        warnings: [
+          for (final resource in selected)
+            for (final warning in resource.warnings)
+              PackWarning(
+                id: '${resource.candidate.type.name}-${resource.name}-$warning',
+                message: '${resource.name}: $warning',
+              ),
+        ],
+        dryRun: true,
+      );
+    } finally {
+      await workspace.close();
     }
   }
 
@@ -365,11 +432,12 @@ interface class PackLifecycleService {
               continue;
             }
             final includeNew =
+                request.includeNew ||
                 request.interactive &&
-                !request.yes &&
-                await _promptYesNo(
-                  '${candidate.name} is new upstream. Include it?',
-                );
+                    !request.yes &&
+                    await _promptYesNo(
+                      '${candidate.name} is new upstream. Include it?',
+                    );
             if (!includeNew) {
               declinedCandidates.add(candidate);
               actions[candidate.name] = 'observed';
@@ -1739,6 +1807,317 @@ interface class PackLifecycleService {
     );
   }
 
+  Future<List<_PackValidationCandidate>> _validationCandidates(
+    AcquisitionWorkspace workspace,
+    PackDefinition pack,
+    PackResourceType type,
+  ) async {
+    final catalogPath = p.join(
+      workspace.selectedRoot,
+      packConfigurationFileName,
+    );
+    final catalogType = skillEntityType(catalogPath, followLinks: false);
+    if (catalogType == FileSystemEntityType.link) {
+      throw MambaException(
+        'The publisher catalog must not be a linked source alias.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final catalog = catalogType == FileSystemEntityType.notFound
+        ? null
+        : _readSourceCatalog(workspace, type: type);
+    final paths = switch (type) {
+      PackResourceType.skill => [
+        for (final entry in catalog?.skills ?? const <SkillCatalogEntry>[])
+          (entry.path, null),
+      ],
+      PackResourceType.agent => [
+        for (final entry in catalog?.agents ?? const <AgentCatalogEntry>[])
+          (entry.path, entry.profile),
+      ],
+    };
+    if (catalog?.declared == true) {
+      return [
+        for (final (relative, profile) in paths)
+          _PackValidationCandidate(
+            type: type,
+            relativePath: relative,
+            path: _validationSourcePath(workspace, relative),
+            profile: profile,
+          ),
+      ];
+    }
+    final relativeRoot = type == PackResourceType.skill
+        ? pack.discovery.skillsDirectory
+        : pack.discovery.agentsDirectory;
+    final root = _validationSourcePath(workspace, relativeRoot);
+    final rootType = skillEntityType(root, followLinks: false);
+    if (rootType == FileSystemEntityType.notFound) return const [];
+    if (rootType != FileSystemEntityType.directory) {
+      throw MambaException(
+        'Pack discovery root must be a real directory: '
+        '${ValidationDiagnostics.escape(relativeRoot)}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final result = <_PackValidationCandidate>[];
+    var entries = 0;
+    Future<void> visit(Directory directory, String relative, int depth) async {
+      if (depth > 16) {
+        throw MambaException(
+          'Pack discovery exceeds its depth-16 budget.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      final children = <FileSystemEntity>[];
+      await for (final child in directory.list(followLinks: false)) {
+        if (++entries > 20000) {
+          throw MambaException(
+            'Pack discovery exceeds its 20,000-entry budget.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        children.add(child);
+      }
+      children.sort((left, right) => left.path.compareTo(right.path));
+      for (final child in children) {
+        final childRelative = p.posix.join(relative, p.basename(child.path));
+        final childType = skillEntityType(child.path, followLinks: false);
+        if (childType == FileSystemEntityType.link) {
+          throw MambaException(
+            'Pack discovery refuses linked source entries: '
+            '${ValidationDiagnostics.escape(childRelative)}.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        if (type == PackResourceType.skill) {
+          if (childType == FileSystemEntityType.directory) {
+            result.add(
+              _PackValidationCandidate(
+                type: type,
+                relativePath: childRelative,
+                path: child.path,
+                profile: null,
+              ),
+            );
+            if (result.length > 1000) {
+              throw MambaException(
+                'Pack discovery exceeds its 1,000-resource budget.',
+                exitCode: PackProcessStatus.invalidInput.code,
+              );
+            }
+          }
+          continue;
+        }
+        if (childType == FileSystemEntityType.directory) {
+          await visit(child as Directory, childRelative, depth + 1);
+        } else if (childType == FileSystemEntityType.file &&
+            const {'.md', '.toml'}.contains(p.extension(child.path))) {
+          result.add(
+            _PackValidationCandidate(
+              type: type,
+              relativePath: childRelative,
+              path: child.path,
+              profile: null,
+            ),
+          );
+          if (result.length > 1000) {
+            throw MambaException(
+              'Pack discovery exceeds its 1,000-resource budget.',
+              exitCode: PackProcessStatus.invalidInput.code,
+            );
+          }
+        }
+      }
+    }
+
+    await visit(Directory(root), relativeRoot, 0);
+    return result;
+  }
+
+  String _validationSourcePath(
+    AcquisitionWorkspace workspace,
+    String relative,
+  ) {
+    if (relative == '.') return workspace.selectedRoot;
+    final path = _catalogPath(workspace, relative);
+    var current = workspace.selectedRoot;
+    if (relative != '.') {
+      for (final segment in p.posix.split(relative)) {
+        current = p.join(current, segment);
+        if (skillEntityType(current, followLinks: false) ==
+            FileSystemEntityType.link) {
+          throw MambaException(
+            'Pack source paths must not contain linked aliases: '
+            '${ValidationDiagnostics.escape(relative)}.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+      }
+    }
+    return path;
+  }
+
+  _InspectedPackResource _inspectPackResource(
+    _PackValidationCandidate candidate,
+    PackDefinition pack,
+  ) {
+    String? name;
+    final failures = <String>[];
+    final warnings = <String>[];
+    try {
+      if (candidate.type == PackResourceType.skill) {
+        name = readDeclaredSkillName(candidate.path);
+        final approvedExtraFolders = pack.resources.skills.overrides
+            .where((override) => override.name == name)
+            .expand((override) => override.extraFolders)
+            .toSet();
+        _admission.inspect(
+          candidate.path,
+          approvedExtraFolders: approvedExtraFolders,
+        );
+        final report = validateSkill(candidate.path);
+        for (final diagnostic in report.diagnostics) {
+          final label = _validationDiagnosticLabel(
+            diagnostic.code,
+            diagnostic.field,
+          );
+          if (diagnostic.severity == DiagnosticSeverity.error) {
+            failures.add(label);
+          } else {
+            warnings.add(label);
+          }
+        }
+      } else if (candidate.profile == null) {
+        failures.add(
+          'NATIVE_PROFILE_REQUIRED: discovered Agents require an explicit '
+          'catalog profile (claude, codex, or pi-common); no profile was inferred',
+        );
+      } else {
+        final report = inspectNativeAgent(
+          AgentInspectionInput(
+            nativeFile: candidate.path,
+            harness: _harness(candidate.profile!),
+          ),
+          operation: AgentOperation.validate,
+        );
+        final identity = report.identity['name'];
+        if (identity is Map<String, Object?>) {
+          name = identity['resolved'] as String?;
+        }
+        if (name == null) failures.add('NATIVE_NAME_UNRESOLVED');
+        for (final diagnostic in report.diagnostics) {
+          final label = _validationDiagnosticLabel(
+            diagnostic.code,
+            diagnostic.field,
+          );
+          if (diagnostic.severity == AgentDiagnosticSeverity.error) {
+            failures.add(label);
+          } else {
+            warnings.add(label);
+          }
+        }
+      }
+    } on MambaException catch (error) {
+      failures.add(
+        candidate.type == PackResourceType.skill
+            ? 'SKILL_SOURCE_REJECTED (source): the Skill root, marker, name, '
+                  'or tree was not admitted (status ${error.exitCode})'
+            : 'NATIVE_INSPECTION_INCOMPLETE: validation could not complete '
+                  'safely (status ${error.exitCode})',
+      );
+    }
+    return _InspectedPackResource(
+      candidate: candidate,
+      name: name,
+      failures: failures,
+      warnings: warnings,
+    );
+  }
+
+  String _validationDiagnosticLabel(String code, String? field) => field == null
+      ? ValidationDiagnostics.escape(code)
+      : '${ValidationDiagnostics.escape(code)} '
+            '(${ValidationDiagnostics.escape(field)})';
+
+  void _requireUniqueValidationNames(
+    List<_InspectedPackResource> resources,
+    PackDefinition pack,
+  ) {
+    final names = <String, List<_InspectedPackResource>>{};
+    for (final resource in resources) {
+      if (resource.name != null) {
+        names.putIfAbsent(resource.name!, () => []).add(resource);
+      }
+    }
+    final duplicates = names.entries
+        .where(
+          (entry) =>
+              entry.value.length > 1 &&
+              entry.value
+                      .map((resource) => resource.candidate.type)
+                      .toSet()
+                      .length !=
+                  entry.value.length,
+        )
+        .map((entry) => entry.key)
+        .toList();
+    if (duplicates.isNotEmpty) {
+      throw MambaException(
+        'Duplicate native name(s) in pack ${pack.key}: '
+        '${duplicates.map(ValidationDiagnostics.escape).join(', ')}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+  }
+
+  List<_InspectedPackResource> _selectValidatedResources(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    List<_InspectedPackResource> resources,
+  ) {
+    if (request.only.isNotEmpty) {
+      final unknown = request.only
+          .where((name) => resources.every((resource) => resource.name != name))
+          .toList();
+      if (unknown.isNotEmpty) {
+        throw MambaException(
+          'Unknown native name(s) in pack ${pack.key}: '
+          '${unknown.map(ValidationDiagnostics.escape).join(', ')}.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      final ambiguous = request.only.where((name) {
+        final matches = resources
+            .where((resource) => resource.name == name)
+            .toList();
+        return matches.length > 1;
+      }).toList();
+      if (ambiguous.isNotEmpty) {
+        throw MambaException(
+          'Ambiguous native name(s) across selected types: '
+          '${ambiguous.map(ValidationDiagnostics.escape).join(', ')}; '
+          'select one --type.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      return resources
+          .where(
+            (resource) =>
+                resource.name == null || request.only.contains(resource.name),
+          )
+          .toList();
+    }
+    return resources.where((resource) {
+      final name = resource.name;
+      if (name == null) return true;
+      final rules = resource.candidate.type == PackResourceType.skill
+          ? pack.resources.skills
+          : pack.resources.agents;
+      return !rules.exclusions.contains(name);
+    }).toList();
+  }
+
   Future<List<_PackCandidate>> _candidates(
     PackLifecycleRequest request,
     LifecycleContext context,
@@ -2172,7 +2551,11 @@ interface class PackLifecycleService {
   }
 
   Future<String?> _promptReleaseBump(PackLifecycleRequest request) async {
-    if (!request.interactive || request.yes) return null;
+    if (request.operation == PackOperation.validate ||
+        !request.interactive ||
+        request.yes) {
+      return null;
+    }
     final answer = await _promptChoice(
       'Release bump [patch/minor/major]:',
       const ['patch', 'minor', 'major'],
@@ -2241,7 +2624,10 @@ interface class PackLifecycleService {
     );
   }
 
-  SourceCatalog _readSourceCatalog(AcquisitionWorkspace workspace) {
+  SourceCatalog _readSourceCatalog(
+    AcquisitionWorkspace workspace, {
+    PackResourceType? type,
+  }) {
     final path = p.join(workspace.selectedRoot, packConfigurationFileName);
     if (skillEntityType(path, followLinks: false) !=
         FileSystemEntityType.file) {
@@ -2261,6 +2647,11 @@ interface class PackLifecycleService {
       return PackConfiguration.parse(
         utf8.decode(bytes, allowMalformed: false),
         configPath: path,
+        catalogType: switch (type) {
+          PackResourceType.skill => CatalogResourceType.skill,
+          PackResourceType.agent => CatalogResourceType.agent,
+          null => null,
+        },
       ).catalog;
     } on PackConfigurationException catch (error) {
       throw MambaException(
@@ -2954,7 +3345,16 @@ interface class PackLifecycleService {
   }
 
   void _validateRequest(PackLifecycleRequest request) {
-
+    if (request.operation == PackOperation.validate) {
+      _validateReadOnlyRequest(request);
+    } else if (request.resourceTypes.isNotEmpty &&
+        (request.resourceTypes.length != 1 ||
+            request.resourceTypes.single != request.resourceType)) {
+      throw MambaException(
+        'Multi-type pack operations are not yet supported.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
     void unique(Iterable<String> values, String option) {
       final seen = <String>{};
       if (values.any((value) => value.trim().isEmpty || !seen.add(value))) {
@@ -3033,6 +3433,76 @@ interface class PackLifecycleService {
       );
     }
   }
+
+  void _validateReadOnlyRequest(PackLifecycleRequest request) {
+    if (request.resourceTypes.toSet().length != request.resourceTypes.length) {
+      throw MambaException(
+        '--type requires unique resource kinds.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final rejected = <String>[
+      if (request.target != null) '--target',
+      if (request.method != null) '--method',
+      if (request.bump != null) '--bump',
+      if (request.savePolicy) '--save-policy',
+      if (request.noSave) '--no-save',
+      if (request.skipNew) '--skip-new',
+      if (request.includeNew) '--include-new',
+      if (request.keepLocal.isNotEmpty) '--keep-local',
+      if (request.replaceLocal.isNotEmpty) '--replace-local',
+      if (request.approveRemoval.isNotEmpty) '--approve-removal',
+      if (request.allowFolder.isNotEmpty) '--allow-folder',
+      if (request.to != null) '--to',
+      if (request.snapshot != null) '--snapshot',
+      if (request.localEdits) '--local-edits',
+      if (request.yes) '--yes',
+    ];
+    if (rejected.isNotEmpty) {
+      throw MambaException(
+        'pack validate is read-only and does not accept mutation-only '
+        'option(s): ${rejected.join(', ')}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+  }
+
+  List<PackResourceType> _requestResourceTypes(PackLifecycleRequest request) =>
+      request.resourceTypes.isEmpty
+      ? [request.resourceType]
+      : request.resourceTypes;
+}
+
+final class _PackValidationCandidate {
+  const _PackValidationCandidate({
+    required this.type,
+    required this.relativePath,
+    required this.path,
+    required this.profile,
+  });
+
+  final PackResourceType type;
+  final String relativePath;
+  final String path;
+  final NativeAgentProfile? profile;
+}
+
+final class _InspectedPackResource {
+  const _InspectedPackResource({
+    required this.candidate,
+    required this.name,
+    required this.failures,
+    required this.warnings,
+  });
+
+  final _PackValidationCandidate candidate;
+  final String? name;
+  final List<String> failures;
+  final List<String> warnings;
+
+  String get label =>
+      '${candidate.type.name} '
+      '${ValidationDiagnostics.escape(candidate.relativePath)}';
 }
 
 final class _AcquiredSource {
