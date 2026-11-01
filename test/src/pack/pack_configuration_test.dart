@@ -188,8 +188,11 @@ extra_folders = ["$folder"]
           ..createSync();
         final userConfig = File(
           PackConfiguration.userConfigPath(
-            environment: {'HOME': home.path},
-            operatingSystem: 'linux',
+            environment: {
+              'HOME': home.path,
+              if (Platform.isWindows) 'APPDATA': home.path,
+            },
+            operatingSystem: Platform.operatingSystem,
           ),
         )..createSync(recursive: true);
         userConfig.writeAsStringSync('''
@@ -216,8 +219,11 @@ path = "project-pack"
         final configuration = PackConfiguration.load(
           scope: PackConfigurationScope.project,
           projectRoot: project.path,
-          environment: {'HOME': home.path},
-          operatingSystem: 'linux',
+          environment: {
+            'HOME': home.path,
+            if (Platform.isWindows) 'APPDATA': home.path,
+          },
+          operatingSystem: Platform.operatingSystem,
         );
 
         expect(configuration.scope, PackConfigurationScope.project);
@@ -241,8 +247,11 @@ path = "project-pack"
         scope: PackConfigurationScope.project,
         projectRoot: 'project',
         workingDirectory: temporary.path,
-        environment: {'HOME': temporary.path},
-        operatingSystem: 'linux',
+        environment: {
+          'HOME': temporary.path,
+          if (Platform.isWindows) 'APPDATA': temporary.path,
+        },
+        operatingSystem: Platform.operatingSystem,
       );
 
       expect(
@@ -294,7 +303,7 @@ path = "../sources/pack"
             environment: {'APPDATA': r'C:\Users\me\AppData\Roaming'},
             operatingSystem: 'windows',
           ),
-          p.normalize(
+          p.windows.normalize(
             r'C:\Users\me\AppData\Roaming\AgentResource\agent-resources.toml',
           ),
         );
@@ -303,7 +312,7 @@ path = "../sources/pack"
             environment: {'HOME': '/Users/me'},
             operatingSystem: 'macos',
           ),
-          p.normalize(
+          p.posix.normalize(
             '/Users/me/Library/Application Support/AgentResource/agent-resources.toml',
           ),
         );
@@ -315,14 +324,16 @@ path = "../sources/pack"
             },
             operatingSystem: 'linux',
           ),
-          p.normalize('/home/me/.config/agent-resource/agent-resources.toml'),
+          p.posix.normalize(
+            '/home/me/.config/agent-resource/agent-resources.toml',
+          ),
         );
         expect(
           PackConfiguration.userConfigPath(
             environment: {'HOME': '/home/me', 'XDG_CONFIG_HOME': '/xdg/config'},
             operatingSystem: 'linux',
           ),
-          p.normalize('/xdg/config/agent-resource/agent-resources.toml'),
+          p.posix.normalize('/xdg/config/agent-resource/agent-resources.toml'),
         );
       },
     );

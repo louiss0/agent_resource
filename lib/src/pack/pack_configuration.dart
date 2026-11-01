@@ -331,10 +331,11 @@ final class PackConfiguration {
   }) {
     final env = environment ?? Platform.environment;
     final platform = operatingSystem ?? Platform.operatingSystem;
+    final pathContext = platform == 'windows' ? p.windows : p.posix;
     final String path;
     if (platform == 'windows') {
       final appData = env['APPDATA'];
-      if (appData == null || !p.isAbsolute(appData)) {
+      if (appData == null || !pathContext.isAbsolute(appData)) {
         throw PackConfigurationException(const [
           PackConfigurationIssue(
             'APPDATA',
@@ -342,10 +343,14 @@ final class PackConfiguration {
           ),
         ]);
       }
-      path = p.join(appData, 'AgentResource', packConfigurationFileName);
+      path = pathContext.join(
+        appData,
+        'AgentResource',
+        packConfigurationFileName,
+      );
     } else if (platform == 'macos') {
-      path = p.join(
-        _absoluteHome(env),
+      path = pathContext.join(
+        _absoluteHome(env, pathContext),
         'Library',
         'Application Support',
         'AgentResource',
@@ -353,12 +358,16 @@ final class PackConfiguration {
       );
     } else {
       final xdg = env['XDG_CONFIG_HOME'];
-      final base = xdg != null && p.isAbsolute(xdg)
+      final base = xdg != null && pathContext.isAbsolute(xdg)
           ? xdg
-          : p.join(_absoluteHome(env), '.config');
-      path = p.join(base, 'agent-resource', packConfigurationFileName);
+          : pathContext.join(_absoluteHome(env, pathContext), '.config');
+      path = pathContext.join(
+        base,
+        'agent-resource',
+        packConfigurationFileName,
+      );
     }
-    return p.normalize(path);
+    return pathContext.normalize(path);
   }
 
   final int schemaVersion;
@@ -391,9 +400,12 @@ final class PackConfiguration {
     return _resolvePath(projectRoot, workingDirectory);
   }
 
-  static String _absoluteHome(Map<String, String> environment) {
+  static String _absoluteHome(
+    Map<String, String> environment,
+    p.Context pathContext,
+  ) {
     final home = environment['HOME'];
-    if (home == null || !p.isAbsolute(home)) {
+    if (home == null || !pathContext.isAbsolute(home)) {
       throw PackConfigurationException(const [
         PackConfigurationIssue(
           'HOME',
