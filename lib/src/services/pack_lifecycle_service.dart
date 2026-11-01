@@ -9,6 +9,7 @@ import '../../components/installation_approval.dart';
 import '../agent_inspection.dart';
 import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
+import '../installation/skill_root_markdown_migration.dart';
 import '../pack/github_release_resolver.dart';
 import '../pack/pack_change_set.dart';
 import '../pack/pack_configuration.dart';
@@ -323,6 +324,7 @@ interface class PackLifecycleService {
       existing: existing,
     );
     final workspace = acquired.workspace;
+    final stagedSkills = <StagedSkill>[];
     try {
       final catalog = _readSourceCatalog(workspace);
       final reusableFolders = _reusableFolderApprovals(
@@ -333,6 +335,7 @@ interface class PackLifecycleService {
         pack,
         workspace.provenance,
       );
+      final warnings = _modeWarnings(request, pack);
       final candidates = await _candidates(
         request,
         context,
@@ -341,6 +344,8 @@ interface class PackLifecycleService {
         pack,
         acquired.release,
         reusableFolders: reusableFolders,
+        stagedSkills: stagedSkills,
+        warnings: warnings,
       );
       _requireAcceptedSource(
         pack,
@@ -361,7 +366,6 @@ interface class PackLifecycleService {
         selectionDecisions,
       );
       _preflightRecords(request, selected, existing);
-      final warnings = _modeWarnings(request, pack);
       final results = <PackResourceResult>[];
       final failures = <String>[];
       final candidateNames = candidates
@@ -473,6 +477,13 @@ interface class PackLifecycleService {
             candidate,
             null,
           );
+          if (method == SkillInstallMethod.sourceLink && candidate.migrated) {
+            throw MambaException(
+              'source-link cannot migrate loose root files for ${candidate.name} '
+              'without changing the user-owned target; move them into references/ or assets/ first.',
+              exitCode: PackProcessStatus.invalidInput.code,
+            );
+          }
           actions[candidate.name] = 'install';
           installTargets[candidate.name] = targets;
           installMethods[candidate.name] = method;
@@ -488,6 +499,13 @@ interface class PackLifecycleService {
             ),
           );
           continue;
+        }
+        if (record.kind == ArtifactKind.skillLink && candidate.migrated) {
+          throw MambaException(
+            'source-link cannot migrate loose root files for ${candidate.name} '
+            'without changing the user-owned target; move them into references/ or assets/ first.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
         }
         final modification = _lifecycleState.verify(record);
         final sameBytes = record.kind == ArtifactKind.skillLink
@@ -726,6 +744,9 @@ interface class PackLifecycleService {
         plan: plan,
       );
     } finally {
+      for (final staged in stagedSkills) {
+        await staged.close();
+      }
       await workspace.close();
     }
   }
@@ -1721,7 +1742,7 @@ interface class PackLifecycleService {
                 : InstallationEntryAction.createLink,
             target: target,
             linkTarget: selectedMethod == SkillInstallMethod.sourceLink
-                ? candidate.path
+                ? candidate.originalPath ?? candidate.path
                 : null,
             nativeLinkKind: selectedMethod == SkillInstallMethod.sourceLink
                 ? _nativeDirectoryLinkKind
@@ -1748,7 +1769,9 @@ interface class PackLifecycleService {
       status: InstallationUnitStatus.planned,
       installationIds: const [],
       entries: entries,
-      sourcePath: candidate.path,
+      sourcePath: selectedMethod == SkillInstallMethod.sourceLink
+          ? candidate.originalPath ?? candidate.path
+          : candidate.path,
       sourceDigest: candidate.digest,
       origin: candidate.origin,
     );
@@ -2141,6 +2164,8 @@ interface class PackLifecycleService {
     PackDefinition pack,
     _ReleaseEvidence? release, {
     Map<String, Set<String>> reusableFolders = const <String, Set<String>>{},
+    List<StagedSkill>? stagedSkills,
+    List<PackWarning>? warnings,
   }) async {
     final paths = request.resourceType == PackResourceType.skill
         ? catalog.skills.map((entry) => (entry.path, null)).toList()
@@ -2159,17 +2184,42 @@ interface class PackLifecycleService {
       final path = _catalogPath(workspace, relative);
       final String name;
       var extraFolders = <String>{};
+      var candidatePath = path;
+      StagedSkill? staged;
       if (request.resourceType == PackResourceType.skill) {
-        name = readDeclaredSkillName(path);
+        if (stagedSkills != null) {
+          staged = await const SkillRootMarkdownMigration().stage(path);
+          stagedSkills.add(staged);
+          candidatePath = staged.path;
+        }
+        name = readDeclaredSkillName(candidatePath);
         extraFolders = {...?folderApprovals[name], ...?reusableFolders[name]};
         extraFolders = await _promptExtraFolders(
           request,
-          path,
+          candidatePath,
           name,
           extraFolders,
           requestedFolders: requestedFolders[name] ?? const <String>{},
         );
-        _admission.inspect(path, approvedExtraFolders: extraFolders);
+        _admission.inspect(candidatePath, approvedExtraFolders: extraFolders);
+        if (staged != null && staged.movedMarkdown.isNotEmpty) {
+          warnings?.add(
+            PackWarning(
+              id: 'root-markdown-migrated-$name',
+              message:
+                  '$name: moved root Markdown documents into references/ in staged content (${staged.movedMarkdown.length}): ${staged.movedMarkdown.join(', ')}; SKILL.md references ${staged.rewritten ? 'were' : 'were not'} rewritten. Make a PR or consult the pack maker about adopting standard support directories.',
+            ),
+          );
+        }
+        if (staged != null && staged.movedImages.isNotEmpty) {
+          warnings?.add(
+            PackWarning(
+              id: 'root-images-migrated-$name',
+              message:
+                  '$name: moved root images into assets/ in staged content (${staged.movedImages.length}): ${staged.movedImages.join(', ')}; SKILL.md references ${staged.rewritten ? 'were' : 'were not'} rewritten. Make a PR or consult the pack maker about adopting standard support directories.',
+            ),
+          );
+        }
       } else {
         final resource = _agents.installationResource(_harness(profile!));
         name = (await resource.inspect(path, context)).name;
@@ -2183,7 +2233,7 @@ interface class PackLifecycleService {
       }
       names[name] = relative;
       final digest = _lifecycleState.contentDigest(
-        path,
+        candidatePath,
         request.resourceType == PackResourceType.skill
             ? ArtifactKind.skillCopy
             : ArtifactKind.agentFile,
@@ -2207,9 +2257,11 @@ interface class PackLifecycleService {
         _PackCandidate(
           type: request.resourceType,
           name: name,
-          path: path,
+          path: candidatePath,
+          originalPath: path,
           profile: profile,
           digest: digest,
+          migrated: staged?.migrated ?? false,
           extraFolders: extraFolders,
           origin: origin,
         ),
@@ -3605,6 +3657,8 @@ final class _PackCandidate {
     required this.type,
     required this.name,
     required this.path,
+    this.originalPath,
+    this.migrated = false,
     required this.profile,
     required this.digest,
     required this.extraFolders,
@@ -3615,6 +3669,8 @@ final class _PackCandidate {
   final PackResourceType type;
   final String name;
   final String path;
+  final String? originalPath;
+  final bool migrated;
   final NativeAgentProfile? profile;
   final String digest;
   final Set<String> extraFolders;

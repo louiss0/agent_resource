@@ -77,12 +77,7 @@ void main() {
           '${p.join(sandbox.path, 'state')}${Platform.pathSeparator}',
         ];
 
-        for (final entry in [
-          'AGENTS.md',
-          'README.md',
-          'metadata.json',
-          'rules',
-        ]) {
+        for (final entry in ['metadata.json', 'rules']) {
           test('rejects unsupported root entry $entry before writes', () async {
             final source = skill('source');
             if (entry.contains('.')) {
@@ -118,37 +113,6 @@ void main() {
             );
           });
         }
-
-        test('canonical preflight rejects README without writes', () async {
-          final source = skill('source');
-          File(p.join(source.path, 'README.md')).writeAsStringSync('extra');
-          final result = await executor().fake().execute([
-            'skill',
-            'install',
-            source.path,
-            '--target',
-            'codex',
-            '--method',
-            'canonical',
-            ...context(),
-            '--yes',
-          ]);
-          expect(
-            result,
-            isA<MambaFailureResult>()
-                .having((r) => r.exitCode, 'status', 2)
-                .having(
-                  (r) => r.message,
-                  'message',
-                  contains('Unsupported Skill root entry: README.md'),
-                ),
-          );
-          expect(project.listSync(recursive: true), isEmpty);
-          expect(
-            Directory(p.join(sandbox.path, 'state')).existsSync(),
-            isFalse,
-          );
-        });
 
         test(
           'mixed discovered batch rejects rules before any writes',

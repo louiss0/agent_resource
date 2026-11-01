@@ -11,6 +11,7 @@ import '../installation/installation_interaction.dart';
 import '../installation/installation_plan.dart';
 import '../installation/installation_request.dart';
 import '../installation/resource_catalog.dart';
+import '../installation/skill_root_markdown_migration.dart';
 import 'acquisition_service.dart';
 import 'lifecycle_state_service.dart';
 import 'skill_lifecycle_service.dart';
@@ -117,58 +118,98 @@ interface class SkillInstallationService {
         throw MambaException('No compatible consuming harness was selected.');
       }
       final units = <InstallationUnitPlan>[];
+      final stagedSkills = <StagedSkill>[];
+      final migrationDiagnostics = <Map<String, Object?>>[];
       final errors = <String>[];
       var worstStatus = 1;
-      for (final candidate in candidates.candidates) {
-        try {
-          units.add(
-            await _planUnit(
-              candidate,
-              candidates.provenance,
-              context,
-              method,
-              targets,
-            ),
+      try {
+        for (final candidate in candidates.candidates) {
+          try {
+            final staged = await const SkillRootMarkdownMigration().stage(
+              candidate.path,
+            );
+            stagedSkills.add(staged);
+            if (staged.migrated) {
+              if (method == InstallationMethod.sourceLink) {
+                throw MambaException(
+                  'source-link cannot migrate loose root files without changing the '
+                  'user-owned target; move them into references/ or assets/ first.',
+                  exitCode: 4,
+                );
+              }
+              final skill = candidate.id ?? p.basename(candidate.path);
+              if (staged.movedMarkdown.isNotEmpty) {
+                migrationDiagnostics.add({
+                  'code': 'root-markdown-migrated',
+                  'skill': skill,
+                  'message':
+                      'Moved root Markdown documents into references/ in staged content (${staged.movedMarkdown.length}): ${staged.movedMarkdown.join(', ')}; SKILL.md references ${staged.rewritten ? 'were' : 'were not'} rewritten. Make a PR or consult the pack maker about adopting standard support directories.',
+                });
+              }
+              if (staged.movedImages.isNotEmpty) {
+                migrationDiagnostics.add({
+                  'code': 'root-images-migrated',
+                  'skill': skill,
+                  'message':
+                      'Moved root images into assets/ in staged content (${staged.movedImages.length}): ${staged.movedImages.join(', ')}; SKILL.md references ${staged.rewritten ? 'were' : 'were not'} rewritten. Make a PR or consult the pack maker about adopting standard support directories.',
+                });
+              }
+            }
+            units.add(
+              await _planUnit(
+                candidate,
+                staged.path,
+                candidates.provenance,
+                context,
+                method,
+                targets,
+              ),
+            );
+          } on MambaException catch (error) {
+            worstStatus = error.exitCode > worstStatus
+                ? error.exitCode
+                : worstStatus;
+            errors.add('${candidate.id ?? candidate.path}: ${error.message}');
+          }
+        }
+        _checkBatchIndependence(units, errors);
+        if (errors.isNotEmpty) {
+          throw MambaException(
+            'Skill installation preflight failed; no installation writes occurred:\n- ${errors.join('\n- ')}',
+            exitCode: worstStatus,
           );
-        } on MambaException catch (error) {
-          worstStatus = error.exitCode > worstStatus
-              ? error.exitCode
-              : worstStatus;
-          errors.add('${candidate.id ?? candidate.path}: ${error.message}');
+        }
+        final plan = InstallationPlan.create(
+          command: 'skill install',
+          source: candidates.provenance,
+          scope: context.scope.name,
+          units: units,
+          diagnostics: [
+            ...migrationDiagnostics,
+            if (candidates.provenance.directFile)
+              const <String, Object?>{
+                'code': 'single-file-boundary',
+                'message': 'Only the selected SKILL.md was acquired; siblings were not read.',
+              },
+          ],
+        );
+        if (request.options.dryRun) {
+          return InstallationCompletedResult(plan, InstallationOutcome.planned);
+        }
+        return await _batch.execute(
+          plan: plan,
+          context: context,
+          state: state,
+          resourceFor: (unit) => _resource(unit),
+          interaction: _interaction,
+          interactive: interactive,
+          approved: request.options.approved,
+        );
+      } finally {
+        for (final staged in stagedSkills) {
+          await staged.close();
         }
       }
-      _checkBatchIndependence(units, errors);
-      if (errors.isNotEmpty) {
-        throw MambaException(
-          'Skill installation preflight failed; no installation writes occurred:\n- ${errors.join('\n- ')}',
-          exitCode: worstStatus,
-        );
-      }
-      final plan = InstallationPlan.create(
-        command: 'skill install',
-        source: candidates.provenance,
-        scope: context.scope.name,
-        units: units,
-        diagnostics: [
-          if (candidates.provenance.directFile)
-            const <String, Object?>{
-              'code': 'single-file-boundary',
-              'message': 'Only the selected SKILL.md was acquired; siblings were not read.',
-            },
-        ],
-      );
-      if (request.options.dryRun) {
-        return InstallationCompletedResult(plan, InstallationOutcome.planned);
-      }
-      return await _batch.execute(
-        plan: plan,
-        context: context,
-        state: state,
-        resourceFor: (unit) => _resource(unit),
-        interaction: _interaction,
-        interactive: interactive,
-        approved: request.options.approved,
-      );
     } finally {
       await workspace.close();
     }
@@ -216,6 +257,7 @@ interface class SkillInstallationService {
 
   Future<InstallationUnitPlan> _planUnit(
     InstallationCandidate candidate,
+    String stagedPath,
     AcquisitionProvenance provenance,
     LifecycleContext context,
     InstallationMethod method,
@@ -229,8 +271,8 @@ interface class SkillInstallationService {
         InstallationMethod.sourceLink => ArtifactKind.skillLink,
       },
     );
-    final inspected = await resource.inspect(candidate.path, context);
-    final digest = state.contentDigest(candidate.path, ArtifactKind.skillCopy);
+    final inspected = await resource.inspect(stagedPath, context);
+    final digest = state.contentDigest(stagedPath, ArtifactKind.skillCopy);
     final origin = <String, Object?>{
       'status': 'evidenced',
       'schemaVersion': 1,
@@ -335,7 +377,9 @@ interface class SkillInstallationService {
           : InstallationUnitStatus.planned,
       installationIds: ids,
       entries: entries,
-      sourcePath: candidate.path,
+      sourcePath: method == InstallationMethod.sourceLink
+          ? candidate.path
+          : stagedPath,
       sourceDigest: digest,
       origin: origin,
     );

@@ -69,24 +69,6 @@ description: Demonstrates admission.
       );
     });
 
-    test('rejects the complete Skill for an unexpected loose root file', () {
-      File(p.join(skill, 'README.md')).writeAsStringSync('Not admitted.');
-
-      expect(
-        () => const SkillAdmission().inspect(
-          skill,
-          approvedExtraFolders: const {'README.md'},
-        ),
-        throwsA(
-          isA<MambaException>().having(
-            (error) => error.message,
-            'message',
-            contains('README.md'),
-          ),
-        ),
-      );
-    });
-
     test('recursively rejects links even inside an approved folder', () {
       final rules = Directory(p.join(skill, 'rules'))..createSync();
       final outside = File(p.join(sandbox.path, 'outside.txt'))
