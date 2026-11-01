@@ -1869,6 +1869,34 @@ interface class PackLifecycleService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
+      if (type == PackResourceType.skill) {
+        final marker = p.join(directory.path, 'SKILL.md');
+        final markerType = skillEntityType(marker, followLinks: false);
+        if (markerType == FileSystemEntityType.link) {
+          throw MambaException(
+            'Pack discovery refuses linked source entries: '
+            '${ValidationDiagnostics.escape(p.posix.join(relative, 'SKILL.md'))}.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        if (markerType == FileSystemEntityType.file) {
+          result.add(
+            _PackValidationCandidate(
+              type: type,
+              relativePath: relative,
+              path: directory.path,
+              profile: null,
+            ),
+          );
+          if (result.length > 1000) {
+            throw MambaException(
+              'Pack discovery exceeds its 1,000-resource budget.',
+              exitCode: PackProcessStatus.invalidInput.code,
+            );
+          }
+          return;
+        }
+      }
       final children = <FileSystemEntity>[];
       await for (final child in directory.list(followLinks: false)) {
         if (++entries > 20000) {
@@ -1892,20 +1920,7 @@ interface class PackLifecycleService {
         }
         if (type == PackResourceType.skill) {
           if (childType == FileSystemEntityType.directory) {
-            result.add(
-              _PackValidationCandidate(
-                type: type,
-                relativePath: childRelative,
-                path: child.path,
-                profile: null,
-              ),
-            );
-            if (result.length > 1000) {
-              throw MambaException(
-                'Pack discovery exceeds its 1,000-resource budget.',
-                exitCode: PackProcessStatus.invalidInput.code,
-              );
-            }
+            await visit(child as Directory, childRelative, depth + 1);
           }
           continue;
         }
