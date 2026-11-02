@@ -160,8 +160,8 @@ jobs:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          GORELEASER_HOMEBREW_DEPLOY_KEY_B64: ${{ secrets.GORELEASER_HOMEBREW_DEPLOY_KEY_OP_REFERENCE }}
-          GORELEASER_WINGET_DEPLOY_KEY_B64: ${{ secrets.GORELEASER_WINGET_DEPLOY_KEY_OP_REFERENCE }}
+          GORELEASER_HOMEBREW_DEPLOY_KEY_B64: "op://Development/CLI-Projects-homebrew-deploy-key/credential"
+          GORELEASER_WINGET_DEPLOY_KEY_B64: "op://Development/CLI-Projects-winget-deploy-key/credential"
       - name: Materialize publishing deploy keys
         shell: bash
         run: |
