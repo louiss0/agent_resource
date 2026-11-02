@@ -1,7 +1,7 @@
-version: 2
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 
+version: 2
 project_name: agent_resource
-report_sizes: true
 
 builds:
   - &dart_build
@@ -61,6 +61,10 @@ homebrew_casks:
   - name: agent-resource
     ids: [agent_resource_darwin]
     binaries: [agent_resource]
+    commit_author:
+      name: louiss0
+      email: louisshelton0@gmail.com
+    commit_msg_template: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
     homepage: https://github.com/louiss0/agent_resource
     description: Manage resources consumed by AI coding harnesses.
     license: MIT
@@ -69,24 +73,33 @@ homebrew_casks:
       binary, inspect it and then remove its quarantine attribute explicitly:
         xattr -dr com.apple.quarantine $(brew --prefix)/Caskroom/agent-resource/{{ .Version }}/agent_resource
     repository:
-      owner: louiss0
+      owner: Sheltons-CLI-Projects
       name: homebrew-the-code-fixer-23
-      token: "{{ .Env.RELEASE_TOKEN }}"
+      branch: main
+      git:
+        url: git@github.com:Sheltons-CLI-Projects/homebrew-the-code-fixer-23.git
+        private_key: "{{ .Env.GORELEASER_HOMEBREW_DEPLOY_KEY_PATH }}"
     skip_upload: auto
 
 winget:
   - name: agent_resource
     ids: [agent_resource_windows]
     package_name: Agent Resource
-    package_identifier: louiss0.AgentResource
-    publisher: louiss0
+    package_identifier: the-code-fixer-23.agent_resource
+    publisher: the-code-fixer-23
     publisher_url: https://github.com/louiss0
-    publisher_support_url: https://github.com/louiss0/agent_resource/issues
+    publisher_support_url: https://github.com/louiss0/agent_resource/issues/new
     homepage: https://github.com/louiss0/agent_resource
+    path: manifests/t/the-code-fixer-23/agent_resource/{{ .Version }}
+    commit_author:
+      name: louiss0
+      email: louisshelton0@gmail.com
+    commit_msg_template: "{{ .PackageIdentifier }}: {{ .Tag }}"
     short_description: Manage resources consumed by AI coding harnesses.
     description: Agent Resource manages Skills, Agents, and packs consumed by AI coding harnesses.
     license: MIT
     license_url: https://github.com/louiss0/agent_resource/blob/main/LICENSE
+    release_notes: "{{ .Changelog }}"
     release_notes_url: https://github.com/louiss0/agent_resource/releases/tag/{{ .Tag }}
     tags:
       - ai
@@ -94,16 +107,40 @@ winget:
       - dart
       - developer-tools
     repository:
-      owner: louiss0
+      owner: Sheltons-CLI-Projects
       name: winget-pkgs
-      token: "{{ .Env.RELEASE_TOKEN }}"
-      pull_request:
-        enabled: true
-        base:
-          owner: microsoft
-          name: winget-pkgs
-          branch: master
+      branch: "{{ .ProjectName }}-{{ .Version }}"
+      git:
+        url: git@github.com:Sheltons-CLI-Projects/winget-pkgs.git
+        private_key: "{{ .Env.GORELEASER_WINGET_DEPLOY_KEY_PATH }}"
     skip_upload: auto
 
 changelog:
-  use: git
+  filters:
+    exclude:
+      - '^docs(\(.*\))?:'
+      - '^chore(\(.*\))?:'
+      - '^style(\(.*\))?:'
+      - '^refactor(\(.*\))?:'
+      - '^Merge'
+      - '^(build|ci)\(deps'
+      - '^(build|ci)\(.*\): bump'
+  groups:
+    - title: Features
+      regexp: '^feat(\(.*\))?:'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^fix(\(.*\))?:'
+      order: 1
+    - title: Tests
+      regexp: '^test(\(.*\))?:'
+      order: 2
+    - title: Performance
+      regexp: '^perf(\(.*\))?:'
+      order: 3
+    - title: CI/Build
+      regexp: '^(build|ci)(\(.*\))?:'
+      order: 4
+    - title: Others
+      order: 999
+  sort: asc

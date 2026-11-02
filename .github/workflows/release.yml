@@ -60,7 +60,7 @@ jobs:
       - name: Test
         run: dart test
       - name: Install GoReleaser
-        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: 2.14.3
@@ -154,13 +154,32 @@ jobs:
         with:
           pattern: native-*
           path: prebuilt
+      - name: Load publishing deploy keys from 1Password
+        uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5.0.1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          GORELEASER_HOMEBREW_DEPLOY_KEY_B64: ${{ secrets.GORELEASER_HOMEBREW_DEPLOY_KEY_OP_REFERENCE }}
+          GORELEASER_WINGET_DEPLOY_KEY_B64: ${{ secrets.GORELEASER_WINGET_DEPLOY_KEY_OP_REFERENCE }}
+      - name: Materialize publishing deploy keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "${GORELEASER_HOMEBREW_DEPLOY_KEY_B64}"
+          test -n "${GORELEASER_WINGET_DEPLOY_KEY_B64}"
+          printf '%s' "$GORELEASER_HOMEBREW_DEPLOY_KEY_B64" | base64 --decode > "$RUNNER_TEMP/homebrew-deploy-key"
+          printf '%s' "$GORELEASER_WINGET_DEPLOY_KEY_B64" | base64 --decode > "$RUNNER_TEMP/winget-deploy-key"
+          chmod 600 "$RUNNER_TEMP/homebrew-deploy-key" "$RUNNER_TEMP/winget-deploy-key"
+          echo "GORELEASER_HOMEBREW_DEPLOY_KEY_PATH=$RUNNER_TEMP/homebrew-deploy-key" >> "$GITHUB_ENV"
+          echo "GORELEASER_WINGET_DEPLOY_KEY_PATH=$RUNNER_TEMP/winget-deploy-key" >> "$GITHUB_ENV"
       - name: Package and publish with GoReleaser
-        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: 2.14.3
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           AGENT_RESOURCE_PREBUILT_DIR: prebuilt
