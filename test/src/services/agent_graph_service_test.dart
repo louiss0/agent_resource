@@ -1,19 +1,23 @@
-import 'dart:io';
-
 import 'package:agent_resource/src/agent_inspection.dart';
 import 'package:agent_resource/src/services/agent_graph_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group(AgentGraphService, () {
+    late FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     test(
       'distinguishes a missing required preload from runtime observations',
       () {
-        final sandbox = Directory.systemTemp.createTempSync('agent-graph-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final definition = File(p.join(sandbox.path, 'reviewer.md'))
+          final definition = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -24,7 +28,7 @@ mcpServers: [docs]
 ---
 Review.
 ''');
-          final report = AgentGraphService().analyze(
+          final report = AgentGraphService(fileSystem: fs).analyze(
             AgentInspectionInput(
               nativeFile: definition.path,
               harness: AgentHarness.claude,
@@ -67,9 +71,9 @@ Review.
     );
 
     test('an absent disabled Skill is an exclusion, not a missing preload', () {
-      final sandbox = Directory.systemTemp.createTempSync('agent-graph-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final definition = File(p.join(sandbox.path, 'reviewer.toml'))
+        final definition = fs.file(fs.path.join(sandbox.path, 'reviewer.toml'))
           ..writeAsStringSync('''
 name = "reviewer"
 description = "Reviews."
@@ -78,7 +82,7 @@ developer_instructions = "Review."
 [skills]
 config = [{ path = "missing-skill", enabled = false }]
 ''');
-        final report = AgentGraphService().analyze(
+        final report = AgentGraphService(fileSystem: fs).analyze(
           AgentInspectionInput(
             nativeFile: definition.path,
             harness: AgentHarness.codex,
@@ -100,9 +104,9 @@ config = [{ path = "missing-skill", enabled = false }]
     test(
       'a required source that becomes unreadable fails with status three',
       () {
-        final sandbox = Directory.systemTemp.createTempSync('agent-graph-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final definition = File(p.join(sandbox.path, 'reviewer.md'))
+          final definition = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -115,11 +119,13 @@ Review.
               harness: AgentHarness.claude,
             ),
             operation: AgentOperation.inspect,
+            fileSystem: fs,
           );
           definition.deleteSync();
 
           expect(
-            () => AgentGraphService().analyzeInspection(inspection),
+            () =>
+                AgentGraphService(fileSystem: fs).analyzeInspection(inspection),
             throwsA(
               isA<MambaException>().having(
                 (error) => error.exitCode,

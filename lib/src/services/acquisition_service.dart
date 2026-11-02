@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
@@ -100,6 +102,7 @@ final class AcquisitionWorkspace {
     required this.provenance,
     this.omittedLinkPaths = const [],
     this._temporaryDirectory,
+    this._fileSystem = const local.LocalFileSystem(),
   });
 
   final String selectedRoot;
@@ -108,7 +111,8 @@ final class AcquisitionWorkspace {
 
   /// Source-root-relative Git symlinks omitted from the materialized tree.
   final List<String> omittedLinkPaths;
-  final Directory? _temporaryDirectory;
+  final String? _temporaryDirectory;
+  final fslib.FileSystem _fileSystem;
   var _closed = false;
 
   String resolveOffering(CatalogOffering offering) {
@@ -122,15 +126,17 @@ final class AcquisitionWorkspace {
     final segments = offering.path == '.'
         ? const <String>[]
         : offering.path.split('/');
-    final resolved = p.normalize(p.joinAll([selectedRoot, ...segments]));
-    if (!p.equals(resolved, selectedRoot) &&
-        !p.isWithin(selectedRoot, resolved)) {
+    final resolved = _fileSystem.path.normalize(
+      _fileSystem.path.joinAll([selectedRoot, ...segments]),
+    );
+    if (!_fileSystem.path.equals(resolved, selectedRoot) &&
+        !_fileSystem.path.isWithin(selectedRoot, resolved)) {
       throw MambaException(
         'A catalog entry escapes its source root.',
         exitCode: 4,
       );
     }
-    if (FileSystemEntity.typeSync(resolved, followLinks: false) ==
+    if (_fileSystem.typeSync(resolved, followLinks: false) ==
         FileSystemEntityType.link) {
       throw MambaException(
         'A catalog entry must not be a linked source alias: ${offering.id}',
@@ -145,11 +151,12 @@ final class AcquisitionWorkspace {
     _closed = true;
     final temporary = _temporaryDirectory;
     if (temporary == null) return;
+    final directory = _fileSystem.directory(temporary);
     try {
-      if (temporary.existsSync()) await temporary.delete(recursive: true);
+      if (directory.existsSync()) await directory.delete(recursive: true);
     } on FileSystemException catch (error) {
       throw MambaException(
-        'Required acquisition cleanup is pending for ${temporary.path}: '
+        'Required acquisition cleanup is pending for $temporary: '
         '${error.message}',
         exitCode: 6,
       );
@@ -160,7 +167,9 @@ final class AcquisitionWorkspace {
 /// Resolves explicit source locators into bounded local workspaces. It never
 /// executes source content, installs tools, or scans for resource candidates.
 interface class AcquisitionService {
-  const AcquisitionService();
+  const AcquisitionService({this._fileSystem = const local.LocalFileSystem()});
+
+  final fslib.FileSystem _fileSystem;
 
   Future<AcquisitionWorkspace> acquire(AcquisitionRequest request) async {
     final clock = Stopwatch()..start();
@@ -172,8 +181,8 @@ interface class AcquisitionService {
       r'^[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*$',
     ).hasMatch(locator);
     final localExists =
-        FileSystemEntity.typeSync(
-          p.join(request.cwd, locator),
+        _fileSystem.typeSync(
+          _fileSystem.path.join(request.cwd, locator),
           followLinks: false,
         ) !=
         FileSystemEntityType.notFound;
@@ -251,6 +260,8 @@ interface class AcquisitionService {
         'protocol.file.allow=never',
         '-c',
         'submodule.recurse=false',
+        '-c',
+        'http.followRedirects=false',
       ];
       Future<String> git(List<String> arguments) => _runGit(
         <String>[...config, ...arguments],
@@ -307,7 +318,7 @@ interface class AcquisitionService {
           requestedRef: request.ref,
           resolvedCommit: commit,
         ),
-        temporaryDirectory: temporary,
+        temporaryDirectory: temporary.path,
       );
     } on Exception {
       await _deleteFailedAcquisition(temporary);
@@ -363,7 +374,7 @@ interface class AcquisitionService {
             durableLocalDirectory: false,
             downloadDigest: result.digest,
           ),
-          temporaryDirectory: temporary,
+          temporaryDirectory: temporary.path,
         );
       }
       if (request.subpath != null) {
@@ -384,7 +395,7 @@ interface class AcquisitionService {
           durableLocalDirectory: false,
           downloadDigest: result.digest,
         ),
-        temporaryDirectory: temporary,
+        temporaryDirectory: temporary.path,
       );
     } on Exception {
       await _deleteFailedAcquisition(temporary);
@@ -393,23 +404,26 @@ interface class AcquisitionService {
   }
 
   AcquisitionWorkspace _local(AcquisitionRequest request) {
-    final selected = p.normalize(
-      p.isAbsolute(request.locator)
+    final selected = _fileSystem.path.normalize(
+      _fileSystem.path.isAbsolute(request.locator)
           ? request.locator
-          : p.join(request.cwd, request.locator),
+          : _fileSystem.path.join(request.cwd, request.locator),
     );
     var root = selected;
     if (request.subpath != null) {
       _validateSubpath(request.subpath!);
-      root = p.normalize(p.joinAll([selected, ...request.subpath!.split('/')]));
-      if (!p.equals(root, selected) && !p.isWithin(selected, root)) {
+      root = _fileSystem.path.normalize(
+        _fileSystem.path.joinAll([selected, ...request.subpath!.split('/')]),
+      );
+      if (!_fileSystem.path.equals(root, selected) &&
+          !_fileSystem.path.isWithin(selected, root)) {
         throw MambaException(
           '--subpath escapes the selected source.',
           exitCode: 4,
         );
       }
     }
-    final type = FileSystemEntity.typeSync(root, followLinks: false);
+    final type = _fileSystem.typeSync(root, followLinks: false);
     if (type == FileSystemEntityType.notFound) {
       throw MambaException(
         'The selected source does not exist: $root',
@@ -436,31 +450,35 @@ interface class AcquisitionService {
     }
     final directFile = type == FileSystemEntityType.file;
     if (directFile) {
-      if (File(root).lengthSync() > _downloadLimit) {
+      if (_fileSystem.file(root).lengthSync() > _downloadLimit) {
         throw MambaException(
           'The direct file exceeded the 64 MiB input limit.',
           exitCode: 3,
         );
       }
-      final temporary = Directory.systemTemp.createTempSync(
+      final temporary = _fileSystem.systemTempDirectory.createTempSync(
         'agent-resource-direct-file-',
       );
       try {
-        final stagedFile = p.join(temporary.path, p.basename(root));
-        File(root).copySync(stagedFile);
+        final stagedFile = _fileSystem.path.join(
+          temporary.path,
+          _fileSystem.path.basename(root),
+        );
+        _fileSystem.file(root).copySync(stagedFile);
         return AcquisitionWorkspace(
           selectedRoot: temporary.path,
           selectedFile: stagedFile,
           provenance: AcquisitionProvenance(
             kind: AcquisitionLocatorKind.local,
             requestedLocator: sanitizeLocator(request.locator),
-            resolvedLocator: p.normalize(selected),
+            resolvedLocator: _fileSystem.path.normalize(selected),
             subpath: request.subpath,
             temporary: true,
             directFile: true,
             durableLocalDirectory: false,
           ),
-          temporaryDirectory: temporary,
+          temporaryDirectory: temporary.path,
+          fileSystem: _fileSystem,
         );
       } on Exception {
         if (temporary.existsSync()) temporary.deleteSync(recursive: true);
@@ -473,12 +491,13 @@ interface class AcquisitionService {
       provenance: AcquisitionProvenance(
         kind: AcquisitionLocatorKind.local,
         requestedLocator: sanitizeLocator(request.locator),
-        resolvedLocator: p.normalize(selected),
+        resolvedLocator: _fileSystem.path.normalize(selected),
         subpath: request.subpath,
         temporary: false,
         directFile: false,
         durableLocalDirectory: true,
       ),
+      fileSystem: _fileSystem,
     );
   }
 }

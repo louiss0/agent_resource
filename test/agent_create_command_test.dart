@@ -1,22 +1,33 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_authoring_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('agent create', () {
+    late FileSystem fs;
+    late MambaExecutor<MambaExecutionResult> executor;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      executor = createExecutor(
+        agentAuthoring: AgentAuthoringService(fileSystem: fs),
+      ).fake();
+    });
     test(
       'plans and applies a canonical positional native creation request',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('agent-create-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final request = File(p.join(sandbox.path, 'create.json'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final request = fs.file(fs.path.join(sandbox.path, 'create.json'))
             ..writeAsStringSync(
               jsonEncode(<String, Object?>{
                 'schemaVersion': 1,
@@ -37,16 +48,16 @@ void main() {
                 'instructions': <Object?>['Complete the selected task.'],
               }),
             );
-          final result = await createExecutor().fake().execute([
+          final result = await executor.execute([
             'agent',
             'create',
             request.path,
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -72,12 +83,12 @@ void main() {
             ),
           );
           expect(result.output, isNot(contains('Complete the selected task.')));
-          final output = File(
-            p.join(project.path, '.agents', 'agents', 'worker.md'),
+          final output = fs.file(
+            fs.path.join(project.path, '.agents', 'agents', 'worker.md'),
           );
           expect(output.existsSync(), isFalse);
 
-          final applied = await createExecutor().fake().execute([
+          final applied = await executor.execute([
             'agent',
             'create',
             request.path,
@@ -86,13 +97,13 @@ void main() {
             data['planId']! as String,
             '--yes',
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--state-dir',
-            '${p.join(sandbox.path, 'state')}${p.separator}',
+            '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -125,9 +136,9 @@ Complete the selected task.''');
     );
 
     test('rejects rich flags on the bound-role compatibility path', () async {
-      final sandbox = await Directory.systemTemp.createTemp('agent-create-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final request = File(p.join(sandbox.path, 'bound.json'))
+        final request = fs.file(fs.path.join(sandbox.path, 'bound.json'))
           ..writeAsStringSync(
             jsonEncode(<String, Object?>{
               'schemaVersion': 1,
@@ -139,7 +150,7 @@ Complete the selected task.''');
               },
             }),
           );
-        final result = await createExecutor().fake().execute([
+        final result = await executor.execute([
           'agent',
           'create',
           '--request',

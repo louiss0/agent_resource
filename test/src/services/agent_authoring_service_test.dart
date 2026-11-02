@@ -1,20 +1,36 @@
-import 'dart:io';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 
 import 'package:agent_resource/src/services/agent_authoring_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group(AgentAuthoringService, () {
+    late MemoryFileSystem fs;
+    var sandboxId = 0;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
+
+    Directory createSandbox() =>
+        fs.directory(fs.path.join('/tmp', 'agent-authoring-${++sandboxId}'))
+          ..createSync(recursive: true);
     test('a stale source-bound plan cannot be applied', () async {
-      final sandbox = await Directory.systemTemp.createTemp('agent-authoring-');
+      final sandbox = createSandbox();
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final output = p.join(project.path, '.claude', 'agents', 'reviewer.md');
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final output = fs.path.join(
+          project.path,
+          '.claude',
+          'agents',
+          'reviewer.md',
+        );
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           cwd: project.path,
@@ -37,7 +53,7 @@ void main() {
           references: const <String, String>{},
           context: './',
         );
-        final service = AgentAuthoringService();
+        final service = AgentAuthoringService(fileSystem: fs);
         final planned = await service.plan(request('Original.'), options);
 
         await expectLater(
@@ -55,9 +71,11 @@ void main() {
             ),
           ),
         );
-        expect(File(output).existsSync(), isFalse);
+        expect(fs.file(output).existsSync(), isFalse);
         expect(
-          Directory(p.join(project.path, '.agent-resource')).existsSync(),
+          fs
+              .directory(fs.path.join(project.path, '.agent-resource'))
+              .existsSync(),
           isFalse,
         );
       } finally {
@@ -66,11 +84,12 @@ void main() {
     });
 
     test('plan identity is independent of native field map order', () async {
-      final sandbox = await Directory.systemTemp.createTemp('agent-authoring-');
+      final sandbox = createSandbox();
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           cwd: project.path,
@@ -84,7 +103,7 @@ void main() {
               base: null,
               target: <String, Object?>{
                 'harness': 'claude',
-                'output': p.join(
+                'output': fs.path.join(
                   project.path,
                   '.claude',
                   'agents',
@@ -98,7 +117,7 @@ void main() {
               references: const <String, String>{},
               context: './',
             );
-        final service = AgentAuthoringService();
+        final service = AgentAuthoringService(fileSystem: fs);
 
         final first = await service.plan(
           request(<String, Object?>{
@@ -129,14 +148,13 @@ void main() {
     test(
       'compose reports conflicting base selections until explicitly resolved',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-authoring-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'base.md'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'base.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -160,7 +178,7 @@ Base instructions.
             },
             target: <String, Object?>{
               'harness': 'claude',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.claude',
                 'agents',
@@ -176,7 +194,7 @@ Base instructions.
             references: const <String, String>{},
             context: './',
           );
-          final service = AgentAuthoringService();
+          final service = AgentAuthoringService(fileSystem: fs);
 
           final unresolved = await service.plan(
             request(const <String>{}),
@@ -200,12 +218,13 @@ Base instructions.
     );
 
     test('clone refuses an implicit cross-harness conversion', () async {
-      final sandbox = await Directory.systemTemp.createTemp('agent-authoring-');
+      final sandbox = createSandbox();
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = File(p.join(sandbox.path, 'source.md'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
           ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -222,7 +241,12 @@ Review.
           base: null,
           target: <String, Object?>{
             'harness': 'codex',
-            'output': p.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+            'output': fs.path.join(
+              project.path,
+              '.codex',
+              'agents',
+              'reviewer.toml',
+            ),
           },
           definition: const <String, Object?>{},
           instructions: const <String>[],
@@ -239,7 +263,7 @@ Review.
         );
 
         await expectLater(
-          () => AgentAuthoringService().plan(request, options),
+          () => AgentAuthoringService(fileSystem: fs).plan(request, options),
           throwsA(
             isA<MambaException>().having(
               (error) => error.exitCode,
@@ -256,23 +280,28 @@ Review.
     test(
       'clone reference changes require a separate impact decision',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-authoring-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           for (final skill in const ['original', 'renamed']) {
-            final marker = File(
-              p.join(project.path, '.claude', 'skills', skill, 'SKILL.md'),
+            final marker = fs.file(
+              fs.path.join(
+                project.path,
+                '.claude',
+                'skills',
+                skill,
+                'SKILL.md',
+              ),
             )..createSync(recursive: true);
             marker.writeAsStringSync(
               '---\nname: $skill\ndescription: Skill.\n---\nBody.\n',
             );
           }
-          final source = File(
-            p.join(project.path, '.claude', 'agents', 'source.md'),
+          final source = fs.file(
+            fs.path.join(project.path, '.claude', 'agents', 'source.md'),
           )..createSync(recursive: true);
           source.writeAsStringSync('''---
 name: reviewer
@@ -297,7 +326,7 @@ Review.
             base: null,
             target: <String, Object?>{
               'harness': 'claude',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.claude',
                 'agents',
@@ -313,7 +342,7 @@ Review.
             references: const <String, String>{'skill:original': 'renamed'},
             context: './',
           );
-          final service = AgentAuthoringService();
+          final service = AgentAuthoringService(fileSystem: fs);
 
           final unresolved = await service.plan(
             request(const <String>{}),
@@ -343,14 +372,13 @@ Review.
     test(
       'a model rename accepts its explicit reference impact decision',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-authoring-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'source.md'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -368,7 +396,7 @@ Review.
             base: null,
             target: <String, Object?>{
               'harness': 'claude',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.claude',
                 'agents',
@@ -391,7 +419,8 @@ Review.
             home: home.path,
           );
 
-          final planned = await AgentAuthoringService().plan(request, options);
+          final planned = await AgentAuthoringService(fileSystem: fs)
+              .plan(request, options);
 
           expect(
             planned.result.diagnostics.toString(),
@@ -407,14 +436,13 @@ Review.
     test(
       'source-only fields require an explicit publication decision',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-authoring-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'source.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.toml'))
             ..writeAsStringSync('''
 name = "reviewer"
 description = "Reviews."
@@ -437,7 +465,7 @@ personality = "pragmatic"
             base: null,
             target: <String, Object?>{
               'harness': 'codex',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.codex',
                 'agents',
@@ -451,7 +479,7 @@ personality = "pragmatic"
             references: const <String, String>{},
             context: './',
           );
-          final service = AgentAuthoringService();
+          final service = AgentAuthoringService(fileSystem: fs);
 
           final unresolved = await service.plan(
             request(const <String>{}),
@@ -481,13 +509,12 @@ personality = "pragmatic"
     test(
       'enforces destination, replacement, and common-Pi field boundaries',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-authoring-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           final options = LifecycleOptions(
             processWorkingDirectory: project.path,
             cwd: project.path,
@@ -526,14 +553,14 @@ personality = "pragmatic"
             references: const <String, String>{},
             context: './',
           );
-          final service = AgentAuthoringService();
+          final service = AgentAuthoringService(fileSystem: fs);
 
           await expectLater(
             () => service.plan(
               request(
                 operation: AuthoringOperation.create,
                 harness: 'claude',
-                output: p.join(sandbox.path, 'outside.md'),
+                output: fs.path.join(sandbox.path, 'outside.md'),
               ),
               options,
             ),
@@ -550,7 +577,12 @@ personality = "pragmatic"
               request(
                 operation: AuthoringOperation.clone,
                 harness: 'claude',
-                output: p.join(project.path, '.claude', 'agents', 'worker.md'),
+                output: fs.path.join(
+                  project.path,
+                  '.claude',
+                  'agents',
+                  'worker.md',
+                ),
                 installationId: 'agent_not-a-replacement-authority',
                 instructions: const <String>[],
               ),
@@ -568,7 +600,7 @@ personality = "pragmatic"
             request(
               operation: AuthoringOperation.create,
               harness: 'pi',
-              output: p.join(project.path, '.pi', 'agents', 'worker.md'),
+              output: fs.path.join(project.path, '.pi', 'agents', 'worker.md'),
               definition: <String, Object?>{
                 'skills': <Object?>['private-extension'],
               },

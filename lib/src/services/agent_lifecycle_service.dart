@@ -2,8 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import '../agent_inspection.dart';
 import '../agent_inventory.dart';
@@ -31,9 +32,15 @@ final class AgentInstallInput {
 /// Regular-file Agent lifecycle using the existing native inspection and
 /// bounded inventory engines.
 interface class AgentLifecycleService {
-  AgentLifecycleService({LifecycleStateService? state})
-    : state = state ?? LifecycleStateService();
+  AgentLifecycleService({
+    LifecycleStateService? state,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : _fileSystem = fileSystem,
+       state = state ?? LifecycleStateService(io: LifecycleIO(fs: fileSystem));
 
+  fslib.FileSystem get fileSystem => _fileSystem;
+
+  final fslib.FileSystem _fileSystem;
   final LifecycleStateService state;
 
   AgentInventoryReport managementAware(
@@ -63,7 +70,10 @@ interface class AgentLifecycleService {
         stateDir: input.stateDir,
         readRoots: input.readRoots,
       );
-      final context = LifecycleContext.resolve(options);
+      final context = LifecycleContext.resolve(
+        options,
+        fileSystem: _fileSystem,
+      );
       var records = <InstallationRecord>[];
       try {
         records = state.records(context);
@@ -88,7 +98,7 @@ interface class AgentLifecycleService {
           (record) =>
               record.kind == ArtifactKind.agentFile &&
               record.lifecycle == 'live' &&
-              p.equals(record.location, path),
+              _fileSystem.path.equals(record.location, path),
         );
         if (matches.length > 1) {
           occurrence['management'] = 'ownershipUnverified';
@@ -112,11 +122,18 @@ interface class AgentLifecycleService {
         final alreadyVisible = occurrences.any(
           (occurrence) =>
               occurrence['path'] is String &&
-              p.equals(occurrence['path']! as String, record.location),
+              _fileSystem.path.equals(
+                occurrence['path']! as String,
+                record.location,
+              ),
         );
         if (alreadyVisible) continue;
         final missing =
-            skillEntityType(record.location, followLinks: false) ==
+            skillEntityType(
+              record.location,
+              followLinks: false,
+              fs: _fileSystem,
+            ) ==
             FileSystemEntityType.notFound;
         if (record.lifecycle == 'live' && !missing) continue;
         occurrences.add(<String, Object?>{
@@ -183,13 +200,18 @@ interface class AgentLifecycleService {
       _defaultRoot(context, harness, AgentDestination.native);
 
   Future<LifecycleResult> install(AgentInstallInput input) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: _fileSystem,
+    );
     _requireMutationScope(context);
     final source = context.resolvePath(input.source);
     _requireExtension(source, input.harness);
     final root = _defaultRoot(context, input.harness, input.destination);
     final location = input.output == null
-        ? p.normalize(p.join(root, p.basename(source)))
+        ? _fileSystem.path.normalize(
+            _fileSystem.path.join(root, _fileSystem.path.basename(source)),
+          )
         : context.resolvePath(input.output!);
     final authority = input.output == null
         ? root
@@ -213,7 +235,10 @@ interface class AgentLifecycleService {
     if (input.output != null) {
       throw MambaException('--output applies only to Agent installation.');
     }
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: _fileSystem,
+    );
     _requireMutationScope(context);
     final location = context.resolvePath(input.source);
     final authority = _eligibleAuthority(
@@ -240,7 +265,10 @@ interface class AgentLifecycleService {
         exitCode: 4,
       );
     }
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: _fileSystem,
+    );
     _requireMutationScope(context);
     final location = context.resolvePath(input.source);
     final authority = _eligibleBoundDefinitionAuthority(context, location);
@@ -258,15 +286,15 @@ interface class AgentLifecycleService {
     String location,
   ) {
     _requireExtension(location, AgentHarness.codex);
-    final root = p.normalize(
+    final root = _fileSystem.path.normalize(
       context.scope == LifecycleScope.project
           ? context.projectRoot
           : context.codexRoot(),
     );
-    if (!p.isWithin(root, location) ||
-        p.basename(location) == 'config.toml' ||
-        p.basename(location) == 'auth.json' ||
-        p.split(location).contains('.agent-resource')) {
+    if (!_fileSystem.path.isWithin(root, location) ||
+        _fileSystem.path.basename(location) == 'config.toml' ||
+        _fileSystem.path.basename(location) == 'auth.json' ||
+        _fileSystem.path.split(location).contains('.agent-resource')) {
       throw MambaException(
         'The Codex bound definition is outside its eligible project/configuration boundary.',
         exitCode: 4,
@@ -279,7 +307,10 @@ interface class AgentLifecycleService {
     LifecycleReplaceInput input, {
     AgentHarness? harness,
   }) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: _fileSystem,
+    );
     _requireMutationScope(context);
     final record = state.recordById(context, input.installationId);
     final storedHarness = _recordHarness(record);
@@ -298,7 +329,10 @@ interface class AgentLifecycleService {
   }
 
   Future<LifecycleResult> remove(LifecycleIdInput input) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: _fileSystem,
+    );
     _requireMutationScope(context);
     return state.remove(
       resource: _AgentResource(AgentHarness.claude, this, true),
@@ -308,7 +342,10 @@ interface class AgentLifecycleService {
   }
 
   Future<LifecycleResult> restore(LifecycleIdInput input) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: _fileSystem,
+    );
     _requireMutationScope(context);
     final record = state.installationForBackup(
       context,
@@ -328,17 +365,20 @@ interface class AgentLifecycleService {
     String? action,
   }) => state.recover(
     resource: _AgentResource(AgentHarness.claude, this, true),
-    context: LifecycleContext.resolve(options),
+    context: LifecycleContext.resolve(options, fileSystem: _fileSystem),
     transactionId: transactionId,
     action: action,
   );
 
-  Future<LifecycleResult> backupList(LifecycleOptions options) => state
-      .backupList(LifecycleContext.resolve(options), ArtifactKind.agentFile);
+  Future<LifecycleResult> backupList(LifecycleOptions options) =>
+      state.backupList(
+        LifecycleContext.resolve(options, fileSystem: _fileSystem),
+        ArtifactKind.agentFile,
+      );
 
   Future<LifecycleResult> cleanup(LifecycleIdInput input) => state.cleanup(
     resource: _AgentResource(AgentHarness.claude, this, true),
-    context: LifecycleContext.resolve(input.options),
+    context: LifecycleContext.resolve(input.options, fileSystem: _fileSystem),
     backupId: input.id,
   );
 
@@ -348,7 +388,7 @@ interface class AgentLifecycleService {
     required LifecycleOptions options,
     required String installationId,
   }) {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
     final record = state.recordById(context, installationId);
     if (record.kind != ArtifactKind.agentFile ||
         record.nativeProfile == null ||
@@ -367,6 +407,7 @@ interface class AgentLifecycleService {
         cwd: context.cwd,
       ),
       operation: AgentOperation.inspect,
+      fileSystem: _fileSystem,
     );
   }
 
@@ -378,7 +419,7 @@ interface class AgentLifecycleService {
     required AgentDestination destination,
     required String output,
   }) {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
     _requireMutationScope(context);
     _eligibleAuthority(
       context,
@@ -398,7 +439,7 @@ interface class AgentLifecycleService {
     required String content,
     required Future<T> Function(String path) body,
   }) {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
     _requireMutationScope(context);
     final location = context.resolvePath(output);
     final authority = _eligibleAuthority(
@@ -427,17 +468,17 @@ interface class AgentLifecycleService {
           exitCode: 4,
         );
       }
-      return p.normalize(context.piSharedAgentsRoot());
+      return _fileSystem.path.normalize(context.piSharedAgentsRoot());
     }
-    return p.normalize(switch (harness) {
+    return _fileSystem.path.normalize(switch (harness) {
       AgentHarness.claude =>
         context.scope == LifecycleScope.project
             ? context.claudeAgentsRoot()
-            : p.join(context.claudeConfigRoot(), 'agents'),
+            : _fileSystem.path.join(context.claudeConfigRoot(), 'agents'),
       AgentHarness.codex =>
         context.scope == LifecycleScope.project
             ? context.codexAgentsRoot()
-            : p.join(context.codexRoot(), 'agents'),
+            : _fileSystem.path.join(context.codexRoot(), 'agents'),
       AgentHarness.pi => context.piAgentsRoot(),
     });
   }
@@ -459,13 +500,22 @@ interface class AgentLifecycleService {
       var current = context.cwd;
       while (true) {
         candidates.add(switch (harness) {
-          AgentHarness.claude => p.join(current, '.claude', 'agents'),
-          AgentHarness.codex => p.join(current, '.codex', 'agents'),
-          AgentHarness.pi => p.join(current, '.pi', 'agents'),
+          AgentHarness.claude => _fileSystem.path.join(
+            current,
+            '.claude',
+            'agents',
+          ),
+          AgentHarness.codex => _fileSystem.path.join(
+            current,
+            '.codex',
+            'agents',
+          ),
+          AgentHarness.pi => _fileSystem.path.join(current, '.pi', 'agents'),
         });
-        if (p.equals(current, context.projectRoot)) break;
-        final parent = p.dirname(current);
-        if (p.equals(parent, current) || candidates.length >= 64) {
+        if (_fileSystem.path.equals(current, context.projectRoot)) break;
+        final parent = _fileSystem.path.dirname(current);
+        if (_fileSystem.path.equals(parent, current) ||
+            candidates.length >= 64) {
           throw MambaException(
             'Agent ancestor authority is incomplete.',
             exitCode: 3,
@@ -475,7 +525,9 @@ interface class AgentLifecycleService {
       }
     }
     final containing =
-        candidates.where((root) => p.isWithin(root, location)).toList()
+        candidates
+            .where((root) => _fileSystem.path.isWithin(root, location))
+            .toList()
           ..sort((left, right) => right.length.compareTo(left.length));
     if (containing.isEmpty) {
       throw MambaException(
@@ -483,23 +535,24 @@ interface class AgentLifecycleService {
         exitCode: 4,
       );
     }
-    final root = p.normalize(containing.first);
-    if (harness == AgentHarness.pi && !p.equals(p.dirname(location), root)) {
+    final root = _fileSystem.path.normalize(containing.first);
+    if (harness == AgentHarness.pi &&
+        !_fileSystem.path.equals(_fileSystem.path.dirname(location), root)) {
       throw MambaException(
         'Common-Pi accepts only immediate native/shared Agent files; '
         'provider-specific deeper files are not common-Pi targets.',
         exitCode: 4,
       );
     }
-    final relative = p.relative(location, from: root);
-    if (p.split(relative).length > 17) {
+    final relative = _fileSystem.path.relative(location, from: root);
+    if (_fileSystem.path.split(relative).length > 17) {
       throw MambaException(
         'Agent native placement exceeds the depth budget.',
         exitCode: 3,
       );
     }
-    if (p.basename(location) == 'config.toml' ||
-        p.split(location).contains('.agent-resource')) {
+    if (_fileSystem.path.basename(location) == 'config.toml' ||
+        _fileSystem.path.split(location).contains('.agent-resource')) {
       throw MambaException(
         'Reserved management or parent configuration paths are ineligible.',
         exitCode: 4,
@@ -510,8 +563,8 @@ interface class AgentLifecycleService {
 
   void _requireExtension(String path, AgentHarness harness) {
     final expected = harness == AgentHarness.codex ? '.toml' : '.md';
-    if (p.extension(path) != expected ||
-        p.basename(path).length <= expected.length) {
+    if (_fileSystem.path.extension(path) != expected ||
+        _fileSystem.path.basename(path).length <= expected.length) {
       throw MambaException(
         'The ${harness.name} Agent definition requires the exact lowercase $expected extension.',
         exitCode: 2,
@@ -546,7 +599,7 @@ interface class AgentLifecycleService {
     final authority = bound
         ? _eligibleBoundDefinitionAuthority(context, record.location)
         : _eligibleAuthority(context, record.location, harness, destination!);
-    if (!p.equals(authority, record.nativeRoot)) {
+    if (!_fileSystem.path.equals(authority, record.nativeRoot)) {
       throw MambaException(
         'Stored Agent native root is not current eligible authority.',
         exitCode: 4,
@@ -586,6 +639,9 @@ final class _AgentResource implements LifecycleResource {
   final AgentLifecycleService? owner;
   final bool anyProfile;
 
+  fslib.FileSystem get _fs =>
+      owner?._fileSystem ?? const local.LocalFileSystem();
+
   @override
   void validateAuthority(InstallationRecord record, LifecycleContext context) {
     final service = owner;
@@ -617,7 +673,8 @@ final class _AgentResource implements LifecycleResource {
     String? expectedName,
     bool restoringBaseline = false,
   }) async {
-    final type = skillEntityType(path, followLinks: false);
+    final fileSystem = owner?._fileSystem ?? const local.LocalFileSystem();
+    final type = skillEntityType(path, followLinks: false, fs: fileSystem);
     if (type == FileSystemEntityType.link) {
       throw MambaException(
         'Linked Agent definitions are not managed regular files.',
@@ -631,7 +688,7 @@ final class _AgentResource implements LifecycleResource {
       );
     }
     final expectedExtension = harness == AgentHarness.codex ? '.toml' : '.md';
-    if (p.extension(path) != expectedExtension) {
+    if (_fs.path.extension(path) != expectedExtension) {
       throw MambaException(
         'The Agent file extension does not match ${harness.name}.',
         exitCode: 2,
@@ -644,6 +701,7 @@ final class _AgentResource implements LifecycleResource {
         harness: harness,
       ),
       operation: AgentOperation.validate,
+      fileSystem: fileSystem,
     );
     if (report.hasErrors) {
       throw MambaException(
@@ -693,6 +751,7 @@ final class _AgentResource implements LifecycleResource {
         piAgentDir: context.options.piAgentDir,
         readRoots: context.options.readRoots,
       ),
+      fileSystem: _fs,
     );
     final comparison = harness == AgentHarness.pi ? name.toLowerCase() : name;
     final builtins = switch (harness) {
@@ -714,9 +773,9 @@ final class _AgentResource implements LifecycleResource {
       final path = occurrence['path'];
       if ((excludePath != null &&
               path is String &&
-              p.equals(path, excludePath)) ||
+              _fs.path.equals(path, excludePath)) ||
           (path is String &&
-              allowedPaths.any((allowed) => p.equals(path, allowed)))) {
+              allowedPaths.any((allowed) => _fs.path.equals(path, allowed)))) {
         continue;
       }
       final identity = occurrence['identity']! as Map<String, Object?>;
@@ -741,8 +800,8 @@ final class _AgentResource implements LifecycleResource {
 
   String? _observableBasename(Object? path) {
     if (path is! String || path.isEmpty) return null;
-    final basename = p.basename(path);
-    final extension = p.extension(basename);
+    final basename = _fs.path.basename(path);
+    final extension = _fs.path.extension(basename);
     if (extension.isEmpty) return null;
     return basename.substring(0, basename.length - extension.length);
   }

@@ -92,6 +92,42 @@ void main() {
       }
     });
 
+    test('does not follow a Git HTTPS downgrade to plaintext', () async {
+      final fixture = await _GitFixture.create(sandbox);
+      File(p.join(fixture.repository.path, 'SKILL.md'))
+          .writeAsStringSync('---\nname: review\ndescription: Fixture.\n---\n');
+      fixture
+        ..run(['add', 'SKILL.md'])
+        ..run(['commit', '-m', 'fixture'])
+        ..publish();
+      await fixture.serve();
+      addTearDown(fixture.dispose);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      var plaintextRequests = 0;
+      server.listen((request) {
+        plaintextRequests++;
+        request.response.statusCode = HttpStatus.notFound;
+        request.response.close();
+      });
+      addTearDown(server.close);
+      final redirect = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      redirect.listen((request) {
+        final target = Uri.parse(
+          'http://127.0.0.1:${server.port}${request.uri.path}',
+        ).replace(query: request.uri.query);
+        request.response.redirect(target, status: HttpStatus.found);
+      });
+      addTearDown(redirect.close);
+
+      await expectLater(
+        AcquisitionService().acquire(
+          request('https://localhost:${redirect.port}/repo.git'),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      expect(plaintextRequests, 0);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
     test('retains direct-file boundaries and refuses a subpath', () async {
       final marker = File(p.join(sandbox.path, 'SKILL.md'))
         ..writeAsStringSync('---\nname: review\ndescription: Reviews.\n---\n');

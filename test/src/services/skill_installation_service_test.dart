@@ -1,33 +1,39 @@
-import 'dart:io';
-
 import 'package:agent_resource/src/installation/installation_interaction.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_installation_service.dart';
-import 'package:path/path.dart' as p;
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('SkillInstallationService', () {
+    late FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     test(
       'plans a durable local source link without management writes',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-workflow-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-          );
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
           final result =
               await SkillInstallationService(
+                fileSystem: fs,
                 interaction: InteractInstallationInteraction(
                   terminal: () => false,
                 ),

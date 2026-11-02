@@ -1,7 +1,8 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart';
+import 'package:file/local.dart';
 import 'package:mamba/mamba.dart';
 import 'package:toml/toml.dart';
 
@@ -42,7 +43,12 @@ final class SkillOffering extends CatalogOffering {
     required super.id,
     required super.path,
     required super.label,
+    this.discoveryRoot,
+    this.discoveryGroup,
   });
+
+  final String? discoveryRoot;
+  final String? discoveryGroup;
 }
 
 final class AgentOffering extends CatalogOffering {
@@ -67,8 +73,12 @@ final class ResourceCatalog {
     required this.offerings,
   });
 
-  factory ResourceCatalog.load(String path, CatalogResourceType type) {
-    final bytes = _readBounded(path);
+  factory ResourceCatalog.load(
+    String path,
+    CatalogResourceType type, {
+    FileSystem fileSystem = const LocalFileSystem(),
+  }) {
+    final bytes = _readBounded(fileSystem, path);
     final digest = sha256.convert(bytes).toString();
     final String source;
     try {
@@ -121,10 +131,10 @@ final class ResourceCatalog {
   final List<CatalogOffering> offerings;
 }
 
-List<int> _readBounded(String path) {
+List<int> _readBounded(FileSystem fileSystem, String path) {
   final RandomAccessFile file;
   try {
-    file = File(path).openSync();
+    file = fileSystem.file(path).openSync();
   } on FileSystemException catch (error) {
     throw MambaException(
       'Could not read the required $sourceConfigFileName: ${error.message}',

@@ -1,22 +1,23 @@
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 
 import 'package:agent_resource/src/pack/pack_state.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
+  late FileSystem fs;
   late Directory sandbox;
   late Directory state;
   late File ledger;
 
   setUp(() {
-    sandbox = Directory.systemTemp.createTempSync('pack-state-test-');
-    state = Directory(p.join(sandbox.path, 'state'))..createSync();
-    ledger = File(p.join(state.path, 'installations.json'));
+    fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    sandbox = fs.directory('/sandbox')..createSync();
+    state = fs.directory(fs.path.join(sandbox.path, 'state'))..createSync();
+    ledger = fs.file(fs.path.join(state.path, 'installations.json'));
   });
-
-  tearDown(() => sandbox.deleteSync(recursive: true));
 
   Map<String, Object?> readLedger() =>
       jsonDecode(ledger.readAsStringSync()) as Map<String, Object?>;
@@ -25,7 +26,10 @@ void main() {
     test(
       'upserts approvals, selections, and operations as separate groups',
       () {
-        final stateStore = PackState(stateDirectory: state.path);
+        final stateStore = PackState(
+          stateDirectory: state.path,
+          fileSystem: fs,
+        );
         stateStore.recordApprovals([
           {
             'packKey': 'owner/repo',
@@ -94,29 +98,39 @@ void main() {
       );
       final before = ledger.readAsBytesSync();
 
-      final document = PackState(stateDirectory: state.path).read();
+      final document = PackState(
+        stateDirectory: state.path,
+        fileSystem: fs,
+      ).read();
 
       expect(document.installations.single['installationId'], 'ins_existing');
       expect(document.packs.single['key'], 'owner/repository');
       expect(ledger.readAsBytesSync(), before);
       expect(
-        PackState(stateDirectory: p.join(sandbox.path, 'absent'))
-            .read()
-            .installations,
+        PackState(
+          stateDirectory: fs.path.join(sandbox.path, 'absent'),
+          fileSystem: fs,
+        ).read().installations,
         isEmpty,
       );
-      expect(Directory(p.join(sandbox.path, 'absent')).existsSync(), isFalse);
+      expect(
+        fs.directory(fs.path.join(sandbox.path, 'absent')).existsSync(),
+        isFalse,
+      );
     });
 
     test(
       'records a complete artifact with stable UTC-millisecond refs and reuse',
       () {
         var now = DateTime.utc(2026, 10, 30, 4, 15, 0, 123);
-        final artifact = Directory(p.join(sandbox.path, 'source'))
+        final artifact = fs.directory(fs.path.join(sandbox.path, 'source'))
           ..createSync();
-        File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('first');
+        fs
+            .file(fs.path.join(artifact.path, 'SKILL.md'))
+            .writeAsStringSync('first');
         final packState = PackState(
           stateDirectory: state.path,
+          fileSystem: fs,
           clock: () => now,
         );
 
@@ -128,8 +142,8 @@ void main() {
           ],
           sourceEvidence: const {'track': 'main', 'commit': 'abc123'},
         );
-        final retained = File(
-          p.join(
+        final retained = fs.file(
+          fs.path.join(
             state.path,
             'snapshots',
             first.contentDigest,
@@ -174,14 +188,20 @@ void main() {
         var now = DateTime.utc(2026, 1, 1);
         final packState = PackState(
           stateDirectory: state.path,
+          fileSystem: fs,
           clock: () => now,
         );
-        final firstArtifact = Directory(p.join(sandbox.path, 'first'))
+        final firstArtifact = fs.directory(fs.path.join(sandbox.path, 'first'))
           ..createSync();
-        File(p.join(firstArtifact.path, 'SKILL.md')).writeAsStringSync('one');
-        final secondArtifact = Directory(p.join(sandbox.path, 'second'))
-          ..createSync();
-        File(p.join(secondArtifact.path, 'SKILL.md')).writeAsStringSync('two');
+        fs
+            .file(fs.path.join(firstArtifact.path, 'SKILL.md'))
+            .writeAsStringSync('one');
+        final secondArtifact = fs.directory(
+          fs.path.join(sandbox.path, 'second'),
+        )..createSync();
+        fs
+            .file(fs.path.join(secondArtifact.path, 'SKILL.md'))
+            .writeAsStringSync('two');
         final first = packState.recordSnapshot(
           installationId: 'ins_one',
           artifactPath: firstArtifact.path,
@@ -230,11 +250,14 @@ void main() {
         var now = DateTime.utc(2026, 1, 1);
         final packState = PackState(
           stateDirectory: state.path,
+          fileSystem: fs,
           clock: () => now,
         );
-        final artifact = Directory(p.join(sandbox.path, 'artifact'))
+        final artifact = fs.directory(fs.path.join(sandbox.path, 'artifact'))
           ..createSync();
-        File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('old');
+        fs
+            .file(fs.path.join(artifact.path, 'SKILL.md'))
+            .writeAsStringSync('old');
         final old = packState.recordSnapshot(
           installationId: 'ins_one',
           artifactPath: artifact.path,
@@ -242,7 +265,9 @@ void main() {
           sourceEvidence: const {},
         );
         now = now.add(const Duration(days: 1));
-        File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('current');
+        fs
+            .file(fs.path.join(artifact.path, 'SKILL.md'))
+            .writeAsStringSync('current');
         final current = packState.recordSnapshot(
           installationId: 'ins_one',
           artifactPath: artifact.path,
@@ -275,11 +300,14 @@ void main() {
         var now = DateTime.utc(2026, 1, 1);
         final packState = PackState(
           stateDirectory: state.path,
+          fileSystem: fs,
           clock: () => now,
         );
-        final artifact = Directory(p.join(sandbox.path, 'edited'))
+        final artifact = fs.directory(fs.path.join(sandbox.path, 'edited'))
           ..createSync();
-        File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('my edits');
+        fs
+            .file(fs.path.join(artifact.path, 'SKILL.md'))
+            .writeAsStringSync('my edits');
         final edited = packState.recordLocalEdit(
           installationId: 'ins_one',
           artifactPath: artifact.path,
@@ -308,10 +336,14 @@ void main() {
     test('keeps source snapshots and identical local-edit backups in separate retention classes', () {
       final packState = PackState(
         stateDirectory: state.path,
+        fileSystem: fs,
         clock: () => DateTime.utc(2026, 1, 1),
       );
-      final artifact = Directory(p.join(sandbox.path, 'same'))..createSync();
-      File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('same bytes');
+      final artifact = fs.directory(fs.path.join(sandbox.path, 'same'))
+        ..createSync();
+      fs
+          .file(fs.path.join(artifact.path, 'SKILL.md'))
+          .writeAsStringSync('same bytes');
       final edited = packState.recordLocalEdit(
         installationId: 'ins_one',
         artifactPath: artifact.path,
@@ -338,11 +370,14 @@ void main() {
         final now = DateTime.utc(2026, 1, 1);
         final packState = PackState(
           stateDirectory: state.path,
+          fileSystem: fs,
           clock: () => now,
         );
-        final artifact = Directory(p.join(sandbox.path, 'artifact'))
+        final artifact = fs.directory(fs.path.join(sandbox.path, 'artifact'))
           ..createSync();
-        File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('content');
+        fs
+            .file(fs.path.join(artifact.path, 'SKILL.md'))
+            .writeAsStringSync('content');
         final original = packState.recordSnapshot(
           installationId: 'ins_one',
           artifactPath: artifact.path,
@@ -380,11 +415,14 @@ void main() {
         var now = DateTime.utc(2026, 1, 1);
         final packState = PackState(
           stateDirectory: state.path,
+          fileSystem: fs,
           clock: () => now,
         );
-        final artifact = Directory(p.join(sandbox.path, 'artifact'))
+        final artifact = fs.directory(fs.path.join(sandbox.path, 'artifact'))
           ..createSync();
-        File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('shared');
+        fs
+            .file(fs.path.join(artifact.path, 'SKILL.md'))
+            .writeAsStringSync('shared');
         final shared = packState.recordSnapshot(
           installationId: 'ins_old',
           artifactPath: artifact.path,
@@ -406,7 +444,9 @@ void main() {
           isTrue,
         );
 
-        File(p.join(artifact.path, 'SKILL.md')).writeAsStringSync('recovery');
+        fs
+            .file(fs.path.join(artifact.path, 'SKILL.md'))
+            .writeAsStringSync('recovery');
         final recovery = packState.recordSnapshot(
           installationId: 'ins_recovery',
           artifactPath: artifact.path,
@@ -437,7 +477,7 @@ void main() {
     test('rejects an unsupported schema without mutation', () {
       ledger.writeAsStringSync('{"schemaVersion":0,"installations":[]}');
       final before = ledger.readAsBytesSync();
-      final packState = PackState(stateDirectory: state.path);
+      final packState = PackState(stateDirectory: state.path, fileSystem: fs);
       expect(packState.read, throwsFormatException);
       expect(ledger.readAsBytesSync(), before);
       expect(() => packState.cleanup(), throwsFormatException);
@@ -458,7 +498,7 @@ void main() {
             ],
           }),
         );
-        final packState = PackState(stateDirectory: state.path);
+        final packState = PackState(stateDirectory: state.path, fileSystem: fs);
 
         packState.updateRecordGroups(
           packs: const [

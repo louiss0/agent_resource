@@ -6,8 +6,9 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import 'agent_inspection.dart';
 import 'skill_files.dart';
@@ -140,8 +141,10 @@ final class AgentInventoryReport {
 }
 
 /// Inventories only explicitly selected native roots and declarations.
-Future<AgentInventoryReport> listNativeAgents(AgentInventoryInput input) =>
-    _Inventory(input).run();
+Future<AgentInventoryReport> listNativeAgents(
+  AgentInventoryInput input, {
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) => _Inventory(input, fileSystem).run();
 
 final class _Root {
   const _Root({
@@ -162,13 +165,14 @@ final class _Root {
 }
 
 final class _Inventory {
-  _Inventory(this.input);
+  _Inventory(this.input, this.fileSystem);
 
   final AgentInventoryInput input;
+  final fslib.FileSystem fileSystem;
   final occurrences = <Map<String, Object?>>[];
   final diagnostics = <AgentDiagnostic>[];
-  late final Directory cwd;
-  late final Directory projectRoot;
+  late final fslib.Directory cwd;
+  late final fslib.Directory projectRoot;
   var entries = 0;
   var directories = 0;
   var metadataBytes = 0;
@@ -181,7 +185,7 @@ final class _Inventory {
   final scannedLocations = <String>{};
   final occurrenceIds = <String>{};
   final visitedDirectories = <String>{};
-  final readRoots = <Directory>[];
+  final readRoots = <fslib.Directory>[];
 
   Future<AgentInventoryReport> run() async {
     cwd = await _directory(
@@ -268,7 +272,7 @@ final class _Inventory {
       if (_selected(AgentHarness.claude)) {
         await _scanRoot(
           _Root(
-            path: p.join(ancestor.path, '.claude', 'agents'),
+            path: fileSystem.path.join(ancestor.path, '.claude', 'agents'),
             anchor: ancestor.path,
             harness: AgentHarness.claude,
             scope: AgentScope.project,
@@ -280,7 +284,7 @@ final class _Inventory {
       if (_selected(AgentHarness.codex)) {
         await _scanRoot(
           _Root(
-            path: p.join(ancestor.path, '.codex', 'agents'),
+            path: fileSystem.path.join(ancestor.path, '.codex', 'agents'),
             anchor: ancestor.path,
             harness: AgentHarness.codex,
             scope: AgentScope.project,
@@ -289,7 +293,7 @@ final class _Inventory {
           ),
         );
         await _scanCodexConfig(
-          p.join(ancestor.path, '.codex', 'config.toml'),
+          fileSystem.path.join(ancestor.path, '.codex', 'config.toml'),
           AgentScope.project,
           ancestor.path,
         );
@@ -297,8 +301,8 @@ final class _Inventory {
     }
     if (_selected(AgentHarness.pi)) {
       for (final (path, destination) in [
-        (p.join(projectRoot.path, '.pi', 'agents'), 'native'),
-        (p.join(projectRoot.path, '.agents', 'agents'), 'shared'),
+        (fileSystem.path.join(projectRoot.path, '.pi', 'agents'), 'native'),
+        (fileSystem.path.join(projectRoot.path, '.agents', 'agents'), 'shared'),
       ]) {
         await _scanRoot(
           _Root(
@@ -316,7 +320,7 @@ final class _Inventory {
       for (final directory in readRoots) {
         await _scanRoot(
           _Root(
-            path: p.join(directory.path, '.claude', 'agents'),
+            path: fileSystem.path.join(directory.path, '.claude', 'agents'),
             anchor: directory.path,
             harness: AgentHarness.claude,
             scope: AgentScope.project,
@@ -334,12 +338,12 @@ final class _Inventory {
       final config = _path(
         input.claudeConfigDir ??
             _environmentPath('CLAUDE_CONFIG_DIR') ??
-            p.join(home.path, '.claude'),
+            fileSystem.path.join(home.path, '.claude'),
         cwd.path,
       );
       await _scanRoot(
         _Root(
-          path: p.join(config, 'agents'),
+          path: fileSystem.path.join(config, 'agents'),
           anchor: home.path,
           harness: AgentHarness.claude,
           scope: AgentScope.user,
@@ -352,12 +356,12 @@ final class _Inventory {
       final codexHome = _path(
         input.codexHome ??
             _environmentPath('CODEX_HOME') ??
-            p.join(home.path, '.codex'),
+            fileSystem.path.join(home.path, '.codex'),
         cwd.path,
       );
       await _scanRoot(
         _Root(
-          path: p.join(codexHome, 'agents'),
+          path: fileSystem.path.join(codexHome, 'agents'),
           anchor: home.path,
           harness: AgentHarness.codex,
           scope: AgentScope.user,
@@ -366,7 +370,7 @@ final class _Inventory {
         ),
       );
       await _scanCodexConfig(
-        p.join(codexHome, 'config.toml'),
+        fileSystem.path.join(codexHome, 'config.toml'),
         AgentScope.user,
         home.path,
       );
@@ -375,12 +379,12 @@ final class _Inventory {
       final piHome = _path(
         input.piAgentDir ??
             _environmentPath('PI_CODING_AGENT_DIR') ??
-            p.join(home.path, '.pi', 'agent'),
+            fileSystem.path.join(home.path, '.pi', 'agent'),
         cwd.path,
       );
       await _scanRoot(
         _Root(
-          path: p.join(piHome, 'agents'),
+          path: fileSystem.path.join(piHome, 'agents'),
           anchor: home.path,
           harness: AgentHarness.pi,
           scope: AgentScope.user,
@@ -395,7 +399,9 @@ final class _Inventory {
     if (raw.trim().isEmpty) {
       throw MambaException('A native context path must not be blank.');
     }
-    return p.normalize(p.isAbsolute(raw) ? raw : p.join(base, raw));
+    return fileSystem.path.normalize(
+      fileSystem.path.isAbsolute(raw) ? raw : fileSystem.path.join(base, raw),
+    );
   }
 
   String _home() {
@@ -418,11 +424,12 @@ final class _Inventory {
   bool _selected(AgentHarness harness) =>
       input.harness == null || input.harness == harness;
 
-  Future<Directory> _selectProjectRoot() async {
+  Future<fslib.Directory> _selectProjectRoot() async {
     final explicit = input.projectRoot;
     if (explicit != null) {
       final root = await _directory(explicit, cwd.path, 'project root');
-      if (!p.equals(root.path, cwd.path) && !p.isWithin(root.path, cwd.path)) {
+      if (!fileSystem.path.equals(root.path, cwd.path) &&
+          !fileSystem.path.isWithin(root.path, cwd.path)) {
         throw MambaException(
           'The project root must contain the working directory.',
         );
@@ -432,15 +439,15 @@ final class _Inventory {
     var current = cwd;
     for (var step = 0; step < _maxAncestors; step++) {
       boundarySearchSteps++;
-      final marker = p.join(current.path, '.git');
+      final marker = fileSystem.path.join(current.path, '.git');
       final type = await _type(marker, followLinks: false);
       if (type == FileSystemEntityType.file ||
           type == FileSystemEntityType.directory) {
         return current;
       }
-      final parentPath = p.dirname(current.path);
-      if (p.equals(parentPath, current.path)) return cwd;
-      current = Directory(parentPath);
+      final parentPath = fileSystem.path.dirname(current.path);
+      if (fileSystem.path.equals(parentPath, current.path)) return cwd;
+      current = fileSystem.directory(parentPath);
     }
     throw MambaException(
       'The project boundary search exceeds the $_maxAncestors-step budget.',
@@ -448,12 +455,12 @@ final class _Inventory {
     );
   }
 
-  List<Directory> _ancestors() {
-    final result = <Directory>[];
+  List<fslib.Directory> _ancestors() {
+    final result = <fslib.Directory>[];
     var current = cwd;
     while (true) {
       result.add(current);
-      if (p.equals(current.path, projectRoot.path)) return result;
+      if (fileSystem.path.equals(current.path, projectRoot.path)) return result;
       if (result.length >= _maxAncestors) {
         throw MambaException(
           'The project ancestor inventory exceeds the '
@@ -461,22 +468,28 @@ final class _Inventory {
           exitCode: 3,
         );
       }
-      final parent = p.dirname(current.path);
-      if (p.equals(parent, current.path)) {
+      final parent = fileSystem.path.dirname(current.path);
+      if (fileSystem.path.equals(parent, current.path)) {
         throw MambaException(
           'The project root is not within the working-directory ancestry.',
           exitCode: 1,
         );
       }
-      current = Directory(parent);
+      current = fileSystem.directory(parent);
     }
   }
 
-  Future<Directory> _directory(String raw, String base, String label) async {
+  Future<fslib.Directory> _directory(
+    String raw,
+    String base,
+    String label,
+  ) async {
     if (raw.trim().isEmpty) {
       throw MambaException('The $label path must not be blank.');
     }
-    final path = p.normalize(p.isAbsolute(raw) ? raw : p.join(base, raw));
+    final path = fileSystem.path.normalize(
+      fileSystem.path.isAbsolute(raw) ? raw : fileSystem.path.join(base, raw),
+    );
     final type = await _type(path, followLinks: true);
     if (type == FileSystemEntityType.notFound) {
       throw MambaException('The $label does not exist: $path');
@@ -484,7 +497,7 @@ final class _Inventory {
     if (type != FileSystemEntityType.directory) {
       throw MambaException('The $label is not a directory: $path');
     }
-    return Directory(path);
+    return fileSystem.directory(path);
   }
 
   Future<FileSystemEntityType> _type(
@@ -492,7 +505,11 @@ final class _Inventory {
     required bool followLinks,
   }) async {
     try {
-      return await skillEntityTypeAsync(path, followLinks: followLinks);
+      return await skillEntityTypeAsync(
+        path,
+        followLinks: followLinks,
+        fs: fileSystem,
+      );
     } on MambaException catch (error) {
       throw MambaException(error.message, exitCode: 3);
     }
@@ -525,8 +542,8 @@ final class _Inventory {
       rootsScanned++;
       return;
     }
-    final pending = <({Directory directory, int depth})>[
-      (directory: Directory(root.path), depth: 0),
+    final pending = <({fslib.Directory directory, int depth})>[
+      (directory: fileSystem.directory(root.path), depth: 0),
     ];
     while (pending.isNotEmpty) {
       final current = pending.removeLast();
@@ -544,7 +561,7 @@ final class _Inventory {
           }
           if (!_visitDirectory(root, child.path)) continue;
           pending.add((
-            directory: Directory(child.path),
+            directory: fileSystem.directory(child.path),
             depth: current.depth + 1,
           ));
           continue;
@@ -553,7 +570,7 @@ final class _Inventory {
           AgentHarness.codex => '.toml',
           AgentHarness.claude || AgentHarness.pi => '.md',
         };
-        if (p.extension(child.path) != extension) continue;
+        if (fileSystem.path.extension(child.path) != extension) continue;
         if (childType == FileSystemEntityType.link) {
           _addLinkedOccurrence(
             root,
@@ -571,6 +588,7 @@ final class _Inventory {
             harness: root.harness,
           ),
           operation: AgentOperation.inspect,
+          fileSystem: fileSystem,
         );
         _addReport(
           report,
@@ -597,8 +615,8 @@ final class _Inventory {
     return true;
   }
 
-  Future<List<FileSystemEntity>> _list(Directory directory) async {
-    final children = <FileSystemEntity>[];
+  Future<List<fslib.FileSystemEntity>> _list(fslib.Directory directory) async {
+    final children = <fslib.FileSystemEntity>[];
     try {
       // Charge before retaining; an exception cancels the directory stream.
       await for (final child in directory.list(followLinks: false)) {
@@ -654,11 +672,12 @@ final class _Inventory {
     }
     final inspection = CodexBindingInspection.read(
       configFile: configPath,
-      workingDirectory: p.dirname(configPath),
+      workingDirectory: fileSystem.path.dirname(configPath),
       beforeRead: _chargeRead,
+      fileSystem: fileSystem,
     );
     final root = _Root(
-      path: p.dirname(configPath),
+      path: fileSystem.path.dirname(configPath),
       anchor: anchor,
       harness: AgentHarness.codex,
       scope: scope,
@@ -684,7 +703,7 @@ final class _Inventory {
   void _chargeRead(String path, int maxBytes) {
     final int length;
     try {
-      length = File(path).lengthSync();
+      length = fileSystem.file(path).lengthSync();
     } on FileSystemException catch (error) {
       throw MambaException(
         'Could not measure required metadata $path: ${error.message}',

@@ -28,6 +28,16 @@ jobs:
           sdk: 3.13.2
       - name: Verify committed dependency resolution
         run: dart pub get --enforce-lockfile
+      - name: Verify real HTTPS Git fixture prerequisites
+        shell: bash
+        run: |
+          git --version
+          openssl version
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            python --version
+          else
+            python3 --version
+          fi
       - name: Check formatting
         run: dart format --output=none --set-exit-if-changed lib bin test
       - name: Analyze

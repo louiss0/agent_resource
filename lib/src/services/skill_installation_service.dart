@@ -2,8 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import '../../components/acquisition_progress.dart';
 import '../installation/installation_batch.dart';
@@ -24,16 +25,20 @@ typedef InstallationProgress = Future<T> Function<T>(
 /// Resource-specific Skill planning and publication workflow.
 interface class SkillInstallationService {
   SkillInstallationService({
-    this._acquisition = const AcquisitionService(),
+    AcquisitionService? acquisition,
     SkillLifecycleService? lifecycle,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     InstallationInteraction? interaction,
     InstallationBatch? batch,
     InstallationProgress? progress,
-  }) : _lifecycle = lifecycle ?? SkillLifecycleService(),
+  }) : _fileSystem = fileSystem,
+       _acquisition = acquisition ?? AcquisitionService(fileSystem: fileSystem),
+       _lifecycle = lifecycle ?? SkillLifecycleService(fileSystem: fileSystem),
        _interaction = interaction ?? InteractInstallationInteraction(),
        _batch = batch ?? InstallationBatch(),
        _progress = progress ?? _defaultProgress;
 
+  final fslib.FileSystem _fileSystem;
   final AcquisitionService _acquisition;
   final SkillLifecycleService _lifecycle;
   final InstallationInteraction _interaction;
@@ -75,7 +80,10 @@ interface class SkillInstallationService {
     if (source == null) {
       return const InstallationCancelledResult('skill install');
     }
-    final context = LifecycleContext.resolve(request.options);
+    final context = LifecycleContext.resolve(
+      request.options,
+      fileSystem: _fileSystem,
+    );
     final method = request.method ?? InstallationMethod.canonical;
     final acquisition = AcquisitionRequest(
       locator: source,
@@ -102,6 +110,21 @@ interface class SkillInstallationService {
       if (candidates == null) {
         return const InstallationCancelledResult('skill install');
       }
+      if (candidates.candidates.isEmpty) {
+        final plan = InstallationPlan.create(
+          command: 'skill install',
+          source: candidates.provenance,
+          scope: context.scope.name,
+          units: const [],
+          diagnostics: [
+            {
+              'code': 'all-groups-declined',
+              'message': candidates.selectionWarning!,
+            },
+          ],
+        );
+        return InstallationCompletedResult(plan, InstallationOutcome.unchanged);
+      }
       if (method == InstallationMethod.sourceLink &&
           !candidates.provenance.durableLocalDirectory) {
         throw MambaException(
@@ -125,9 +148,9 @@ interface class SkillInstallationService {
       try {
         for (final candidate in candidates.candidates) {
           try {
-            final staged = await const SkillRootMarkdownMigration().stage(
-              candidate.path,
-            );
+            final staged = await SkillRootMarkdownMigration(
+              fileSystem: _fileSystem,
+            ).stage(candidate.path);
             stagedSkills.add(staged);
             if (staged.migrated) {
               if (method == InstallationMethod.sourceLink) {
@@ -137,7 +160,8 @@ interface class SkillInstallationService {
                   exitCode: 4,
                 );
               }
-              final skill = candidate.id ?? p.basename(candidate.path);
+              final skill =
+                  candidate.id ?? _fileSystem.path.basename(candidate.path);
               if (staged.movedMarkdown.isNotEmpty) {
                 migrationDiagnostics.add({
                   'code': 'root-markdown-migrated',
@@ -240,9 +264,9 @@ interface class SkillInstallationService {
       throw MambaException('Unattended Skill installation requires --target.');
     }
     final detected = <InstallationTarget>{
-      if (_directoryHint(context.claudeSkillsRoot())) InstallationTarget.claude,
-      if (_directoryHint(context.codexSkillsRoot()) ||
-          _directoryHint(context.sharedSkillsRoot()))
+      if (_isDirectory(context.claudeSkillsRoot())) InstallationTarget.claude,
+      if (_isDirectory(context.codexSkillsRoot()) ||
+          _isDirectory(context.sharedSkillsRoot()))
         InstallationTarget.codex,
     };
     while (true) {
@@ -281,8 +305,10 @@ interface class SkillInstallationService {
       if (method != InstallationMethod.sourceLink) 'contentDigest': digest,
     };
     final entries = <InstallationEntryPlan>[];
-    final canonicalRoot = p.normalize(context.sharedSkillsRoot());
-    final canonicalPath = p.join(canonicalRoot, inspected.name);
+    final canonicalRoot = _fileSystem.path.normalize(
+      context.sharedSkillsRoot(),
+    );
+    final canonicalPath = _fileSystem.path.join(canonicalRoot, inspected.name);
     if (method == InstallationMethod.canonical) {
       entries.add(
         InstallationEntryPlan(
@@ -296,10 +322,10 @@ interface class SkillInstallationService {
         ),
       );
       if (targets.contains(InstallationTarget.claude)) {
-        final root = p.normalize(context.claudeSkillsRoot());
+        final root = _fileSystem.path.normalize(context.claudeSkillsRoot());
         entries.add(
           InstallationEntryPlan(
-            path: p.join(root, inspected.name),
+            path: _fileSystem.path.join(root, inspected.name),
             kind: InstallationEntryKind.link,
             action: InstallationEntryAction.createLink,
             target: 'claude',
@@ -323,12 +349,12 @@ interface class SkillInstallationService {
       }
     } else {
       for (final target in targets) {
-        final root = p.normalize(
+        final root = _fileSystem.path.normalize(
           target == InstallationTarget.claude
               ? context.claudeSkillsRoot()
               : context.sharedSkillsRoot(),
         );
-        final location = p.join(root, inspected.name);
+        final location = _fileSystem.path.join(root, inspected.name);
         entries.add(
           InstallationEntryPlan(
             path: location,
@@ -400,7 +426,7 @@ interface class SkillInstallationService {
             );
             return record.kind == ArtifactKind.skillCanonical &&
                 record.lifecycle == 'live' &&
-                p.equals(record.location, content.path);
+                _fileSystem.path.equals(record.location, content.path);
           }).toList()
         : const <InstallationRecord>[];
     final canonicalRecord = canonical.isEmpty ? null : canonical.single;
@@ -433,7 +459,9 @@ interface class SkillInstallationService {
           method == InstallationMethod.canonical &&
           canonicalRecord != null) {
         final exposures = canonicalRecord.exposures
-            .where((exposure) => p.equals(exposure.path, entry.path))
+            .where(
+              (exposure) => _fileSystem.path.equals(exposure.path, entry.path),
+            )
             .toList();
         if (exposures.isNotEmpty) {
           final exposure = exposures.single;
@@ -451,13 +479,10 @@ interface class SkillInstallationService {
           continue;
         }
       }
-      final occupant = FileSystemEntity.typeSync(
-        entry.path,
-        followLinks: false,
-      );
+      final occupant = _fileSystem.typeSync(entry.path, followLinks: false);
       final managed = records.where((record) {
         return record.lifecycle == 'live' &&
-            p.equals(record.location, entry.path);
+            _fileSystem.path.equals(record.location, entry.path);
       }).toList();
       if (managed.isNotEmpty) {
         final record = managed.single;
@@ -562,15 +587,15 @@ interface class SkillInstallationService {
       }
     }
   }
+
+  bool _isDirectory(String path) =>
+      _fileSystem.typeSync(path, followLinks: false) ==
+      FileSystemEntityType.directory;
 }
 
 String get _nativeDirectoryLinkKind => Platform.isWindows
     ? 'windows-directory-symlink'
     : 'posix-directory-symlink';
-
-bool _directoryHint(String path) =>
-    FileSystemEntity.typeSync(path, followLinks: false) ==
-    FileSystemEntityType.directory;
 
 Future<T> _defaultProgress<T>(String label, Future<T> Function() work) =>
     AcquisitionProgressComponent(label: label).render(work);

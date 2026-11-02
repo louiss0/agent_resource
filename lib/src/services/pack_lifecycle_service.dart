@@ -2,13 +2,17 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../../components/installation_approval.dart';
+import '../../components/resource_selector.dart';
 import '../agent_inspection.dart';
 import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
+import '../installation/skill_source_discovery.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../pack/github_release_resolver.dart';
 import '../pack/pack_change_set.dart';
@@ -44,6 +48,8 @@ enum PackOperation {
 final class const PackPrompts({
   final Future<bool> Function(String label)? confirmation,
   final Future<String?> Function(String label, List<String> choices)? choice,
+  final Future<List<int>?> Function(String label, List<String> choices)?
+  multiChoice,
 });
 
 final class const PackLifecycleRequest({
@@ -83,23 +89,29 @@ final class const PackLifecycleRequest({
 });
 
 interface class PackLifecycleService {
-  PackLifecycleService()
-    : _acquisition = null,
-      _state = null,
-      _admission = const SkillAdmission(),
-      _releaseResolver = null,
-      prompts = const PackPrompts(),
-      operatingSystem = Platform.operatingSystem;
+  PackLifecycleService({
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+    this._state,
+  }) : _fileSystem = fileSystem,
+       _acquisition = null,
+       _admission = SkillAdmission(fileSystem: fileSystem),
+       _releaseResolver = null,
+       prompts = const PackPrompts(),
+       operatingSystem = Platform.operatingSystem;
 
   PackLifecycleService.withDependencies({
-    this._acquisition = const AcquisitionService(),
+    AcquisitionService? acquisition,
     this._state,
-    this._admission = const SkillAdmission(),
+    SkillAdmission? admission,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     this._releaseResolver = const GithubReleaseResolver(),
     this.prompts = const PackPrompts(),
     this.operatingSystem,
-  });
+  }) : _fileSystem = fileSystem,
+       _acquisition = acquisition ?? AcquisitionService(fileSystem: fileSystem),
+       _admission = admission ?? SkillAdmission(fileSystem: fileSystem);
 
+  final fslib.FileSystem _fileSystem;
   final AcquisitionService? _acquisition;
   final LifecycleStateService? _state;
   final SkillAdmission _admission;
@@ -108,15 +120,17 @@ interface class PackLifecycleService {
   final String? operatingSystem;
 
   late final LifecycleStateService _lifecycleState =
-      _state ?? LifecycleStateService();
+      _state ?? LifecycleStateService(io: LifecycleIO(fs: _fileSystem));
   late final SkillLifecycleService _skills = SkillLifecycleService(
     state: _lifecycleState,
+    fileSystem: _fileSystem,
   );
   late final AgentLifecycleService _agents = AgentLifecycleService(
     state: _lifecycleState,
+    fileSystem: _fileSystem,
   );
   AcquisitionService get _acquirer =>
-      _acquisition ?? const AcquisitionService();
+      _acquisition ?? AcquisitionService(fileSystem: _fileSystem);
   GithubReleaseResolver get _releases =>
       _releaseResolver ?? const GithubReleaseResolver();
 
@@ -220,6 +234,7 @@ interface class PackLifecycleService {
           inspected.add(_inspectPackResource(candidate, pack));
         }
       }
+      inspected.sort(_compareInspectedResources);
       _requireUniqueValidationNames(inspected, pack);
       final selected = _selectValidatedResources(request, pack, inspected);
       final failures = <String>[
@@ -358,13 +373,36 @@ interface class PackLifecycleService {
         pack.key,
         request.resourceType,
       );
-      final selected = _selectCandidates(
-        request,
-        pack,
-        candidates,
-        existing,
-        selectionDecisions,
-      );
+      final declinedGroups = request.only.isEmpty
+          ? _declinedGroups(context, pack.key, request.resourceType)
+          : const <String>{};
+      var selected =
+          _selectCandidates(
+                request,
+                pack,
+                candidates,
+                existing,
+                selectionDecisions,
+              )
+              .where(
+                (candidate) => !declinedGroups.contains(_groupKey(candidate)),
+              )
+              .toList();
+      final declinedGroupCandidates = <_PackCandidate>[];
+      if (request.interactive && !request.yes && request.only.isEmpty) {
+        final review = await _reviewCandidateGroups(selected);
+        selected = review.selected;
+        declinedGroupCandidates.addAll(review.declined);
+        for (final candidate in review.declined) {
+          warnings.add(
+            PackWarning(
+              id: 'group-declined-${candidate.discoveryGroup}',
+              message:
+                  'Skill group ${candidate.discoveryGroup} was not selected; its resources were skipped.',
+            ),
+          );
+        }
+      }
       _preflightRecords(request, selected, existing);
       final results = <PackResourceResult>[];
       final failures = <String>[];
@@ -578,19 +616,6 @@ interface class PackLifecycleService {
         policy: _policyChange(request, pack),
       );
       await _confirmPlan(request, plan);
-      if (!request.dryRun && !request.noSave) {
-        for (final candidate in declinedCandidates) {
-          _recordSelectionChoice(
-            context,
-            pack.key,
-            request.resourceType,
-            candidate.name,
-            selected: false,
-            reason: 'declined',
-          );
-        }
-      }
-
       var recoveryRequired = false;
       for (final candidate in selected) {
         if (recoveryRequired) {
@@ -687,8 +712,10 @@ interface class PackLifecycleService {
         }
         if (!request.dryRun) {
           await _removeRecord(request, context, record);
-          PackState(stateDirectory: context.stateRoot())
-              .markInstallationNoncurrent(record.installationId);
+          PackState(
+            fileSystem: _fileSystem,
+            stateDirectory: context.stateRoot(),
+          ).markInstallationNoncurrent(record.installationId);
         }
         results.add(
           _result(
@@ -720,6 +747,21 @@ interface class PackLifecycleService {
               ? PackProcessStatus.recoveryRequired.code
               : PackProcessStatus.failure.code,
         );
+      }
+      if (!request.dryRun && !request.noSave) {
+        for (final candidate in declinedCandidates) {
+          _recordSelectionChoice(
+            context,
+            pack.key,
+            request.resourceType,
+            candidate.name,
+            selected: false,
+            reason: 'declined',
+          );
+        }
+        for (final candidate in declinedGroupCandidates) {
+          _recordGroupDecline(context, pack.key, candidate);
+        }
       }
       if (!request.dryRun &&
           request.operation == PackOperation.update &&
@@ -1017,11 +1059,18 @@ interface class PackLifecycleService {
     );
     final workspace = acquired.workspace;
     try {
+      final catalog = _readSourceCatalog(workspace);
+      if (catalog == null) {
+        throw MambaException(
+          'Source association requires an explicit publisher catalog with stable resource identities.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
       final candidates = await _candidates(
         request,
         context,
         workspace,
-        _readSourceCatalog(workspace),
+        catalog,
         destination,
         acquired.release,
       );
@@ -1199,7 +1248,10 @@ interface class PackLifecycleService {
     }
     final record = records.single;
     final previousRef = _currentSnapshotRef(context, record);
-    final state = PackState(stateDirectory: context.stateRoot());
+    final state = PackState(
+      fileSystem: _fileSystem,
+      stateDirectory: context.stateRoot(),
+    );
     final RecordedSnapshot snapshot;
     final String artifact;
     try {
@@ -1301,9 +1353,10 @@ interface class PackLifecycleService {
         : <String>{};
     var sourcePath = artifact;
     if (record.kind == ArtifactKind.agentFile) {
-      final files = Directory(artifact)
+      final files = _fileSystem
+          .directory(artifact)
           .listSync(followLinks: false)
-          .whereType<File>()
+          .whereType<fslib.File>()
           .toList();
       if (files.length != 1) {
         throw MambaException(
@@ -1313,7 +1366,9 @@ interface class PackLifecycleService {
       }
       sourcePath = files.single.path;
     } else if (record.kind == ArtifactKind.skillLink) {
-      final linkEvidence = File(p.join(artifact, 'link.json'));
+      final linkEvidence = _fileSystem.file(
+        _fileSystem.path.join(artifact, 'link.json'),
+      );
       final decoded = jsonDecode(linkEvidence.readAsStringSync());
       if (decoded is! List || decoded.length != 1) {
         throw MambaException(
@@ -1413,7 +1468,10 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    final state = PackState(stateDirectory: context.stateRoot());
+    final state = PackState(
+      fileSystem: _fileSystem,
+      stateDirectory: context.stateRoot(),
+    );
     final snapshots = state.snapshots();
     final installationIds = records
         .map((record) => record.installationId)
@@ -1543,8 +1601,10 @@ interface class PackLifecycleService {
     for (final record in records) {
       if (!request.dryRun) {
         await _removeRecord(request, context, record);
-        PackState(stateDirectory: context.stateRoot())
-            .markInstallationNoncurrent(record.installationId);
+        PackState(
+          fileSystem: _fileSystem,
+          stateDirectory: context.stateRoot(),
+        ).markInstallationNoncurrent(record.installationId);
       }
       results.add(
         _result(
@@ -1656,7 +1716,10 @@ interface class PackLifecycleService {
     if (type == PackResourceType.agent) {
       final harness = _harness(candidate.profile!);
       final root = _agents.installRoot(context, harness);
-      final location = p.join(root, p.basename(candidate.path));
+      final location = _fileSystem.path.join(
+        root,
+        _fileSystem.path.basename(candidate.path),
+      );
       return InstallationUnitPlan(
         resourceType: InstallationResourceType.agent,
         resourceId: candidate.name,
@@ -1685,8 +1748,8 @@ interface class PackLifecycleService {
     final selectedMethod = method!;
     final entries = <InstallationEntryPlan>[];
     if (selectedMethod == SkillInstallMethod.canonical) {
-      final root = p.normalize(context.sharedSkillsRoot());
-      final canonical = p.join(root, candidate.name);
+      final root = _fileSystem.path.normalize(context.sharedSkillsRoot());
+      final canonical = _fileSystem.path.join(root, candidate.name);
       entries.add(
         InstallationEntryPlan(
           path: canonical,
@@ -1699,10 +1762,12 @@ interface class PackLifecycleService {
         ),
       );
       if (targets.contains('claude')) {
-        final claudeRoot = p.normalize(context.claudeSkillsRoot());
+        final claudeRoot = _fileSystem.path.normalize(
+          context.claudeSkillsRoot(),
+        );
         entries.add(
           InstallationEntryPlan(
-            path: p.join(claudeRoot, candidate.name),
+            path: _fileSystem.path.join(claudeRoot, candidate.name),
             kind: InstallationEntryKind.link,
             action: InstallationEntryAction.createLink,
             target: 'claude',
@@ -1726,14 +1791,14 @@ interface class PackLifecycleService {
       }
     } else {
       for (final target in targets) {
-        final root = p.normalize(
+        final root = _fileSystem.path.normalize(
           target == 'claude'
               ? context.claudeSkillsRoot()
               : context.sharedSkillsRoot(),
         );
         entries.add(
           InstallationEntryPlan(
-            path: p.join(root, candidate.name),
+            path: _fileSystem.path.join(root, candidate.name),
             kind: selectedMethod == SkillInstallMethod.copy
                 ? InstallationEntryKind.copy
                 : InstallationEntryKind.link,
@@ -1835,11 +1900,15 @@ interface class PackLifecycleService {
     PackDefinition pack,
     PackResourceType type,
   ) async {
-    final catalogPath = p.join(
+    final catalogPath = _fileSystem.path.join(
       workspace.selectedRoot,
       packConfigurationFileName,
     );
-    final catalogType = skillEntityType(catalogPath, followLinks: false);
+    final catalogType = skillEntityType(
+      catalogPath,
+      followLinks: false,
+      fs: _fileSystem,
+    );
     if (catalogType == FileSystemEntityType.link) {
       throw MambaException(
         'The publisher catalog must not be a linked source alias.',
@@ -1874,7 +1943,7 @@ interface class PackLifecycleService {
         ? pack.discovery.skillsDirectory
         : pack.discovery.agentsDirectory;
     final root = _validationSourcePath(workspace, relativeRoot);
-    final rootType = skillEntityType(root, followLinks: false);
+    final rootType = skillEntityType(root, followLinks: false, fs: _fileSystem);
     if (rootType == FileSystemEntityType.notFound) return const [];
     if (rootType != FileSystemEntityType.directory) {
       throw MambaException(
@@ -1883,44 +1952,41 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
+    if (type == PackResourceType.skill) {
+      final offerings = await discoverSkillSource(
+        root: root,
+        relativeRoot: relativeRoot,
+        refuseLinkedEntries: true,
+        subject: 'Pack',
+        budgetExitCode: PackProcessStatus.invalidInput.code,
+        linkExitCode: PackProcessStatus.invalidInput.code,
+      );
+      return [
+        for (final offering in offerings)
+          _PackValidationCandidate(
+            type: type,
+            relativePath: offering.path,
+            path: _validationSourcePath(workspace, offering.path),
+            profile: null,
+            discoveryRoot: offering.discoveryRoot,
+            discoveryGroup: offering.discoveryGroup,
+          ),
+      ];
+    }
     final result = <_PackValidationCandidate>[];
     var entries = 0;
-    Future<void> visit(Directory directory, String relative, int depth) async {
+    Future<void> visit(
+      fslib.Directory directory,
+      String relative,
+      int depth,
+    ) async {
       if (depth > 16) {
         throw MambaException(
           'Pack discovery exceeds its depth-16 budget.',
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
-      if (type == PackResourceType.skill) {
-        final marker = p.join(directory.path, 'SKILL.md');
-        final markerType = skillEntityType(marker, followLinks: false);
-        if (markerType == FileSystemEntityType.link) {
-          throw MambaException(
-            'Pack discovery refuses linked source entries: '
-            '${ValidationDiagnostics.escape(p.posix.join(relative, 'SKILL.md'))}.',
-            exitCode: PackProcessStatus.invalidInput.code,
-          );
-        }
-        if (markerType == FileSystemEntityType.file) {
-          result.add(
-            _PackValidationCandidate(
-              type: type,
-              relativePath: relative,
-              path: directory.path,
-              profile: null,
-            ),
-          );
-          if (result.length > 1000) {
-            throw MambaException(
-              'Pack discovery exceeds its 1,000-resource budget.',
-              exitCode: PackProcessStatus.invalidInput.code,
-            );
-          }
-          return;
-        }
-      }
-      final children = <FileSystemEntity>[];
+      final children = <fslib.FileSystemEntity>[];
       await for (final child in directory.list(followLinks: false)) {
         if (++entries > 20000) {
           throw MambaException(
@@ -1932,8 +1998,15 @@ interface class PackLifecycleService {
       }
       children.sort((left, right) => left.path.compareTo(right.path));
       for (final child in children) {
-        final childRelative = p.posix.join(relative, p.basename(child.path));
-        final childType = skillEntityType(child.path, followLinks: false);
+        final childRelative = p.posix.join(
+          relative,
+          _fileSystem.path.basename(child.path),
+        );
+        final childType = skillEntityType(
+          child.path,
+          followLinks: false,
+          fs: _fileSystem,
+        );
         if (childType == FileSystemEntityType.link) {
           throw MambaException(
             'Pack discovery refuses linked source entries: '
@@ -1941,16 +2014,13 @@ interface class PackLifecycleService {
             exitCode: PackProcessStatus.invalidInput.code,
           );
         }
-        if (type == PackResourceType.skill) {
-          if (childType == FileSystemEntityType.directory) {
-            await visit(child as Directory, childRelative, depth + 1);
-          }
-          continue;
-        }
         if (childType == FileSystemEntityType.directory) {
-          await visit(child as Directory, childRelative, depth + 1);
+          await visit(child as fslib.Directory, childRelative, depth + 1);
         } else if (childType == FileSystemEntityType.file &&
-            const {'.md', '.toml'}.contains(p.extension(child.path))) {
+            const {
+              '.md',
+              '.toml',
+            }.contains(_fileSystem.path.extension(child.path))) {
           result.add(
             _PackValidationCandidate(
               type: type,
@@ -1969,7 +2039,7 @@ interface class PackLifecycleService {
       }
     }
 
-    await visit(Directory(root), relativeRoot, 0);
+    await visit(_fileSystem.directory(root), relativeRoot, 0);
     return result;
   }
 
@@ -1982,8 +2052,8 @@ interface class PackLifecycleService {
     var current = workspace.selectedRoot;
     if (relative != '.') {
       for (final segment in p.posix.split(relative)) {
-        current = p.join(current, segment);
-        if (skillEntityType(current, followLinks: false) ==
+        current = _fileSystem.path.join(current, segment);
+        if (skillEntityType(current, followLinks: false, fs: _fileSystem) ==
             FileSystemEntityType.link) {
           throw MambaException(
             'Pack source paths must not contain linked aliases: '
@@ -2005,7 +2075,7 @@ interface class PackLifecycleService {
     final warnings = <String>[];
     try {
       if (candidate.type == PackResourceType.skill) {
-        name = readDeclaredSkillName(candidate.path);
+        name = readDeclaredSkillName(candidate.path, fs: _fileSystem);
         final approvedExtraFolders = pack.resources.skills.overrides
             .where((override) => override.name == name)
             .expand((override) => override.extraFolders)
@@ -2014,7 +2084,7 @@ interface class PackLifecycleService {
           candidate.path,
           approvedExtraFolders: approvedExtraFolders,
         );
-        final report = validateSkill(candidate.path);
+        final report = validateSkill(candidate.path, fs: _fileSystem);
         for (final diagnostic in report.diagnostics) {
           final label = _validationDiagnosticLabel(
             diagnostic.code,
@@ -2160,16 +2230,43 @@ interface class PackLifecycleService {
     PackLifecycleRequest request,
     LifecycleContext context,
     AcquisitionWorkspace workspace,
-    SourceCatalog catalog,
+    SourceCatalog? catalog,
     PackDefinition pack,
     _ReleaseEvidence? release, {
     Map<String, Set<String>> reusableFolders = const <String, Set<String>>{},
     List<StagedSkill>? stagedSkills,
     List<PackWarning>? warnings,
   }) async {
-    final paths = request.resourceType == PackResourceType.skill
-        ? catalog.skills.map((entry) => (entry.path, null)).toList()
-        : catalog.agents.map((entry) => (entry.path, entry.profile)).toList();
+    final discovered = catalog == null
+        ? await _validationCandidates(workspace, pack, request.resourceType)
+        : const <_PackValidationCandidate>[];
+    final paths = catalog != null
+        ? request.resourceType == PackResourceType.skill
+              ? catalog.skills
+                    .map(
+                      (entry) =>
+                          (entry.path, null, null as String?, null as String?),
+                    )
+                    .toList()
+              : catalog.agents
+                    .map(
+                      (entry) => (
+                        entry.path,
+                        entry.profile,
+                        null as String?,
+                        null as String?,
+                      ),
+                    )
+                    .toList()
+        : [
+            for (final candidate in discovered)
+              (
+                candidate.relativePath,
+                candidate.profile,
+                candidate.discoveryRoot,
+                candidate.discoveryGroup,
+              ),
+          ];
     final folderApprovals = _folderApprovals(request.allowFolder);
     final rules = request.resourceType == PackResourceType.skill
         ? pack.resources.skills
@@ -2180,7 +2277,7 @@ interface class PackLifecycleService {
     };
     final result = <_PackCandidate>[];
     final names = <String, String>{};
-    for (final (relative, profile) in paths) {
+    for (final (relative, profile, discoveryRoot, discoveryGroup) in paths) {
       final path = _catalogPath(workspace, relative);
       final String name;
       var extraFolders = <String>{};
@@ -2188,11 +2285,12 @@ interface class PackLifecycleService {
       StagedSkill? staged;
       if (request.resourceType == PackResourceType.skill) {
         if (stagedSkills != null) {
-          staged = await const SkillRootMarkdownMigration().stage(path);
+          staged = await SkillRootMarkdownMigration(fileSystem: _fileSystem)
+              .stage(path);
           stagedSkills.add(staged);
           candidatePath = staged.path;
         }
-        name = readDeclaredSkillName(candidatePath);
+        name = readDeclaredSkillName(candidatePath, fs: _fileSystem);
         extraFolders = {...?folderApprovals[name], ...?reusableFolders[name]};
         extraFolders = await _promptExtraFolders(
           request,
@@ -2221,7 +2319,13 @@ interface class PackLifecycleService {
           );
         }
       } else {
-        final resource = _agents.installationResource(_harness(profile!));
+        if (profile == null) {
+          throw MambaException(
+            'Catalog-less Agent discovery cannot infer a native profile for $relative; add an explicit publisher catalog entry with profile = "claude", "codex", or "pi-common".',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        final resource = _agents.installationResource(_harness(profile));
         name = (await resource.inspect(path, context)).name;
       }
       final previous = names[name];
@@ -2264,9 +2368,12 @@ interface class PackLifecycleService {
           migrated: staged?.migrated ?? false,
           extraFolders: extraFolders,
           origin: origin,
+          discoveryRoot: discoveryRoot,
+          discoveryGroup: discoveryGroup,
         ),
       );
     }
+    result.sort(_compareCandidates);
     return result;
   }
 
@@ -2320,17 +2427,17 @@ interface class PackLifecycleService {
     PackDefinition pack,
     AcquisitionProvenance provenance,
   ) {
-    final approvals = PackState(stateDirectory: context.stateRoot())
-        .read()
-        .approvals
-        .where((approval) {
+    final approvals =
+        PackState(
+          fileSystem: _fileSystem,
+          stateDirectory: context.stateRoot(),
+        ).read().approvals.where((approval) {
           return approval['packKey'] == pack.key &&
               approval['resourceType'] == request.resourceType.name &&
               approval['scope'] == context.scope.name &&
               approval['sourceRequested'] == provenance.requestedLocator &&
               approval['sourceResolved'] == provenance.resolvedLocator;
-        })
-        .toList();
+        }).toList();
     final result = <String, Set<String>>{};
     for (final approval in approvals) {
       final name = approval['resourceName'];
@@ -2360,6 +2467,91 @@ interface class PackLifecycleService {
     return result;
   }
 
+  Future<({List<_PackCandidate> selected, List<_PackCandidate> declined})>
+  _reviewCandidateGroups(List<_PackCandidate> candidates) async {
+    final grouped = candidates.any(
+      (candidate) => candidate.discoveryGroup != null,
+    );
+    if (!grouped) return (selected: candidates, declined: <_PackCandidate>[]);
+    final groups = <String, List<_PackCandidate>>{};
+    for (final candidate in candidates) {
+      if (candidate.discoveryGroup == null) continue;
+      groups
+          .putIfAbsent(_groupKey(candidate), () => <_PackCandidate>[])
+          .add(candidate);
+    }
+    final selected = <_PackCandidate>[
+      for (final candidate in candidates)
+        if (candidate.discoveryGroup == null) candidate,
+    ];
+    final declined = <_PackCandidate>[];
+    for (final entry in groups.entries) {
+      final offerings = entry.value;
+      final group = offerings.first.discoveryGroup!;
+      final indices = await _promptMultiChoice('Select resources: $group', [
+        for (final candidate in offerings) candidate.name,
+      ]);
+      if (indices == null) {
+        throw MambaException(
+          'Resource selection was cancelled; no pack or installation state was published.',
+          exitCode: PackProcessStatus.cancelled.code,
+        );
+      }
+      if (indices.isEmpty) {
+        declined.add(offerings.first);
+      } else {
+        selected.addAll([for (final index in indices) offerings[index]]);
+      }
+    }
+    selected.sort(_compareCandidates);
+    return (selected: selected, declined: declined);
+  }
+
+  Set<String> _declinedGroups(
+    LifecycleContext context,
+    String packKey,
+    PackResourceType type,
+  ) {
+    return {
+      for (final selection in PackState(
+        fileSystem: _fileSystem,
+        stateDirectory: context.stateRoot(),
+      ).read().selections)
+        if (selection['packKey'] == packKey &&
+            selection['resourceType'] == type.name &&
+            selection['scope'] == context.scope.name &&
+            selection['membership'] == 'group' &&
+            selection['selected'] == false &&
+            selection['resourceName'] is String)
+          selection['resourceName']! as String,
+    };
+  }
+
+  void _recordGroupDecline(
+    LifecycleContext context,
+    String packKey,
+    _PackCandidate candidate,
+  ) {
+    PackState(
+      fileSystem: _fileSystem,
+      stateDirectory: context.stateRoot(),
+    ).recordSelections([
+      {
+        'packKey': packKey,
+        'resourceType': candidate.type.name,
+        'resourceName': _groupKey(candidate),
+        'scope': context.scope.name,
+        'selected': false,
+        'reason': 'declined',
+        'excluded': true,
+        'membership': 'group',
+        'discoveryRoot': candidate.discoveryRoot,
+        'group': candidate.discoveryGroup,
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    ]);
+  }
+
   Map<String, bool> _selectionDecisions(
     LifecycleContext context,
     String packKey,
@@ -2367,6 +2559,7 @@ interface class PackLifecycleService {
   ) {
     final result = <String, bool>{};
     for (final selection in PackState(
+      fileSystem: _fileSystem,
       stateDirectory: context.stateRoot(),
     ).read().selections) {
       if (selection['packKey'] != packKey ||
@@ -2395,7 +2588,10 @@ interface class PackLifecycleService {
     required bool selected,
     required String reason,
   }) {
-    PackState(stateDirectory: context.stateRoot()).recordSelections([
+    PackState(
+      fileSystem: _fileSystem,
+      stateDirectory: context.stateRoot(),
+    ).recordSelections([
       {
         'packKey': packKey,
         'resourceType': type.name,
@@ -2537,7 +2733,7 @@ interface class PackLifecycleService {
     final workspace = await _acquirer.acquire(
       AcquisitionRequest(
         locator: locator,
-        cwd: p.dirname(configuration.configPath),
+        cwd: _fileSystem.path.dirname(configuration.configPath),
         resourceType: CatalogResourceType.skill,
         sourceKind: AcquisitionSourceKind.collection,
         ref: ref,
@@ -2575,10 +2771,10 @@ interface class PackLifecycleService {
     if (!request.interactive || request.yes) return approved;
     final result = {...approved};
     final actual = <String>{
-      for (final entity in listSkillDirectory(path))
-        if (skillEntityType(entity.path, followLinks: false) ==
+      for (final entity in listSkillDirectory(path, fs: _fileSystem))
+        if (skillEntityType(entity.path, followLinks: false, fs: _fileSystem) ==
             FileSystemEntityType.directory)
-          p.basename(entity.path),
+          _fileSystem.path.basename(entity.path),
     };
     final folders = {...actual, ...requestedFolders}.toList()..sort();
     for (final folder in folders) {
@@ -2604,6 +2800,18 @@ interface class PackLifecycleService {
     final injected = prompts.confirmation;
     if (injected != null) return injected(label);
     return InstallationApprovalComponent(label: label).render();
+  }
+
+  Future<List<int>?> _promptMultiChoice(
+    String label,
+    List<String> choices,
+  ) async {
+    final injected = prompts.multiChoice;
+    if (injected != null) return injected(label, choices);
+    return ResourceSelectorComponent(
+      label: '$label (Ctrl+C to cancel)',
+      options: choices,
+    ).render();
   }
 
   Future<String?> _promptChoice(String label, List<String> choices) async {
@@ -2691,19 +2899,26 @@ interface class PackLifecycleService {
     );
   }
 
-  SourceCatalog _readSourceCatalog(
+  SourceCatalog? _readSourceCatalog(
     AcquisitionWorkspace workspace, {
     PackResourceType? type,
   }) {
-    final path = p.join(workspace.selectedRoot, packConfigurationFileName);
-    if (skillEntityType(path, followLinks: false) !=
+    final path = _fileSystem.path.join(
+      workspace.selectedRoot,
+      packConfigurationFileName,
+    );
+    if (skillEntityType(path, followLinks: false, fs: _fileSystem) ==
+        FileSystemEntityType.notFound) {
+      return null;
+    }
+    if (skillEntityType(path, followLinks: false, fs: _fileSystem) !=
         FileSystemEntityType.file) {
       throw MambaException(
-        'The acquired pack has no $packConfigurationFileName publisher catalog.',
+        'The publisher catalog must be a regular file.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    final bytes = File(path).readAsBytesSync();
+    final bytes = _fileSystem.file(path).readAsBytesSync();
     if (bytes.length > 1024 * 1024) {
       throw MambaException(
         'The publisher catalog exceeds the 1 MiB budget.',
@@ -2742,16 +2957,19 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    final path = p.normalize(
-      p.joinAll([workspace.selectedRoot, ...p.posix.split(relative)]),
+    final path = _fileSystem.path.normalize(
+      _fileSystem.path.joinAll([
+        workspace.selectedRoot,
+        ...p.posix.split(relative),
+      ]),
     );
-    if (!p.isWithin(workspace.selectedRoot, path)) {
+    if (!_fileSystem.path.isWithin(workspace.selectedRoot, path)) {
       throw MambaException(
         'Catalog path escapes the package: $relative',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    if (skillEntityType(path, followLinks: false) ==
+    if (skillEntityType(path, followLinks: false, fs: _fileSystem) ==
         FileSystemEntityType.link) {
       throw MambaException(
         'Catalog entries must not be linked aliases: $relative',
@@ -2783,6 +3001,7 @@ interface class PackLifecycleService {
         explicitPath: request.configPath,
         workingDirectory: context.cwd,
         environment: request.environment,
+        fileSystem: _fileSystem,
       );
     } on PackConfigurationException catch (error) {
       throw MambaException(
@@ -2805,6 +3024,7 @@ interface class PackLifecycleService {
           dryRun: request.dryRun,
           approved: request.yes || request.interactive,
         ),
+        fileSystem: _fileSystem,
       );
 
   Future<void> _confirmPlan(PackLifecycleRequest request, PackPlan plan) async {
@@ -2967,7 +3187,9 @@ interface class PackLifecycleService {
       }
       final name = value.substring(0, separator);
       final folder = value.substring(separator + 1);
-      if (p.basename(folder) != folder || folder == '.' || folder == '..') {
+      if (_fileSystem.path.basename(folder) != folder ||
+          folder == '.' ||
+          folder == '..') {
         throw MambaException(
           '--allow-folder must name one root folder: $value',
           exitCode: PackProcessStatus.invalidInput.code,
@@ -3079,7 +3301,7 @@ interface class PackLifecycleService {
   ) {
     if (pack.update.track is! ReleaseTrack) return;
     if (request.bump == null && !request.includePrerelease) return;
-    final file = File(configuration.configPath);
+    final file = _fileSystem.file(configuration.configPath);
     final source = file.readAsStringSync();
     final lines = source.split('\n');
     final escaped = pack.key.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
@@ -3118,7 +3340,7 @@ interface class PackLifecycleService {
       ...section,
       ...lines.sublist(end),
     ];
-    final temporary = File('${file.path}.policy.tmp');
+    final temporary = _fileSystem.file('${file.path}.policy.tmp');
     try {
       temporary.writeAsStringSync(updated.join('\n'), flush: true);
       temporary.renameSync(file.path);
@@ -3185,10 +3407,11 @@ interface class PackLifecycleService {
     LifecycleContext context,
     InstallationRecord record,
   ) {
-    final current = PackState(stateDirectory: context.stateRoot())
-        .snapshots(installationId: record.installationId)
-        .where((snapshot) => snapshot.noncurrentAt == null)
-        .toList();
+    final current =
+        PackState(fileSystem: _fileSystem, stateDirectory: context.stateRoot())
+            .snapshots(installationId: record.installationId)
+            .where((snapshot) => snapshot.noncurrentAt == null)
+            .toList();
     return current.isEmpty ? null : current.single.ref;
   }
 
@@ -3197,7 +3420,10 @@ interface class PackLifecycleService {
     InstallationRecord record,
   ) {
     return _withSnapshotArtifact(record, (artifactPath) {
-      return PackState(stateDirectory: context.stateRoot()).recordLocalEdit(
+      return PackState(
+        fileSystem: _fileSystem,
+        stateDirectory: context.stateRoot(),
+      ).recordLocalEdit(
         installationId: record.installationId,
         artifactPath: artifactPath,
         baseline: _lifecycleState.observeBaseline(record).toJson(),
@@ -3214,7 +3440,10 @@ interface class PackLifecycleService {
     InstallationRecord record,
   ) {
     return _withSnapshotArtifact(record, (artifactPath) {
-      return PackState(stateDirectory: context.stateRoot()).recordSnapshot(
+      return PackState(
+        fileSystem: _fileSystem,
+        stateDirectory: context.stateRoot(),
+      ).recordSnapshot(
         installationId: record.installationId,
         artifactPath: artifactPath,
         baseline: record.baseline.toJson(),
@@ -3234,20 +3463,29 @@ interface class PackLifecycleService {
         record.kind == ArtifactKind.skillCanonical) {
       return body(record.location);
     }
-    final temporary = Directory.systemTemp.createTempSync(
+    final temporary = _fileSystem.systemTempDirectory.createTempSync(
       'agent-resource-snapshot-',
     );
     try {
       if (record.kind == ArtifactKind.agentFile) {
-        File(p.join(temporary.path, p.basename(record.location)))
+        _fileSystem
+            .file(
+              _fileSystem.path.join(
+                temporary.path,
+                _fileSystem.path.basename(record.location),
+              ),
+            )
             .writeAsBytesSync(
-              File(record.location).readAsBytesSync(),
+              _fileSystem.file(record.location).readAsBytesSync(),
               flush: true,
             );
       } else {
-        File(
-          p.join(temporary.path, 'link.json'),
-        ).writeAsStringSync(jsonEncode(record.baseline.toJson()), flush: true);
+        _fileSystem
+            .file(_fileSystem.path.join(temporary.path, 'link.json'))
+            .writeAsStringSync(
+              jsonEncode(record.baseline.toJson()),
+              flush: true,
+            );
       }
       return body(temporary.path);
     } finally {
@@ -3275,7 +3513,10 @@ interface class PackLifecycleService {
     List<_PackCandidate> candidates = const <_PackCandidate>[],
     bool noSave = false,
   }) {
-    final state = PackState(stateDirectory: context.stateRoot());
+    final state = PackState(
+      fileSystem: _fileSystem,
+      stateDirectory: context.stateRoot(),
+    );
     final recorded = DateTime.now().toUtc().toIso8601String();
     state.recordOperation({
       'operationId': plan.planId,
@@ -3289,7 +3530,7 @@ interface class PackLifecycleService {
       'warnings': [for (final warning in plan.warnings) warning.toJson()],
       'recordedAt': recorded,
     });
-    if (!noSave) {
+    if (!noSave && outcome == 'completed') {
       for (final result in results) {
         state.recordSelections([
           {
@@ -3540,18 +3781,73 @@ interface class PackLifecycleService {
       : request.resourceTypes;
 }
 
+String _groupKey(_PackCandidate candidate) =>
+    '${candidate.discoveryRoot}\u0000${candidate.discoveryGroup}';
+
+int _compareCandidateIdentity(
+  String leftName,
+  String leftPath,
+  String? leftRoot,
+  String? leftGroup,
+  String rightName,
+  String rightPath,
+  String? rightRoot,
+  String? rightGroup,
+) {
+  final leftIsRoot = leftGroup == 'root';
+  final rightIsRoot = rightGroup == 'root';
+  if (leftIsRoot != rightIsRoot) return leftIsRoot ? -1 : 1;
+  var comparison = (leftGroup ?? '').compareTo(rightGroup ?? '');
+  if (comparison != 0) return comparison;
+  comparison = (leftRoot ?? '').compareTo(rightRoot ?? '');
+  if (comparison != 0) return comparison;
+  comparison = leftName.compareTo(rightName);
+  if (comparison != 0) return comparison;
+  return leftPath.compareTo(rightPath);
+}
+
+int _compareCandidates(_PackCandidate left, _PackCandidate right) =>
+    _compareCandidateIdentity(
+      left.name,
+      left.originalPath ?? left.path,
+      left.discoveryRoot,
+      left.discoveryGroup,
+      right.name,
+      right.originalPath ?? right.path,
+      right.discoveryRoot,
+      right.discoveryGroup,
+    );
+
+int _compareInspectedResources(
+  _InspectedPackResource left,
+  _InspectedPackResource right,
+) => _compareCandidateIdentity(
+  left.name ?? '',
+  left.candidate.relativePath,
+  left.candidate.discoveryRoot,
+  left.candidate.discoveryGroup,
+  right.name ?? '',
+  right.candidate.relativePath,
+  right.candidate.discoveryRoot,
+  right.candidate.discoveryGroup,
+);
+
 final class _PackValidationCandidate {
   const _PackValidationCandidate({
     required this.type,
     required this.relativePath,
     required this.path,
     required this.profile,
+    this.discoveryRoot,
+    this.discoveryGroup,
   });
 
   final PackResourceType type;
   final String relativePath;
   final String path;
   final NativeAgentProfile? profile;
+  final String? discoveryRoot;
+  final String? discoveryGroup;
 }
 
 final class _InspectedPackResource {
@@ -3663,6 +3959,8 @@ final class _PackCandidate {
     required this.digest,
     required this.extraFolders,
     required this.origin,
+    this.discoveryRoot,
+    this.discoveryGroup,
     this.historicalInstallation,
   });
 
@@ -3675,5 +3973,7 @@ final class _PackCandidate {
   final String digest;
   final Set<String> extraFolders;
   final Map<String, Object?> origin;
+  final String? discoveryRoot;
+  final String? discoveryGroup;
   final InstallationRecord? historicalInstallation;
 }

@@ -496,7 +496,9 @@ void main() {
             File(p.join(directory.path, 'references', 'reference.txt'))
                 .writeAsStringSync('Bundled reference');
           }
-          interaction.resourceSelections.add(['skills/category/other']);
+          interaction.resourceSelections
+            ..add([])
+            ..add(['skills/category/other']);
           final result = await executor().fake().execute([
             'skill',
             'install',
@@ -587,7 +589,6 @@ void main() {
         for (final sourcePath in [
           'skills/category/review',
           '.agents/skills/review',
-          'packages/tools/review',
         ]) {
           test(
             'discovers $sourcePath with explicit unattended selection',

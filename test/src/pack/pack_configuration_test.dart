@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'package:agent_resource/src/pack/pack_configuration.dart';
+import 'package:file/memory.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -178,21 +177,95 @@ extra_folders = ["$folder"]
       }
     });
 
+    test('discovery defaults and per-pack overrides', () {
+      final config = PackConfiguration.parse('''
+schema_version = 1
+[packs."default".source]
+kind = "local"
+path = "default"
+[packs."custom".source]
+kind = "local"
+path = "custom"
+[packs."custom".discovery]
+skills_directory = "packages/skills"
+agents_directory = "."
+[packs."partial".source]
+kind = "local"
+path = "partial"
+[packs."partial".discovery]
+agents_directory = "custom/agents"
+''');
+      expect(config.findPack('default')!.discovery.skillsDirectory, 'skills');
+      expect(config.findPack('default')!.discovery.agentsDirectory, 'agents');
+      expect(
+        config.findPack('custom')!.discovery.skillsDirectory,
+        'packages/skills',
+      );
+      expect(config.findPack('custom')!.discovery.agentsDirectory, '.');
+      expect(config.findPack('partial')!.discovery.skillsDirectory, 'skills');
+      expect(
+        config.findPack('partial')!.discovery.agentsDirectory,
+        'custom/agents',
+      );
+    });
+
+    test('rejects unsafe discovery paths and unknown fields', () {
+      for (final value in [
+        '',
+        '   ',
+        '../escape',
+        'a/../b',
+        '/absolute',
+        r'C:\absolute',
+        r'a\b',
+        'a//b',
+        'a/',
+      ]) {
+        final error = _parseError('''
+schema_version = 1
+[packs."local".source]
+kind = "local"
+path = "pack"
+[packs."local".discovery]
+skills_directory = '$value'
+''');
+        expect(
+          error.issues.map((issue) => issue.keyPath),
+          contains('packs."local".discovery.skills_directory'),
+          reason: value,
+        );
+      }
+      final error = _parseError('''
+schema_version = 1
+[packs."local".source]
+kind = "local"
+path = "pack"
+[packs."local".discovery]
+agents_directory = 42
+unexpected = "value"
+''');
+      expect(
+        error.issues.map((issue) => issue.keyPath),
+        containsAll([
+          'packs."local".discovery.agents_directory',
+          'packs."local".discovery.unexpected',
+        ]),
+      );
+    });
+
     test(
       'loads the selected project file and inherits only user preferences',
       () {
-        final temporary = Directory.systemTemp.createTempSync('pack-config-');
-        addTearDown(() => temporary.deleteSync(recursive: true));
-        final home = Directory(p.join(temporary.path, 'home'))..createSync();
-        final project = Directory(p.join(temporary.path, 'project'))
+        final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+        final temporary = fs.directory('/sandbox')..createSync();
+        final home = fs.directory(fs.path.join(temporary.path, 'home'))
           ..createSync();
-        final userConfig = File(
+        final project = fs.directory(fs.path.join(temporary.path, 'project'))
+          ..createSync();
+        final userConfig = fs.file(
           PackConfiguration.userConfigPath(
-            environment: {
-              'HOME': home.path,
-              if (Platform.isWindows) 'APPDATA': home.path,
-            },
-            operatingSystem: Platform.operatingSystem,
+            environment: {'HOME': home.path},
+            operatingSystem: 'linux',
           ),
         )..createSync(recursive: true);
         userConfig.writeAsStringSync('''
@@ -206,7 +279,8 @@ snapshot_days = 45
 kind = "local"
 path = "user-pack"
 ''');
-        File(p.join(project.path, packConfigurationFileName))
+        fs
+            .file(fs.path.join(project.path, packConfigurationFileName))
             .writeAsStringSync('''
 schema_version = 1
 [cli.retention]
@@ -219,11 +293,9 @@ path = "project-pack"
         final configuration = PackConfiguration.load(
           scope: PackConfigurationScope.project,
           projectRoot: project.path,
-          environment: {
-            'HOME': home.path,
-            if (Platform.isWindows) 'APPDATA': home.path,
-          },
-          operatingSystem: Platform.operatingSystem,
+          environment: {'HOME': home.path},
+          operatingSystem: 'linux',
+          fileSystem: fs,
         );
 
         expect(configuration.scope, PackConfigurationScope.project);
@@ -236,41 +308,43 @@ path = "project-pack"
     );
 
     test('resolves a relative project root from the invocation directory', () {
-      final temporary = Directory.systemTemp.createTempSync('pack-config-');
-      addTearDown(() => temporary.deleteSync(recursive: true));
-      final project = Directory(p.join(temporary.path, 'project'))
+      final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      final temporary = fs.directory('/sandbox')..createSync();
+      final project = fs.directory(fs.path.join(temporary.path, 'project'))
         ..createSync();
-      File(p.join(project.path, packConfigurationFileName))
+      fs
+          .file(fs.path.join(project.path, packConfigurationFileName))
           .writeAsStringSync('schema_version = 1\n');
 
       final configuration = PackConfiguration.load(
         scope: PackConfigurationScope.project,
         projectRoot: 'project',
         workingDirectory: temporary.path,
-        environment: {
-          'HOME': temporary.path,
-          if (Platform.isWindows) 'APPDATA': temporary.path,
-        },
-        operatingSystem: Platform.operatingSystem,
+        environment: {'HOME': temporary.path},
+        operatingSystem: 'linux',
+        fileSystem: fs,
       );
 
       expect(
         configuration.configPath,
-        p.join(project.path, packConfigurationFileName),
+        fs.path.join(project.path, packConfigurationFileName),
       );
     });
 
     test(
       'resolves explicit files and their local paths from the right bases',
       () {
-        final temporary = Directory.systemTemp.createTempSync('pack-config-');
-        addTearDown(() => temporary.deleteSync(recursive: true));
-        final invocation = Directory(p.join(temporary.path, 'invocation'))
-          ..createSync();
-        final configDirectory = Directory(p.join(temporary.path, 'config'))
-          ..createSync();
-        final config = File(p.join(configDirectory.path, 'chosen.toml'))
-          ..writeAsStringSync('''
+        final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+        final temporary = fs.directory('/sandbox')..createSync();
+        final invocation = fs.directory(
+          fs.path.join(temporary.path, 'invocation'),
+        )..createSync();
+        final configDirectory = fs.directory(
+          fs.path.join(temporary.path, 'config'),
+        )..createSync();
+        final config =
+            fs.file(fs.path.join(configDirectory.path, 'chosen.toml'))
+              ..writeAsStringSync('''
 schema_version = 1
 [packs."local".source]
 kind = "local"
@@ -279,8 +353,9 @@ path = "../sources/pack"
 
         final configuration = PackConfiguration.load(
           scope: PackConfigurationScope.user,
-          explicitPath: p.join('..', 'config', 'chosen.toml'),
+          explicitPath: fs.path.join('..', 'config', 'chosen.toml'),
           workingDirectory: invocation.path,
+          fileSystem: fs,
         );
 
         expect(configuration.configPath, config.path);
@@ -289,7 +364,7 @@ path = "../sources/pack"
           isA<LocalPackSource>().having(
             (source) => source.path,
             'path',
-            p.normalize(p.join(temporary.path, 'sources', 'pack')),
+            fs.path.normalize(fs.path.join(temporary.path, 'sources', 'pack')),
           ),
         );
       },

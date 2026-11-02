@@ -61,6 +61,18 @@ A reviewable proposal for changing a resource installation and its management re
 **Resource origin**:
 Where a resource came from, distinct from where it is installed; an origin may be unknown, declared, or supported by recorded evidence.
 
+**Pack**:
+A resource collection offered by a source, which may contain Skills, Agent definitions, or multiple resource types. Its available contents are distinct from the subset installed by a user; it is not itself an individual managed installation.
+
+**Skill pack**:
+A Pack offering Skills, often identified by its source repository owner and name, such as `mattpocock/skills`; the source may also offer other resource types.
+
+**Reviewed resource inventory**:
+The resource paths known at a Pack's last successful review for a resource type, including paths the user declined to install. Skills are identified by resource-folder paths and Agent definitions by native file paths; this inventory is distinct from installation ownership and installed-version state.
+
+**Recorded snapshot ref**:
+A reference to a retained historical installation snapshot, associated with the source evidence and content needed to identify that historical state. It selects a rollback version independently of the current meaning or availability of an upstream Git ref.
+
 **Unmanaged resource**:
 An existing resource that Agent Resource may discover and inspect but has not created or explicitly adopted for lifecycle management.
 

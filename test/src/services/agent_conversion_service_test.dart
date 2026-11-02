@@ -1,15 +1,20 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/src/agent_inspection.dart';
 import 'package:agent_resource/src/services/agent_conversion_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group(AgentConversionService, () {
+    late FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     const instructions = 'Review correctness.\n';
     final cases = <({AgentHarness source, AgentHarness target})>[
       (source: AgentHarness.claude, target: AgentHarness.codex),
@@ -23,15 +28,14 @@ void main() {
       test(
         '${testCase.source.name} to ${testCase.target.name} produces valid native output',
         () async {
-          final sandbox = await Directory.systemTemp.createTemp(
-            'agent-conversion-',
-          );
+          final sandbox = (fs.directory('/sandbox')..createSync());
           try {
-            final project = Directory(p.join(sandbox.path, 'project'))
+            final project = fs.directory(fs.path.join(sandbox.path, 'project'))
               ..createSync();
-            final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-            final source = File(
-              p.join(
+            final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+              ..createSync();
+            final source = fs.file(
+              fs.path.join(
                 sandbox.path,
                 'source${testCase.source == AgentHarness.codex ? '.toml' : '.md'}',
               ),
@@ -87,7 +91,7 @@ $instructions''',
               },
               target: <String, Object?>{
                 'harness': testCase.target.name,
-                'output': p.join(
+                'output': fs.path.join(
                   project.path,
                   '.${testCase.target.name}',
                   'agents',
@@ -115,7 +119,8 @@ $instructions''',
               home: home.path,
             );
 
-            final plan = await AgentConversionService().plan(request, options);
+            final plan = await AgentConversionService(fileSystem: fs)
+                .plan(request, options);
 
             expect(
               plan.result.data['ready'],
@@ -142,10 +147,10 @@ $instructions''',
             );
             expect(candidate.nativeFields['model'], targetDefinition['model']);
             expect(source.readAsBytesSync(), sourceBytes);
-            final output = File(request.target['output']! as String);
+            final output = fs.file(request.target['output']! as String);
             expect(output.existsSync(), isFalse);
 
-            final applied = await AgentConversionService().run(
+            final applied = await AgentConversionService(fileSystem: fs).run(
               request,
               options.copyWith(approved: true),
               apply: true,
@@ -159,6 +164,7 @@ $instructions''',
                 harness: testCase.target,
               ),
               operation: AgentOperation.validate,
+              fileSystem: fs,
             );
             expect(published.hasErrors, isFalse);
             expect(published.instructionText, instructions);
@@ -171,14 +177,13 @@ $instructions''',
     }
 
     test('altered controls require their explicit mapping decisions', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'agent-conversion-',
-      );
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = File(p.join(sandbox.path, 'source.md'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
           ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -188,13 +193,13 @@ tools: [Read]
 ---
 Review.
 ''');
-        final output = p.join(
+        final output = fs.path.join(
           project.path,
           '.codex',
           'agents',
           'reviewer.toml',
         );
-        final plan = await AgentConversionService().plan(
+        final plan = await AgentConversionService(fileSystem: fs).plan(
           ConversionRequest(
             source: <String, Object?>{
               'kind': 'native-file',
@@ -235,28 +240,35 @@ Review.
                 as Map<String, Object?>;
         expect(model['outcome'], 'unresolved');
         expect(effort['outcome'], 'unresolved');
-        expect(File(output).existsSync(), isFalse);
+        expect(fs.file(output).existsSync(), isFalse);
       } finally {
         await sandbox.delete(recursive: true);
       }
     });
 
     test('source Skill associations require source-bound mappings', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'agent-conversion-',
-      );
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
         for (final skill in const ['old', 'new']) {
-          File(p.join(project.path, '.claude', 'skills', skill, 'SKILL.md'))
+          fs.file(
+              fs.path.join(
+                project.path,
+                '.claude',
+                'skills',
+                skill,
+                'SKILL.md',
+              ),
+            )
             ..createSync(recursive: true)
             ..writeAsStringSync(
               '---\nname: $skill\ndescription: Skill.\n---\nBody.\n',
             );
         }
-        final source = File(p.join(sandbox.path, 'source.toml'))
+        final source = fs.file(fs.path.join(sandbox.path, 'source.toml'))
           ..writeAsStringSync('''
 name = "reviewer"
 description = "Reviews."
@@ -284,7 +296,12 @@ config = [{ path = "old", enabled = false }]
           },
           target: <String, Object?>{
             'harness': 'claude',
-            'output': p.join(project.path, '.claude', 'agents', 'reviewer.md'),
+            'output': fs.path.join(
+              project.path,
+              '.claude',
+              'agents',
+              'reviewer.md',
+            ),
           },
           context: './',
           definition: <String, Object?>{
@@ -301,7 +318,7 @@ config = [{ path = "old", enabled = false }]
           },
           references: references,
         );
-        final service = AgentConversionService();
+        final service = AgentConversionService(fileSystem: fs);
         Map<String, Object?> referenceField(
           LifecycleResult result,
           String sourcePath,
@@ -355,14 +372,13 @@ config = [{ path = "old", enabled = false }]
     test(
       'a removal decision cannot publish a target that keeps the association',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-conversion-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'source.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.toml'))
             ..writeAsStringSync('''
 name = "reviewer"
 description = "Reviews."
@@ -388,7 +404,7 @@ config = [{ path = "old", enabled = false }]
             },
             target: <String, Object?>{
               'harness': 'claude',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.claude',
                 'agents',
@@ -401,7 +417,7 @@ config = [{ path = "old", enabled = false }]
             references: const <String, String>{},
           );
           const base = <String>{'map:model', 'map:effort', 'map:tools'};
-          final service = AgentConversionService();
+          final service = AgentConversionService(fileSystem: fs);
 
           final conflicting = await service.plan(
             request(
@@ -465,14 +481,13 @@ config = [{ path = "old", enabled = false }]
     test(
       'an explicit Skill mapping changes the proposed native association',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-conversion-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'source.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.toml'))
             ..writeAsStringSync('''name = "reviewer"
 description = "Reviews."
 model = "openai/gpt-5"
@@ -483,7 +498,15 @@ developer_instructions = "Review."
 config = [{ path = "old", enabled = false }]
 ''');
           final skill =
-              File(p.join(project.path, '.claude', 'skills', 'new', 'SKILL.md'))
+              fs.file(
+                  fs.path.join(
+                    project.path,
+                    '.claude',
+                    'skills',
+                    'new',
+                    'SKILL.md',
+                  ),
+                )
                 ..createSync(recursive: true)
                 ..writeAsStringSync('''---
 name: new
@@ -491,7 +514,7 @@ description: New target Skill.
 ---
 Skill body.
 ''');
-          final plan = await AgentConversionService().plan(
+          final plan = await AgentConversionService(fileSystem: fs).plan(
             ConversionRequest(
               source: <String, Object?>{
                 'kind': 'native-file',
@@ -500,7 +523,7 @@ Skill body.
               },
               target: <String, Object?>{
                 'harness': 'claude',
-                'output': p.join(
+                'output': fs.path.join(
                   project.path,
                   '.claude',
                   'agents',
@@ -550,28 +573,35 @@ Skill body.
     test(
       'a config-bound Codex source retains binding provenance and bytes',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-conversion-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final config = File(p.join(project.path, '.codex', 'config.toml'))
-            ..createSync(recursive: true)
-            ..writeAsStringSync('''[agents.reviewer]
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final config =
+              fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync('''[agents.reviewer]
 description = "Reviews from the declaration."
 config_file = "roles/reviewer.toml"
 ''');
           final role =
-              File(p.join(project.path, '.codex', 'roles', 'reviewer.toml'))
+              fs.file(
+                  fs.path.join(
+                    project.path,
+                    '.codex',
+                    'roles',
+                    'reviewer.toml',
+                  ),
+                )
                 ..createSync(recursive: true)
                 ..writeAsStringSync(
                   'developer_instructions = "Review the bound role."\n',
                 );
           final configBytes = config.readAsBytesSync();
           final roleBytes = role.readAsBytesSync();
-          final output = p.join(
+          final output = fs.path.join(
             project.path,
             '.claude',
             'agents',
@@ -598,10 +628,11 @@ config_file = "roles/reviewer.toml"
             cwd: project.path,
             projectRoot: project.path,
             home: home.path,
-            stateDir: p.join(sandbox.path, 'state'),
+            stateDir: fs.path.join(sandbox.path, 'state'),
           );
 
-          final plan = await AgentConversionService().plan(request, options);
+          final plan = await AgentConversionService(fileSystem: fs)
+              .plan(request, options);
 
           expect(
             plan.result.data['ready'],
@@ -625,18 +656,18 @@ config_file = "roles/reviewer.toml"
           expect(effort['outcome'], 'altered');
           expect(config.readAsBytesSync(), configBytes);
           expect(role.readAsBytesSync(), roleBytes);
-          expect(File(output).existsSync(), isFalse);
+          expect(fs.file(output).existsSync(), isFalse);
 
-          final applied = await AgentConversionService().run(
+          final applied = await AgentConversionService(fileSystem: fs).run(
             request,
             options.copyWith(approved: true),
             apply: true,
             planId: plan.result.data['planId']! as String,
           );
           expect(applied.outcome, 'converted');
-          expect(File(output).existsSync(), isTrue);
+          expect(fs.file(output).existsSync(), isTrue);
           expect(
-            File(output).readAsStringSync(),
+            fs.file(output).readAsStringSync(),
             contains('Review the bound role.'),
           );
           expect(config.readAsBytesSync(), configBytes);
@@ -647,14 +678,13 @@ config_file = "roles/reviewer.toml"
       },
     );
     test('model and tool inheritance require deliberate selections', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'agent-conversion-',
-      );
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = File(p.join(sandbox.path, 'source.md'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
           ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -678,14 +708,19 @@ Review.
           },
           target: <String, Object?>{
             'harness': 'codex',
-            'output': p.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+            'output': fs.path.join(
+              project.path,
+              '.codex',
+              'agents',
+              'reviewer.toml',
+            ),
           },
           context: './',
           definition: const <String, Object?>{'model_reasoning_effort': 'high'},
           decisions: decisions,
           references: const <String, String>{},
         );
-        final service = AgentConversionService();
+        final service = AgentConversionService(fileSystem: fs);
 
         final unresolved = await service.plan(
           request(const <String>{'map:effort'}),
@@ -723,19 +758,26 @@ Review.
     test(
       'a target-only association requires an explicit field mapping',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-conversion-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          File(p.join(project.path, '.claude', 'skills', 'new', 'SKILL.md'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          fs.file(
+              fs.path.join(
+                project.path,
+                '.claude',
+                'skills',
+                'new',
+                'SKILL.md',
+              ),
+            )
             ..createSync(recursive: true)
             ..writeAsStringSync(
               '---\nname: new\ndescription: New Skill.\n---\nBody.\n',
             );
-          final source = File(p.join(sandbox.path, 'source.toml'))
+          final source = fs.file(fs.path.join(sandbox.path, 'source.toml'))
             ..writeAsStringSync('''
 name = "reviewer"
 description = "Reviews."
@@ -756,7 +798,7 @@ developer_instructions = "Review."
             },
             target: <String, Object?>{
               'harness': 'claude',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.claude',
                 'agents',
@@ -773,7 +815,7 @@ developer_instructions = "Review."
             references: const <String, String>{},
           );
           const required = <String>{'map:model', 'map:tools'};
-          final service = AgentConversionService();
+          final service = AgentConversionService(fileSystem: fs);
 
           final unresolved = await service.plan(request(required), options);
           expect(unresolved.result.data['ready'], isFalse);
@@ -798,14 +840,13 @@ developer_instructions = "Review."
     test(
       'a target-only effort selection requires an explicit mapping',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-conversion-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'source.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.toml'))
             ..writeAsStringSync('''
 name = "reviewer"
 description = "Reviews."
@@ -826,7 +867,7 @@ developer_instructions = "Review."
             },
             target: <String, Object?>{
               'harness': 'claude',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.claude',
                 'agents',
@@ -843,7 +884,7 @@ developer_instructions = "Review."
             references: const <String, String>{},
           );
           const required = <String>{'map:model', 'map:tools', 'inherit:tools'};
-          final service = AgentConversionService();
+          final service = AgentConversionService(fileSystem: fs);
 
           final unresolved = await service.plan(request(required), options);
           expect(unresolved.result.data['ready'], isFalse);
@@ -866,21 +907,28 @@ developer_instructions = "Review."
     );
 
     test('plan identity is independent of request map ordering', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'agent-conversion-',
-      );
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
         for (final skill in const ['one', 'two']) {
-          File(p.join(project.path, '.claude', 'skills', skill, 'SKILL.md'))
+          fs.file(
+              fs.path.join(
+                project.path,
+                '.claude',
+                'skills',
+                skill,
+                'SKILL.md',
+              ),
+            )
             ..createSync(recursive: true)
             ..writeAsStringSync(
               '---\nname: $skill\ndescription: Skill.\n---\nBody.\n',
             );
         }
-        final source = File(p.join(sandbox.path, 'source.toml'))
+        final source = fs.file(fs.path.join(sandbox.path, 'source.toml'))
           ..writeAsStringSync('''
 name = "reviewer"
 description = "Reviews."
@@ -916,8 +964,13 @@ config = [{ path = "one", enabled = false }, { path = "two", enabled = false }]
           },
           references: references,
         );
-        final output = p.join(project.path, '.claude', 'agents', 'reviewer.md');
-        final service = AgentConversionService();
+        final output = fs.path.join(
+          project.path,
+          '.claude',
+          'agents',
+          'reviewer.md',
+        );
+        final service = AgentConversionService(fileSystem: fs);
 
         final first = await service.plan(
           request(
@@ -973,14 +1026,13 @@ config = [{ path = "one", enabled = false }, { path = "two", enabled = false }]
     test(
       'changed name and description require explicit mapping decisions',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-conversion-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'source.md'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -1004,7 +1056,7 @@ Review.
             },
             target: <String, Object?>{
               'harness': 'codex',
-              'output': p.join(
+              'output': fs.path.join(
                 project.path,
                 '.codex',
                 'agents',
@@ -1022,7 +1074,7 @@ Review.
             references: const <String, String>{},
           );
           const base = <String>{'map:model', 'map:effort', 'inherit:tools'};
-          final service = AgentConversionService();
+          final service = AgentConversionService(fileSystem: fs);
 
           final unresolved = await service.plan(request(base), options);
           expect(unresolved.result.data['ready'], isFalse);
@@ -1062,11 +1114,9 @@ Review.
     test(
       'request parsing rejects unsupported and conflicting native sources',
       () {
-        final sandbox = Directory.systemTemp.createTempSync(
-          'agent-conversion-',
-        );
+        final sandbox = fs.directory('/sandbox')..createSync();
         try {
-          final request = File(p.join(sandbox.path, 'request.json'));
+          final request = fs.file(fs.path.join(sandbox.path, 'request.json'));
           Map<String, Object?> envelope(Map<String, Object?> source) =>
               <String, Object?>{
                 'schemaVersion': 1,
@@ -1088,7 +1138,11 @@ Review.
             ),
           );
           expect(
-            () => parseConversionRequest(request.path, sandbox.path),
+            () => parseConversionRequest(
+              request.path,
+              sandbox.path,
+              fileSystem: fs,
+            ),
             throwsA(isA<MambaException>()),
           );
 
@@ -1103,7 +1157,11 @@ Review.
             ),
           );
           expect(
-            () => parseConversionRequest(request.path, sandbox.path),
+            () => parseConversionRequest(
+              request.path,
+              sandbox.path,
+              fileSystem: fs,
+            ),
             throwsA(isA<MambaException>()),
           );
         } finally {

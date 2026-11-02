@@ -1,13 +1,13 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:agent_resource/src/installation/installation_batch.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import '../../support/installation_test_support.dart';
@@ -71,29 +71,37 @@ InstallationPlan _plan(List<InstallationUnitPlan> units) =>
       units: units,
     );
 
-LifecycleContext _context(Directory project, Directory home) =>
-    LifecycleContext.resolve(
-      LifecycleOptions(
-        processWorkingDirectory: project.path,
-        scope: LifecycleScope.project,
-        cwd: project.path,
-        projectRoot: project.path,
-        home: home.path,
-      ),
-    );
+LifecycleContext _context(
+  Directory project,
+  Directory home,
+  FileSystem fileSystem,
+) => LifecycleContext.resolve(
+  LifecycleOptions(
+    processWorkingDirectory: project.path,
+    scope: LifecycleScope.project,
+    cwd: project.path,
+    projectRoot: project.path,
+    home: home.path,
+  ),
+  fileSystem: fileSystem,
+);
 
 void main() {
   group('InstallationBatch', () {
+    late FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     test(
       'restored failures skip dependents and continue independent units',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'batch-continue-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           final attempted = <String>[];
           final state = _FakeState((unit) async {
             attempted.add(unit.resourceId);
@@ -113,7 +121,7 @@ void main() {
                 _unit('two', path: '/shared'),
                 _unit('three', path: '/independent'),
               ]),
-              context: _context(project, home),
+              context: _context(project, home, fs),
               state: state,
               resourceFor: (_) => _FakeResource(),
               interaction: ScriptedInstallationInteraction(),
@@ -145,13 +153,12 @@ void main() {
     test(
       'unchanged-unit failure joins the aggregate and independent outcome',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'batch-unchanged-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           final attempted = <String>[];
           final stale = _unit('one')
               .copyWith(status: InstallationUnitStatus.unchanged);
@@ -169,7 +176,7 @@ void main() {
           await expectLater(
             () => InstallationBatch().execute(
               plan: _plan([stale, _unit('two')]),
-              context: _context(project, home),
+              context: _context(project, home, fs),
               state: state,
               resourceFor: (_) => _FakeResource(),
               interaction: ScriptedInstallationInteraction(),
@@ -201,11 +208,12 @@ void main() {
     test(
       'recovery uncertainty stops every remaining unit with status six',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('batch-stop-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           final attempted = <String>[];
           final state = _FakeState((unit) async {
             attempted.add(unit.resourceId);
@@ -214,7 +222,7 @@ void main() {
           await expectLater(
             () => InstallationBatch().execute(
               plan: _plan([_unit('one'), _unit('two')]),
-              context: _context(project, home),
+              context: _context(project, home, fs),
               state: state,
               resourceFor: (_) => _FakeResource(),
               interaction: ScriptedInstallationInteraction(),
@@ -241,13 +249,12 @@ void main() {
     test(
       'post-write interruption retains success and prevents new units',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'batch-interrupt-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           final interruption = StreamController<void>();
           final attempted = <String>[];
           final state = _FakeState((unit) async {
@@ -262,7 +269,7 @@ void main() {
           final execution = InstallationBatch(interruption: interruption.stream)
               .execute(
                 plan: _plan([_unit('one'), _unit('two')]),
-                context: _context(project, home),
+                context: _context(project, home, fs),
                 state: state,
                 resourceFor: (_) => _FakeResource(),
                 interaction: ScriptedInstallationInteraction(),
@@ -288,11 +295,12 @@ void main() {
     );
 
     test('pre-write decline cancels without invoking publication', () async {
-      final sandbox = await Directory.systemTemp.createTemp('batch-cancel-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
         final context = LifecycleContext.resolve(
           LifecycleOptions(
             processWorkingDirectory: project.path,
@@ -301,6 +309,7 @@ void main() {
             projectRoot: project.path,
             home: home.path,
           ),
+          fileSystem: fs,
         );
         final unit = InstallationUnitPlan(
           resourceType: InstallationResourceType.skill,
@@ -334,7 +343,7 @@ void main() {
         final result = await InstallationBatch().execute(
           plan: plan,
           context: context,
-          state: LifecycleStateService(),
+          state: LifecycleStateService(io: LifecycleIO(fs: fs)),
           resourceFor: (unit) => throw StateError('Publication must not start'),
           interaction: interaction,
           interactive: true,

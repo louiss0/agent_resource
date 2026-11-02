@@ -3,8 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import '../agent_inspection.dart';
 import '../native_references.dart';
@@ -44,19 +45,22 @@ final class AuthoringRequest {
 
 AuthoringRequest parseAuthoringRequest(
   String requestFile,
-  String workingDirectory,
-) {
-  final path = p.normalize(
-    p.isAbsolute(requestFile)
+  String workingDirectory, {
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) {
+  final path = fileSystem.path.normalize(
+    fileSystem.path.isAbsolute(requestFile)
         ? requestFile
-        : p.join(workingDirectory, requestFile),
+        : fileSystem.path.join(workingDirectory, requestFile),
   );
-  if (skillEntityType(path, followLinks: false) != FileSystemEntityType.file) {
+  if (skillEntityType(path, followLinks: false, fs: fileSystem) !=
+      FileSystemEntityType.file) {
     throw MambaException('The operation request must be a regular file: $path');
   }
   final bytes = readBoundedSkillMarker(
     path,
     maxBytes: maxManagementDocumentBytes,
+    fs: fileSystem,
   );
   if (bytes.length > maxManagementDocumentBytes) {
     throw MambaException('The operation request exceeds 8 MiB.', exitCode: 3);
@@ -317,9 +321,14 @@ interface class AgentAuthoringService {
   AgentAuthoringService({
     AgentLifecycleService? lifecycle,
     AgentGraphService? graph,
-  }) : lifecycle = lifecycle ?? AgentLifecycleService(),
-       _graph = graph ?? AgentGraphService();
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : _fileSystem = fileSystem,
+       lifecycle = lifecycle ?? AgentLifecycleService(fileSystem: fileSystem),
+       _graph = graph ?? AgentGraphService(fileSystem: fileSystem);
 
+  fslib.FileSystem get fileSystem => _fileSystem;
+
+  final fslib.FileSystem _fileSystem;
   final AgentLifecycleService lifecycle;
   final AgentGraphService _graph;
 
@@ -329,9 +338,9 @@ interface class AgentAuthoringService {
     bool showInstructions = false,
     bool allowManagedReplacement = false,
   }) async {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
     final working = context.resolvePath(request.context);
-    if (!p.equals(working, context.cwd)) {
+    if (!_fileSystem.path.equals(working, context.cwd)) {
       throw MambaException(
         'Request workingDirectory must agree with --cwd.',
         exitCode: 1,
@@ -572,7 +581,7 @@ interface class AgentAuthoringService {
       if (request.source?['kind'] != 'managed-agent' ||
           request.source?['installationId'] != installationId ||
           inherited?.definitionFile == null ||
-          !p.equals(output, inherited!.definitionFile!)) {
+          !_fileSystem.path.equals(output, inherited!.definitionFile!)) {
         throw MambaException(
           'Edit source, target installation ID, and recorded location must agree.',
           exitCode: 4,
@@ -591,7 +600,7 @@ interface class AgentAuthoringService {
       final record = lifecycle.state.recordById(context, installationId);
       if (record.kind != ArtifactKind.agentFile ||
           record.nativeProfile != harness.name ||
-          !p.equals(record.location, output) ||
+          !_fileSystem.path.equals(record.location, output) ||
           lifecycle.state.verify(record) != ModificationStatus.unchanged) {
         throw MambaException(
           'The target installation ID, native profile, unchanged baseline, and reviewed output must agree.',
@@ -600,7 +609,7 @@ interface class AgentAuthoringService {
       }
     }
     final expectedExtension = harness == AgentHarness.codex ? '.toml' : '.md';
-    if (p.extension(output) != expectedExtension) {
+    if (_fileSystem.path.extension(output) != expectedExtension) {
       diagnostics.add(
         _finding(
           'TARGET_EXTENSION',
@@ -609,7 +618,7 @@ interface class AgentAuthoringService {
         ),
       );
     }
-    final targetObservation = _observeTarget(output);
+    final targetObservation = _observeTarget(output, _fileSystem);
     if (targetObservation == 'occupied' && installationId == null) {
       diagnostics.add(
         _finding(
@@ -720,7 +729,7 @@ interface class AgentAuthoringService {
       output: planned.output,
       content: planned.content,
       body: (candidate) async {
-        if (base64Encode(File(candidate).readAsBytesSync()) !=
+        if (base64Encode(_fileSystem.file(candidate).readAsBytesSync()) !=
             base64Encode(utf8.encode(planned.content))) {
           throw MambaException(
             'The staged candidate changed before publication.',
@@ -776,7 +785,7 @@ interface class AgentAuthoringService {
     Map<String, Object?> source,
     LifecycleOptions options,
   ) {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
     final kind = source['kind'];
     if (kind == 'native-file') {
       return inspectNativeAgent(
@@ -788,12 +797,14 @@ interface class AgentAuthoringService {
           cwd: context.cwd,
         ),
         operation: AgentOperation.inspect,
+        fileSystem: _fileSystem,
       );
     }
     if (kind == 'codex-role') {
       return CodexBindingInspection.read(
         configFile: context.resolvePath(source['configFile']! as String),
         workingDirectory: context.cwd,
+        fileSystem: _fileSystem,
       ).inspectRole(source['roleKey']! as String);
     }
     return lifecycle.inspectManagedSource(
@@ -828,20 +839,23 @@ interface class AgentAuthoringService {
           exitCode: 4,
         );
       }
-      return p.join(context.piSharedAgentsRoot(), '$safeName.md');
+      return _fileSystem.path.join(
+        context.piSharedAgentsRoot(),
+        '$safeName.md',
+      );
     }
     final root = switch (harness) {
       AgentHarness.claude =>
         context.scope == LifecycleScope.project
             ? context.claudeAgentsRoot()
-            : p.join(context.claudeConfigRoot(), 'agents'),
+            : _fileSystem.path.join(context.claudeConfigRoot(), 'agents'),
       AgentHarness.codex =>
         context.scope == LifecycleScope.project
             ? context.codexAgentsRoot()
-            : p.join(context.codexRoot(), 'agents'),
+            : _fileSystem.path.join(context.codexRoot(), 'agents'),
       AgentHarness.pi => context.piAgentsRoot(),
     };
-    return p.join(
+    return _fileSystem.path.join(
       root,
       '$safeName${harness == AgentHarness.codex ? '.toml' : '.md'}',
     );
@@ -1003,8 +1017,8 @@ bool _qualifiedModel(String value) {
       !value.substring(slash + 1).contains(':');
 }
 
-String _observeTarget(String path) {
-  final type = skillEntityType(path, followLinks: false);
+String _observeTarget(String path, fslib.FileSystem fileSystem) {
+  final type = skillEntityType(path, followLinks: false, fs: fileSystem);
   return type == FileSystemEntityType.notFound ? 'absent' : 'occupied';
 }
 

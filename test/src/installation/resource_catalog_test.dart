@@ -1,22 +1,18 @@
-import 'dart:io';
-
 import 'package:agent_resource/src/installation/resource_catalog.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('ResourceCatalog', () {
-    late Directory sandbox;
+    late FileSystem fs;
     late File config;
 
-    setUp(() async {
-      sandbox = await Directory.systemTemp.createTemp('resource-catalog-');
-      config = File(p.join(sandbox.path, 'agent-resources.toml'));
-    });
-
-    tearDown(() async {
-      if (sandbox.existsSync()) await sandbox.delete(recursive: true);
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      fs.directory('/sandbox').createSync();
+      config = fs.file(fs.path.join('/sandbox', 'agent-resources.toml'));
     });
 
     ResourceCatalog load(
@@ -24,7 +20,7 @@ void main() {
       CatalogResourceType type = CatalogResourceType.skill,
     ]) {
       config.writeAsStringSync(source);
-      return ResourceCatalog.load(config.path, type);
+      return ResourceCatalog.load(config.path, type, fileSystem: fs);
     }
 
     test('loads immutable typed offerings and evidence-backed metadata', () {
@@ -290,7 +286,11 @@ label = "$label"
     test('enforces the one MiB config budget during reading', () {
       config.writeAsBytesSync(List<int>.filled(1024 * 1024 + 1, 0x20));
       expect(
-        () => ResourceCatalog.load(config.path, CatalogResourceType.skill),
+        () => ResourceCatalog.load(
+          config.path,
+          CatalogResourceType.skill,
+          fileSystem: fs,
+        ),
         throwsA(
           isA<MambaException>()
               .having((error) => error.exitCode, 'status', 3)

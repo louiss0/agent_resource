@@ -136,7 +136,17 @@ than installed incomplete. Limits are depth 16,
 are source-relative directory paths, such as `skills/category/review`.
 Interactive collections show a picker; automation requires exact IDs through
 `--resource` or explicit `--all-resources`. `--yes` never selects resources.
-A present `agent-resources.toml` stays authoritative. Agents remain
+A present `agent-resources.toml` stays authoritative. Skill installation preflight
+requires each selected package root to contain only a regular `SKILL.md` and
+optional `references/`, `scripts/`, and `assets/` directories; other entries
+are rejected, not omitted. For example, Codex's `agents/openai.yaml` sidecar is
+not accepted for new installations. Recursive safety checks still apply inside permitted
+directories. A directly selected `SKILL.md` is a single-file source: its siblings
+are not acquired or inspected. Public GitHub availability does not override
+this layout: Vercel's `skills/composition-patterns`, for example, is rejected
+because it also contains `AGENTS.md`, `README.md`, `metadata.json`, and
+`rules/`. Repackage or explicitly convert it before installing; there is no
+automatic conversion or `skills-lock.json` import. Agents remain
 catalog/exact-file only. No automatic dependency installation occurs.
 
 ```text
@@ -144,6 +154,10 @@ dart run bin/agent_resource.dart skill install mattpocock/skills
 dart run bin/agent_resource.dart skill install https://github.com/mattpocock/skills/
 dart run bin/agent_resource.dart skill install mattpocock/skills --scope user --target codex --method canonical --all-resources --dry-run
 ```
+
+Git acquisition uses the requested final URL and refuses HTTP redirects.
+Supply the final HTTPS repository URL instead of relying on a redirect; no
+HTTPS-to-HTTP downgrade is followed.
 
 Unattended and JSON invocations require an explicit source and scope, consuming
 targets, catalog selection where applicable, and `--yes` for the current final

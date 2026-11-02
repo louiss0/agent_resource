@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
@@ -120,32 +122,56 @@ final class LifecycleContext {
     required this.cwd,
     required this.projectRoot,
     required this.home,
+    required this.fs,
   });
 
-  factory LifecycleContext.resolve(LifecycleOptions options) {
-    final processCwd = _existingDirectory(
+  factory LifecycleContext.resolve(
+    LifecycleOptions options, {
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) {
+    String existingDirectory(String raw, String base, String label) {
+      _rejectTerminalControls(raw);
+      if (raw.trim().isEmpty) {
+        throw MambaException('The $label path must not be blank.');
+      }
+      final path = fileSystem.path.normalize(
+        fileSystem.path.isAbsolute(raw) ? raw : fileSystem.path.join(base, raw),
+      );
+      final type = fileSystem.typeSync(path);
+      if (type == FileSystemEntityType.notFound) {
+        throw MambaException('The $label does not exist: $path');
+      }
+      if (type != FileSystemEntityType.directory) {
+        throw MambaException('The $label is not a directory: $path');
+      }
+      return path;
+    }
+
+    final processCwd = existingDirectory(
       options.processWorkingDirectory,
       options.processWorkingDirectory,
       'process working directory',
     );
-    final cwd = _existingDirectory(
+    final cwd = existingDirectory(
       options.cwd ?? processCwd,
       processCwd,
       'working directory',
     );
-    final projectRoot = _projectRoot(options, cwd);
+    final projectRoot = _projectRoot(options, cwd, fileSystem);
     final home = options.home == null
         ? null
-        : _existingDirectory(options.home!, cwd, 'home directory');
+        : existingDirectory(options.home!, cwd, 'home directory');
     return LifecycleContext._(
       options: options,
       cwd: cwd,
       projectRoot: projectRoot,
       home: home,
+      fs: fileSystem,
     );
   }
 
   final LifecycleOptions options;
+  final fslib.FileSystem fs;
   final String cwd;
   final String projectRoot;
   final String? home;
@@ -159,7 +185,9 @@ final class LifecycleContext {
     if (raw.trim().isEmpty) {
       throw MambaException('A filesystem path must not be blank.');
     }
-    return p.normalize(p.isAbsolute(raw) ? raw : p.join(cwd, raw));
+    return fs.path.normalize(
+      fs.path.isAbsolute(raw) ? raw : fs.path.join(cwd, raw),
+    );
   }
 
   String requireHome() {
@@ -171,7 +199,7 @@ final class LifecycleContext {
         'A home directory is required for user scope; supply --home.',
       );
     }
-    return _existingDirectory(value, cwd, 'home directory');
+    return _existingDirectory(value, cwd, 'home directory', fs);
   }
 
   String? _environment(String name) {
@@ -182,19 +210,19 @@ final class LifecycleContext {
   String claudeConfigRoot() => resolvePath(
     options.claudeConfigDir ??
         _environment('CLAUDE_CONFIG_DIR') ??
-        p.join(requireHome(), '.claude'),
+        fs.path.join(requireHome(), '.claude'),
   );
 
   String codexRoot() => resolvePath(
     options.codexHome ??
         _environment('CODEX_HOME') ??
-        p.join(requireHome(), '.codex'),
+        fs.path.join(requireHome(), '.codex'),
   );
 
   String piAgentRoot() => resolvePath(
     options.piAgentDir ??
         _environment('PI_CODING_AGENT_DIR') ??
-        p.join(requireHome(), '.pi', 'agent'),
+        fs.path.join(requireHome(), '.pi', 'agent'),
   );
 
   String stateRoot([LifecycleScope? selectedScope]) {
@@ -203,7 +231,7 @@ final class LifecycleContext {
       throw MambaException('A mutation must select exactly one scope.');
     }
     if (selected == LifecycleScope.project) {
-      return p.normalize(p.join(projectRoot, '.agent-resource'));
+      return fs.path.normalize(fs.path.join(projectRoot, '.agent-resource'));
     }
     final explicit = options.stateDir;
     if (explicit != null) return resolvePath(explicit);
@@ -214,11 +242,11 @@ final class LifecycleContext {
           'LOCALAPPDATA is required for user state; supply --state-dir.',
         );
       }
-      return p.normalize(p.join(local, 'AgentResource'));
+      return fs.path.normalize(fs.path.join(local, 'AgentResource'));
     }
     if (Platform.isMacOS) {
-      return p.normalize(
-        p.join(
+      return fs.path.normalize(
+        fs.path.join(
           requireHome(),
           'Library',
           'Application Support',
@@ -227,35 +255,35 @@ final class LifecycleContext {
       );
     }
     final xdg = _environment('XDG_STATE_HOME');
-    if (xdg != null && p.isAbsolute(xdg)) {
-      return p.normalize(p.join(xdg, 'agent-resource'));
+    if (xdg != null && fs.path.isAbsolute(xdg)) {
+      return fs.path.normalize(fs.path.join(xdg, 'agent-resource'));
     }
-    return p.normalize(
-      p.join(requireHome(), '.local', 'state', 'agent-resource'),
+    return fs.path.normalize(
+      fs.path.join(requireHome(), '.local', 'state', 'agent-resource'),
     );
   }
 
   String claudeSkillsRoot() => scope == LifecycleScope.project
-      ? p.join(projectRoot, '.claude', 'skills')
-      : p.join(claudeConfigRoot(), 'skills');
+      ? fs.path.join(projectRoot, '.claude', 'skills')
+      : fs.path.join(claudeConfigRoot(), 'skills');
 
   String codexSkillsRoot() => scope == LifecycleScope.project
-      ? p.join(projectRoot, '.codex', 'skills')
-      : p.join(codexRoot(), 'skills');
+      ? fs.path.join(projectRoot, '.codex', 'skills')
+      : fs.path.join(codexRoot(), 'skills');
 
   String sharedSkillsRoot() => scope == LifecycleScope.project
-      ? p.join(projectRoot, '.agents', 'skills')
-      : p.join(requireHome(), '.agents', 'skills');
+      ? fs.path.join(projectRoot, '.agents', 'skills')
+      : fs.path.join(requireHome(), '.agents', 'skills');
 
   String claudeAgentsRoot([String? boundary]) =>
-      p.join(boundary ?? projectRoot, '.claude', 'agents');
+      fs.path.join(boundary ?? projectRoot, '.claude', 'agents');
 
   String codexAgentsRoot([String? boundary]) =>
-      p.join(boundary ?? projectRoot, '.codex', 'agents');
+      fs.path.join(boundary ?? projectRoot, '.codex', 'agents');
 
   String piAgentsRoot() => scope == LifecycleScope.project
-      ? p.join(projectRoot, '.pi', 'agents')
-      : p.join(piAgentRoot(), 'agents');
+      ? fs.path.join(projectRoot, '.pi', 'agents')
+      : fs.path.join(piAgentRoot(), 'agents');
 
   String piSharedAgentsRoot() {
     if (scope != LifecycleScope.project) {
@@ -264,14 +292,18 @@ final class LifecycleContext {
         exitCode: 4,
       );
     }
-    return p.join(projectRoot, '.agents', 'agents');
+    return fs.path.join(projectRoot, '.agents', 'agents');
   }
 
-  static String _projectRoot(LifecycleOptions options, String cwd) {
+  static String _projectRoot(
+    LifecycleOptions options,
+    String cwd,
+    fslib.FileSystem fs,
+  ) {
     final explicit = options.projectRoot;
     if (explicit != null) {
-      final root = _existingDirectory(explicit, cwd, 'project root');
-      if (!p.equals(root, cwd) && !p.isWithin(root, cwd)) {
+      final root = _existingDirectory(explicit, cwd, 'project root', fs);
+      if (!fs.path.equals(root, cwd) && !fs.path.isWithin(root, cwd)) {
         throw MambaException(
           'The project root must contain the working directory.',
         );
@@ -280,14 +312,14 @@ final class LifecycleContext {
     }
     var current = cwd;
     for (var step = 0; step < 64; step++) {
-      final marker = p.join(current, '.git');
-      final type = skillEntityType(marker, followLinks: false);
+      final marker = fs.path.join(current, '.git');
+      final type = fs.typeSync(marker, followLinks: false);
       if (type == FileSystemEntityType.file ||
           type == FileSystemEntityType.directory) {
         return current;
       }
-      final parent = p.dirname(current);
-      if (p.equals(parent, current)) return cwd;
+      final parent = fs.path.dirname(current);
+      if (fs.path.equals(parent, current)) return cwd;
       current = parent;
     }
     throw MambaException(
@@ -296,13 +328,20 @@ final class LifecycleContext {
     );
   }
 
-  static String _existingDirectory(String raw, String base, String label) {
+  static String _existingDirectory(
+    String raw,
+    String base,
+    String label,
+    fslib.FileSystem fs,
+  ) {
     _rejectTerminalControls(raw);
     if (raw.trim().isEmpty) {
       throw MambaException('The $label path must not be blank.');
     }
-    final path = p.normalize(p.isAbsolute(raw) ? raw : p.join(base, raw));
-    final type = skillEntityType(path, followLinks: true);
+    final path = fs.path.normalize(
+      fs.path.isAbsolute(raw) ? raw : fs.path.join(base, raw),
+    );
+    final type = fs.typeSync(path);
     if (type == FileSystemEntityType.notFound) {
       throw MambaException('The $label does not exist: $path');
     }
@@ -557,15 +596,16 @@ final class BackupRecord {
       throw const FormatException('Unexpected canonical backup evidence.');
     }
     final artifactPath = _absolutePath(_string(map, 'artifactPath'));
-    final expectedDirectory = p.join(state, 'backups', backupId);
-    if (!p.equals(p.dirname(artifactPath), expectedDirectory) ||
-        p.basename(artifactPath) !=
+    final path = p.posix.isAbsolute(state) ? p.posix : p.context;
+    final expectedDirectory = path.join(state, 'backups', backupId);
+    if (!path.equals(path.dirname(artifactPath), expectedDirectory) ||
+        path.basename(artifactPath) !=
             switch (kind) {
               ArtifactKind.skillCopy ||
               ArtifactKind.skillCanonical => 'artifact',
               ArtifactKind.skillLink => 'artifact-link.json',
               ArtifactKind.agentFile =>
-                'artifact${p.extension(_string(map, 'location'))}',
+                'artifact${path.extension(_string(map, 'location'))}',
             }) {
       throw const FormatException('Backup artifact path is not manager-owned.');
     }
@@ -713,7 +753,8 @@ final class InstallationRecord {
     }
     final location = _absolutePath(_string(map, 'location'));
     final nativeRoot = _absolutePath(_string(map, 'nativeRoot'));
-    if (!p.isWithin(nativeRoot, location)) {
+    final path = p.posix.isAbsolute(nativeRoot) ? p.posix : p.context;
+    if (!path.isWithin(nativeRoot, location)) {
       throw const FormatException('Installation location escapes native root.');
     }
     return InstallationRecord(
@@ -826,19 +867,21 @@ final class InstallationRecord {
 /// Narrow filesystem seam used by deterministic failure tests. The default
 /// implementation performs only local filesystem operations.
 class LifecycleIO {
-  const new();
+  const new({this.fs = const local.LocalFileSystem()});
+
+  final fslib.FileSystem fs;
 
   void before(String operation, String path) {}
 
   FileSystemEntityType type(String path, {required bool followLinks}) =>
-      skillEntityType(path, followLinks: followLinks);
+      fs.typeSync(path, followLinks: followLinks);
 
   List<FileSystemEntity> list(String path) =>
-      Directory(path).listSync(followLinks: false);
+      fs.directory(path).listSync(followLinks: false);
 
   List<int> read(String path, int maxBytes) {
     before('read', path);
-    final file = File(path).openSync();
+    final file = fs.file(path).openSync();
     try {
       return file.readSync(maxBytes + 1);
     } finally {
@@ -848,12 +891,12 @@ class LifecycleIO {
 
   void createDirectory(String path) {
     before('createDirectory', path);
-    Directory(path).createSync(recursive: true);
+    fs.directory(path).createSync(recursive: true);
   }
 
   void copyFile(String source, String destination) {
     before('copy', source);
-    File(source).copySync(destination);
+    fs.file(source).copySync(destination);
   }
 
   void rename(String source, String destination) {
@@ -861,11 +904,11 @@ class LifecycleIO {
     final type = this.type(source, followLinks: false);
     switch (type) {
       case FileSystemEntityType.file:
-        File(source).renameSync(destination);
+        fs.file(source).renameSync(destination);
       case FileSystemEntityType.directory:
-        Directory(source).renameSync(destination);
+        fs.directory(source).renameSync(destination);
       case FileSystemEntityType.link:
-        Link(source).renameSync(destination);
+        fs.link(source).renameSync(destination);
       default:
         throw FileSystemException('Cannot rename unsupported entry', source);
     }
@@ -876,11 +919,11 @@ class LifecycleIO {
     final type = this.type(path, followLinks: false);
     switch (type) {
       case FileSystemEntityType.file:
-        File(path).deleteSync();
+        fs.file(path).deleteSync();
       case FileSystemEntityType.directory:
-        Directory(path).deleteSync(recursive: true);
+        fs.directory(path).deleteSync(recursive: true);
       case FileSystemEntityType.link:
-        Link(path).deleteSync();
+        fs.link(path).deleteSync();
       default:
         throw FileSystemException('Cannot delete unsupported entry', path);
     }
@@ -888,12 +931,12 @@ class LifecycleIO {
 
   void deleteEmptyDirectory(String path) {
     before('deleteEmptyDirectory', path);
-    Directory(path).deleteSync();
+    fs.directory(path).deleteSync();
   }
 
   void write(String path, List<int> bytes) {
     before('write', path);
-    File(path).writeAsBytesSync(bytes, flush: true);
+    fs.file(path).writeAsBytesSync(bytes, flush: true);
   }
 
   String linkKind(String path) => const NativeLinkService().inspectKind(path);
@@ -920,14 +963,17 @@ interface class LifecycleStateService {
     required List<int> bytes,
     required Future<T> Function(String path) body,
   }) async {
-    if (p.basename(name) != name || name == '.' || name == '..') {
+    if (io.fs.path.basename(name) != name || name == '.' || name == '..') {
       throw MambaException('A staged source requires a plain basename.');
     }
-    final root = p.join(p.dirname(nativeRoot), '.agent-resource-authoring');
+    final root = io.fs.path.join(
+      io.fs.path.dirname(nativeRoot),
+      '.agent-resource-authoring',
+    );
     _makePrivate(root);
     final transactionId = _newId('authoring');
-    final directory = p.join(root, transactionId);
-    final path = p.join(directory, name);
+    final directory = io.fs.path.join(root, transactionId);
+    final path = io.fs.path.join(directory, name);
     io.createDirectory(directory);
     try {
       io.write(path, bytes);
@@ -993,10 +1039,10 @@ interface class LifecycleStateService {
         nativeRoot,
         transactionId,
         resource.kind == ArtifactKind.agentFile
-            ? p.basename(location)
+            ? io.fs.path.basename(location)
             : current.candidate.name,
       );
-      final transactionPath = p.join(
+      final transactionPath = io.fs.path.join(
         state,
         'transactions',
         '$transactionId.json',
@@ -1081,7 +1127,7 @@ interface class LifecycleStateService {
             location,
           ),
         });
-        io.createDirectory(p.dirname(location));
+        io.createDirectory(io.fs.path.dirname(location));
         _requireAbsent(location);
         io.rename(stage, location);
         published = true;
@@ -1097,7 +1143,7 @@ interface class LifecycleStateService {
           'installationId': installationId,
           'phase': 'committed',
         });
-        _removeIfPresent(p.dirname(stage));
+        _removeIfPresent(io.fs.path.dirname(stage));
         return LifecycleResult(
           command: '${_resourceLabel(resource.kind)} install',
           outcome: 'installed',
@@ -1173,7 +1219,7 @@ interface class LifecycleStateService {
     return _serialized(context, primary, () async {
       final state = context.stateRoot();
       final transactionId = _newId('trx');
-      final transactionPath = p.join(
+      final transactionPath = io.fs.path.join(
         state,
         'transactions',
         '$transactionId.json',
@@ -1212,12 +1258,12 @@ interface class LifecycleStateService {
                 record.kind == ArtifactKind.skillCanonical &&
                 record.lifecycle == 'live' &&
                 record.exposures.any(
-                  (exposure) => p.equals(exposure.path, entry.path),
+                  (exposure) => io.fs.path.equals(exposure.path, entry.path),
                 ),
           );
           if (owners.length == 1) {
             final exposure = owners.single.exposures.singleWhere(
-              (item) => p.equals(item.path, entry.path),
+              (item) => io.fs.path.equals(item.path, entry.path),
             );
             if ((entry.observedDigest != null &&
                     exposure.baseline.digest != entry.observedDigest) ||
@@ -1316,9 +1362,9 @@ interface class LifecycleStateService {
           final stage = _stagePath(
             nativeRoot,
             transactionId,
-            '$index-${p.basename(entry.path)}',
+            '$index-${io.fs.path.basename(entry.path)}',
           );
-          stagingRoots.add(p.dirname(stage));
+          stagingRoots.add(io.fs.path.dirname(stage));
           _prepareStaging(nativeRoot);
           final linkSource =
               unit.method == InstallationMethod.canonical &&
@@ -1327,7 +1373,7 @@ interface class LifecycleStateService {
               : unit.sourcePath;
           if (unit.method == InstallationMethod.canonical &&
               kind == ArtifactKind.skillLink) {
-            io.createDirectory(p.dirname(stage));
+            io.createDirectory(io.fs.path.dirname(stage));
             io.createLink(stage, linkSource);
           } else {
             _copySource(linkSource, stage, kind, linkDestination: entry.path);
@@ -1422,7 +1468,7 @@ interface class LifecycleStateService {
             final baseline = baselines[index]!;
             final link = baseline.entries.single;
             if (exposures.any(
-              (exposure) => p.equals(exposure.path, entry.path),
+              (exposure) => io.fs.path.equals(exposure.path, entry.path),
             )) {
               continue;
             }
@@ -1501,7 +1547,7 @@ interface class LifecycleStateService {
         for (final index in staged.keys) {
           final entry = unit.entries[index];
           _requireAbsent(entry.path);
-          io.createDirectory(p.dirname(entry.path));
+          io.createDirectory(io.fs.path.dirname(entry.path));
           _requireAbsent(entry.path);
           io.rename(staged[index]!, entry.path);
           published.add(index);
@@ -1598,7 +1644,7 @@ interface class LifecycleStateService {
               entry.path,
             );
             _requireAbsent(quarantine);
-            io.createDirectory(p.dirname(quarantine));
+            io.createDirectory(io.fs.path.dirname(quarantine));
             io.rename(entry.path, quarantine);
           } on Exception {
             restored = false;
@@ -1706,7 +1752,7 @@ interface class LifecycleStateService {
       }
       final installationId = _newId('ins');
       final transactionId = _newId('trx');
-      final transactionPath = p.join(
+      final transactionPath = io.fs.path.join(
         state,
         'transactions',
         '$transactionId.json',
@@ -1889,10 +1935,10 @@ interface class LifecycleStateService {
         record.nativeRoot,
         transactionId,
         resource.kind == ArtifactKind.agentFile
-            ? p.basename(record.location)
+            ? io.fs.path.basename(record.location)
             : record.name,
       );
-      final transactionPath = p.join(
+      final transactionPath = io.fs.path.join(
         state,
         'transactions',
         '$transactionId.json',
@@ -1961,7 +2007,7 @@ interface class LifecycleStateService {
           'quarantinePath': quarantine,
           'phase': 'prepared',
         });
-        io.createDirectory(p.dirname(quarantine));
+        io.createDirectory(io.fs.path.dirname(quarantine));
         io.rename(record.location, quarantine);
         unpublished = true;
         _advanceTransaction(transactionPath, 'quarantined');
@@ -1986,7 +2032,7 @@ interface class LifecycleStateService {
         io.delete(quarantine);
         unpublished = false;
         _advanceTransaction(transactionPath, 'committed');
-        _removeIfPresent(p.dirname(stage));
+        _removeIfPresent(io.fs.path.dirname(stage));
         return LifecycleResult(
           command: '${_resourceLabel(resource.kind)} replace',
           outcome: 'replaced',
@@ -2101,7 +2147,7 @@ interface class LifecycleStateService {
       requireObserved(record);
       _blockPendingAcrossScopes(context, record.location);
       final transactionId = _newId('trx');
-      final transactionPath = p.join(
+      final transactionPath = io.fs.path.join(
         state,
         'transactions',
         '$transactionId.json',
@@ -2132,7 +2178,7 @@ interface class LifecycleStateService {
           'quarantinePath': quarantine,
           'phase': 'prepared',
         });
-        io.createDirectory(p.dirname(quarantine));
+        io.createDirectory(io.fs.path.dirname(quarantine));
         io.rename(record.location, quarantine);
         unpublished = true;
         _advanceTransaction(transactionPath, 'quarantined');
@@ -2334,8 +2380,11 @@ interface class LifecycleStateService {
     for (final record in records) {
       if (record.scope != context.scope ||
           (!coordinated &&
-              (!p.equals(record.location, transaction['location']! as String) ||
-                  !p.equals(
+              (!io.fs.path.equals(
+                    record.location,
+                    transaction['location']! as String,
+                  ) ||
+                  !io.fs.path.equals(
                     record.nativeRoot,
                     transaction['nativeRoot']! as String,
                   )))) {
@@ -2367,17 +2416,17 @@ interface class LifecycleStateService {
     Set<ArtifactKind> kinds,
   ) {
     return runZoned(() {
-      final root = p.join(state, 'transactions');
+      final root = io.fs.path.join(state, 'transactions');
       if (io.type(root, followLinks: false) == FileSystemEntityType.notFound) {
         return <Map<String, Object?>>[];
       }
       final result = <Map<String, Object?>>[];
       for (final file in io.list(root)) {
-        if (p.extension(file.path) != '.json') continue;
+        if (io.fs.path.extension(file.path) != '.json') continue;
         final transaction = _validateTransaction(
           _readTransaction(file.path),
           state,
-          p.basenameWithoutExtension(file.path),
+          io.fs.path.basenameWithoutExtension(file.path),
         );
         if (kinds.any((kind) => kind.wireName == transaction['artifactKind'])) {
           result.add(transaction);
@@ -2399,7 +2448,7 @@ interface class LifecycleStateService {
     if (!RegExp(r'^trx_[a-f0-9]{32}$').hasMatch(id)) {
       throw MambaException('Invalid transaction ID.', exitCode: 4);
     }
-    final path = p.join(state, 'transactions', '$id.json');
+    final path = io.fs.path.join(state, 'transactions', '$id.json');
     if (io.type(path, followLinks: false) != FileSystemEntityType.file) {
       throw MambaException(
         'No transaction $id exists in the selected scope.',
@@ -2452,7 +2501,8 @@ interface class LifecycleStateService {
       _enumValue(_string(transaction, 'scope'), const ['project', 'user']);
       final location = _absolutePath(_string(transaction, 'location'));
       final nativeRoot = _absolutePath(_string(transaction, 'nativeRoot'));
-      if (operation != 'cleanup' && !p.isWithin(nativeRoot, location)) {
+      if (operation != 'cleanup' &&
+          !io.fs.path.isWithin(nativeRoot, location)) {
         throw const FormatException(
           'Transaction location escapes native authority.',
         );
@@ -2482,15 +2532,15 @@ interface class LifecycleStateService {
       if (staged is String) {
         final expectedName = kindName != 'agent-file'
             ? (newRecord ?? oldRecord)?.name
-            : p.basename(location);
-        final expected = p.join(
-          p.dirname(nativeRoot),
+            : io.fs.path.basename(location);
+        final expected = io.fs.path.join(
+          io.fs.path.dirname(nativeRoot),
           '.agent-resource',
           'staging',
           expectedId,
           expectedName,
         );
-        if (!p.equals(_absolutePath(staged), expected)) {
+        if (!io.fs.path.equals(_absolutePath(staged), expected)) {
           throw const FormatException(
             'Transaction staging path does not match its identity.',
           );
@@ -2499,20 +2549,20 @@ interface class LifecycleStateService {
       final quarantine = transaction['quarantinePath'];
       if (quarantine is String) {
         final expected = operation == 'cleanup'
-            ? p.join(
+            ? io.fs.path.join(
                 state,
                 'backups',
                 _id(_string(transaction, 'backupId'), 'bak'),
                 'cleanup-quarantine',
               )
-            : p.join(
-                p.dirname(nativeRoot),
+            : io.fs.path.join(
+                io.fs.path.dirname(nativeRoot),
                 '.agent-resource',
                 'quarantine',
                 expectedId,
-                p.basename(location),
+                io.fs.path.basename(location),
               );
-        if (!p.equals(_absolutePath(quarantine), expected)) {
+        if (!io.fs.path.equals(_absolutePath(quarantine), expected)) {
           throw const FormatException(
             'Transaction quarantine path does not match its identity.',
           );
@@ -2520,8 +2570,8 @@ interface class LifecycleStateService {
       }
       for (final record in [oldRecord, newRecord]) {
         if (record == null) continue;
-        if (!p.equals(record.location, location) ||
-            !p.equals(record.nativeRoot, nativeRoot) ||
+        if (!io.fs.path.equals(record.location, location) ||
+            !io.fs.path.equals(record.nativeRoot, nativeRoot) ||
             (record == newRecord && record.kind.wireName != kindName) ||
             (record == oldRecord &&
                 kindName == 'agent-file' &&
@@ -2587,7 +2637,7 @@ interface class LifecycleStateService {
     ]);
     final location = _absolutePath(_string(transaction, 'location'));
     final nativeRoot = _absolutePath(_string(transaction, 'nativeRoot'));
-    if (!p.isWithin(nativeRoot, location)) {
+    if (!io.fs.path.isWithin(nativeRoot, location)) {
       throw const FormatException(
         'Coordinated location escapes its native root.',
       );
@@ -2615,8 +2665,8 @@ interface class LifecycleStateService {
         ) ||
         !records.any(
           (record) =>
-              p.equals(record.location, location) &&
-              p.equals(record.nativeRoot, nativeRoot),
+              io.fs.path.equals(record.location, location) &&
+              io.fs.path.equals(record.nativeRoot, nativeRoot),
         )) {
       throw const FormatException(
         'Coordinated record authority is inconsistent.',
@@ -2633,7 +2683,7 @@ interface class LifecycleStateService {
         }
         final entryLocation = _absolutePath(_string(entry, 'location'));
         final entryRoot = _absolutePath(_string(entry, 'nativeRoot'));
-        if (!p.isWithin(entryRoot, entryLocation)) {
+        if (!io.fs.path.isWithin(entryRoot, entryLocation)) {
           throw const FormatException(
             'Resource-unit entry escapes its native root.',
           );
@@ -2643,9 +2693,9 @@ interface class LifecycleStateService {
         final expectedStage = _stagePath(
           entryRoot,
           expectedId,
-          '$index-${p.basename(entryLocation)}',
+          '$index-${io.fs.path.basename(entryLocation)}',
         );
-        if (!p.equals(
+        if (!io.fs.path.equals(
           _absolutePath(_string(entry, 'stagedPath')),
           expectedStage,
         )) {
@@ -2674,7 +2724,7 @@ interface class LifecycleStateService {
       final changes = _list(transaction['changes'], 'canonical changes');
       for (final value in changes) {
         final change = _CanonicalChange.fromJson(value);
-        if (!p.isWithin(change.nativeRoot, change.location)) {
+        if (!io.fs.path.isWithin(change.nativeRoot, change.location)) {
           throw const FormatException(
             'Canonical change escapes its native root.',
           );
@@ -2720,7 +2770,7 @@ interface class LifecycleStateService {
     Map<String, Object?> transaction,
   ) {
     final id = transaction['transactionId']! as String;
-    final path = p.join(state, 'transactions', '$id.json');
+    final path = io.fs.path.join(state, 'transactions', '$id.json');
     final entries = _resourceUnitJournalEntries(transaction);
     final published = _intList(transaction['publishedIndices']);
     for (final index in published.reversed) {
@@ -2740,7 +2790,7 @@ interface class LifecycleStateService {
           location,
         );
         _requireAbsent(quarantine);
-        io.createDirectory(p.dirname(quarantine));
+        io.createDirectory(io.fs.path.dirname(quarantine));
         io.rename(location, quarantine);
       }
     }
@@ -2757,7 +2807,7 @@ interface class LifecycleStateService {
     Map<String, Object?> transaction,
   ) {
     final id = transaction['transactionId']! as String;
-    final path = p.join(state, 'transactions', '$id.json');
+    final path = io.fs.path.join(state, 'transactions', '$id.json');
     final entries = _resourceUnitJournalEntries(transaction);
     final published = _intList(transaction['publishedIndices']);
     for (final index in entries.keys) {
@@ -2769,7 +2819,7 @@ interface class LifecycleStateService {
         final staged = entry['stagedPath']! as String;
         _verifyBaseline(staged, baseline, kind);
         _requireAbsent(location);
-        io.createDirectory(p.dirname(location));
+        io.createDirectory(io.fs.path.dirname(location));
         _requireAbsent(location);
         io.rename(staged, location);
         published.add(index);
@@ -2804,7 +2854,7 @@ interface class LifecycleStateService {
     }
     final stagingRoots = <String>{
       for (final entry in entries.values)
-        p.dirname(entry['stagedPath']! as String),
+        io.fs.path.dirname(entry['stagedPath']! as String),
     };
     for (final root in stagingRoots) {
       if (io.type(root, followLinks: false) != FileSystemEntityType.notFound) {
@@ -2826,7 +2876,7 @@ interface class LifecycleStateService {
     Map<String, Object?> transaction,
   ) {
     final id = transaction['transactionId']! as String;
-    final path = p.join(state, 'transactions', '$id.json');
+    final path = io.fs.path.join(state, 'transactions', '$id.json');
     final changes = _canonicalJournalChanges(transaction);
     final completed = _stringList(transaction['completedActions']);
     if (!_rollbackCanonicalActions(changes, completed, this)) {
@@ -2857,7 +2907,7 @@ interface class LifecycleStateService {
     Map<String, Object?> transaction,
   ) {
     final id = transaction['transactionId']! as String;
-    final path = p.join(state, 'transactions', '$id.json');
+    final path = io.fs.path.join(state, 'transactions', '$id.json');
     final changes = _canonicalJournalChanges(transaction);
     final completed = _stringList(transaction['completedActions']);
     for (var index = 0; index < changes.length; index++) {
@@ -2949,10 +2999,13 @@ interface class LifecycleStateService {
         ]..sort(
           (left, right) => left.installationId.compareTo(right.installationId),
         );
-    _writeManagementJson(p.join(state, 'installations.json'), <String, Object?>{
-      'schemaVersion': managementSchemaVersion,
-      'installations': [for (final record in restored) record.toJson()],
-    });
+    _writeManagementJson(
+      io.fs.path.join(state, 'installations.json'),
+      <String, Object?>{
+        'schemaVersion': managementSchemaVersion,
+        'installations': [for (final record in restored) record.toJson()],
+      },
+    );
   }
 
   void _commitCoordinatedRecords(
@@ -3053,7 +3106,7 @@ interface class LifecycleStateService {
     if (transaction['operation'] != 'cleanup') {
       _prepareStaging(transaction['nativeRoot']! as String);
     }
-    final path = p.join(
+    final path = io.fs.path.join(
       state,
       'transactions',
       '${transaction['transactionId']}.json',
@@ -3078,8 +3131,8 @@ interface class LifecycleStateService {
       final currentAuthority =
           current != null &&
           current.installationId == old.installationId &&
-          p.equals(current.location, old.location) &&
-          p.equals(current.nativeRoot, old.nativeRoot);
+          io.fs.path.equals(current.location, old.location) &&
+          io.fs.path.equals(current.nativeRoot, old.nativeRoot);
       final rollbackRecord = old.copyWith(
         backupIds: <String>{
           ...old.backupIds,
@@ -3144,7 +3197,7 @@ interface class LifecycleStateService {
         _verifyBaseline(location, baseline, kind);
         final failedNew = _rollbackStoragePath(transaction, 'rolled-back-new');
         _requireAbsent(failedNew);
-        io.createDirectory(p.dirname(failedNew));
+        io.createDirectory(io.fs.path.dirname(failedNew));
         io.rename(location, failedNew);
       }
       final id = transaction['installationId'] as String?;
@@ -3169,7 +3222,7 @@ interface class LifecycleStateService {
         );
         final failedNew = _rollbackStoragePath(transaction, 'rolled-back-new');
         _requireAbsent(failedNew);
-        io.createDirectory(p.dirname(failedNew));
+        io.createDirectory(io.fs.path.dirname(failedNew));
         io.rename(location, failedNew);
       }
       if (old.lifecycle == 'live') {
@@ -3193,8 +3246,8 @@ interface class LifecycleStateService {
   String _rollbackStoragePath(
     Map<String, Object?> transaction,
     String basename,
-  ) => p.join(
-    p.dirname(transaction['nativeRoot']! as String),
+  ) => io.fs.path.join(
+    io.fs.path.dirname(transaction['nativeRoot']! as String),
     '.agent-resource',
     'quarantine',
     transaction['transactionId']! as String,
@@ -3205,7 +3258,7 @@ interface class LifecycleStateService {
     if (transaction['operation'] != 'cleanup') {
       _prepareStaging(transaction['nativeRoot']! as String);
     }
-    final path = p.join(
+    final path = io.fs.path.join(
       state,
       'transactions',
       '${transaction['transactionId']}.json',
@@ -3283,7 +3336,7 @@ interface class LifecycleStateService {
               FileSystemEntityType.notFound) {
         final staged = transaction['stagedPath']! as String;
         _verifyBaseline(staged, baseline, kind);
-        io.createDirectory(p.dirname(location));
+        io.createDirectory(io.fs.path.dirname(location));
         io.rename(staged, location);
       }
       _verifyBaseline(location, baseline, kind);
@@ -3380,10 +3433,13 @@ interface class LifecycleStateService {
     final records = _readRecords(state)
         .where((record) => record.installationId != installationId)
         .toList();
-    _writeManagementJson(p.join(state, 'installations.json'), <String, Object?>{
-      'schemaVersion': 1,
-      'installations': [for (final record in records) record.toJson()],
-    });
+    _writeManagementJson(
+      io.fs.path.join(state, 'installations.json'),
+      <String, Object?>{
+        'schemaVersion': 1,
+        'installations': [for (final record in records) record.toJson()],
+      },
+    );
   }
 
   Future<LifecycleResult> restore({
@@ -3396,8 +3452,8 @@ interface class LifecycleStateService {
     _verifyBackup(backup);
     final initial = recordById(context, backup.installationId);
     _requireResource(initial, resource, context, live: false);
-    if (!p.equals(initial.location, backup.location) ||
-        !p.equals(initial.nativeRoot, backup.nativeRoot) ||
+    if (!io.fs.path.equals(initial.location, backup.location) ||
+        !io.fs.path.equals(initial.nativeRoot, backup.nativeRoot) ||
         initial.baseline.digest == '') {
       throw MambaException(
         'Backup and original installation identity do not match.',
@@ -3453,7 +3509,7 @@ interface class LifecycleStateService {
       }
       _blockPendingAcrossScopes(context, record.location);
       final transactionId = _newId('trx');
-      final transactionPath = p.join(
+      final transactionPath = io.fs.path.join(
         state,
         'transactions',
         '$transactionId.json',
@@ -3462,7 +3518,7 @@ interface class LifecycleStateService {
         record.nativeRoot,
         transactionId,
         resource.kind == ArtifactKind.agentFile
-            ? p.basename(record.location)
+            ? io.fs.path.basename(record.location)
             : record.name,
       );
       final quarantine = _quarantinePath(
@@ -3528,7 +3584,7 @@ interface class LifecycleStateService {
           'phase': 'prepared',
         });
         if (record.lifecycle == 'live') {
-          io.createDirectory(p.dirname(quarantine));
+          io.createDirectory(io.fs.path.dirname(quarantine));
           io.rename(record.location, quarantine);
           unpublished = true;
         } else {
@@ -3567,7 +3623,7 @@ interface class LifecycleStateService {
           unpublished = false;
         }
         _advanceTransaction(transactionPath, 'committed');
-        _removeIfPresent(p.dirname(stage));
+        _removeIfPresent(io.fs.path.dirname(stage));
         return LifecycleResult(
           command: '${_resourceLabel(resource.kind)} backup restore',
           outcome: 'restored',
@@ -3665,7 +3721,7 @@ interface class LifecycleStateService {
     final installation = recordById(context, backup.installationId);
     if (backup.retention != 'retained' ||
         !installation.backupIds.contains(backupId) ||
-        !p.equals(installation.location, backup.location)) {
+        !io.fs.path.equals(installation.location, backup.location)) {
       throw MambaException(
         'Backup retention or installation evidence does not match.',
         exitCode: 4,
@@ -3692,8 +3748,12 @@ interface class LifecycleStateService {
       _verifyBackup(current);
       _blockPendingAcrossScopes(context, current.location);
       final transactionId = _newId('trx');
-      final path = p.join(state, 'transactions', '$transactionId.json');
-      final quarantine = p.join(
+      final path = io.fs.path.join(
+        state,
+        'transactions',
+        '$transactionId.json',
+      );
+      final quarantine = io.fs.path.join(
         state,
         'backups',
         backupId,
@@ -3795,7 +3855,7 @@ interface class LifecycleStateService {
     final baseline = _manifest(path, ArtifactKind.skillCopy);
     if (restoringBaseline) return;
     for (final entry in baseline.entries.where(
-      (entry) => p.dirname(entry.path) == '.',
+      (entry) => io.fs.path.dirname(entry.path) == '.',
     )) {
       final name = entry.path;
       if (!const {
@@ -4017,11 +4077,12 @@ interface class LifecycleStateService {
     String transactionId,
   ) {
     final backupId = _newId('bak');
-    final directory = p.join(state, 'backups', backupId);
-    final artifact = p.join(directory, switch (record.kind) {
+    final directory = io.fs.path.join(state, 'backups', backupId);
+    final artifact = io.fs.path.join(directory, switch (record.kind) {
       ArtifactKind.skillCopy || ArtifactKind.skillCanonical => 'artifact',
       ArtifactKind.skillLink => 'artifact-link.json',
-      ArtifactKind.agentFile => 'artifact${p.extension(record.location)}',
+      ArtifactKind.agentFile =>
+        'artifact${io.fs.path.extension(record.location)}',
     });
     _makePrivate(directory);
     if (record.kind == ArtifactKind.skillLink) {
@@ -4056,16 +4117,18 @@ interface class LifecycleStateService {
   }
 
   void _writeBackup(BackupRecord backup) {
-    final state = p.dirname(p.dirname(p.dirname(backup.artifactPath)));
+    final state = io.fs.path.dirname(
+      io.fs.path.dirname(io.fs.path.dirname(backup.artifactPath)),
+    );
     _writeManagementJson(
-      p.join(state, 'backups', backup.backupId, 'backup.json'),
+      io.fs.path.join(state, 'backups', backup.backupId, 'backup.json'),
       backup.toJson(),
     );
   }
 
   List<BackupRecord> _readBackups(String state, Set<ArtifactKind> kinds) {
     return runZoned(() {
-      final root = p.join(state, 'backups');
+      final root = io.fs.path.join(state, 'backups');
       if (io.type(root, followLinks: false) == FileSystemEntityType.notFound) {
         return <BackupRecord>[];
       }
@@ -4084,7 +4147,7 @@ interface class LifecycleStateService {
             exitCode: 4,
           );
         }
-        final metadata = p.join(directory.path, 'backup.json');
+        final metadata = io.fs.path.join(directory.path, 'backup.json');
         if (io.type(metadata, followLinks: false) ==
             FileSystemEntityType.notFound) {
           throw MambaException(
@@ -4101,7 +4164,7 @@ interface class LifecycleStateService {
   }
 
   BackupRecord _backupById(String state, String id, ArtifactKind kind) {
-    final metadata = p.join(state, 'backups', id, 'backup.json');
+    final metadata = io.fs.path.join(state, 'backups', id, 'backup.json');
     if (!RegExp(r'^bak_[a-f0-9]{32}$').hasMatch(id) ||
         io.type(metadata, followLinks: false) ==
             FileSystemEntityType.notFound) {
@@ -4164,12 +4227,12 @@ interface class LifecycleStateService {
     String nativeRoot,
     String transactionId,
     String location,
-  ) => p.join(
-    p.dirname(nativeRoot),
+  ) => io.fs.path.join(
+    io.fs.path.dirname(nativeRoot),
     '.agent-resource',
     'quarantine',
     transactionId,
-    p.basename(location),
+    io.fs.path.basename(location),
   );
 
   bool _rollbackReplacement(
@@ -4327,18 +4390,18 @@ interface class LifecycleStateService {
   }
 
   void _blockPending(String state, String location) {
-    final root = p.join(state, 'transactions');
+    final root = io.fs.path.join(state, 'transactions');
     if (io.type(root, followLinks: false) == FileSystemEntityType.notFound) {
       return;
     }
     for (final file in io.list(root)) {
-      if (p.extension(file.path) != '.json') continue;
+      if (io.fs.path.extension(file.path) != '.json') continue;
       final transaction = _readTransaction(file.path);
       final phase = transaction['phase'];
       const terminal = ['committed', 'rolledBack', 'failedRestored'];
       if (terminal.contains(phase)) continue;
       if (transaction['location'] is String &&
-          p.equals(transaction['location']! as String, location)) {
+          io.fs.path.equals(transaction['location']! as String, location)) {
         throw MambaException(
           'A pending transaction blocks this installation: ${transaction['transactionId']}',
           exitCode: 6,
@@ -4365,7 +4428,7 @@ interface class LifecycleStateService {
     if ((resource.kind == ArtifactKind.skillCopy ||
             resource.kind == ArtifactKind.skillLink ||
             resource.kind == ArtifactKind.skillCanonical) &&
-        p.basename(location) != candidate.name) {
+        io.fs.path.basename(location) != candidate.name) {
       throw MambaException(
         'The Skill destination name must match the declared name.',
         exitCode: 2,
@@ -4384,7 +4447,7 @@ interface class LifecycleStateService {
   ArtifactBaseline _linkBaseline(String path) {
     final type = io.type(path, followLinks: false);
     if (type == FileSystemEntityType.file &&
-        p.basename(path) == 'artifact-link.json') {
+        io.fs.path.basename(path) == 'artifact-link.json') {
       final baseline = ArtifactBaseline.fromJson(_readManagementJson(path));
       if (baseline.entries.length != 1 ||
           baseline.entries.single.type != 'link') {
@@ -4413,7 +4476,7 @@ interface class LifecycleStateService {
         readOnly: false,
         target: target,
         nativeKind: nativeKind,
-        originalParent: p.normalize(p.dirname(path)),
+        originalParent: io.fs.path.normalize(io.fs.path.dirname(path)),
       ),
     ]);
   }
@@ -4426,15 +4489,15 @@ interface class LifecycleStateService {
   }) {
     _requireAbsent(stage);
     if (kind == ArtifactKind.skillLink) {
-      io.createDirectory(p.dirname(stage));
+      io.createDirectory(io.fs.path.dirname(stage));
       final sourceType = io.type(source, followLinks: false);
       final String target;
       final String? originalParent;
       if (sourceType == FileSystemEntityType.link) {
         target = io.readLink(source);
-        originalParent = p.normalize(p.dirname(source));
+        originalParent = io.fs.path.normalize(io.fs.path.dirname(source));
       } else if (sourceType == FileSystemEntityType.file &&
-          p.basename(source) == 'artifact-link.json') {
+          io.fs.path.basename(source) == 'artifact-link.json') {
         final entry = _linkBaseline(source).entries.single;
         target = entry.target!;
         originalParent = entry.originalParent;
@@ -4447,18 +4510,23 @@ interface class LifecycleStateService {
           exitCode: 4,
         );
       }
-      final absolute = p.isAbsolute(target) || originalParent == null
-          ? p.normalize(target)
-          : p.normalize(p.join(originalParent, target));
+      final absolute = io.fs.path.isAbsolute(target) || originalParent == null
+          ? io.fs.path.normalize(target)
+          : io.fs.path.normalize(io.fs.path.join(originalParent, target));
       final destination = linkDestination ?? source;
-      final stagedTarget = p.isAbsolute(target)
+      final stagedTarget = io.fs.path.isAbsolute(target)
           ? absolute
-          : p.normalize(p.relative(absolute, from: p.dirname(destination)));
+          : io.fs.path.normalize(
+              io.fs.path.relative(
+                absolute,
+                from: io.fs.path.dirname(destination),
+              ),
+            );
       io.createLink(stage, stagedTarget);
       return absolute;
     }
     if (kind == ArtifactKind.agentFile) {
-      io.createDirectory(p.dirname(stage));
+      io.createDirectory(io.fs.path.dirname(stage));
       io.copyFile(source, stage);
       return null;
     }
@@ -4480,7 +4548,7 @@ interface class LifecycleStateService {
       readOnly: false,
       target: target,
       nativeKind: nativeKind,
-      originalParent: p.normalize(p.dirname(location)),
+      originalParent: io.fs.path.normalize(io.fs.path.dirname(location)),
     ),
   ]);
 
@@ -4503,14 +4571,14 @@ interface class LifecycleStateService {
             exitCode: 3,
           );
         }
-        final target = p.join(to, p.basename(entity.path));
+        final target = io.fs.path.join(to, io.fs.path.basename(entity.path));
         final type = io.type(entity.path, followLinks: false);
         switch (type) {
           case FileSystemEntityType.directory:
             io.createDirectory(target);
             copy(entity.path, target, depth + 1);
           case FileSystemEntityType.file:
-            final length = File(entity.path).lengthSync();
+            final length = io.fs.file(entity.path).lengthSync();
             if (length > maxSkillFileBytes) {
               throw MambaException(
                 'A Skill file exceeds the 64 MiB budget.',
@@ -4556,7 +4624,7 @@ interface class LifecycleStateService {
           exitCode: 4,
         );
       }
-      final stat = FileStat.statSync(current);
+      final stat = io.fs.statSync(current);
       final executable = !Platform.isWindows && stat.mode & 0x49 != 0;
       final readOnly = Platform.isWindows && stat.mode & 0x92 == 0;
       if (type == FileSystemEntityType.file) {
@@ -4621,8 +4689,8 @@ interface class LifecycleStateService {
           );
         }
         final childRelative = relative == '.'
-            ? p.basename(child.path)
-            : p.join(relative, p.basename(child.path));
+            ? io.fs.path.basename(child.path)
+            : io.fs.path.join(relative, io.fs.path.basename(child.path));
         visit(child.path, childRelative, depth + 1);
       }
     }
@@ -4681,7 +4749,7 @@ interface class LifecycleStateService {
         final quarantine = transaction['quarantinePath'] as String?;
         if (quarantine == null) return false;
         _requireAbsent(quarantine);
-        io.createDirectory(p.dirname(quarantine));
+        io.createDirectory(io.fs.path.dirname(quarantine));
         io.rename(location, quarantine);
       }
       _writeTransaction(transactionPath, <String, Object?>{
@@ -4696,7 +4764,7 @@ interface class LifecycleStateService {
   }
 
   void _ensureLedger(String state) {
-    final path = p.join(state, 'installations.json');
+    final path = io.fs.path.join(state, 'installations.json');
     if (io.type(path, followLinks: false) != FileSystemEntityType.notFound) {
       _readRecords(state);
       return;
@@ -4704,7 +4772,7 @@ interface class LifecycleStateService {
     if (io.type(state, followLinks: false) != FileSystemEntityType.notFound) {
       final unexpected = io
           .list(state)
-          .where((entry) => p.basename(entry.path) != 'coordination');
+          .where((entry) => io.fs.path.basename(entry.path) != 'coordination');
       if (unexpected.isNotEmpty) {
         throw MambaException(
           'Installation ownership evidence is missing from non-empty state: $path',
@@ -4719,14 +4787,14 @@ interface class LifecycleStateService {
   }
 
   List<InstallationRecord> _readRecords(String state) {
-    final path = p.join(state, 'installations.json');
+    final path = io.fs.path.join(state, 'installations.json');
     if (io.type(path, followLinks: false) == FileSystemEntityType.notFound) {
       if (io.type(state, followLinks: false) == FileSystemEntityType.notFound) {
         return <InstallationRecord>[];
       }
       final unexpected = io
           .list(state)
-          .where((entry) => p.basename(entry.path) != 'coordination');
+          .where((entry) => io.fs.path.basename(entry.path) != 'coordination');
       if (unexpected.isEmpty) return <InstallationRecord>[];
       throw MambaException(
         'Installation ownership evidence is missing: $path',
@@ -4793,7 +4861,7 @@ interface class LifecycleStateService {
       } on MambaException {
         continue;
       }
-      final ledger = p.join(otherState, 'installations.json');
+      final ledger = io.fs.path.join(otherState, 'installations.json');
       if (io.type(ledger, followLinks: false) ==
           FileSystemEntityType.notFound) {
         final stateType = io.type(otherState, followLinks: false);
@@ -4801,7 +4869,9 @@ interface class LifecycleStateService {
             stateType != FileSystemEntityType.notFound &&
             io
                 .list(otherState)
-                .every((entry) => p.basename(entry.path) == 'coordination');
+                .every(
+                  (entry) => io.fs.path.basename(entry.path) == 'coordination',
+                );
         if (stateType == FileSystemEntityType.notFound || lockOnly) {
           continue;
         }
@@ -4825,7 +4895,7 @@ interface class LifecycleStateService {
     final matches = _readRecords(state).where(
       (record) =>
           (installationId == null || record.installationId == installationId) &&
-          (location == null || p.equals(record.location, location)) &&
+          (location == null || io.fs.path.equals(record.location, location)) &&
           (!liveOnly || record.lifecycle == 'live'),
     );
     if (matches.length > 1) {
@@ -4852,7 +4922,7 @@ interface class LifecycleStateService {
             current.installationId != record.installationId &&
             current.lifecycle == 'live' &&
             record.lifecycle == 'live' &&
-            p.equals(current.location, record.location),
+            io.fs.path.equals(current.location, record.location),
       );
       if (conflictingAuthority) {
         throw MambaException(
@@ -4869,7 +4939,7 @@ interface class LifecycleStateService {
     records.sort(
       (left, right) => left.installationId.compareTo(right.installationId),
     );
-    final path = p.join(state, 'installations.json');
+    final path = io.fs.path.join(state, 'installations.json');
     final existing =
         io.type(path, followLinks: false) == FileSystemEntityType.notFound
         ? const <String, Object?>{}
@@ -4914,8 +4984,8 @@ interface class LifecycleStateService {
     if (bytes.length > maxManagementDocumentBytes) {
       throw MambaException('Management update exceeds 8 MiB.', exitCode: 3);
     }
-    io.createDirectory(p.dirname(path));
-    _makePrivate(p.dirname(path));
+    io.createDirectory(io.fs.path.dirname(path));
+    _makePrivate(io.fs.path.dirname(path));
     final temporary = '$path.${_newId('tmp')}.tmp';
     _requireAbsent(temporary);
     io.write(temporary, bytes);
@@ -4936,16 +5006,19 @@ interface class LifecycleStateService {
     final completion = Completer<void>.sync();
     _inProcessLocks[key] = completion.future;
     await previous;
-    final locks = <RandomAccessFile>[];
+    final locks = <fslib.RandomAccessFile>[];
     try {
       for (final state in states) {
-        final coordination = p.join(state, 'coordination');
+        final coordination = io.fs.path.join(state, 'coordination');
         io.createDirectory(coordination);
         _makePrivate(coordination);
-        final lock = File(p.join(coordination, 'lifecycle.lock'))
-            .openSync(mode: FileMode.write);
-        locks.add(lock);
-        lock.lockSync(FileLock.exclusive);
+        if (io.fs is local.LocalFileSystem) {
+          final lock = io.fs
+              .file(io.fs.path.join(coordination, 'lifecycle.lock'))
+              .openSync(mode: FileMode.write);
+          locks.add(lock);
+          lock.lockSync(FileLock.exclusive);
+        }
       }
       return await runZoned(
         body,
@@ -4978,7 +5051,8 @@ interface class LifecycleStateService {
     String nativeRoot, {
     bool allowFinalLink = false,
   }) {
-    if (!p.isAbsolute(location) || !p.isWithin(nativeRoot, location)) {
+    if (!io.fs.path.isAbsolute(location) ||
+        !io.fs.path.isWithin(nativeRoot, location)) {
       throw MambaException(
         'The installation location is outside its native root.',
         exitCode: 4,
@@ -4986,9 +5060,10 @@ interface class LifecycleStateService {
     }
     for (final component in skillPathComponents(
       location,
-      base: p.dirname(nativeRoot),
+      base: io.fs.path.dirname(nativeRoot),
+      fs: io.fs,
     )) {
-      if (allowFinalLink && p.equals(component, location)) continue;
+      if (allowFinalLink && io.fs.path.equals(component, location)) continue;
       if (io.type(component, followLinks: false) == FileSystemEntityType.link) {
         throw MambaException(
           'Refusing linked installation authority: $component',
@@ -5005,7 +5080,7 @@ interface class LifecycleStateService {
     String state,
   ) {
     bool contains(String parent, String child) =>
-        p.equals(parent, child) || p.isWithin(parent, child);
+        io.fs.path.equals(parent, child) || io.fs.path.isWithin(parent, child);
     if (contains(source, location) || contains(location, source)) {
       throw MambaException(
         'Source and destination must be distinct and non-containing.',
@@ -5014,14 +5089,17 @@ interface class LifecycleStateService {
     }
     if (contains(source, state) || contains(state, source)) {
       throw MambaException(
-        'Source and management storage must not overlap.',
+        'Source and management storage must not overlaio.fs.path.',
         exitCode: 4,
       );
     }
-    final staging = p.join(p.dirname(nativeRoot), '.agent-resource');
+    final staging = io.fs.path.join(
+      io.fs.path.dirname(nativeRoot),
+      '.agent-resource',
+    );
     if (contains(source, staging) || contains(staging, source)) {
       throw MambaException(
-        'Source and staging storage must not overlap.',
+        'Source and staging storage must not overlaio.fs.path.',
         exitCode: 4,
       );
     }
@@ -5079,8 +5157,9 @@ interface class LifecycleStateService {
       (root: context.codexSkillsRoot(), consumer: 'codex'),
     ];
     for (final destination in destinations) {
-      final root = p.normalize(destination.root);
-      if (p.equals(location, root) || p.isWithin(root, location)) {
+      final root = io.fs.path.normalize(destination.root);
+      if (io.fs.path.equals(location, root) ||
+          io.fs.path.isWithin(root, location)) {
         return [destination.consumer];
       }
     }
@@ -5088,12 +5167,14 @@ interface class LifecycleStateService {
   }
 
   void _prepareStaging(String nativeRoot) {
-    _makePrivate(p.join(p.dirname(nativeRoot), '.agent-resource'));
+    _makePrivate(
+      io.fs.path.join(io.fs.path.dirname(nativeRoot), '.agent-resource'),
+    );
   }
 
   String _stagePath(String nativeRoot, String transactionId, String name) {
-    final path = p.join(
-      p.dirname(nativeRoot),
+    final path = io.fs.path.join(
+      io.fs.path.dirname(nativeRoot),
       '.agent-resource',
       'staging',
       transactionId,
@@ -5112,6 +5193,7 @@ interface class LifecycleStateService {
         exitCode: 4,
       );
     }
+    if (io.fs is! local.LocalFileSystem) return;
     if (Platform.isWindows) {
       final username = Platform.environment['USERNAME'];
       if (username == null || username.trim().isEmpty) {
@@ -5307,7 +5389,8 @@ List<String> _stringList(Object? value) {
 
 String _absolutePath(String value) {
   _rejectTerminalControls(value);
-  if (!p.isAbsolute(value) || p.normalize(value) != value) {
+  final path = p.posix.isAbsolute(value) ? p.posix : p.context;
+  if (!path.isAbsolute(value) || path.normalize(value) != value) {
     throw const FormatException('Expected a normalized absolute path.');
   }
   return value;
@@ -5315,10 +5398,11 @@ String _absolutePath(String value) {
 
 String _relativePath(String value) {
   _rejectTerminalControls(value);
+  final path = value.contains('\\') ? p.context : p.posix;
   if (value.isEmpty ||
-      p.isAbsolute(value) ||
-      p.normalize(value) != value ||
-      p.split(value).any((part) => part == '..')) {
+      path.isAbsolute(value) ||
+      path.normalize(value) != value ||
+      path.split(value).any((part) => part == '..')) {
     throw FormatException('Invalid baseline relative path: $value');
   }
   return value;

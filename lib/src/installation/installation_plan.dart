@@ -310,6 +310,11 @@ final class InstallationPlan {
         buffer.writeln();
       }
     }
+    for (final diagnostic in diagnostics) {
+      buffer.writeln(
+        'Warning[${diagnostic['code']}]: ${diagnostic['message']}',
+      );
+    }
     buffer.write('Summary: ${jsonEncode(summary)}');
     return buffer.toString();
   }

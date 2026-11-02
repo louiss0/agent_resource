@@ -1,22 +1,33 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_authoring_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('agent compose', () {
+    late FileSystem fs;
+    late MambaExecutor<MambaExecutionResult> executor;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      executor = createExecutor(
+        agentAuthoring: AgentAuthoringService(fileSystem: fs),
+      ).fake();
+    });
     test(
       'plans ordered native instructions without writing artifacts',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('agent-compose-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final request = File(p.join(sandbox.path, 'compose.json'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final request = fs.file(fs.path.join(sandbox.path, 'compose.json'))
             ..writeAsStringSync(
               jsonEncode(<String, Object?>{
                 'schemaVersion': 1,
@@ -36,36 +47,36 @@ void main() {
                 ],
               }),
             );
-          final output = p.join(
+          final output = fs.path.join(
             project.path,
             '.claude',
             'agents',
             'reviewer.md',
           );
 
-          final first = await createExecutor().fake().execute([
+          final first = await executor.execute([
             'agent',
             'compose',
             request.path,
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--format',
             'json',
           ]);
-          final second = await createExecutor().fake().execute([
+          final second = await executor.execute([
             'agent',
             'compose',
             request.path,
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -95,9 +106,11 @@ void main() {
           expect(data['planId'], secondData['planId']);
           expect(data['instructionParts'], [25, 18]);
           expect(first.output, isNot(contains('First review correctness.')));
-          expect(File(output).existsSync(), isFalse);
+          expect(fs.file(output).existsSync(), isFalse);
           expect(
-            Directory(p.join(project.path, '.agent-resource')).existsSync(),
+            fs
+                .directory(fs.path.join(project.path, '.agent-resource'))
+                .existsSync(),
             isFalse,
           );
         } finally {
@@ -109,12 +122,13 @@ void main() {
     test(
       'applies only the reviewed plan through native lifecycle validation',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('agent-compose-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final request = File(p.join(sandbox.path, 'compose.json'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final request = fs.file(fs.path.join(sandbox.path, 'compose.json'))
             ..writeAsStringSync(
               jsonEncode(<String, Object?>{
                 'schemaVersion': 1,
@@ -137,17 +151,17 @@ void main() {
             );
           final context = <String>[
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--state-dir',
-            '${p.join(sandbox.path, 'state')}${p.separator}',
+            '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
             '--format',
             'json',
           ];
-          final planned = await createExecutor().fake().execute([
+          final planned = await executor.execute([
             'agent',
             'compose',
             request.path,
@@ -159,7 +173,7 @@ void main() {
           ) as Map<String, Object?>;
           final planId =
               (plan['data']! as Map<String, Object?>)['planId']! as String;
-          final applied = await createExecutor().fake().execute([
+          final applied = await executor.execute([
             'agent',
             'compose',
             request.path,
@@ -175,8 +189,8 @@ void main() {
             isA<MambaSuccessResult>(),
             reason: applied is MambaFailureResult ? applied.message : null,
           );
-          final output = File(
-            p.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+          final output = fs.file(
+            fs.path.join(project.path, '.codex', 'agents', 'reviewer.toml'),
           );
           expect(output.readAsStringSync(), '''
 description = "Reviews changes."
@@ -199,12 +213,13 @@ name = "reviewer"
     test(
       'reports native candidate errors before apply without writing',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('agent-compose-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final request = File(p.join(sandbox.path, 'compose.json'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final request = fs.file(fs.path.join(sandbox.path, 'compose.json'))
             ..writeAsStringSync(
               jsonEncode(<String, Object?>{
                 'schemaVersion': 1,
@@ -223,16 +238,16 @@ name = "reviewer"
                 'instructions': <Object?>['Work.'],
               }),
             );
-          final result = await createExecutor().fake().execute([
+          final result = await executor.execute([
             'agent',
             'compose',
             request.path,
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -245,7 +260,8 @@ name = "reviewer"
           expect(data['ready'], isFalse);
           expect(report['diagnostics'].toString(), contains('TOOLS_CATALOG'));
           expect(
-            File(p.join(project.path, '.pi', 'agents', 'worker.md'))
+            fs
+                .file(fs.path.join(project.path, '.pi', 'agents', 'worker.md'))
                 .existsSync(),
             isFalse,
           );

@@ -2,8 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 
 import '../agent_inspection.dart';
@@ -18,13 +19,21 @@ enum BoundOperation { create, adopt, replace, remove }
 
 /// Identifies the legacy bound-role envelope shape without using exceptions
 /// for dispatch. Full validation still occurs in [parseBoundRoleRequest].
-bool isBoundRoleRequest(String requestFile, String workingDirectory) {
-  final path = p.normalize(
-    p.isAbsolute(requestFile)
+bool isBoundRoleRequest(
+  String requestFile,
+  String workingDirectory, {
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) {
+  final path = fileSystem.path.normalize(
+    fileSystem.path.isAbsolute(requestFile)
         ? requestFile
-        : p.join(workingDirectory, requestFile),
+        : fileSystem.path.join(workingDirectory, requestFile),
   );
-  final bytes = readBoundedSkillMarker(path, maxBytes: parentDocumentLimit);
+  final bytes = readBoundedSkillMarker(
+    path,
+    maxBytes: parentDocumentLimit,
+    fs: fileSystem,
+  );
   final map = parseStrictJsonObject(utf8.decode(bytes, allowMalformed: false));
   final source = map['source'];
   return source is Map<String, Object?> && source['kind'] == 'codex-role';
@@ -58,14 +67,15 @@ final class BoundRoleRequest {
 
 BoundRoleRequest parseBoundRoleRequest(
   String requestFile,
-  String workingDirectory,
-) {
-  final path = p.normalize(
-    p.isAbsolute(requestFile)
+  String workingDirectory, {
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) {
+  final path = fileSystem.path.normalize(
+    fileSystem.path.isAbsolute(requestFile)
         ? requestFile
-        : p.join(workingDirectory, requestFile),
+        : fileSystem.path.join(workingDirectory, requestFile),
   );
-  final file = File(path);
+  final file = fileSystem.file(path);
   if (!file.existsSync()) {
     throw MambaException('Bound-role request does not exist: $path');
   }
@@ -189,10 +199,17 @@ BoundRoleRequest parseBoundRoleRequest(
 }
 
 final class BoundRoleService {
-  BoundRoleService({AgentLifecycleService? agent, ParentConfigService? parent})
-    : agent = agent ?? AgentLifecycleService(),
-      parent = parent ?? ParentConfigService();
+  BoundRoleService({
+    AgentLifecycleService? agent,
+    ParentConfigService? parent,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : _fileSystem = fileSystem,
+       agent = agent ?? AgentLifecycleService(fileSystem: fileSystem),
+       parent = parent ?? ParentConfigService(fileSystem: fileSystem);
 
+  fslib.FileSystem get fileSystem => _fileSystem;
+
+  final fslib.FileSystem _fileSystem;
   final AgentLifecycleService agent;
   final ParentConfigService parent;
 
@@ -236,7 +253,9 @@ final class BoundRoleService {
     String? definitionId;
     String? definitionBackupId;
     ParentResult? registration;
-    agent.state.ensureLedger(LifecycleContext.resolve(options));
+    agent.state.ensureLedger(
+      LifecycleContext.resolve(options, fileSystem: _fileSystem),
+    );
     Future<void> publishDefinition() async {
       if (request.ownership == BoundOwnership.registration) return;
       if (request.operation == BoundOperation.create) {
@@ -442,11 +461,12 @@ final class BoundRoleService {
         );
       }
       final record = agent.state.recordById(
-        LifecycleContext.resolve(options),
+        LifecycleContext.resolve(options, fileSystem: _fileSystem),
         id,
       );
       final referenced = _definitionFile(binding, request);
-      if (referenced == null || !p.equals(record.location, referenced)) {
+      if (referenced == null ||
+          !_fileSystem.path.equals(record.location, referenced)) {
         throw MambaException(
           'The managed definition and binding reference do not match; registration cannot be redirected implicitly.',
           exitCode: 4,
@@ -581,8 +601,10 @@ final class BoundRoleService {
           exitCode: 4,
         );
       }
-      final relative = p.isWithin(p.dirname(configFile), resolvedDefinition)
-          ? p.relative(resolvedDefinition, from: p.dirname(configFile))
+      final configDirectory = _fileSystem.path.dirname(configFile);
+      final relative =
+          _fileSystem.path.isWithin(configDirectory, resolvedDefinition)
+          ? _fileSystem.path.relative(resolvedDefinition, from: configDirectory)
           : resolvedDefinition;
       changes.add(
         ParentChange(
@@ -627,6 +649,7 @@ final class BoundRoleService {
     final binding = CodexBindingInspection.read(
       configFile: request.configFile,
       workingDirectory: cwd,
+      fileSystem: _fileSystem,
     );
     if (request.operation != BoundOperation.create) {
       binding.inspectRole(request.roleKey);
@@ -643,23 +666,33 @@ final class BoundRoleService {
     BoundRoleRequest request,
     LifecycleOptions options,
   ) {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
     final root = context.scope == LifecycleScope.project
         ? context.codexAgentsRoot()
-        : p.join(context.codexRoot(), 'agents');
-    return p.join(root, p.basename(request.source!));
+        : _fileSystem.path.join(context.codexRoot(), 'agents');
+    return _fileSystem.path.join(
+      root,
+      _fileSystem.path.basename(request.source!),
+    );
   }
 
   LifecycleScope _scopeForConfig(String configFile, LifecycleOptions options) {
-    final context = LifecycleContext.resolve(options);
-    return p.isWithin(context.projectRoot, configFile)
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
+    return _fileSystem.path.isWithin(context.projectRoot, configFile)
         ? LifecycleScope.project
         : LifecycleScope.user;
   }
 
   String _sourceDigest(String source, LifecycleOptions options) {
-    final resolved = LifecycleContext.resolve(options).resolvePath(source);
-    final bytes = readBoundedSkillMarker(resolved, maxBytes: 1048576);
+    final resolved = LifecycleContext.resolve(
+      options,
+      fileSystem: _fileSystem,
+    ).resolvePath(source);
+    final bytes = readBoundedSkillMarker(
+      resolved,
+      maxBytes: 1048576,
+      fs: _fileSystem,
+    );
     if (bytes.length > 1048576) {
       throw MambaException(
         'The bound-role definition exceeds the 1 MiB native limit.',
@@ -670,9 +703,9 @@ final class BoundRoleService {
   }
 
   String? _definitionDescription(String file) {
-    final type = skillEntityType(file, followLinks: false);
+    final type = skillEntityType(file, followLinks: false, fs: _fileSystem);
     if (type != FileSystemEntityType.file) return null;
-    final bytes = File(file).readAsBytesSync();
+    final bytes = _fileSystem.file(file).readAsBytesSync();
     if (bytes.length > 1024 * 1024) return null;
     final map = TomlDocument.parse(utf8.decode(bytes)).toMap();
     final description = map['description'];

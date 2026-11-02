@@ -6,9 +6,15 @@ import 'config.dart';
 import 'skill.dart';
 import 'pack.dart';
 import 'skills.dart';
+import 'src/services/agent_authoring_service.dart';
+import 'src/services/agent_conversion_service.dart';
+import 'src/services/agent_graph_service.dart';
 import 'src/services/agent_installation_service.dart';
+import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
+import 'src/services/parent_config_service.dart';
 import 'src/services/skill_installation_service.dart';
+import 'src/services/skill_lifecycle_service.dart';
 
 const applicationVersion = String.fromEnvironment(
   'AGENT_RESOURCE_VERSION',
@@ -21,7 +27,13 @@ const applicationVersion = String.fromEnvironment(
 /// tests exercise the same metadata and command registration.
 Executor createExecutor({
   SkillInstallationService? skillInstallation,
+  SkillLifecycleService? skillLifecycle,
   AgentInstallationService? agentInstallation,
+  AgentLifecycleService? agentLifecycle,
+  AgentGraphService? agentGraph,
+  ParentConfigService? parentConfig,
+  AgentAuthoringService? agentAuthoring,
+  AgentConversionService? agentConversion,
   PackLifecycleService? packLifecycle,
   void Function(String)? deprecationWarning,
 }) => Executor(
@@ -29,8 +41,15 @@ Executor createExecutor({
   'Manage resources consumed by AI coding harnesses.',
   applicationVersion,
   [
-    SkillCommand(installation: skillInstallation),
-    AgentCommand(installation: agentInstallation),
+    SkillCommand(installation: skillInstallation, lifecycle: skillLifecycle),
+    AgentCommand(
+      installation: agentInstallation,
+      lifecycle: agentLifecycle,
+      graph: agentGraph,
+      parentConfig: parentConfig,
+      authoring: agentAuthoring,
+      conversion: agentConversion,
+    ),
     PackCommand(service: packLifecycle),
     SkillsCommand(service: packLifecycle, warning: deprecationWarning),
     AgentsCommand(service: packLifecycle, warning: deprecationWarning),

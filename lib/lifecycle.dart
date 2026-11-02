@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, Platform;
+import 'dart:io' show Platform;
 
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'components/installation_approval.dart';
@@ -46,8 +47,8 @@ final class LifecycleBackupCommand extends GroupCommand {
          _Resource.agent,
          null,
          service,
-         parentConfig ?? ParentConfigService(),
-         boundRole ?? BoundRoleService(),
+         parentConfig ?? ParentConfigService(fileSystem: service.fileSystem),
+         boundRole ?? BoundRoleService(fileSystem: service.fileSystem),
        );
 
   LifecycleBackupCommand._(
@@ -162,8 +163,8 @@ final class LifecycleActionCommand extends Command {
          null,
          service,
          confirmation,
-         parentConfig ?? ParentConfigService(),
-         boundRole ?? BoundRoleService(),
+         parentConfig ?? ParentConfigService(fileSystem: service.fileSystem),
+         boundRole ?? BoundRoleService(fileSystem: service.fileSystem),
        );
 
   LifecycleActionCommand._(
@@ -430,7 +431,13 @@ final class LifecycleActionCommand extends Command {
     required bool dryRun,
     required bool approved,
   }) => LifecycleOptions(
-    processWorkingDirectory: Directory.current.path,
+    processWorkingDirectory:
+        (_agent?.fileSystem ??
+                _skill?.state.io.fs ??
+                _boundRole?.fileSystem ??
+                const local.LocalFileSystem())
+            .currentDirectory
+            .path,
     environment: Map<String, String>.unmodifiable(Platform.environment),
     scope: valueOf(_resource == _Resource.skill ? _skillScope : _agentScope),
     cwd: valueOf(_cwd),
@@ -649,6 +656,7 @@ final class LifecycleActionCommand extends Command {
     final request = parseBoundRoleRequest(
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
+      fileSystem: _boundRole!.fileSystem,
     );
     final acknowledged =
         valueOf(_ackClientsStopped) || valueOf(_clientsStopped);
@@ -664,7 +672,7 @@ final class LifecycleActionCommand extends Command {
         exitCode: 1,
       );
     }
-    return _boundRole!.run(request, options);
+    return _boundRole.run(request, options);
   }
 
   SkillInstallInput _skillInstall(ValueOf valueOf, LifecycleOptions options) {

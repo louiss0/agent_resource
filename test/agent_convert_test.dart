@@ -1,22 +1,33 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_conversion_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('agent convert', () {
+    late FileSystem fs;
+    late MambaExecutor<MambaExecutionResult> executor;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      executor = createExecutor(
+        agentConversion: AgentConversionService(fileSystem: fs),
+      ).fake();
+    });
     test(
       'plans Claude to Codex with typed field outcomes and no source writes',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('agent-convert-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'reviewer.md'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews changes.
@@ -27,7 +38,7 @@ effort: high
 Review correctness.
 ''');
           final sourceBytes = source.readAsBytesSync();
-          final request = File(p.join(sandbox.path, 'convert.json'))
+          final request = fs.file(fs.path.join(sandbox.path, 'convert.json'))
             ..writeAsStringSync(
               jsonEncode(<String, Object?>{
                 'schemaVersion': 1,
@@ -49,22 +60,22 @@ Review correctness.
                 'decisions': <Object?>['omit:tools', 'map:model', 'map:effort'],
               }),
             );
-          final output = p.join(
+          final output = fs.path.join(
             project.path,
             '.codex',
             'agents',
             'reviewer.toml',
           );
-          final result = await createExecutor().fake().execute([
+          final result = await executor.execute([
             'agent',
             'convert',
             request.path,
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -99,9 +110,11 @@ Review correctness.
           );
           expect(result.output, isNot(contains('Review correctness.')));
           expect(source.readAsBytesSync(), sourceBytes);
-          expect(File(output).existsSync(), isFalse);
+          expect(fs.file(output).existsSync(), isFalse);
           expect(
-            Directory(p.join(project.path, '.agent-resource')).existsSync(),
+            fs
+                .directory(fs.path.join(project.path, '.agent-resource'))
+                .existsSync(),
             isFalse,
           );
         } finally {
@@ -110,12 +123,13 @@ Review correctness.
       },
     );
     test('applies a reviewed Claude to common-Pi conversion', () async {
-      final sandbox = await Directory.systemTemp.createTemp('agent-convert-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = File(p.join(sandbox.path, 'reviewer.md'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
           ..writeAsStringSync('''---
 name: reviewer
 description: Reviews changes.
@@ -126,7 +140,7 @@ effort: high
 Review carefully.
 ''');
         final sourceBytes = source.readAsBytesSync();
-        final request = File(p.join(sandbox.path, 'convert.json'))
+        final request = fs.file(fs.path.join(sandbox.path, 'convert.json'))
           ..writeAsStringSync(
             jsonEncode(<String, Object?>{
               'schemaVersion': 1,
@@ -151,17 +165,17 @@ Review carefully.
           );
         final context = <String>[
           '--cwd',
-          '${project.path}${p.separator}',
+          '${project.path}${fs.path.separator}',
           '--project-root',
-          '${project.path}${p.separator}',
+          '${project.path}${fs.path.separator}',
           '--home',
-          '${home.path}${p.separator}',
+          '${home.path}${fs.path.separator}',
           '--state-dir',
-          '${p.join(sandbox.path, 'state')}${p.separator}',
+          '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
           '--format',
           'json',
         ];
-        final planned = await createExecutor().fake().execute([
+        final planned = await executor.execute([
           'agent',
           'convert',
           request.path,
@@ -181,12 +195,12 @@ Review carefully.
         ) as Map<String, Object?>;
         final planData = plan['data']! as Map<String, Object?>;
         expect(planData['ready'], isTrue);
-        final output = File(
-          p.join(project.path, '.pi', 'agents', 'reviewer.md'),
+        final output = fs.file(
+          fs.path.join(project.path, '.pi', 'agents', 'reviewer.md'),
         );
         expect(output.existsSync(), isFalse);
 
-        final applied = await createExecutor().fake().execute([
+        final applied = await executor.execute([
           'agent',
           'convert',
           request.path,
@@ -222,12 +236,13 @@ Review carefully.
     });
 
     test('refuses to apply a conversion with unresolved decisions', () async {
-      final sandbox = await Directory.systemTemp.createTemp('agent-convert-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = File(p.join(sandbox.path, 'reviewer.md'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
           ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -236,7 +251,7 @@ tools: [Read]
 ---
 Review.
 ''');
-        final request = File(p.join(sandbox.path, 'convert.json'))
+        final request = fs.file(fs.path.join(sandbox.path, 'convert.json'))
           ..writeAsStringSync(
             jsonEncode(<String, Object?>{
               'schemaVersion': 1,
@@ -257,17 +272,17 @@ Review.
           );
         final context = <String>[
           '--cwd',
-          '${project.path}${p.separator}',
+          '${project.path}${fs.path.separator}',
           '--project-root',
-          '${project.path}${p.separator}',
+          '${project.path}${fs.path.separator}',
           '--home',
-          '${home.path}${p.separator}',
+          '${home.path}${fs.path.separator}',
           '--state-dir',
-          '${p.join(sandbox.path, 'state')}${p.separator}',
+          '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
           '--format',
           'json',
         ];
-        final planned = await createExecutor().fake().execute([
+        final planned = await executor.execute([
           'agent',
           'convert',
           request.path,
@@ -289,7 +304,7 @@ Review.
         expect(planData['ready'], isFalse);
         expect(planData['writes'], isFalse);
 
-        final applied = await createExecutor().fake().execute([
+        final applied = await executor.execute([
           'agent',
           'convert',
           request.path,
@@ -321,7 +336,10 @@ Review.
               ]),
         );
         expect(
-          File(p.join(project.path, '.codex', 'agents', 'reviewer.toml'))
+          fs
+              .file(
+                fs.path.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+              )
               .existsSync(),
           isFalse,
         );

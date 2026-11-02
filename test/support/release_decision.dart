@@ -119,6 +119,25 @@ Future<void> main(List<String> args) async {
       );
     }
 
+    final https = bundle['httpsGitQualification'];
+    if (https is! Map<String, Object?> ||
+        https['transport'] != 'real-git-smart-https' ||
+        https['certificateVerification'] != 'enabled' ||
+        https['trustScope'] != 'fixture-child-process-only' ||
+        https['credentialKind'] != 'synthetic-ephemeral' ||
+        https['gitRedirectPolicy'] != 'refused' ||
+        https['serverObservedAuthenticatedRequests'] != true ||
+        https['crossOriginRequests'] != 0 ||
+        https['plaintextRequests'] != 0 ||
+        https['rawRequestsRetained'] != false ||
+        https['rawCredentialsRetained'] != false) {
+      blockers.add(
+        _blocker(
+          'HTTPS_GIT_EVIDENCE_INVALID',
+          '$os lacks safe real Git HTTPS/TLS credential evidence.',
+        ),
+      );
+    }
     final resultStatuses = <int>{};
     if (bundle['results'] is! List<Object?> ||
         (bundle['results']! as List<Object?>).isEmpty) {
@@ -183,6 +202,23 @@ Future<void> main(List<String> args) async {
           _blocker(
             'DEFERRAL_PROVENANCE_MISSING',
             '$os lacks an explicit capable-job deferral scope.',
+          ),
+        );
+      }
+    }
+    for (final entry in const {
+      'authenticated-success': 0,
+      'wrong-credentials': 3,
+      'untrusted-certificate': 3,
+      'hostname-mismatch': 3,
+      'cross-origin-redirect-refused': 3,
+      'https-downgrade-refused': 3,
+    }.entries) {
+      if (!_hasScenarioWithStatus(bundle, entry.key, entry.value)) {
+        blockers.add(
+          _blocker(
+            'HTTPS_GIT_SCENARIO_MISSING',
+            '$os lacks ${entry.key} evidence with status ${entry.value}.',
           ),
         );
       }
@@ -351,6 +387,22 @@ bool _hasSuccessfulScenario(Map<String, Object?> bundle, String scenario) {
         result is Map<String, Object?> &&
         result['scenario'] == scenario &&
         result['exitCode'] == 0,
+  );
+}
+
+bool _hasScenarioWithStatus(
+  Map<String, Object?> bundle,
+  String scenario,
+  int status,
+) {
+  if (bundle['results'] is! List<Object?>) return false;
+  return (bundle['results']! as List<Object?>).any(
+    (result) =>
+        result is Map<String, Object?> &&
+        result['scenario'] == scenario &&
+        result['exitCode'] == status &&
+        result['rawStreamsRetained'] == false &&
+        result['credentialsRedacted'] == true,
   );
 }
 

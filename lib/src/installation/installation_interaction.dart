@@ -33,8 +33,9 @@ abstract interface class InstallationInteraction {
   Future<InteractionAnswer<String>> requestSource();
 
   Future<InteractionAnswer<List<CatalogOffering>>> selectResources(
-    List<CatalogOffering> offerings,
-  );
+    List<CatalogOffering> offerings, {
+    String? group,
+  });
 
   Future<InteractionAnswer<List<InstallationTarget>>> selectTargets(
     List<InstallationTarget> compatible,
@@ -67,9 +68,13 @@ final class InteractInstallationInteraction implements InstallationInteraction {
 
   @override
   Future<InteractionAnswer<List<CatalogOffering>>> selectResources(
-    List<CatalogOffering> offerings,
-  ) => _guard(() async {
+    List<CatalogOffering> offerings, {
+    String? group,
+  }) => _guard(() async {
     final selected = await ResourceSelectorComponent(
+      label: group == null
+          ? 'Select resources (Ctrl+C to cancel)'
+          : 'Select resources: $group (Ctrl+C to cancel)',
       options: [
         for (final offering in offerings) resourceChoiceLabel(offering),
       ],

@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
@@ -36,8 +38,10 @@ final class SkillInstallInput {
 /// Copied-Skill installation and adoption. Later lifecycle operations share
 /// the same state service and native adapter.
 interface class SkillLifecycleService implements LifecycleResource {
-  SkillLifecycleService({LifecycleStateService? state})
-    : state = state ?? LifecycleStateService();
+  SkillLifecycleService({
+    LifecycleStateService? state,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : state = state ?? LifecycleStateService(io: LifecycleIO(fs: fileSystem));
 
   final LifecycleStateService state;
 
@@ -66,6 +70,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     }) {
       final scopedContext = LifecycleContext.resolve(
         options.copyWith(scope: scope),
+        fileSystem: state.io.fs,
       );
       final records = <InstallationRecord>[];
       String? ownershipFailure;
@@ -76,7 +81,11 @@ interface class SkillLifecycleService implements LifecycleResource {
       }
       for (final selected in SkillDestination.values) {
         for (final root in _inventoryRoots(scopedContext, selected)) {
-          final type = skillEntityType(root, followLinks: false);
+          final type = skillEntityType(
+            root,
+            followLinks: false,
+            fs: state.io.fs,
+          );
           if (type == FileSystemEntityType.notFound) {
             rootsAbsent++;
             continue;
@@ -131,7 +140,8 @@ interface class SkillLifecycleService implements LifecycleResource {
                   record?.installationId ?? canonical?.installationId,
               if (canonical != null)
                 'artifactKind': ArtifactKind.skillCanonical.wireName,
-              if (canonical != null && p.equals(canonical.location, path)) ...{
+              if (canonical != null &&
+                  state.io.fs.path.equals(canonical.location, path)) ...{
                 'exposures': [
                   for (final item in canonical.exposures)
                     <String, Object?>{
@@ -185,11 +195,18 @@ interface class SkillLifecycleService implements LifecycleResource {
         final alreadyVisible = occurrences.any(
           (occurrence) =>
               occurrence['path'] is String &&
-              p.equals(occurrence['path']! as String, record.location),
+              state.io.fs.path.equals(
+                occurrence['path']! as String,
+                record.location,
+              ),
         );
         if (alreadyVisible) continue;
         final missing =
-            skillEntityType(record.location, followLinks: false) ==
+            skillEntityType(
+              record.location,
+              followLinks: false,
+              fs: state.io.fs,
+            ) ==
             FileSystemEntityType.notFound;
         if (record.lifecycle == 'live' && !missing) continue;
         occurrences.add(<String, Object?>{
@@ -243,7 +260,10 @@ interface class SkillLifecycleService implements LifecycleResource {
           'occurrenceId': sha256
               .convert(utf8.encode('skill-state\n${scopedContext.stateRoot()}'))
               .toString(),
-          'path': p.join(scopedContext.stateRoot(), 'installations.json'),
+          'path': state.io.fs.path.join(
+            scopedContext.stateRoot(),
+            'installations.json',
+          ),
           'root': scopedContext.stateRoot(),
           'destination': null,
           'installationScope': scope.name,
@@ -296,12 +316,16 @@ interface class SkillLifecycleService implements LifecycleResource {
           exitCode: 3,
         );
       }
-      final children = listSkillDirectory(directory)
+      final children = listSkillDirectory(directory, fs: state.io.fs)
         ..sort((left, right) => left.path.compareTo(right.path));
       for (final child in children) {
         chargeEntry();
-        final type = skillEntityType(child.path, followLinks: false);
-        final path = p.normalize(child.absolute.path);
+        final type = skillEntityType(
+          child.path,
+          followLinks: false,
+          fs: state.io.fs,
+        );
+        final path = state.io.fs.path.normalize(child.absolute.path);
         if (type == FileSystemEntityType.link) {
           if (depth == 0) {
             result.add(
@@ -317,7 +341,10 @@ interface class SkillLifecycleService implements LifecycleResource {
         }
         if (type != FileSystemEntityType.directory) continue;
         final hasMarker =
-            skillEntityType(p.join(path, 'SKILL.md'), followLinks: false) ==
+            skillEntityType(
+              state.io.fs.path.join(path, 'SKILL.md'),
+              followLinks: false,
+            ) ==
             FileSystemEntityType.file;
         if (depth == 0 || hasMarker) {
           result.add(
@@ -349,7 +376,7 @@ interface class SkillLifecycleService implements LifecycleResource {
           skillKinds.contains(record.kind) &&
           record.scope == scope &&
           record.lifecycle == 'live' &&
-          p.equals(record.location, path),
+          state.io.fs.path.equals(record.location, path),
     );
     if (matches.length > 1) {
       throw MambaException(
@@ -367,7 +394,9 @@ interface class SkillLifecycleService implements LifecycleResource {
     for (final record in records) {
       if (record.kind == ArtifactKind.skillCanonical &&
           record.lifecycle == 'live' &&
-          record.exposures.any((exposure) => p.equals(exposure.path, path))) {
+          record.exposures.any(
+            (exposure) => state.io.fs.path.equals(exposure.path, path),
+          )) {
         return record;
       }
     }
@@ -376,7 +405,7 @@ interface class SkillLifecycleService implements LifecycleResource {
 
   ExposureRecord? _exposureAt(InstallationRecord record, String path) {
     for (final exposure in record.exposures) {
-      if (p.equals(exposure.path, path)) return exposure;
+      if (state.io.fs.path.equals(exposure.path, path)) return exposure;
     }
     return null;
   }
@@ -404,14 +433,26 @@ interface class SkillLifecycleService implements LifecycleResource {
     var current = context.cwd;
     while (true) {
       roots.add(
-        p.normalize(switch (destination) {
-          SkillDestination.claude => p.join(current, '.claude', 'skills'),
-          SkillDestination.codex => p.join(current, '.codex', 'skills'),
-          SkillDestination.shared => p.join(current, '.agents', 'skills'),
+        state.io.fs.path.normalize(switch (destination) {
+          SkillDestination.claude => state.io.fs.path.join(
+            current,
+            '.claude',
+            'skills',
+          ),
+          SkillDestination.codex => state.io.fs.path.join(
+            current,
+            '.codex',
+            'skills',
+          ),
+          SkillDestination.shared => state.io.fs.path.join(
+            current,
+            '.agents',
+            'skills',
+          ),
         }),
       );
-      if (p.equals(current, context.projectRoot)) break;
-      current = p.dirname(current);
+      if (state.io.fs.path.equals(current, context.projectRoot)) break;
+      current = state.io.fs.path.dirname(current);
       if (roots.length >= 64) {
         throw MambaException(
           'Skill inventory exceeds 64 ancestors.',
@@ -429,12 +470,17 @@ interface class SkillLifecycleService implements LifecycleResource {
   }) => _ProfiledSkillResource(this, targets, kind, allowedExtraFolders);
 
   Future<LifecycleResult> install(SkillInstallInput input) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
     _requireMutationScope(context);
     final source = context.resolvePath(input.source);
-    final declaredName = readDeclaredSkillName(source);
+    final declaredName = readDeclaredSkillName(source, fs: state.io.fs);
     final root = _root(context, input.destination);
-    final location = p.normalize(p.join(root, declaredName));
+    final location = state.io.fs.path.normalize(
+      state.io.fs.path.join(root, declaredName),
+    );
     return state.install(
       resource: _ProfiledSkillResource(
         this,
@@ -452,11 +498,14 @@ interface class SkillLifecycleService implements LifecycleResource {
   }
 
   Future<LifecycleResult> adopt(SkillInstallInput input) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
     _requireMutationScope(context);
     final location = context.resolvePath(input.source);
     final root = _root(context, input.destination);
-    if (!p.equals(p.dirname(location), root)) {
+    if (!state.io.fs.path.equals(state.io.fs.path.dirname(location), root)) {
       throw MambaException(
         'Skill adoption requires an existing direct child of $root; '
         'nested candidates remain discoverable but are ineligible.',
@@ -484,7 +533,10 @@ interface class SkillLifecycleService implements LifecycleResource {
     LifecycleReplaceInput input, {
     SkillMode? mode,
   }) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
     _requireMutationScope(context);
     final record = state.recordById(context, input.installationId);
     if (!skillKinds.contains(record.kind)) {
@@ -547,7 +599,10 @@ interface class SkillLifecycleService implements LifecycleResource {
     LifecycleIdInput input, {
     SkillHarness? target,
   }) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
     _requireMutationScope(context);
     final record = state.recordById(context, input.id);
     if (record.kind == ArtifactKind.skillCanonical) {
@@ -581,7 +636,10 @@ interface class SkillLifecycleService implements LifecycleResource {
   }
 
   Future<LifecycleResult> restore(LifecycleIdInput input) async {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
     _requireMutationScope(context);
     final backupKind = state.artifactKindForBackup(
       context,
@@ -616,7 +674,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     String? transactionId,
     String? action,
   }) {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: state.io.fs);
     final resource = transactionId == null
         ? this
         : _ProfiledSkillResource(
@@ -639,7 +697,7 @@ interface class SkillLifecycleService implements LifecycleResource {
 
   Future<LifecycleResult> backupList(LifecycleOptions options) =>
       state.backupList(
-        LifecycleContext.resolve(options),
+        LifecycleContext.resolve(options, fileSystem: state.io.fs),
         kind,
         additionalKinds: const {
           ArtifactKind.skillLink,
@@ -648,7 +706,10 @@ interface class SkillLifecycleService implements LifecycleResource {
       );
 
   Future<LifecycleResult> cleanup(LifecycleIdInput input) {
-    final context = LifecycleContext.resolve(input.options);
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
     final backupKind = state.artifactKindForBackup(
       context,
       input.id,
@@ -665,7 +726,10 @@ interface class SkillLifecycleService implements LifecycleResource {
     for (final profile in profiles) {
       switch (profile) {
         case 'claude':
-          final name = readDeclaredSkillName(path).toLowerCase();
+          final name = readDeclaredSkillName(
+            path,
+            fs: state.io.fs,
+          ).toLowerCase();
           if (name == 'synced' || name == 'anthropic-skills') {
             throw MambaException(
               'The Claude Skill profile reserves the name "$name".',
@@ -684,8 +748,8 @@ interface class SkillLifecycleService implements LifecycleResource {
   }
 
   void _validateCodexSidecar(String path) {
-    final sidecar = p.join(path, 'agents', 'openai.yaml');
-    final type = skillEntityType(sidecar, followLinks: false);
+    final sidecar = state.io.fs.path.join(path, 'agents', 'openai.yaml');
+    final type = skillEntityType(sidecar, followLinks: false, fs: state.io.fs);
     if (type == FileSystemEntityType.notFound) return;
     if (type != FileSystemEntityType.file) {
       throw MambaException(
@@ -693,7 +757,11 @@ interface class SkillLifecycleService implements LifecycleResource {
         exitCode: 2,
       );
     }
-    final bytes = readBoundedSkillMarker(sidecar, maxBytes: 1048576);
+    final bytes = readBoundedSkillMarker(
+      sidecar,
+      maxBytes: 1048576,
+      fs: state.io.fs,
+    );
     if (bytes.length > 1048576) {
       throw MambaException(
         'Codex agents/openai.yaml exceeds 1 MiB.',
@@ -739,17 +807,19 @@ interface class SkillLifecycleService implements LifecycleResource {
     final type = state.io.type(path, followLinks: false);
     if (type == FileSystemEntityType.link) {
       final target = state.io.readLink(path);
-      return p.normalize(
-        p.isAbsolute(target) ? target : p.join(p.dirname(path), target),
+      return state.io.fs.path.normalize(
+        state.io.fs.path.isAbsolute(target)
+            ? target
+            : state.io.fs.path.join(state.io.fs.path.dirname(path), target),
       );
     }
     if (type == FileSystemEntityType.file &&
-        p.basename(path) == 'artifact-link.json') {
+        state.io.fs.path.basename(path) == 'artifact-link.json') {
       final entry = state.readLinkBaseline(path).entries.single;
-      return p.normalize(
-        p.isAbsolute(entry.target!)
+      return state.io.fs.path.normalize(
+        state.io.fs.path.isAbsolute(entry.target!)
             ? entry.target!
-            : p.join(entry.originalParent!, entry.target!),
+            : state.io.fs.path.join(entry.originalParent!, entry.target!),
       );
     }
     if (type != FileSystemEntityType.directory) {
@@ -778,21 +848,27 @@ interface class SkillLifecycleService implements LifecycleResource {
         record.scope != context.scope ||
         record.nativeForm != record.kind.wireName ||
         (canonical && record.nativeDestination != 'canonical') ||
-        !p.equals(record.nativeRoot, root) ||
-        !p.equals(p.dirname(record.location), root) ||
-        p.basename(record.location) != record.name) {
+        !state.io.fs.path.equals(record.nativeRoot, root) ||
+        !state.io.fs.path.equals(
+          state.io.fs.path.dirname(record.location),
+          root,
+        ) ||
+        state.io.fs.path.basename(record.location) != record.name) {
       throw MambaException(
         'Stored Skill location does not match current native authority.',
         exitCode: 4,
       );
     }
     if (canonical) {
-      final expectedExposure = p.join(context.claudeSkillsRoot(), record.name);
+      final expectedExposure = state.io.fs.path.join(
+        context.claudeSkillsRoot(),
+        record.name,
+      );
       final paths = <String>{};
       for (final exposure in record.exposures) {
         if (exposure.target != 'claude' ||
-            !p.equals(exposure.path, expectedExposure) ||
-            !paths.add(p.normalize(exposure.path)) ||
+            !state.io.fs.path.equals(exposure.path, expectedExposure) ||
+            !paths.add(state.io.fs.path.normalize(exposure.path)) ||
             exposure.baseline.entries.length != 1 ||
             exposure.baseline.entries.single.type != 'link') {
           throw MambaException(
@@ -821,7 +897,7 @@ interface class SkillLifecycleService implements LifecycleResource {
       nativeLinkKind = state.io.linkKind(path);
       linkTarget = state.io.readLink(path);
     } else if (type == FileSystemEntityType.file &&
-        p.basename(path) == 'artifact-link.json') {
+        state.io.fs.path.basename(path) == 'artifact-link.json') {
       nativeForm = 'skill-link';
       final entry = state.readLinkBaseline(path).entries.single;
       nativeLinkKind = entry.nativeKind;
@@ -833,7 +909,7 @@ interface class SkillLifecycleService implements LifecycleResource {
       restoringBaseline: restoringBaseline,
       allowedExtraFolders: allowedExtraFolders,
     );
-    final declaredName = readDeclaredSkillName(inspectedPath);
+    final declaredName = readDeclaredSkillName(inspectedPath, fs: state.io.fs);
     if (expectedName != null && declaredName != expectedName) {
       throw MambaException(
         'The declared Skill name changed during the operation.',
@@ -843,6 +919,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     final report = validateSkill(
       inspectedPath,
       expectedDirectoryName: declaredName,
+      fs: state.io.fs,
     );
     if (!report.valid) {
       throw MambaException(
@@ -885,9 +962,9 @@ interface class SkillLifecycleService implements LifecycleResource {
     final seen = <String>{};
     for (final destination in destinations) {
       for (final root in _visibleRoots(context, destination)) {
-        final key = '${destination.name}\n${p.normalize(root)}';
+        final key = '${destination.name}\n${state.io.fs.path.normalize(root)}';
         if (!seen.add(key)) continue;
-        final type = skillEntityType(root, followLinks: false);
+        final type = skillEntityType(root, followLinks: false, fs: state.io.fs);
         if (type == FileSystemEntityType.notFound) continue;
         if (type != FileSystemEntityType.directory) {
           throw MambaException(
@@ -904,7 +981,7 @@ interface class SkillLifecycleService implements LifecycleResource {
           }
           final List<FileSystemEntity> children;
           try {
-            children = listSkillDirectory(directory);
+            children = listSkillDirectory(directory, fs: state.io.fs);
           } on MambaException catch (error) {
             throw MambaException(error.message, exitCode: 3);
           }
@@ -916,16 +993,23 @@ interface class SkillLifecycleService implements LifecycleResource {
                 exitCode: 3,
               );
             }
-            if ((excludePath != null && p.equals(child.path, excludePath)) ||
-                allowedPaths.any((path) => p.equals(child.path, path))) {
+            if ((excludePath != null &&
+                    state.io.fs.path.equals(child.path, excludePath)) ||
+                allowedPaths.any(
+                  (path) => state.io.fs.path.equals(child.path, path),
+                )) {
               continue;
             }
-            final childType = skillEntityType(child.path, followLinks: false);
+            final childType = skillEntityType(
+              child.path,
+              followLinks: false,
+              fs: state.io.fs,
+            );
             if (childType != FileSystemEntityType.directory &&
                 childType != FileSystemEntityType.link) {
               continue;
             }
-            if (p.basename(child.path) == name) {
+            if (state.io.fs.path.basename(child.path) == name) {
               throw MambaException(
                 'Skill name "$name" conflicts with ${child.path} for the selected consumer profile.',
                 exitCode: 4,
@@ -957,16 +1041,25 @@ interface class SkillLifecycleService implements LifecycleResource {
   SkillDestination? _destinationForPath(LifecycleContext context, String path) {
     for (final destination in SkillDestination.values) {
       final root = _root(context, destination);
-      if (p.equals(path, root) || p.isWithin(root, path)) return destination;
+      if (state.io.fs.path.equals(path, root) ||
+          state.io.fs.path.isWithin(root, path)) {
+        return destination;
+      }
     }
     return null;
   }
 
   String _root(LifecycleContext context, SkillDestination destination) =>
       switch (destination) {
-        SkillDestination.claude => p.normalize(context.claudeSkillsRoot()),
-        SkillDestination.codex => p.normalize(context.codexSkillsRoot()),
-        SkillDestination.shared => p.normalize(context.sharedSkillsRoot()),
+        SkillDestination.claude => state.io.fs.path.normalize(
+          context.claudeSkillsRoot(),
+        ),
+        SkillDestination.codex => state.io.fs.path.normalize(
+          context.codexSkillsRoot(),
+        ),
+        SkillDestination.shared => state.io.fs.path.normalize(
+          context.sharedSkillsRoot(),
+        ),
       };
 
   List<String> _visibleRoots(
@@ -974,17 +1067,29 @@ interface class SkillLifecycleService implements LifecycleResource {
     SkillDestination destination,
   ) {
     String at(String boundary) => switch (destination) {
-      SkillDestination.claude => p.join(boundary, '.claude', 'skills'),
-      SkillDestination.codex => p.join(boundary, '.codex', 'skills'),
-      SkillDestination.shared => p.join(boundary, '.agents', 'skills'),
+      SkillDestination.claude => state.io.fs.path.join(
+        boundary,
+        '.claude',
+        'skills',
+      ),
+      SkillDestination.codex => state.io.fs.path.join(
+        boundary,
+        '.codex',
+        'skills',
+      ),
+      SkillDestination.shared => state.io.fs.path.join(
+        boundary,
+        '.agents',
+        'skills',
+      ),
     };
     final roots = <String>[];
     var current = context.cwd;
     while (true) {
-      roots.add(p.normalize(at(current)));
-      if (p.equals(current, context.projectRoot)) break;
-      final parent = p.dirname(current);
-      if (p.equals(parent, current)) {
+      roots.add(state.io.fs.path.normalize(at(current)));
+      if (state.io.fs.path.equals(current, context.projectRoot)) break;
+      final parent = state.io.fs.path.dirname(current);
+      if (state.io.fs.path.equals(parent, current)) {
         throw MambaException('Project ancestry is incomplete.', exitCode: 3);
       }
       current = parent;
@@ -994,13 +1099,15 @@ interface class SkillLifecycleService implements LifecycleResource {
     }
     final home = context.requireHome();
     roots.add(switch (destination) {
-      SkillDestination.claude => p.normalize(
-        p.join(context.claudeConfigRoot(), 'skills'),
+      SkillDestination.claude => state.io.fs.path.normalize(
+        state.io.fs.path.join(context.claudeConfigRoot(), 'skills'),
       ),
-      SkillDestination.codex => p.normalize(
-        p.join(context.codexRoot(), 'skills'),
+      SkillDestination.codex => state.io.fs.path.normalize(
+        state.io.fs.path.join(context.codexRoot(), 'skills'),
       ),
-      SkillDestination.shared => p.normalize(p.join(home, '.agents', 'skills')),
+      SkillDestination.shared => state.io.fs.path.normalize(
+        state.io.fs.path.join(home, '.agents', 'skills'),
+      ),
     });
     return roots;
   }

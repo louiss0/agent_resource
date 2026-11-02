@@ -4,8 +4,9 @@ import 'dart:io';
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/installation/resource_catalog.dart';
 import 'package:agent_resource/src/services/agent_installation_service.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/installation_test_support.dart';
@@ -14,17 +15,20 @@ void main() {
   group('agent_resource', () {
     group('agent', () {
       group('install', () {
-        late Directory sandbox;
+        late fslib.FileSystem fs;
+        late fslib.Directory sandbox;
         late Directory project;
         late Directory home;
         late ScriptedInstallationInteraction interaction;
 
         setUp(() async {
-          sandbox = await Directory.systemTemp.createTemp('agent-install-cli-');
-          project = Directory(p.join(sandbox.path, 'project'))..createSync();
-          home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          sandbox = fs.directory('/sandbox')..createSync();
+          project = fs.directory(fs.path.join(sandbox.path, 'project'))
+            ..createSync();
+          home = fs.directory(fs.path.join(sandbox.path, 'home'))..createSync();
           for (final name in ['claude', 'codex', 'pi']) {
-            Directory(p.join(sandbox.path, name)).createSync();
+            fs.directory(fs.path.join(sandbox.path, name)).createSync();
           }
           interaction = ScriptedInstallationInteraction();
         });
@@ -36,12 +40,13 @@ void main() {
         Executor executor() => createExecutor(
           agentInstallation: AgentInstallationService(
             interaction: interaction,
+            fileSystem: fs,
             progress: noInstallationProgress,
           ),
         );
 
-        File agent({String name = 'reviewer.md'}) =>
-            File(p.join(sandbox.path, name))..writeAsStringSync(
+        fslib.File agent({String name = 'reviewer.md'}) =>
+            fs.file(fs.path.join(sandbox.path, name))..writeAsStringSync(
               '---\nname: reviewer\ndescription: Reviews.\n---\nAgent body.\n',
             );
 
@@ -49,19 +54,19 @@ void main() {
           '--scope',
           'project',
           '--cwd',
-          '${project.path}${Platform.pathSeparator}',
+          '${project.path}${fs.path.separator}',
           '--project-root',
-          '${project.path}${Platform.pathSeparator}',
+          '${project.path}${fs.path.separator}',
           '--home',
-          '${home.path}${Platform.pathSeparator}',
+          '${home.path}${fs.path.separator}',
           '--claude-config-dir',
-          '${p.join(sandbox.path, 'claude')}${Platform.pathSeparator}',
+          '${fs.path.join(sandbox.path, 'claude')}${fs.path.separator}',
           '--codex-home',
-          '${p.join(sandbox.path, 'codex')}${Platform.pathSeparator}',
+          '${fs.path.join(sandbox.path, 'codex')}${fs.path.separator}',
           '--pi-agent-dir',
-          '${p.join(sandbox.path, 'pi')}${Platform.pathSeparator}',
+          '${fs.path.join(sandbox.path, 'pi')}${fs.path.separator}',
           '--state-dir',
-          '${p.join(sandbox.path, 'state')}${Platform.pathSeparator}',
+          '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
         ];
 
         test('exact unattended dry-run requires and preserves explicit native profile', () async {
@@ -108,11 +113,11 @@ void main() {
             'agent',
             'install',
             '--cwd',
-            '${project.path}${Platform.pathSeparator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${Platform.pathSeparator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${Platform.pathSeparator}',
+            '${home.path}${fs.path.separator}',
             '--dry-run',
           ]);
           expect(
@@ -156,8 +161,8 @@ void main() {
             (first as MambaSuccessResult).output!,
           ) as Map<String, Object?>;
           expect(installed['outcome'], 'installed');
-          final destination = File(
-            p.join(project.path, '.claude', 'agents', 'reviewer.md'),
+          final destination = fs.file(
+            fs.path.join(project.path, '.claude', 'agents', 'reviewer.md'),
           );
           expect(destination.readAsBytesSync(), original);
           expect(source.readAsBytesSync(), original);
@@ -175,16 +180,20 @@ void main() {
         });
 
         test('curated profiles filter before selection and direct profile is rejected', () async {
-          final collection = Directory(p.join(sandbox.path, 'collection'))
-            ..createSync();
-          final claude = File(p.join(collection.path, 'claude.md'))
+          final collection = fs.directory(
+            fs.path.join(sandbox.path, 'collection'),
+          )..createSync();
+          final claude = fs.file(fs.path.join(collection.path, 'claude.md'))
             ..writeAsStringSync(
               '---\nname: reviewer\ndescription: Reviews.\n---\nBody.\n',
             );
-          File(p.join(collection.path, 'codex.toml')).writeAsStringSync(
-            'name = "reviewer"\ndescription = "Reviews."\ndeveloper_instructions = "Review."\n',
-          );
-          File(p.join(collection.path, 'agent-resources.toml'))
+          fs
+              .file(fs.path.join(collection.path, 'codex.toml'))
+              .writeAsStringSync(
+                'name = "reviewer"\ndescription = "Reviews."\ndeveloper_instructions = "Review."\n',
+              );
+          fs
+              .file(fs.path.join(collection.path, 'agent-resources.toml'))
               .writeAsStringSync('''
 schema_version = 1
 [[agents]]

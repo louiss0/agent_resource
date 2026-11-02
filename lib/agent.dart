@@ -2,10 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'src/agent_inspection.dart';
 import 'src/agent_inventory.dart';
+import 'src/services/agent_authoring_service.dart';
+import 'src/services/agent_conversion_service.dart';
 import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/agent_graph_service.dart';
 import 'src/services/agent_installation_service.dart';
@@ -26,12 +30,14 @@ enum OutputFormat { text, json }
 typedef AgentInspectionOperation = AgentInspectionReport Function(
   AgentInspectionInput input, {
   required AgentOperation operation,
+  fslib.FileSystem fileSystem,
 });
 
 /// The inventory operation shared by the `agent list` command.
 typedef AgentInventoryOperation = FutureOr<AgentInventoryReport> Function(
-  AgentInventoryInput input,
-);
+  AgentInventoryInput input, {
+  fslib.FileSystem fileSystem,
+});
 
 /// The `agent` command group owning the native-agent inspection and
 /// validation children.
@@ -42,7 +48,21 @@ final class AgentCommand extends GroupCommand {
     AgentLifecycleService? lifecycle,
     AgentGraphService? graph,
     AgentInstallationService? installation,
-  }) : super(_children(operation, inventory, lifecycle, graph, installation));
+    ParentConfigService? parentConfig,
+    AgentAuthoringService? authoring,
+    AgentConversionService? conversion,
+  }) : super(
+         _children(
+           operation,
+           inventory,
+           lifecycle,
+           graph,
+           installation,
+           parentConfig,
+           authoring,
+           conversion,
+         ),
+       );
 
   static List<Command> _children(
     AgentInspectionOperation operation,
@@ -50,16 +70,29 @@ final class AgentCommand extends GroupCommand {
     AgentLifecycleService? lifecycle,
     AgentGraphService? graph,
     AgentInstallationService? installation,
+    ParentConfigService? parentConfig,
+    AgentAuthoringService? authoring,
+    AgentConversionService? conversion,
   ) {
-    final service = lifecycle ?? AgentLifecycleService();
+    final service =
+        lifecycle ??
+        AgentLifecycleService(
+          fileSystem:
+              installation?.fileSystem ??
+              authoring?.fileSystem ??
+              conversion?.fileSystem ??
+              const local.LocalFileSystem(),
+        );
     return [
       AgentListCommand(inventory, service),
-      AgentConfigCommand(ParentConfigService()),
-      AgentCreateCommand(),
-      AgentComposeCommand(),
-      AgentCloneCommand(),
-      AgentEditCommand(),
-      AgentConvertCommand(),
+      AgentConfigCommand(
+        parentConfig ?? ParentConfigService(fileSystem: service.fileSystem),
+      ),
+      AgentCreateCommand(service: authoring),
+      AgentComposeCommand(service: authoring),
+      AgentCloneCommand(service: authoring),
+      AgentEditCommand(service: authoring),
+      AgentConvertCommand(service: conversion),
       AgentInspectCommand(operation, graph: graph),
       AgentValidateCommand(operation),
       AgentInstallCommand(
@@ -68,7 +101,11 @@ final class AgentCommand extends GroupCommand {
       LifecycleActionCommand.agentAdopt(service),
       LifecycleActionCommand.agentReplace(service),
       LifecycleActionCommand.agentRemove(service),
-      LifecycleBackupCommand.agent(service),
+      LifecycleBackupCommand.agent(
+        service,
+        parentConfig:
+            parentConfig ?? ParentConfigService(fileSystem: service.fileSystem),
+      ),
       LifecycleActionCommand.agentRecover(service),
     ];
   }
@@ -169,7 +206,11 @@ final class AgentInspectCommand(
     );
 
     const operation = AgentOperation.inspect;
-    final report = _operation(input, operation: operation);
+    final report = _operation(
+      input,
+      operation: operation,
+      fileSystem: _graphService.fileSystem,
+    );
     final graph = _graphService.analyzeInspection(report);
     return switch (valueOf(_format)) {
       OutputFormat.json => jsonEncode(<String, Object?>{
@@ -447,7 +488,7 @@ final class AgentListCommand(
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final report = await _inventory(
       AgentInventoryInput(
-        processWorkingDirectory: Directory.current.path,
+        processWorkingDirectory: _lifecycle.fileSystem.currentDirectory.path,
         environment: Platform.environment,
         scope: valueOf(_scope),
         harness: valueOf(_listHarness),
@@ -461,11 +502,12 @@ final class AgentListCommand(
         readRoots: valueOf(_readRoots) ?? const <String>[],
         stateDir: valueOf(_stateDir),
       ),
+      fileSystem: _lifecycle.fileSystem,
     );
     final managed = _lifecycle.managementAware(
       report,
       AgentInventoryInput(
-        processWorkingDirectory: Directory.current.path,
+        processWorkingDirectory: _lifecycle.fileSystem.currentDirectory.path,
         environment: Platform.environment,
         scope: valueOf(_scope),
         harness: valueOf(_listHarness),

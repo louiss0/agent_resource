@@ -114,7 +114,7 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final result = await _lifecycle.list(
       LifecycleOptions(
-        processWorkingDirectory: Directory.current.path,
+        processWorkingDirectory: _lifecycle.state.io.fs.currentDirectory.path,
         environment: Platform.environment,
         scope: valueOf(_scope),
         cwd: valueOf(_cwd),

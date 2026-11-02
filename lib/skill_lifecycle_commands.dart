@@ -109,7 +109,7 @@ final class SkillInstallCommand extends Command {
             'source links (source-link). Canonical content uses scope-specific '
             '.agents/skills; Codex consumes it directly and Claude receives a '
             'managed exposure link. Search skills/ and conventional harness folders '
-            'with bounded recursive fallback. No implicit dependency '
+            'with bounded direct and one-group-level fallback. No implicit dependency '
             'installation, source execution, silent link fallback, or remote '
             'source-link is performed. Interactive user scope and canonical '
             'method are disclosed defaults. JSON and unattended execution '

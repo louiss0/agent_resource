@@ -4,12 +4,15 @@ import 'dart:io';
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
-Future<MambaExecutionResult> _list(List<String> args) =>
-    createExecutor().fake().execute(['skill', 'list', ...args]);
+Future<MambaExecutionResult> _list(List<String> args, fslib.FileSystem fs) =>
+    createExecutor(skillLifecycle: SkillLifecycleService(fileSystem: fs))
+        .fake()
+        .execute(['skill', 'list', ...args]);
 
 Map<String, Object?> _successReport(MambaExecutionResult result) {
   expect(
@@ -40,33 +43,38 @@ List<Map<String, Object?>> _occurrences(Map<String, Object?> report) =>
 
 void main() {
   group('agent_resource', () {
+    late fslib.FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     group('skill', () {
       group('list', () {
         test(
           'project inventory retains every native destination without writes',
           () async {
-            final sandbox = await Directory.systemTemp.createTemp(
-              'skill-list-',
-            );
+            final sandbox = (fs.directory('/sandbox')..createSync());
             try {
-              final project = Directory(p.join(sandbox.path, 'project'))
+              final project = fs.directory(
+                fs.path.join(sandbox.path, 'project'),
+              )..createSync();
+              final work = fs.directory(fs.path.join(project.path, 'work'))
                 ..createSync();
-              final work = Directory(p.join(project.path, 'work'))
-                ..createSync();
-              final home = Directory(p.join(sandbox.path, 'home'))
+              final home = fs.directory(fs.path.join(sandbox.path, 'home'))
                 ..createSync();
               for (final destination in ['claude', 'codex', 'shared']) {
                 final harness = destination == 'shared'
                     ? '.agents'
                     : '.$destination';
-                final skill = Directory(
-                  p.join(project.path, harness, 'skills', 'alpha'),
+                final skill = fs.directory(
+                  fs.path.join(project.path, harness, 'skills', 'alpha'),
                 )..createSync(recursive: true);
-                File(p.join(skill.path, 'SKILL.md'))
+                fs
+                    .file(fs.path.join(skill.path, 'SKILL.md'))
                     .writeAsStringSync('not validated');
               }
               final before = project.listSync(recursive: true).length;
-              final separator = Platform.pathSeparator;
+              final separator = fs.path.separator;
               final report = _successReport(
                 await _list([
                   '--scope',
@@ -79,7 +87,7 @@ void main() {
                   '${home.path}$separator',
                   '--format',
                   'json',
-                ]),
+                ], fs),
               );
               final occurrences = _occurrences(report);
               expect(occurrences, hasLength(3));
@@ -98,7 +106,9 @@ void main() {
               }
               expect(project.listSync(recursive: true).length, before);
               expect(
-                Directory(p.join(project.path, '.agent-resource')).existsSync(),
+                fs
+                    .directory(fs.path.join(project.path, '.agent-resource'))
+                    .existsSync(),
                 isFalse,
               );
             } finally {
@@ -110,21 +120,20 @@ void main() {
         test(
           'managed verification distinguishes unchanged and changed',
           () async {
-            final sandbox = await Directory.systemTemp.createTemp(
-              'skill-managed-list-',
-            );
+            final sandbox = (fs.directory('/sandbox')..createSync());
             try {
-              final project = Directory(p.join(sandbox.path, 'project'))
+              final project = fs.directory(
+                fs.path.join(sandbox.path, 'project'),
+              )..createSync();
+              final home = fs.directory(fs.path.join(sandbox.path, 'home'))
                 ..createSync();
-              final home = Directory(p.join(sandbox.path, 'home'))
+              final source = fs.directory(fs.path.join(sandbox.path, 'source'))
                 ..createSync();
-              final source = Directory(p.join(sandbox.path, 'source'))
-                ..createSync();
-              final marker = File(p.join(source.path, 'SKILL.md'))
+              final marker = fs.file(fs.path.join(source.path, 'SKILL.md'))
                 ..writeAsStringSync(
                   '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
                 );
-              final service = SkillLifecycleService();
+              final service = SkillLifecycleService(fileSystem: fs);
               LifecycleOptions options() => LifecycleOptions(
                 processWorkingDirectory: project.path,
                 scope: LifecycleScope.project,
@@ -139,7 +148,7 @@ void main() {
                   destination: SkillDestination.claude,
                 ),
               );
-              final separator = Platform.pathSeparator;
+              final separator = fs.path.separator;
               final args = [
                 '--scope',
                 'project',
@@ -153,8 +162,9 @@ void main() {
                 '--format',
                 'json',
               ];
-              final unchanged = _occurrences(_successReport(await _list(args)))
-                  .single;
+              final unchanged = _occurrences(
+                _successReport(await _list(args, fs)),
+              ).single;
               expect(
                 unchanged['installationId'],
                 installed.data['installationId'],
@@ -162,11 +172,20 @@ void main() {
               expect(unchanged['management'], 'managed');
               expect(unchanged['modification'], 'unchanged');
 
-              File(
-                p.join(project.path, '.claude', 'skills', 'review', 'SKILL.md'),
-              ).writeAsStringSync('user edit');
-              final changed = _occurrences(_successReport(await _list(args)))
-                  .single;
+              fs
+                  .file(
+                    fs.path.join(
+                      project.path,
+                      '.claude',
+                      'skills',
+                      'review',
+                      'SKILL.md',
+                    ),
+                  )
+                  .writeAsStringSync('user edit');
+              final changed = _occurrences(
+                _successReport(await _list(args, fs)),
+              ).single;
               expect(changed['modification'], 'changed');
               expect(marker.readAsStringSync(), contains('Body.'));
             } finally {
@@ -178,20 +197,27 @@ void main() {
         test(
           'destination filter does not alter scope or create state',
           () async {
-            final sandbox = await Directory.systemTemp.createTemp(
-              'skill-filter-',
-            );
+            final sandbox = (fs.directory('/sandbox')..createSync());
             try {
-              final project = Directory(p.join(sandbox.path, 'project'))
+              final project = fs.directory(
+                fs.path.join(sandbox.path, 'project'),
+              )..createSync();
+              final home = fs.directory(fs.path.join(sandbox.path, 'home'))
                 ..createSync();
-              final home = Directory(p.join(sandbox.path, 'home'))
-                ..createSync();
-              Directory(p.join(project.path, '.codex', 'skills', 'codex-only'))
+              fs
+                  .directory(
+                    fs.path.join(
+                      project.path,
+                      '.codex',
+                      'skills',
+                      'codex-only',
+                    ),
+                  )
                   .createSync(recursive: true);
               Directory(
-                p.join(project.path, '.claude', 'skills', 'claude-only'),
+                fs.path.join(project.path, '.claude', 'skills', 'claude-only'),
               ).createSync(recursive: true);
-              final separator = Platform.pathSeparator;
+              final separator = fs.path.separator;
               final report = _successReport(
                 await _list([
                   '--scope',
@@ -206,11 +232,13 @@ void main() {
                   'codex',
                   '--format',
                   'json',
-                ]),
+                ], fs),
               );
               expect(_occurrences(report).single['destination'], 'codex');
               expect(
-                Directory(p.join(project.path, '.agent-resource')).existsSync(),
+                fs
+                    .directory(fs.path.join(project.path, '.agent-resource'))
+                    .existsSync(),
                 isFalse,
               );
             } finally {

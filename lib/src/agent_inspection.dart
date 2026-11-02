@@ -21,8 +21,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 import 'package:yaml/yaml.dart';
 
@@ -356,6 +357,7 @@ final class AgentInspectionReport {
 AgentInspectionReport inspectNativeAgent(
   AgentInspectionInput input, {
   required AgentOperation operation,
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
 }) {
   final nativeFile = _checkedOptional(input.nativeFile, 'native file');
   final requestFile = _checkedOptional(input.requestFile, 'request file');
@@ -388,6 +390,7 @@ AgentInspectionReport inspectNativeAgent(
       cwd,
       input.showInstructions,
       operation,
+      fileSystem,
     );
   }
   return _inspectDirect(
@@ -395,6 +398,7 @@ AgentInspectionReport inspectNativeAgent(
     input.harness!,
     cwd,
     input.showInstructions,
+    fileSystem,
   );
 }
 
@@ -520,15 +524,29 @@ String _outcomeLabel(AgentOperation operation) => switch (operation) {
 // Filesystem, decode, and budget primitives
 // ---------------------------------------------------------------------------
 
-String _resolvePath(String base, String path) =>
-    p.normalize(p.isAbsolute(path) ? path : p.join(base, path));
+String _resolvePath(
+  String base,
+  String path, [
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+]) => fileSystem.path.normalize(
+  fileSystem.path.isAbsolute(path) ? path : fileSystem.path.join(base, path),
+);
 
-String _resolveWorkingDirectory(String? cwd) {
-  final raw = cwd ?? Directory.current.path;
-  final resolved = p.normalize(
-    p.isAbsolute(raw) ? raw : p.join(Directory.current.path, raw),
+String _resolveWorkingDirectory(
+  String? cwd, [
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+]) {
+  final raw = cwd ?? fileSystem.currentDirectory.path;
+  final resolved = fileSystem.path.normalize(
+    fileSystem.path.isAbsolute(raw)
+        ? raw
+        : fileSystem.path.join(fileSystem.currentDirectory.path, raw),
   );
-  final type = _observeType(resolved, followLinks: true);
+  final type = _observeType(
+    resolved,
+    followLinks: true,
+    fileSystem: fileSystem,
+  );
   if (type == FileSystemEntityType.notFound) {
     throw _usage('The working directory does not exist: $resolved');
   }
@@ -541,9 +559,13 @@ String _resolveWorkingDirectory(String? cwd) {
 /// Link-aware filesystem observation for required inputs. An inaccessible
 /// lookup is an incomplete-coverage failure (status 3), never conflated with
 /// absence.
-FileSystemEntityType _observeType(String path, {required bool followLinks}) {
+FileSystemEntityType _observeType(
+  String path, {
+  required bool followLinks,
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) {
   try {
-    return skillEntityType(path, followLinks: followLinks);
+    return skillEntityType(path, followLinks: followLinks, fs: fileSystem);
   } on MambaException catch (error) {
     throw _incomplete('Could not observe $path: ${error.message}');
   }
@@ -551,10 +573,15 @@ FileSystemEntityType _observeType(String path, {required bool followLinks}) {
 
 /// Reads a required file within [maxBytes]; over-cap reads and inaccessible
 /// files are incomplete-coverage failures (status 3).
-List<int> _readBounded(String path, int maxBytes, String what) {
+List<int> _readBounded(
+  String path,
+  int maxBytes,
+  String what, {
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) {
   final List<int> bytes;
   try {
-    bytes = readBoundedSkillMarker(path, maxBytes: maxBytes);
+    bytes = readBoundedSkillMarker(path, maxBytes: maxBytes, fs: fileSystem);
   } on MambaException catch (error) {
     throw _incomplete('Could not read the $what: ${error.message}');
   }
@@ -781,14 +808,15 @@ AgentInspectionReport _inspectDirect(
   AgentHarness harness,
   String? cwd,
   bool showInstructions,
+  fslib.FileSystem fileSystem,
 ) {
-  final workingDirectory = _resolveWorkingDirectory(cwd);
-  final path = _resolvePath(workingDirectory, nativeFile);
+  final workingDirectory = _resolveWorkingDirectory(cwd, fileSystem);
+  final path = _resolvePath(workingDirectory, nativeFile, fileSystem);
   final builder = _directBuilder(harness);
   builder.coverage.add('source-selection');
   builder.definitionFile = path;
 
-  final type = _observeType(path, followLinks: false);
+  final type = _observeType(path, followLinks: false, fileSystem: fileSystem);
   if (type == FileSystemEntityType.link) {
     throw _refusal(
       'Refusing to read the linked file $path; select the definition file '
@@ -803,7 +831,12 @@ AgentInspectionReport _inspectDirect(
   }
   builder.coverage.add('filesystem-observation');
 
-  final bytes = _readBounded(path, _maxDefinitionBytes, 'native definition');
+  final bytes = _readBounded(
+    path,
+    _maxDefinitionBytes,
+    'native definition',
+    fileSystem: fileSystem,
+  );
   builder.coverage.add('bounded-read');
   final text = _decodeStrictUtf8(bytes);
   builder.coverage.add('utf8-decode');
@@ -1292,10 +1325,12 @@ AgentInspectionReport _inspectBoundRole(
   String requestFile,
   String? cwd,
   bool showInstructions,
-  AgentOperation operation,
-) => _inspectBoundRoleSelection(
-  _readRequest(requestFile, cwd, operation),
+  AgentOperation operation, [
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+]) => _inspectBoundRoleSelection(
+  _readRequest(requestFile, cwd, operation, fileSystem),
   showInstructions,
+  fileSystem,
 );
 
 /// Inspects one explicitly selected Codex binding without a JSON request file.
@@ -1309,6 +1344,7 @@ AgentInspectionReport inspectCodexBoundRole({
   required String workingDirectory,
   String? requestFile,
   bool showInstructions = false,
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
 }) {
   if (configFile.trim().isEmpty || roleKey.trim().isEmpty) {
     throw _usage('A bound role requires nonblank configFile and roleKey.');
@@ -1318,19 +1354,22 @@ AgentInspectionReport inspectCodexBoundRole({
       requestPath: requestFile,
       configFile: configFile,
       roleKey: roleKey,
-      workingDirectory: _resolveWorkingDirectory(workingDirectory),
+      workingDirectory: _resolveWorkingDirectory(workingDirectory, fileSystem),
     ),
     showInstructions,
+    fileSystem,
   );
 }
 
 AgentInspectionReport _inspectBoundRoleSelection(
   _BoundRoleRequest request,
-  bool showInstructions,
-) => CodexBindingInspection.read(
+  bool showInstructions, [
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+]) => CodexBindingInspection.read(
   configFile: request.configFile,
   workingDirectory: request.workingDirectory,
   requestFile: request.requestPath,
+  fileSystem: fileSystem,
 ).inspectRole(request.roleKey, showInstructions: showInstructions);
 
 /// Observes a required metadata read before it occurs.
@@ -1347,6 +1386,7 @@ final class CodexBindingInspection {
     required this.requestFile,
     required this._config,
     required this._beforeRead,
+    required this.fileSystem,
   });
 
   factory CodexBindingInspection.read({
@@ -1354,23 +1394,29 @@ final class CodexBindingInspection {
     required String workingDirectory,
     String? requestFile,
     AgentMetadataReadObserver? beforeRead,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   }) {
     if (configFile.trim().isEmpty) {
       throw _usage('The declaring config path must not be blank.');
     }
-    final configPath = _resolvePath(workingDirectory, configFile);
+    final configPath = _resolvePath(workingDirectory, configFile, fileSystem);
     for (final component in skillPathComponents(
       configPath,
       base: workingDirectory,
+      fs: fileSystem,
     )) {
-      if (_observeType(component, followLinks: false) ==
+      if (_observeType(component, followLinks: false, fileSystem: fileSystem) ==
           FileSystemEntityType.link) {
         throw _refusal(
           'Refusing to read the linked declaring config path $component.',
         );
       }
     }
-    final configType = _observeType(configPath, followLinks: false);
+    final configType = _observeType(
+      configPath,
+      followLinks: false,
+      fileSystem: fileSystem,
+    );
     if (configType == FileSystemEntityType.link) {
       throw _refusal(
         'Refusing to read the linked declaring config $configPath.',
@@ -1389,6 +1435,7 @@ final class CodexBindingInspection {
       configPath,
       _maxConfigBytes,
       'declaring config',
+      fileSystem: fileSystem,
     );
     final configText = _decodeStrictUtf8(configBytes);
     if (configText == null) {
@@ -1403,6 +1450,7 @@ final class CodexBindingInspection {
       requestFile: requestFile,
       config: _parseDeclaringConfig(configText, configPath),
       beforeRead: beforeRead,
+      fileSystem: fileSystem,
     );
   }
 
@@ -1411,6 +1459,7 @@ final class CodexBindingInspection {
   final String? requestFile;
   final Map<String, Object?> _config;
   final AgentMetadataReadObserver? _beforeRead;
+  final fslib.FileSystem fileSystem;
 
   /// Sorted role-table keys in this declaring layer, excluding scalar global
   /// agents settings. No precedence is inferred.
@@ -1478,15 +1527,21 @@ final class CodexBindingInspection {
 
     if (selection.configFile != null) {
       final definitionPath = _resolvePath(
-        p.dirname(configFile),
+        fileSystem.path.dirname(configFile),
         selection.configFile!,
+        fileSystem,
       );
       builder.definitionFile = definitionPath;
       for (final component in skillPathComponents(
         definitionPath,
-        base: p.dirname(configFile),
+        base: fileSystem.path.dirname(configFile),
+        fs: fileSystem,
       )) {
-        if (_observeType(component, followLinks: false) !=
+        if (_observeType(
+              component,
+              followLinks: false,
+              fileSystem: fileSystem,
+            ) !=
             FileSystemEntityType.link) {
           continue;
         }
@@ -1505,7 +1560,11 @@ final class CodexBindingInspection {
         _applyBoundFallbacks(builder, roleKey, selection.description);
         return builder.finish(showInstructions: false);
       }
-      final definitionType = _observeType(definitionPath, followLinks: false);
+      final definitionType = _observeType(
+        definitionPath,
+        followLinks: false,
+        fileSystem: fileSystem,
+      );
       if (definitionType == FileSystemEntityType.notFound) {
         throw _incomplete(
           'The referenced role definition does not exist: $definitionPath',
@@ -1524,6 +1583,7 @@ final class CodexBindingInspection {
         definitionPath,
         _maxDefinitionBytes,
         'role definition',
+        fileSystem: fileSystem,
       );
       final text = _decodeStrictUtf8(bytes);
       if (text == null) {
@@ -1680,13 +1740,18 @@ void _applyBoundFallbacks(
 _BoundRoleRequest _readRequest(
   String requestFile,
   String? cwd,
-  AgentOperation operation,
-) {
-  final cliCwd = cwd == null ? null : _resolveWorkingDirectory(cwd);
-  final requestBase = cliCwd ?? p.normalize(Directory.current.path);
-  final requestPath = _resolvePath(requestBase, requestFile);
+  AgentOperation operation, [
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+]) {
+  final cliCwd = cwd == null ? null : _resolveWorkingDirectory(cwd, fileSystem);
+  final requestBase = cliCwd ?? fileSystem.currentDirectory.path;
+  final requestPath = _resolvePath(requestBase, requestFile, fileSystem);
 
-  final type = _observeType(requestPath, followLinks: false);
+  final type = _observeType(
+    requestPath,
+    followLinks: false,
+    fileSystem: fileSystem,
+  );
   if (type == FileSystemEntityType.link) {
     throw _refusal(
       'Refusing to read the linked request document $requestPath.',
@@ -1701,7 +1766,11 @@ _BoundRoleRequest _readRequest(
 
   final List<int> bytes;
   try {
-    bytes = readBoundedSkillMarker(requestPath, maxBytes: _maxRequestBytes);
+    bytes = readBoundedSkillMarker(
+      requestPath,
+      maxBytes: _maxRequestBytes,
+      fs: fileSystem,
+    );
   } on MambaException catch (error) {
     throw _incomplete('Could not read the request document: ${error.message}');
   }
@@ -1820,14 +1889,15 @@ _BoundRoleRequest _readRequest(
   // Request-level relative paths resolve against the explicit CLI working
   // directory, or the captured process directory when --cwd is absent. The
   // request document's own location never supplies an implicit base.
-  final workingDirectory = p.normalize(
-    p.isAbsolute(workingDirectoryValue)
+  final workingDirectory = fileSystem.path.normalize(
+    fileSystem.path.isAbsolute(workingDirectoryValue)
         ? workingDirectoryValue
-        : p.join(requestBase, workingDirectoryValue),
+        : fileSystem.path.join(requestBase, workingDirectoryValue),
   );
   final workingDirectoryType = _observeType(
     workingDirectory,
     followLinks: true,
+    fileSystem: fileSystem,
   );
   if (workingDirectoryType == FileSystemEntityType.notFound) {
     throw _usage(
@@ -1839,7 +1909,7 @@ _BoundRoleRequest _readRequest(
       'The request working directory is not a directory: $workingDirectory',
     );
   }
-  if (cliCwd != null && !p.equals(cliCwd, workingDirectory)) {
+  if (cliCwd != null && !fileSystem.path.equals(cliCwd, workingDirectory)) {
     throw _usage(
       'The request workingDirectory conflicts with the --cwd context.',
     );

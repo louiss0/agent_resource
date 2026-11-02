@@ -7,6 +7,7 @@ dependencies:
   archive: 4.0.7
   crypto: ^3.0.7
   ffi: ^2.2.0
+  file: ^7.0.1
   interact2: ^4.0.0
   mamba: any
   path: any

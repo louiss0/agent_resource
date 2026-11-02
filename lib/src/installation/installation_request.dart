@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
@@ -8,6 +10,7 @@ import '../services/lifecycle_state_service.dart';
 import 'installation_interaction.dart';
 import 'installation_plan.dart';
 import 'resource_catalog.dart';
+import 'skill_source_discovery.dart';
 
 final class InstallationWorkflowRequest {
   const InstallationWorkflowRequest({
@@ -71,10 +74,15 @@ final class InstallationCandidate {
 }
 
 final class InstallationCandidateSet {
-  const InstallationCandidateSet(this.candidates, this.provenance);
+  const InstallationCandidateSet(
+    this.candidates,
+    this.provenance, {
+    this.selectionWarning,
+  });
 
   final List<InstallationCandidate> candidates;
   final AcquisitionProvenance provenance;
+  final String? selectionWarning;
 }
 
 /// Resolves exact resources, curated catalogs, or bounded Skill discovery.
@@ -85,11 +93,12 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
   required InstallationInteraction interaction,
   required CatalogResourceType resourceType,
   required bool interactive,
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
 }) async {
   String checkedPath(String path) {
-    final relative = p
+    final relative = fileSystem.path
         .relative(path, from: workspace.selectedRoot)
-        .split(p.separator)
+        .split(fileSystem.path.separator)
         .join('/');
     final repositoryPath = p.posix.normalize(
       p.posix.join(workspace.provenance.subpath ?? '.', relative),
@@ -107,7 +116,13 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
     return path;
   }
 
-  final kind = _sourceKind(workspace, request, resourceType, interactive);
+  final kind = _sourceKind(
+    workspace,
+    request,
+    resourceType,
+    interactive,
+    fileSystem,
+  );
   if (kind == AcquisitionSourceKind.collection) {
     if (request.profile != null) {
       throw MambaException(
@@ -115,15 +130,19 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
         'already declare their profile.',
       );
     }
-    final config = p.join(workspace.selectedRoot, sourceConfigFileName);
+    final config = fileSystem.path.join(
+      workspace.selectedRoot,
+      sourceConfigFileName,
+    );
     final hasConfig =
-        FileSystemEntity.typeSync(config, followLinks: false) ==
+        fileSystem.typeSync(config, followLinks: false) ==
         FileSystemEntityType.file;
     final catalog = hasConfig
-        ? ResourceCatalog.load(config, resourceType)
+        ? ResourceCatalog.load(config, resourceType, fileSystem: fileSystem)
         : null;
     var offerings =
-        catalog?.offerings ?? await _discoverSkills(workspace.selectedRoot);
+        catalog?.offerings ??
+        await _discoverSkills(workspace.selectedRoot, fileSystem);
     if (resourceType == CatalogResourceType.agent &&
         request.targets.isNotEmpty) {
       offerings = offerings.where((offering) {
@@ -159,12 +178,56 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
         '--all-resources.',
       );
     } else {
-      while (true) {
-        final answer = await interaction.selectResources(offerings);
-        if (answer.status == InteractionAnswerStatus.cancelled) return null;
-        if (answer.status == InteractionAnswerStatus.value) {
-          selected = answer.value!;
-          break;
+      final grouped =
+          resourceType == CatalogResourceType.skill &&
+          offerings.any(
+            (offering) =>
+                offering is SkillOffering && offering.discoveryGroup != null,
+          );
+      if (grouped) {
+        selected = [];
+        final groups = <String>[];
+        for (final offering in offerings.cast<SkillOffering>()) {
+          final key =
+              '${offering.discoveryRoot}\u0000${offering.discoveryGroup}';
+          if (!groups.contains(key)) groups.add(key);
+        }
+        for (final key in groups) {
+          final separator = key.indexOf('\u0000');
+          final root = key.substring(0, separator);
+          final group = key.substring(separator + 1);
+          final groupOfferings = offerings
+              .cast<SkillOffering>()
+              .where(
+                (offering) =>
+                    offering.discoveryRoot == root &&
+                    offering.discoveryGroup == group,
+              )
+              .toList();
+          final answer = await interaction.selectResources(
+            groupOfferings,
+            group: group,
+          );
+          if (answer.status == InteractionAnswerStatus.cancelled) return null;
+          if (answer.status == InteractionAnswerStatus.value) {
+            selected.addAll(answer.value!);
+          }
+        }
+        if (selected.isEmpty) {
+          return InstallationCandidateSet(
+            const [],
+            workspace.provenance,
+            selectionWarning: 'No Skill groups were selected; nothing was installed and no management state was written.',
+          );
+        }
+      } else {
+        while (true) {
+          final answer = await interaction.selectResources(offerings);
+          if (answer.status == InteractionAnswerStatus.cancelled) return null;
+          if (answer.status == InteractionAnswerStatus.value) {
+            selected = answer.value!;
+            break;
+          }
         }
       }
     }
@@ -217,7 +280,7 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
   }
   if (resourceType == CatalogResourceType.skill &&
       workspace.selectedFile != null &&
-      p.basename(workspace.selectedFile!) != 'SKILL.md') {
+      fileSystem.path.basename(workspace.selectedFile!) != 'SKILL.md') {
     throw MambaException(
       'An exact single-file Skill source must be named SKILL.md.',
       exitCode: 2,
@@ -246,7 +309,7 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
   final selectedFile = workspace.selectedFile;
   final selectedPath =
       resourceType == CatalogResourceType.skill && selectedFile != null
-      ? p.dirname(selectedFile)
+      ? fileSystem.path.dirname(selectedFile)
       : selectedFile ?? workspace.selectedRoot;
   return InstallationCandidateSet([
     InstallationCandidate(
@@ -264,10 +327,12 @@ AcquisitionSourceKind _sourceKind(
   InstallationWorkflowRequest request,
   CatalogResourceType resourceType,
   bool interactive,
+  fslib.FileSystem fileSystem,
 ) {
   final explicit = request.sourceKind;
   if (workspace.selectedFile != null) {
-    if (p.basename(workspace.selectedFile!) == sourceConfigFileName) {
+    if (fileSystem.path.basename(workspace.selectedFile!) ==
+        sourceConfigFileName) {
       throw MambaException(
         'A direct configuration file cannot authorize crawling its host; '
         'select the containing local repository, Git repository, or archive.',
@@ -287,14 +352,17 @@ AcquisitionSourceKind _sourceKind(
     }
     return AcquisitionSourceKind.resource;
   }
-  final config = p.join(workspace.selectedRoot, sourceConfigFileName);
+  final config = fileSystem.path.join(
+    workspace.selectedRoot,
+    sourceConfigFileName,
+  );
   final hasConfig =
-      FileSystemEntity.typeSync(config, followLinks: false) ==
+      fileSystem.typeSync(config, followLinks: false) ==
       FileSystemEntityType.file;
   final hasRootSkill =
       resourceType == CatalogResourceType.skill &&
-      FileSystemEntity.typeSync(
-            p.join(workspace.selectedRoot, 'SKILL.md'),
+      fileSystem.typeSync(
+            fileSystem.path.join(workspace.selectedRoot, 'SKILL.md'),
             followLinks: false,
           ) ==
           FileSystemEntityType.file;
@@ -339,109 +407,77 @@ AcquisitionSourceKind _sourceKind(
   );
 }
 
-// Prefer conventional distribution roots. If absent, inspect the selected
-// tree, never its ancestors. A Skill directory is a package boundary.
-Future<List<CatalogOffering>> _discoverSkills(String root) async {
-  final offerings = <CatalogOffering>[];
-  var entries = 0;
-  var directories = 0;
-  Future<void> visit(String directory, int depth) async {
-    if (depth > 16 || ++directories > 2000) {
-      throw MambaException(
-        'Skill discovery exceeded its depth-16 / 2,000-directory budget.',
-        exitCode: 3,
-      );
-    }
-    final children = <FileSystemEntity>[];
-    await for (final child in Directory(directory).list(followLinks: false)) {
-      if (++entries > 20000) {
-        throw MambaException(
-          'Skill discovery exceeded its 20,000-entry budget.',
-          exitCode: 3,
-        );
-      }
-      children.add(child);
-    }
-    children.sort((a, b) => a.path.compareTo(b.path));
-    if (FileSystemEntity.typeSync(
-          p.join(directory, 'SKILL.md'),
-          followLinks: false,
-        ) ==
-        FileSystemEntityType.file) {
-      final relative = p
-          .relative(directory, from: root)
-          .split(p.separator)
-          .join('/');
-      offerings.add(
-        SkillOffering(
-          id: relative,
-          path: relative,
-          label: p.basename(directory),
-        ),
-      );
-      if (offerings.length > maxCatalogEntries) {
-        throw MambaException(
-          'Skill discovery exceeded its 1,000-Skill budget.',
-          exitCode: 3,
-        );
-      }
-      return;
-    }
-    for (final child in children) {
-      final name = p.basename(child.path);
-      if (name.startsWith('.') ||
-          const {'node_modules', 'vendor'}.contains(name)) {
-        continue;
-      }
-      if (FileSystemEntity.typeSync(child.path, followLinks: false) ==
+// Prefer conventional distribution roots. If absent, inspect only direct
+// Skills and one group level in the selected tree, never its ancestors.
+Future<List<CatalogOffering>> _discoverSkills(
+  String root,
+  fslib.FileSystem fileSystem,
+) async {
+  final roots = ['skills', '.agents/skills', '.claude/skills', '.codex/skills']
+      .map((path) => fileSystem.path.joinAll([root, ...path.split('/')]))
+      .where(
+        (path) =>
+            fileSystem.typeSync(path, followLinks: false) ==
+            FileSystemEntityType.directory,
+      )
+      .toList();
+  // Do not follow linked conventional roots or intermediate directories.
+  for (final candidate in roots) {
+    var current = root;
+    for (final segment in fileSystem.path.split(
+      fileSystem.path.relative(candidate, from: root),
+    )) {
+      current = fileSystem.path.join(current, segment);
+      if (fileSystem.typeSync(current, followLinks: false) !=
           FileSystemEntityType.directory) {
-        await visit(child.path, depth + 1);
+        throw MambaException(
+          'Skill discovery refuses a linked source directory: $current',
+          exitCode: 4,
+        );
       }
     }
   }
-
-  try {
-    final roots =
-        ['skills', '.agents/skills', '.claude/skills', '.codex/skills']
-            .map((path) => p.joinAll([root, ...path.split('/')]))
-            .where(
-              (path) =>
-                  FileSystemEntity.typeSync(path, followLinks: false) ==
-                  FileSystemEntityType.directory,
-            )
-            .toList();
-    // Do not follow linked conventional roots or intermediate directories.
-    for (final candidate in roots) {
-      var current = root;
-      for (final segment in p.split(p.relative(candidate, from: root))) {
-        current = p.join(current, segment);
-        if (FileSystemEntity.typeSync(current, followLinks: false) !=
-            FileSystemEntityType.directory) {
-          throw MambaException(
-            'Skill discovery refuses a linked source directory: $current',
-            exitCode: 4,
-          );
-        }
-      }
-    }
-    for (final directory in roots.isEmpty ? [root] : roots) {
-      await visit(
-        directory,
-        p.equals(directory, root)
-            ? 0
-            : p.split(p.relative(directory, from: root)).length,
-      );
-    }
-  } on FileSystemException catch (error) {
+  final offerings = <SkillOffering>[];
+  final budget = SkillDiscoveryBudget();
+  for (final directory in roots.isEmpty ? [root] : roots) {
+    final relative = p
+        .relative(directory, from: root)
+        .split(fileSystem.path.separator)
+        .join('/');
+    offerings.addAll(
+      await discoverSkillSource(
+        root: directory,
+        relativeRoot: relative,
+        budget: budget,
+        fileSystem: fileSystem,
+      ),
+    );
+  }
+  if (offerings.length > maxCatalogEntries) {
     throw MambaException(
-      'Skill discovery could not completely read the selected source: ${error.message}',
+      'Skill discovery exceeded its 1,000-resource budget.',
       exitCode: 3,
     );
   }
-  offerings.sort((a, b) => a.id.compareTo(b.id));
+  offerings.sort((left, right) {
+    final leftRoot = left.discoveryGroup == 'root';
+    final rightRoot = right.discoveryGroup == 'root';
+    if (leftRoot != rightRoot) return leftRoot ? -1 : 1;
+    var comparison = (left.discoveryGroup ?? '').compareTo(
+      right.discoveryGroup ?? '',
+    );
+    if (comparison != 0) return comparison;
+    comparison = (left.discoveryRoot ?? '').compareTo(
+      right.discoveryRoot ?? '',
+    );
+    if (comparison != 0) return comparison;
+    comparison = (left.label ?? '').compareTo(right.label ?? '');
+    if (comparison != 0) return comparison;
+    return left.path.compareTo(right.path);
+  });
   if (offerings.isEmpty) {
     throw MambaException(
-      'No Skills found in the selected source. Searched skills/ and conventional harness skills folders, or the selected tree when none exist; expected an exact SKILL.md.',
+      'No Skills found in the selected source. Searched direct Skills and one group level in skills/ and conventional harness skills folders, or the selected tree when none exist; expected an exact SKILL.md.',
       exitCode: 2,
     );
   }

@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 /// The inert staged form of a Skill and its safe migration diagnostics.
 final class StagedSkill {
@@ -15,7 +16,7 @@ final class StagedSkill {
   );
 
   final String path;
-  final Directory _temporaryRoot;
+  final fslib.Directory _temporaryRoot;
 
   /// Root-relative Markdown paths moved into `references/`, sorted by name.
   final List<String> movedMarkdown;
@@ -37,7 +38,11 @@ final class StagedSkill {
 
 /// Migrates loose root files only in a disposable copy of a Skill source.
 final class SkillRootMarkdownMigration {
-  const SkillRootMarkdownMigration();
+  const SkillRootMarkdownMigration({
+    this.fileSystem = const local.LocalFileSystem(),
+  });
+
+  final fslib.FileSystem fileSystem;
 
   static const _imageExtensions = {
     '.png',
@@ -54,21 +59,24 @@ final class SkillRootMarkdownMigration {
   };
 
   Future<StagedSkill> stage(String sourcePath) async {
-    final temporaryRoot = await Directory.systemTemp.createTemp(
+    final temporaryRoot = await fileSystem.systemTempDirectory.createTemp(
       'agent-resource-skill-root-files-',
     );
-    final stagedPath = p.join(temporaryRoot.path, 'skill');
+    final stagedPath = fileSystem.path.join(temporaryRoot.path, 'skill');
     try {
       final entries = <int>[0];
       _copyTree(sourcePath, stagedPath, 0, entries);
       final moved = _rootFiles(stagedPath);
       final markdown = moved
-          .where((file) => p.extension(file.path).toLowerCase() == '.md')
+          .where(
+            (file) =>
+                fileSystem.path.extension(file.path).toLowerCase() == '.md',
+          )
           .toList();
       final images = moved
           .where(
             (file) =>
-                _imageExtensions.contains(p.extension(file.path).toLowerCase()),
+                _imageExtensions.contains(fileSystem.path.extension(file.path)),
           )
           .toList();
       moved.removeWhere(
@@ -78,14 +86,17 @@ final class SkillRootMarkdownMigration {
         _prepareDestination(stagedPath, 'references', markdown);
         _prepareDestination(stagedPath, 'assets', images);
         var rewritten = false;
-        final marker = File(p.join(stagedPath, 'SKILL.md'));
+        final marker = fileSystem.file(
+          fileSystem.path.join(stagedPath, 'SKILL.md'),
+        );
         var text = marker.readAsStringSync(encoding: utf8);
         for (final file in moved) {
-          final basename = p.basename(file.path);
-          final folder = p.extension(file.path).toLowerCase() == '.md'
+          final basename = fileSystem.path.basename(file.path);
+          final folder =
+              fileSystem.path.extension(file.path).toLowerCase() == '.md'
               ? 'references'
               : 'assets';
-          file.renameSync(p.join(stagedPath, folder, basename));
+          file.renameSync(fileSystem.path.join(stagedPath, folder, basename));
           final reference = RegExp(
             '(?<![A-Za-z0-9_/.\\\\:-])(?:\\./)?${RegExp.escape(basename)}(?![A-Za-z0-9_./\\\\-])',
           );
@@ -98,10 +109,12 @@ final class SkillRootMarkdownMigration {
           stagedPath,
           temporaryRoot,
           List.unmodifiable([
-            for (final file in markdown) 'references/${p.basename(file.path)}',
+            for (final file in markdown)
+              'references/${fileSystem.path.basename(file.path)}',
           ]),
           List.unmodifiable([
-            for (final file in images) 'assets/${p.basename(file.path)}',
+            for (final file in images)
+              'assets/${fileSystem.path.basename(file.path)}',
           ]),
           rewritten,
         );
@@ -127,34 +140,36 @@ final class SkillRootMarkdownMigration {
     }
   }
 
-  List<File> _rootFiles(String root) {
+  List<fslib.File> _rootFiles(String root) {
     final files =
-        <File>[
-          for (final entity in Directory(root).listSync(followLinks: false))
-            if (p.basename(entity.path) != 'SKILL.md' &&
-                FileSystemEntity.typeSync(entity.path, followLinks: false) ==
+        <fslib.File>[
+          for (final entity
+              in fileSystem.directory(root).listSync(followLinks: false))
+            if (fileSystem.path.basename(entity.path) != 'SKILL.md' &&
+                fileSystem.typeSync(entity.path, followLinks: false) ==
                     FileSystemEntityType.file)
-              entity as File,
+              entity as fslib.File,
         ]..sort(
-          (left, right) =>
-              p.basename(left.path).compareTo(p.basename(right.path)),
+          (left, right) => fileSystem.path
+              .basename(left.path)
+              .compareTo(fileSystem.path.basename(right.path)),
         );
     return files;
   }
 
-  void _prepareDestination(String root, String folder, List<File> files) {
+  void _prepareDestination(String root, String folder, List<fslib.File> files) {
     if (files.isEmpty) return;
-    final destination = p.join(root, folder);
-    final type = FileSystemEntity.typeSync(destination, followLinks: false);
+    final destination = fileSystem.path.join(root, folder);
+    final type = fileSystem.typeSync(destination, followLinks: false);
     if (type == FileSystemEntityType.notFound) {
-      Directory(destination).createSync();
+      fileSystem.directory(destination).createSync();
     } else if (type != FileSystemEntityType.directory) {
       throw _failure('Skill $folder must be a real directory.');
     }
     for (final file in files) {
-      final basename = p.basename(file.path);
-      if (FileSystemEntity.typeSync(
-            p.join(destination, basename),
+      final basename = fileSystem.path.basename(file.path);
+      if (fileSystem.typeSync(
+            fileSystem.path.join(destination, basename),
             followLinks: false,
           ) !=
           FileSystemEntityType.notFound) {
@@ -172,27 +187,33 @@ final class SkillRootMarkdownMigration {
     if (depth > 32) {
       throw _failure('The Skill tree exceeds the depth-32 budget.');
     }
-    final type = FileSystemEntity.typeSync(source, followLinks: false);
+    final type = fileSystem.typeSync(source, followLinks: false);
     switch (type) {
       case FileSystemEntityType.directory:
-        Directory(destination).createSync();
-        final children = Directory(source).listSync(followLinks: false)
-          ..sort((left, right) => left.path.compareTo(right.path));
+        fileSystem.directory(destination).createSync();
+        final children =
+            fileSystem.directory(source).listSync(followLinks: false)
+              ..sort((left, right) => left.path.compareTo(right.path));
         for (final entity in children) {
           if (++entries[0] > 10000) {
             throw _failure('The Skill tree exceeds the 10,000-entry budget.');
           }
           _copyTree(
             entity.path,
-            p.join(destination, p.basename(entity.path)),
+            fileSystem.path.join(
+              destination,
+              fileSystem.path.basename(entity.path),
+            ),
             depth + 1,
             entries,
           );
         }
       case FileSystemEntityType.file:
-        File(source).copySync(destination);
+        fileSystem.file(source).copySync(destination);
       case FileSystemEntityType.link:
-        Link(destination).createSync(Link(source).targetSync());
+        fileSystem
+            .link(destination)
+            .createSync(fileSystem.link(source).targetSync());
       case FileSystemEntityType.notFound:
       case FileSystemEntityType.pipe:
       case FileSystemEntityType.unixDomainSock:

@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
@@ -82,17 +84,21 @@ final class ValidationReport {
 
 /// Validates one explicitly selected skill directory without executing or
 /// inspecting anything outside its immediate SKILL.md marker.
-ValidationReport validateSkill(String skill, {String? expectedDirectoryName}) {
+ValidationReport validateSkill(
+  String skill, {
+  String? expectedDirectoryName,
+  fslib.FileSystem fs = const local.LocalFileSystem(),
+}) {
   if (skill.trim().isEmpty) {
     throw MambaException('The --skill directory must not be blank.');
   }
 
-  final selectedPath = p.normalize(Directory(skill).absolute.path);
-  _requireRootDirectory(selectedPath);
+  final selectedPath = fs.path.normalize(fs.directory(skill).absolute.path);
+  _requireRootDirectory(selectedPath, fs);
 
   final diagnostics = <ValidationDiagnostic>[];
-  final markerPath = p.join(selectedPath, 'SKILL.md');
-  final markerType = skillEntityType(markerPath, followLinks: false);
+  final markerPath = fs.path.join(selectedPath, 'SKILL.md');
+  final markerType = skillEntityType(markerPath, followLinks: false, fs: fs);
 
   if (markerType == FileSystemEntityType.notFound) {
     diagnostics.add(
@@ -133,6 +139,7 @@ ValidationReport validateSkill(String skill, {String? expectedDirectoryName}) {
   final markerBytes = readBoundedSkillMarker(
     markerPath,
     maxBytes: _maxMarkerBytes,
+    fs: fs,
   );
   if (markerBytes.length > _maxMarkerBytes) {
     diagnostics.add(
@@ -254,18 +261,25 @@ ValidationReport validateSkill(String skill, {String? expectedDirectoryName}) {
 
 /// Reads only the declared name so an arbitrary source folder can be copied
 /// to its validated installation name. Full validation remains a separate gate.
-String readDeclaredSkillName(String skill) {
-  final selectedPath = p.normalize(Directory(skill).absolute.path);
-  _requireRootDirectory(selectedPath);
-  final markerPath = p.join(selectedPath, 'SKILL.md');
-  if (skillEntityType(markerPath, followLinks: false) !=
+String readDeclaredSkillName(
+  String skill, {
+  fslib.FileSystem fs = const local.LocalFileSystem(),
+}) {
+  final selectedPath = fs.path.normalize(fs.directory(skill).absolute.path);
+  _requireRootDirectory(selectedPath, fs);
+  final markerPath = fs.path.join(selectedPath, 'SKILL.md');
+  if (skillEntityType(markerPath, followLinks: false, fs: fs) !=
       FileSystemEntityType.file) {
     throw MambaException(
       'The Skill source must contain a regular SKILL.md.',
       exitCode: 2,
     );
   }
-  final bytes = readBoundedSkillMarker(markerPath, maxBytes: _maxMarkerBytes);
+  final bytes = readBoundedSkillMarker(
+    markerPath,
+    maxBytes: _maxMarkerBytes,
+    fs: fs,
+  );
   if (bytes.length > _maxMarkerBytes) {
     throw MambaException('SKILL.md exceeds the maximum size.', exitCode: 2);
   }
@@ -304,8 +318,8 @@ ValidationReport _report(
   diagnostics: diagnostics,
 );
 
-void _requireRootDirectory(String path) {
-  final type = skillEntityType(path, followLinks: true);
+void _requireRootDirectory(String path, fslib.FileSystem fs) {
+  final type = skillEntityType(path, followLinks: true, fs: fs);
   if (type == FileSystemEntityType.directory) {
     return;
   }

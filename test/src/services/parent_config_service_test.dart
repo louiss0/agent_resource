@@ -1,23 +1,32 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:agent_resource/src/services/parent_config_service.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('ParentConfigService', () {
+    late MemoryFileSystem fs;
+    var sandboxId = 0;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
+
+    Directory createSandbox(String prefix) =>
+        fs.directory(fs.path.join('/tmp', '$prefix${++sandboxId}'))
+          ..createSync(recursive: true);
     test(
       'request validation rejects duplicate and unknown envelope fields',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'parent-request-',
-        );
+        final sandbox = createSandbox('parent-request-');
         try {
           File write(String name, String text) =>
-              File(p.join(sandbox.path, name))..writeAsStringSync(text);
+              fs.file(fs.path.join(sandbox.path, name))
+                ..writeAsStringSync(text);
           for (final request in [
             write(
               'duplicate.json',
@@ -33,7 +42,7 @@ void main() {
             ),
           ]) {
             expect(
-              () => parseParentRequest(request.path, sandbox.path),
+              () => parseParentRequest(request.path, sandbox.path, fs: fs),
               throwsA(isA<MambaException>()),
             );
           }
@@ -46,15 +55,16 @@ void main() {
     test(
       'Claude array membership edits preserve unrelated bytes and order',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('parent-json-');
+        final sandbox = createSandbox('parent-json-');
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final claude = Directory(p.join(sandbox.path, 'claude'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
             ..createSync();
           final settings =
-              File(p.join(project.path, '.claude', 'settings.json'))
+              fs.file(fs.path.join(project.path, '.claude', 'settings.json'))
                 ..createSync(recursive: true)
                 ..writeAsStringSync(
                   '{\r\n  "model": "sonnet",\r\n'
@@ -72,7 +82,7 @@ void main() {
             claudeConfigDir: claude.path,
             approved: approved,
           );
-          final service = ParentConfigService();
+          final service = ParentConfigService(fileSystem: fs);
           const changes = [
             ParentChange(
               unit: 'permissions.allow',
@@ -86,7 +96,7 @@ void main() {
                 harness: ParentHarness.claude,
                 scope: LifecycleScope.project,
                 layer: ParentLayer.project,
-                file: p.join('.claude', 'settings.json'),
+                file: fs.path.join('.claude', 'settings.json'),
                 changes: changes,
                 adopt: true,
                 planId: planId,
@@ -125,15 +135,16 @@ void main() {
     test(
       'stale Claude plans refuse after an unrelated document edit',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('parent-stale-');
+        final sandbox = createSandbox('parent-stale-');
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final claude = Directory(p.join(sandbox.path, 'claude'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
             ..createSync();
           final settings =
-              File(p.join(project.path, '.claude', 'settings.json'))
+              fs.file(fs.path.join(project.path, '.claude', 'settings.json'))
                 ..createSync(recursive: true)
                 ..writeAsStringSync('{"model":"sonnet"}\n');
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
@@ -145,14 +156,14 @@ void main() {
             claudeConfigDir: claude.path,
             approved: approved,
           );
-          final service = ParentConfigService();
+          final service = ParentConfigService(fileSystem: fs);
           ParentRequest request(ParentOperation operation, {String? planId}) =>
               ParentRequest(
                 operation: operation,
                 harness: ParentHarness.claude,
                 scope: LifecycleScope.project,
                 layer: ParentLayer.project,
-                file: p.join('.claude', 'settings.json'),
+                file: fs.path.join('.claude', 'settings.json'),
                 changes: const [
                   ParentChange(
                     unit: 'model',
@@ -191,22 +202,25 @@ void main() {
     test(
       'Codex TOML edits preserve comments and refuse project providers',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('parent-codex-');
+        final sandbox = createSandbox('parent-codex-');
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-          final config = File(p.join(project.path, '.codex', 'config.toml'))
-            ..createSync(recursive: true)
-            ..writeAsStringSync(
-              '# keep this comment\n'
-              'model = "gpt-5"\n'
-              'unknown = "unchanged"\n\n'
-              '[mcp_servers.github]\n'
-              'command = "github-mcp" # inline comment\n'
-              'args = ["serve"]\n',
-            );
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+            ..createSync();
+          final config =
+              fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync(
+                  '# keep this comment\n'
+                  'model = "gpt-5"\n'
+                  'unknown = "unchanged"\n\n'
+                  '[mcp_servers.github]\n'
+                  'command = "github-mcp" # inline comment\n'
+                  'args = ["serve"]\n',
+                );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -216,7 +230,7 @@ void main() {
             codexHome: codex.path,
             approved: approved,
           );
-          final service = ParentConfigService();
+          final service = ParentConfigService(fileSystem: fs);
           ParentRequest request(
             List<ParentChange> changes,
             ParentOperation operation, {
@@ -226,7 +240,7 @@ void main() {
             harness: ParentHarness.codex,
             scope: LifecycleScope.project,
             layer: ParentLayer.project,
-            file: p.join('.codex', 'config.toml'),
+            file: fs.path.join('.codex', 'config.toml'),
             changes: changes,
             adopt: true,
             planId: planId,
@@ -297,13 +311,15 @@ void main() {
     );
 
     test('disjoint applies merge selected-unit ownership', () async {
-      final sandbox = await Directory.systemTemp.createTemp('parent-merge-');
+      final sandbox = createSandbox('parent-merge-');
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final claude = Directory(p.join(sandbox.path, 'claude'))..createSync();
-        File(p.join(project.path, '.claude', 'settings.json'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
+          ..createSync();
+        fs.file(fs.path.join(project.path, '.claude', 'settings.json'))
           ..createSync(recursive: true)
           ..writeAsStringSync('{"model":"sonnet","effortLevel":"low"}\n');
         LifecycleOptions options({bool approved = false}) => LifecycleOptions(
@@ -315,7 +331,7 @@ void main() {
           claudeConfigDir: claude.path,
           approved: approved,
         );
-        final service = ParentConfigService();
+        final service = ParentConfigService(fileSystem: fs);
         Future<void> apply(String unit, String value) async {
           ParentRequest request(ParentOperation operation, {String? planId}) =>
               ParentRequest(
@@ -323,7 +339,7 @@ void main() {
                 harness: ParentHarness.claude,
                 scope: LifecycleScope.project,
                 layer: ParentLayer.project,
-                file: p.join('.claude', 'settings.json'),
+                file: fs.path.join('.claude', 'settings.json'),
                 changes: [
                   ParentChange(
                     unit: unit,
@@ -364,17 +380,16 @@ void main() {
     test(
       'parent backup restore preserves unrelated later edits and cleanup',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'parent-restore-',
-        );
+        final sandbox = createSandbox('parent-restore-');
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final claude = Directory(p.join(sandbox.path, 'claude'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
             ..createSync();
           final settings =
-              File(p.join(project.path, '.claude', 'settings.json'))
+              fs.file(fs.path.join(project.path, '.claude', 'settings.json'))
                 ..createSync(recursive: true)
                 ..writeAsStringSync('{"model":"sonnet","keep":"one"}\n');
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
@@ -386,14 +401,14 @@ void main() {
             claudeConfigDir: claude.path,
             approved: approved,
           );
-          final service = ParentConfigService();
+          final service = ParentConfigService(fileSystem: fs);
           ParentRequest request(ParentOperation operation, {String? planId}) =>
               ParentRequest(
                 operation: operation,
                 harness: ParentHarness.claude,
                 scope: LifecycleScope.project,
                 layer: ParentLayer.project,
-                file: p.join('.claude', 'settings.json'),
+                file: fs.path.join('.claude', 'settings.json'),
                 changes: const [
                   ParentChange(
                     unit: 'model',
@@ -464,13 +479,15 @@ void main() {
     );
 
     test('existing unmanaged units require explicit adoption', () async {
-      final sandbox = await Directory.systemTemp.createTemp('parent-adopt-');
+      final sandbox = createSandbox('parent-adopt-');
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final claude = Directory(p.join(sandbox.path, 'claude'))..createSync();
-        File(p.join(project.path, '.claude', 'settings.json'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
+          ..createSync();
+        fs.file(fs.path.join(project.path, '.claude', 'settings.json'))
           ..createSync(recursive: true)
           ..writeAsStringSync('{"model":"sonnet"}\n');
         final options = LifecycleOptions(
@@ -486,7 +503,7 @@ void main() {
           harness: ParentHarness.claude,
           scope: LifecycleScope.project,
           layer: ParentLayer.project,
-          file: p.join('.claude', 'settings.json'),
+          file: fs.path.join('.claude', 'settings.json'),
           changes: const [
             ParentChange(
               unit: 'model',
@@ -496,7 +513,7 @@ void main() {
           ],
           adopt: adopt,
         );
-        final service = ParentConfigService();
+        final service = ParentConfigService(fileSystem: fs);
         await expectLater(
           service.plan(request: request(false), options: options),
           throwsA(
@@ -520,15 +537,18 @@ void main() {
     });
 
     test('impact decisions are specific and expose native defaults', () async {
-      final sandbox = await Directory.systemTemp.createTemp('parent-impact-');
+      final sandbox = createSandbox('parent-impact-');
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-        final config = File(p.join(project.path, '.codex', 'config.toml'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync('approval_policy = "never"\n');
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+          ..createSync();
+        final config =
+            fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+              ..createSync(recursive: true)
+              ..writeAsStringSync('approval_policy = "never"\n');
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -542,7 +562,7 @@ void main() {
           harness: ParentHarness.codex,
           scope: LifecycleScope.project,
           layer: ParentLayer.project,
-          file: p.join('.codex', 'config.toml'),
+          file: fs.path.join('.codex', 'config.toml'),
           changes: const [
             ParentChange(
               unit: 'approval_policy',
@@ -553,7 +573,7 @@ void main() {
           adopt: true,
           affected: affected,
         );
-        final service = ParentConfigService();
+        final service = ParentConfigService(fileSystem: fs);
         await expectLater(
           service.plan(request: request(const []), options: options),
           throwsA(
@@ -584,11 +604,12 @@ void main() {
     });
 
     test('Pi and managed sources are report-only or inspect-only', () async {
-      final sandbox = await Directory.systemTemp.createTemp('parent-readonly-');
+      final sandbox = createSandbox('parent-readonly-');
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -596,7 +617,7 @@ void main() {
           projectRoot: project.path,
           home: home.path,
         );
-        final piFile = File(p.join(project.path, 'pi-settings.json'))
+        final piFile = fs.file(fs.path.join(project.path, 'pi-settings.json'))
           ..writeAsStringSync('provider-specific');
         ParentRequest piRequest(ParentOperation operation) => ParentRequest(
           operation: operation,
@@ -612,7 +633,7 @@ void main() {
             ),
           ],
         );
-        final service = ParentConfigService();
+        final service = ParentConfigService(fileSystem: fs);
         final inspected = await service.inspect(
           request: piRequest(ParentOperation.inspect),
           options: options,
@@ -632,7 +653,7 @@ void main() {
           ),
         );
 
-        final managed = File(p.join(sandbox.path, 'requirements.toml'))
+        final managed = fs.file(fs.path.join(sandbox.path, 'requirements.toml'))
           ..writeAsStringSync('model = "managed"\n');
         final managedRequest = ParentRequest(
           operation: ParentOperation.inspect,
@@ -669,17 +690,18 @@ void main() {
         'duplicate': 'model = "one"\nmodel = "two"\n',
       };
       for (final entry in cases.entries) {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'parent-toml-${entry.key}-',
-        );
+        final sandbox = createSandbox('parent-toml-${entry.key}-');
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-          final config = File(p.join(project.path, '.codex', 'config.toml'))
-            ..createSync(recursive: true)
-            ..writeAsStringSync(entry.value);
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+            ..createSync();
+          final config =
+              fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync(entry.value);
           final original = config.readAsBytesSync();
           final options = LifecycleOptions(
             processWorkingDirectory: project.path,
@@ -694,7 +716,7 @@ void main() {
             harness: ParentHarness.codex,
             scope: LifecycleScope.project,
             layer: ParentLayer.project,
-            file: p.join('.codex', 'config.toml'),
+            file: fs.path.join('.codex', 'config.toml'),
             changes: const [
               ParentChange(
                 unit: 'model',
@@ -705,7 +727,8 @@ void main() {
             adopt: true,
           );
           await expectLater(
-            ParentConfigService().plan(request: request, options: options),
+            ParentConfigService(fileSystem: fs)
+                .plan(request: request, options: options),
             throwsA(isA<MambaException>()),
             reason: entry.key,
           );

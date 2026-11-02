@@ -1,15 +1,18 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/src/services/bound_role_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/parent_config_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 final class _FailRegistrationApply implements ParentConfigService {
-  final ParentConfigService _delegate = ParentConfigService();
+  _FailRegistrationApply(FileSystem fileSystem)
+    : _delegate = ParentConfigService(fileSystem: fileSystem);
+
+  final ParentConfigService _delegate;
 
   @override
   Future<ParentResult> plan({
@@ -46,24 +49,32 @@ final class _FailRegistrationApply implements ParentConfigService {
 
 void main() {
   group('BoundRoleService', () {
+    late FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     test(
       'create plans by default and publishes definition plus registration',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('bound-create-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-          final config = File(p.join(project.path, '.codex', 'config.toml'))
-            ..createSync(recursive: true)
-            ..writeAsStringSync('# keep\n');
-          final source = File(p.join(sandbox.path, 'reviewer.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+            ..createSync();
+          final config =
+              fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync('# keep\n');
+          final source = fs.file(fs.path.join(sandbox.path, 'reviewer.toml'))
             ..writeAsStringSync(
               'name = "reviewer"\ndescription = "Reviews changes."\n'
               'developer_instructions = "Review."\n',
             );
-          final service = BoundRoleService();
+          final service = BoundRoleService(fileSystem: fs);
           LifecycleOptions options({
             bool approved = false,
             bool dryRun = false,
@@ -79,17 +90,30 @@ void main() {
           );
           final request = BoundRoleRequest(
             operation: BoundOperation.create,
-            configFile: p.join(project.path, '.codex', 'config.toml'),
+            configFile: fs.path.join(project.path, '.codex', 'config.toml'),
             roleKey: 'reviewer',
             ownership: BoundOwnership.both,
             source: source.path,
-            output: p.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+            output: fs.path.join(
+              project.path,
+              '.codex',
+              'agents',
+              'reviewer.toml',
+            ),
             clientsStopped: true,
           );
           final planned = await service.run(request, options(dryRun: true));
           expect(planned.outcome, 'planned');
           expect(
-            File(p.join(project.path, '.codex', 'agents', 'reviewer.toml'))
+            fs
+                .file(
+                  fs.path.join(
+                    project.path,
+                    '.codex',
+                    'agents',
+                    'reviewer.toml',
+                  ),
+                )
                 .existsSync(),
             isFalse,
           );
@@ -109,8 +133,8 @@ void main() {
             options(approved: true),
           );
           expect(applied.outcome, 'created');
-          final installed = File(
-            p.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+          final installed = fs.file(
+            fs.path.join(project.path, '.codex', 'agents', 'reviewer.toml'),
           );
           expect(installed.existsSync(), isTrue);
           final text = config.readAsStringSync();
@@ -127,9 +151,9 @@ void main() {
     );
 
     test('request parsing rejects operation/source ambiguity', () async {
-      final sandbox = await Directory.systemTemp.createTemp('bound-request-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final request = File(p.join(sandbox.path, 'request.json'))
+        final request = fs.file(fs.path.join(sandbox.path, 'request.json'))
           ..writeAsStringSync(
             jsonEncode(<String, Object?>{
               'schemaVersion': 1,
@@ -145,7 +169,8 @@ void main() {
             }),
           );
         expect(
-          () => parseBoundRoleRequest(request.path, sandbox.path),
+          () =>
+              parseBoundRoleRequest(request.path, sandbox.path, fileSystem: fs),
           throwsA(isA<MambaException>()),
         );
       } finally {
@@ -153,21 +178,27 @@ void main() {
       }
     });
     test('registration failure removes a newly created definition', () async {
-      final sandbox = await Directory.systemTemp.createTemp('bound-recovery-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-        final config = File(p.join(project.path, '.codex', 'config.toml'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync('# preserve\n');
-        final source = File(p.join(sandbox.path, 'reviewer.toml'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+          ..createSync();
+        final config =
+            fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+              ..createSync(recursive: true)
+              ..writeAsStringSync('# preserve\n');
+        final source = fs.file(fs.path.join(sandbox.path, 'reviewer.toml'))
           ..writeAsStringSync(
             'name = "reviewer"\ndescription = "Reviews."\n'
             'developer_instructions = "Review."\n',
           );
-        final service = BoundRoleService(parent: _FailRegistrationApply());
+        final service = BoundRoleService(
+          parent: _FailRegistrationApply(fs),
+          fileSystem: fs,
+        );
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -206,7 +237,10 @@ void main() {
           ),
         );
         expect(
-          File(p.join(project.path, '.codex', 'agents', 'reviewer.toml'))
+          fs
+              .file(
+                fs.path.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+              )
               .existsSync(),
           isFalse,
         );
@@ -219,23 +253,24 @@ void main() {
     test(
       'definition-only creation needs no stopped-client acknowledgement',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'bound-definition-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-          final config = File(p.join(project.path, '.codex', 'config.toml'))
-            ..createSync(recursive: true)
-            ..writeAsStringSync('# unchanged\n');
-          final source = File(p.join(sandbox.path, 'reviewer.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+            ..createSync();
+          final config =
+              fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync('# unchanged\n');
+          final source = fs.file(fs.path.join(sandbox.path, 'reviewer.toml'))
             ..writeAsStringSync(
               'name = "reviewer"\ndescription = "Reviews."\n'
               'developer_instructions = "Review."\n',
             );
-          final service = BoundRoleService();
+          final service = BoundRoleService(fileSystem: fs);
           final options = LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -275,28 +310,33 @@ void main() {
     );
 
     test('referenced definitions adopt inside the approved boundary', () async {
-      final sandbox = await Directory.systemTemp.createTemp('bound-adopt-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+          ..createSync();
         final definition =
-            File(p.join(project.path, '.codex', 'roles', 'reviewer.toml'))
+            fs.file(
+                fs.path.join(project.path, '.codex', 'roles', 'reviewer.toml'),
+              )
               ..createSync(recursive: true)
               ..writeAsStringSync(
                 'name = "reviewer"\ndescription = "Reviews."\n'
                 'developer_instructions = "Review."\n',
               );
         final original = definition.readAsBytesSync();
-        final config = File(p.join(project.path, '.codex', 'config.toml'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync(
-            '[agents.reviewer]\n'
-            'description = "Reviews."\n'
-            'config_file = "roles/reviewer.toml"\n',
-          );
-        final service = BoundRoleService();
+        final config =
+            fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+              ..createSync(recursive: true)
+              ..writeAsStringSync(
+                '[agents.reviewer]\n'
+                'description = "Reviews."\n'
+                'config_file = "roles/reviewer.toml"\n',
+              );
+        final service = BoundRoleService(fileSystem: fs);
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -330,7 +370,7 @@ void main() {
         expect(adopted.outcome, 'adopted');
         expect(definition.readAsBytesSync(), original);
         final records = service.agent.state.records(
-          LifecycleContext.resolve(options),
+          LifecycleContext.resolve(options, fileSystem: fs),
         );
         expect(records.single.nativeDestination, 'codex-bound');
         expect(records.single.location, definition.path);
@@ -340,21 +380,24 @@ void main() {
     });
 
     test('builtin name conflicts stop before publication', () async {
-      final sandbox = await Directory.systemTemp.createTemp('bound-builtin-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-        final config = File(p.join(project.path, '.codex', 'config.toml'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync('# unchanged\n');
-        final source = File(p.join(sandbox.path, 'default.toml'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+          ..createSync();
+        final config =
+            fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+              ..createSync(recursive: true)
+              ..writeAsStringSync('# unchanged\n');
+        final source = fs.file(fs.path.join(sandbox.path, 'default.toml'))
           ..writeAsStringSync(
             'name = "default"\ndescription = "Built in."\n'
             'developer_instructions = "Default."\n',
           );
-        final service = BoundRoleService();
+        final service = BoundRoleService(fileSystem: fs);
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -387,7 +430,10 @@ void main() {
         );
         expect(config.readAsStringSync(), '# unchanged\n');
         expect(
-          File(p.join(project.path, '.codex', 'agents', 'default.toml'))
+          fs
+              .file(
+                fs.path.join(project.path, '.codex', 'agents', 'default.toml'),
+              )
               .existsSync(),
           isFalse,
         );
@@ -397,21 +443,24 @@ void main() {
     });
 
     test('source bytes are bound to the reviewed plan', () async {
-      final sandbox = await Directory.systemTemp.createTemp('bound-drift-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-        final config = File(p.join(project.path, '.codex', 'config.toml'))
-          ..createSync(recursive: true)
-          ..writeAsStringSync('# unchanged\n');
-        final source = File(p.join(sandbox.path, 'reviewer.toml'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+          ..createSync();
+        final config =
+            fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+              ..createSync(recursive: true)
+              ..writeAsStringSync('# unchanged\n');
+        final source = fs.file(fs.path.join(sandbox.path, 'reviewer.toml'))
           ..writeAsStringSync(
             'name = "reviewer"\ndescription = "Reviews."\n'
             'developer_instructions = "Original."\n',
           );
-        final service = BoundRoleService();
+        final service = BoundRoleService(fileSystem: fs);
         final options = LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -459,7 +508,10 @@ void main() {
         );
         expect(config.readAsStringSync(), '# unchanged\n');
         expect(
-          File(p.join(project.path, '.codex', 'agents', 'reviewer.toml'))
+          fs
+              .file(
+                fs.path.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+              )
               .existsSync(),
           isFalse,
         );
@@ -471,20 +523,22 @@ void main() {
     test(
       'user-scope registration uses the actual Codex-home location',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('bound-user-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-          final config = File(p.join(codex.path, 'config.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+            ..createSync();
+          final config = fs.file(fs.path.join(codex.path, 'config.toml'))
             ..writeAsStringSync('# user\n');
-          final source = File(p.join(sandbox.path, 'reviewer.toml'))
+          final source = fs.file(fs.path.join(sandbox.path, 'reviewer.toml'))
             ..writeAsStringSync(
               'name = "reviewer"\ndescription = "Reviews."\n'
               'developer_instructions = "Review."\n',
             );
-          final service = BoundRoleService();
+          final service = BoundRoleService(fileSystem: fs);
           final options = LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.user,
@@ -492,7 +546,7 @@ void main() {
             projectRoot: project.path,
             home: home.path,
             codexHome: codex.path,
-            stateDir: p.join(sandbox.path, 'state'),
+            stateDir: fs.path.join(sandbox.path, 'state'),
             approved: true,
           );
           final request = BoundRoleRequest(
@@ -517,9 +571,11 @@ void main() {
             options,
           );
           expect(created.outcome, 'created');
-          final installed = File(p.join(codex.path, 'agents', 'reviewer.toml'));
+          final installed = fs.file(
+            fs.path.join(codex.path, 'agents', 'reviewer.toml'),
+          );
           expect(installed.existsSync(), isTrue);
-          final separator = Platform.isWindows ? r'\\' : '/';
+          final separator = fs.path.separator;
           expect(
             config.readAsStringSync(),
             contains('config_file = "agents${separator}reviewer.toml"'),
@@ -533,23 +589,24 @@ void main() {
     test(
       'relative definition sources digest against the selected cwd',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'bound-relative-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final codex = Directory(p.join(sandbox.path, 'codex'))..createSync();
-          final config = File(p.join(project.path, '.codex', 'config.toml'))
-            ..createSync(recursive: true)
-            ..writeAsStringSync('# relative\n');
-          final source = File(p.join(project.path, 'reviewer.toml'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+            ..createSync();
+          final config =
+              fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync('# relative\n');
+          final source = fs.file(fs.path.join(project.path, 'reviewer.toml'))
             ..writeAsStringSync(
               'name = "reviewer"\ndescription = "Reviews."\n'
               'developer_instructions = "Review."\n',
             );
-          final service = BoundRoleService();
+          final service = BoundRoleService(fileSystem: fs);
           final options = LifecycleOptions(
             processWorkingDirectory: sandbox.path,
             scope: LifecycleScope.project,

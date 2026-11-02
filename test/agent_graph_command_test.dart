@@ -1,21 +1,28 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_graph_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('agent inspect graph', () {
+    late FileSystem fs;
+    late MambaExecutor<MambaExecutionResult> executor;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      executor = createExecutor(agentGraph: AgentGraphService(fileSystem: fs))
+          .fake();
+    });
     test(
       'adds bounded graph and source-qualified capability evidence',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-graph-command-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final source = File(p.join(sandbox.path, 'reviewer.md'))
+          final source = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -23,14 +30,14 @@ tools: [Read]
 ---
 Private instructions.
 ''');
-          final result = await createExecutor().fake().execute([
+          final result = await executor.execute([
             'agent',
             'inspect',
             source.path,
             '--harness',
             'claude',
             '--cwd',
-            '${sandbox.path}${p.separator}',
+            '${sandbox.path}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -59,11 +66,9 @@ Private instructions.
     );
 
     test('a missing required preload makes the inspection unready', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'agent-graph-command-',
-      );
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final source = File(p.join(sandbox.path, 'reviewer.md'))
+        final source = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
           ..writeAsStringSync('''---
 name: reviewer
 description: Reviews.
@@ -71,14 +76,14 @@ skills: [missing-skill]
 ---
 Review.
 ''');
-        final result = await createExecutor().fake().execute([
+        final result = await executor.execute([
           'agent',
           'inspect',
           source.path,
           '--harness',
           'claude',
           '--cwd',
-          '${sandbox.path}${p.separator}',
+          '${sandbox.path}${fs.path.separator}',
           '--format',
           'json',
         ]);

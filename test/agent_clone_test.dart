@@ -1,22 +1,33 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_authoring_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('agent clone', () {
+    late FileSystem fs;
+    late MambaExecutor<MambaExecutionResult> executor;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      executor = createExecutor(
+        agentAuthoring: AgentAuthoringService(fileSystem: fs),
+      ).fake();
+    });
     test(
       'plans and applies a definition-only clone with source provenance',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('agent-clone-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = File(p.join(sandbox.path, 'source.md'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
             ..writeAsStringSync('''---
 name: reviewer
 description: Reviews changes.
@@ -26,7 +37,7 @@ tools: [Read, Grep]
 Review correctness.
 ''');
           final sourceBytes = source.readAsBytesSync();
-          final request = File(p.join(sandbox.path, 'clone.json'))
+          final request = fs.file(fs.path.join(sandbox.path, 'clone.json'))
             ..writeAsStringSync(
               jsonEncode(<String, Object?>{
                 'schemaVersion': 1,
@@ -43,22 +54,22 @@ Review correctness.
                 'context': <String, Object?>{'workingDirectory': './'},
               }),
             );
-          final output = p.join(
+          final output = fs.path.join(
             project.path,
             '.claude',
             'agents',
             'reviewer-copy.md',
           );
-          final result = await createExecutor().fake().execute([
+          final result = await executor.execute([
             'agent',
             'clone',
             request.path,
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -86,13 +97,15 @@ Review correctness.
           expect(data['instructionByteLength'], 20);
           expect(result.output, isNot(contains('Review correctness.')));
           expect(source.readAsBytesSync(), sourceBytes);
-          expect(File(output).existsSync(), isFalse);
+          expect(fs.file(output).existsSync(), isFalse);
           expect(
-            Directory(p.join(project.path, '.agent-resource')).existsSync(),
+            fs
+                .directory(fs.path.join(project.path, '.agent-resource'))
+                .existsSync(),
             isFalse,
           );
 
-          final applied = await createExecutor().fake().execute([
+          final applied = await executor.execute([
             'agent',
             'clone',
             request.path,
@@ -101,13 +114,13 @@ Review correctness.
             data['planId']! as String,
             '--yes',
             '--cwd',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--project-root',
-            '${project.path}${p.separator}',
+            '${project.path}${fs.path.separator}',
             '--home',
-            '${home.path}${p.separator}',
+            '${home.path}${fs.path.separator}',
             '--state-dir',
-            '${p.join(sandbox.path, 'state')}${p.separator}',
+            '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
             '--format',
             'json',
           ]);
@@ -126,7 +139,7 @@ Review correctness.
           expect(appliedReport['command'], 'agent clone');
           expect(appliedReport['outcome'], 'installed');
           expect(source.readAsBytesSync(), sourceBytes);
-          expect(File(output).readAsStringSync(), '''---
+          expect(fs.file(output).readAsStringSync(), '''---
 description: "Reviews changes."
 model: "claude-sonnet"
 name: "reviewer"

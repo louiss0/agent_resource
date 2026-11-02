@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
-import 'package:path/path.dart' as p;
+import 'package:file/file.dart';
+import 'package:file/local.dart';
 
 const _maximumLockBytes = 8 * 1024 * 1024;
 const _maximumJsonDepth = 32;
@@ -134,14 +134,31 @@ final class RecordedSnapshot {
 final class PackState {
   static final _random = Random.secure();
 
-  PackState({required String stateDirectory, DateTime Function()? clock})
-    : stateDirectory = p.normalize(stateDirectory),
-      _clock = clock ?? DateTime.now;
+  PackState({
+    required String stateDirectory,
+    FileSystem? fileSystem,
+    DateTime Function()? clock,
+  }) : this._(
+         stateDirectory: stateDirectory,
+         fileSystem: fileSystem ?? LocalFileSystem(),
+         clock: clock,
+       );
+
+  PackState._({
+    required String stateDirectory,
+    required FileSystem fileSystem,
+    DateTime Function()? clock,
+  }) : _fileSystem = fileSystem,
+       stateDirectory = fileSystem.path.normalize(stateDirectory),
+       _clock = clock ?? DateTime.now;
+
+  final FileSystem _fileSystem;
 
   final String stateDirectory;
   final DateTime Function() _clock;
 
-  String get lockPath => p.join(stateDirectory, 'installations.json');
+  String get lockPath =>
+      _fileSystem.path.join(stateDirectory, 'installations.json');
 
   void updateRecordGroups({
     List<Map<String, Object?>>? packs,
@@ -177,7 +194,7 @@ final class PackState {
         'Recorded snapshot content is unavailable locally: $ref',
       );
     }
-    return p.join(
+    return _fileSystem.path.join(
       stateDirectory,
       'snapshots',
       selected.contentDigest,
@@ -212,16 +229,18 @@ final class PackState {
     sourceEvidence: snapshot.sourceEvidence,
     contentAvailable:
         snapshot.contentAvailable &&
-        Directory(
-          p.join(
-            stateDirectory,
-            'snapshots',
-            snapshot.contentDigest,
-            'artifact',
-          ),
-        ).existsSync() &&
+        _fileSystem
+            .directory(
+              _fileSystem.path.join(
+                stateDirectory,
+                'snapshots',
+                snapshot.contentDigest,
+                'artifact',
+              ),
+            )
+            .existsSync() &&
         _artifactDigest(
-              p.join(
+              _fileSystem.path.join(
                 stateDirectory,
                 'snapshots',
                 snapshot.contentDigest,
@@ -346,7 +365,7 @@ final class PackState {
     );
     _retainArtifact(
       artifactPath,
-      p.join(stateDirectory, 'snapshots', digest, 'artifact'),
+      _fileSystem.path.join(stateDirectory, 'snapshots', digest, 'artifact'),
     );
     if (existing.isNotEmpty) {
       final original = existing.first;
@@ -445,7 +464,9 @@ final class PackState {
     for (final digest in candidateDigests.intersection(
       prunable.map((snapshot) => snapshot.contentDigest).toSet(),
     )) {
-      final root = Directory(p.join(stateDirectory, 'snapshots', digest));
+      final root = _fileSystem.directory(
+        _fileSystem.path.join(stateDirectory, 'snapshots', digest),
+      );
       if (root.existsSync()) root.deleteSync(recursive: true);
     }
     _write(document, [
@@ -496,7 +517,7 @@ final class PackState {
           snapshot.contentDigest == digest &&
           snapshot.retentionClass == 'source',
     );
-    final retainedDirectory = p.join(
+    final retainedDirectory = _fileSystem.path.join(
       stateDirectory,
       'snapshots',
       digest,
@@ -565,29 +586,31 @@ final class PackState {
     if (bytes.length > _maximumLockBytes) {
       throw const FormatException('Installation ledger update exceeds 8 MiB.');
     }
-    Directory(stateDirectory).createSync(recursive: true);
+    _fileSystem.directory(stateDirectory).createSync(recursive: true);
     final temporary = '$lockPath.${_random.nextInt(1 << 32)}.tmp';
     try {
-      File(temporary).writeAsBytesSync(bytes, flush: true);
-      File(temporary).renameSync(lockPath);
+      _fileSystem.file(temporary).writeAsBytesSync(bytes, flush: true);
+      _fileSystem.file(temporary).renameSync(lockPath);
     } catch (_) {
-      if (File(temporary).existsSync()) File(temporary).deleteSync();
+      if (_fileSystem.file(temporary).existsSync()) {
+        _fileSystem.file(temporary).deleteSync();
+      }
       rethrow;
     }
   }
 
   PackLockDocument read() {
-    if (FileSystemEntity.typeSync(lockPath, followLinks: false) ==
+    if (_fileSystem.typeSync(lockPath, followLinks: false) ==
         FileSystemEntityType.notFound) {
       return PackLockDocument.empty();
     }
-    if (FileSystemEntity.typeSync(lockPath, followLinks: false) !=
+    if (_fileSystem.typeSync(lockPath, followLinks: false) !=
         FileSystemEntityType.file) {
       throw FormatException(
         'Installation ledger is not a regular file: $lockPath',
       );
     }
-    final file = File(lockPath).openSync();
+    final file = _fileSystem.file(lockPath).openSync();
     final List<int> bytes;
     try {
       bytes = file.readSync(_maximumLockBytes + 1);
@@ -619,6 +642,93 @@ final class PackState {
       selections: _records(root['selections'] ?? const [], 'selections'),
       operations: _records(root['operations'] ?? const [], 'operations'),
     );
+  }
+
+  String _artifactDigest(String artifactPath) {
+    final type = _fileSystem.typeSync(artifactPath, followLinks: false);
+    if (type != FileSystemEntityType.directory) {
+      throw ArgumentError.value(
+        artifactPath,
+        'artifactPath',
+        'Must be a directory.',
+      );
+    }
+    final entries =
+        _fileSystem
+            .directory(artifactPath)
+            .listSync(recursive: true, followLinks: false)
+          ..sort((left, right) => left.path.compareTo(right.path));
+    final output = BytesBuilder(copy: false);
+    for (final entry in entries) {
+      final relative = _fileSystem.path.relative(
+        entry.path,
+        from: artifactPath,
+      );
+      final entryType = _fileSystem.typeSync(entry.path, followLinks: false);
+      if (entryType == FileSystemEntityType.link) {
+        throw FormatException(
+          'Snapshot artifacts cannot contain links: $relative',
+        );
+      }
+      output.add(utf8.encode('$relative\x00$entryType\x00'));
+      if (entryType == FileSystemEntityType.file) {
+        output.add(_fileSystem.file(entry.path).readAsBytesSync());
+      }
+      output.add(const [0]);
+    }
+    return sha256.convert(output.takeBytes()).toString();
+  }
+
+  void _retainArtifact(String source, String destination) {
+    if (_fileSystem.typeSync(destination, followLinks: false) ==
+        FileSystemEntityType.directory) {
+      if (_artifactDigest(destination) == _artifactDigest(source)) return;
+      throw FormatException(
+        'Retained snapshot content does not match its digest.',
+      );
+    }
+    final staging = '$destination.staging';
+    if (_fileSystem.typeSync(staging, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      throw StateError('Snapshot staging path already exists: $staging');
+    }
+    _fileSystem.directory(staging).createSync(recursive: true);
+    try {
+      _copyDirectory(source, staging);
+      if (_artifactDigest(staging) != _artifactDigest(source)) {
+        throw StateError('Retained snapshot verification failed.');
+      }
+      _fileSystem
+          .directory(_fileSystem.path.dirname(destination))
+          .createSync(recursive: true);
+      _fileSystem.directory(staging).renameSync(destination);
+    } catch (_) {
+      if (_fileSystem.directory(staging).existsSync()) {
+        _fileSystem.directory(staging).deleteSync(recursive: true);
+      }
+      rethrow;
+    }
+  }
+
+  void _copyDirectory(String source, String destination) {
+    for (final entry
+        in _fileSystem.directory(source).listSync(followLinks: false)) {
+      final target = _fileSystem.path.join(
+        destination,
+        _fileSystem.path.basename(entry.path),
+      );
+      final type = _fileSystem.typeSync(entry.path, followLinks: false);
+      if (type == FileSystemEntityType.directory) {
+        _fileSystem.directory(target).createSync();
+        _copyDirectory(entry.path, target);
+      } else if (type == FileSystemEntityType.file) {
+        _fileSystem.file(entry.path).copySync(target);
+      } else {
+        throw FormatException(
+          'Unsupported snapshot artifact entry: ${entry.path}',
+        );
+      }
+    }
   }
 }
 
@@ -698,83 +808,6 @@ RecordedSnapshot _noncurrent(RecordedSnapshot snapshot, String timestamp) =>
       noncurrentAt: timestamp,
       retentionClass: snapshot.retentionClass,
     );
-
-String _artifactDigest(String artifactPath) {
-  final type = FileSystemEntity.typeSync(artifactPath, followLinks: false);
-  if (type != FileSystemEntityType.directory) {
-    throw ArgumentError.value(
-      artifactPath,
-      'artifactPath',
-      'Must be a directory.',
-    );
-  }
-  final entries = Directory(artifactPath).listSync(
-    recursive: true,
-    followLinks: false,
-  )..sort((left, right) => left.path.compareTo(right.path));
-  final output = BytesBuilder(copy: false);
-  for (final entry in entries) {
-    final relative = p.relative(entry.path, from: artifactPath);
-    final entryType = FileSystemEntity.typeSync(entry.path, followLinks: false);
-    if (entryType == FileSystemEntityType.link) {
-      throw FormatException(
-        'Snapshot artifacts cannot contain links: $relative',
-      );
-    }
-    output.add(utf8.encode('$relative\x00$entryType\x00'));
-    if (entryType == FileSystemEntityType.file) {
-      output.add(File(entry.path).readAsBytesSync());
-    }
-    output.add(const [0]);
-  }
-  return sha256.convert(output.takeBytes()).toString();
-}
-
-void _retainArtifact(String source, String destination) {
-  if (FileSystemEntity.typeSync(destination, followLinks: false) ==
-      FileSystemEntityType.directory) {
-    if (_artifactDigest(destination) == _artifactDigest(source)) return;
-    throw FormatException(
-      'Retained snapshot content does not match its digest.',
-    );
-  }
-  final staging = '$destination.staging';
-  if (FileSystemEntity.typeSync(staging, followLinks: false) !=
-      FileSystemEntityType.notFound) {
-    throw StateError('Snapshot staging path already exists: $staging');
-  }
-  Directory(staging).createSync(recursive: true);
-  try {
-    _copyDirectory(source, staging);
-    if (_artifactDigest(staging) != _artifactDigest(source)) {
-      throw StateError('Retained snapshot verification failed.');
-    }
-    Directory(p.dirname(destination)).createSync(recursive: true);
-    Directory(staging).renameSync(destination);
-  } catch (_) {
-    if (Directory(staging).existsSync()) {
-      Directory(staging).deleteSync(recursive: true);
-    }
-    rethrow;
-  }
-}
-
-void _copyDirectory(String source, String destination) {
-  for (final entry in Directory(source).listSync(followLinks: false)) {
-    final target = p.join(destination, p.basename(entry.path));
-    final type = FileSystemEntity.typeSync(entry.path, followLinks: false);
-    if (type == FileSystemEntityType.directory) {
-      Directory(target).createSync();
-      _copyDirectory(entry.path, target);
-    } else if (type == FileSystemEntityType.file) {
-      File(entry.path).copySync(target);
-    } else {
-      throw FormatException(
-        'Unsupported snapshot artifact entry: ${entry.path}',
-      );
-    }
-  }
-}
 
 List<Map<String, Object?>> _records(Object? value, String label) {
   if (value is! List) {

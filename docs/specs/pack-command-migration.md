@@ -37,9 +37,14 @@ skills_directory = "resources/skills"
 agents_directory = "resources/agents"
 ```
 
-Explicit source catalogs remain authoritative. Folder discovery must stay bounded
-and reject unsafe paths and symlinks rather than following arbitrary source trees.
-A supported filename or folder is only a candidate; normal validation still applies.
+Explicit source catalogs remain authoritative, including when the selected type is
+absent. Without a catalog, validation, install, and update use the same bounded
+discovery. Skills are direct children or one group level deep (`root/<skill>` and
+`root/<group>/<skill>`), never deeper. Root candidates appear first, then groups
+and Skills alphabetically by native/display name with deterministic path tie-breaks.
+Folder discovery rejects unsafe paths and symlinks rather than following arbitrary
+source trees. A supported filename or folder is only a candidate; normal validation
+still applies.
 Discovered Agents have no inferred native profile: authors must select them through
 an explicit catalog entry with `profile = "claude"`, `"codex"`, or `"pi-common"`.
 
@@ -67,6 +72,16 @@ only, not runtime discovery, release qualification, or harness execution readine
 
 Updates affect active managed installations by default. `--yes` approves a plan;
 it is not permission to expand installed membership.
+
+Interactive grouped install/update uses one unchecked MultiSelect per group, with
+`root` first and actual folder names afterward. Empty selection rejects the whole
+group and continues; cancellation persists nothing. Successful approved non-dry-run
+operations without failures record declines in machine-local pack state, keyed by
+source-relative discovery root and group. `--no-save`, dry-run, cancellation, and
+failure do not record them. Later install/update suppresses declined groups and
+their additions; `--include-new` does not resurrect them, while explicit `--only`
+can review an individual Skill. Direct Skill installation does not retain group
+history.
 
 An interactive update may offer to review additions, defaulting to No. Individual
 additions require explicit selection, with nothing preselected. The final plan

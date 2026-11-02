@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 2,
+  "transactionId": "trx_82d022bfc57604a8baaff2f94ac5d17d",
+  "installationId": "ins_67217bd71192988e483ae1f4123e524c",
+  "operation": "resource-unit-install",
+  "artifactKind": "agent-file",
+  "scope": "project",
+  "location": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents\\demo-documentation-reviewer.md",
+  "nativeRoot": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents",
+  "resourceId": "demo-documentation-reviewer",
+  "sourceDigest": "471dca1f9ac12f0f1bda618bfca053211c0ff6567c7b6db5f2c497ed8d40ef4b",
+  "origin": {
+    "status": "evidenced",
+    "schemaVersion": 1,
+    "source": {
+      "kind": "local",
+      "requestedLocator": "./agents/demo-documentation-reviewer.md",
+      "resolvedLocator": "C:\\Users\\bvlou\\projects\\agent_resource\\agents\\demo-documentation-reviewer.md",
+      "temporary": true,
+      "packageBoundary": "single-file"
+    },
+    "contentDigest": "471dca1f9ac12f0f1bda618bfca053211c0ff6567c7b6db5f2c497ed8d40ef4b",
+    "profile": "claude"
+  },
+  "entries": [
+    {
+      "index": 0,
+      "location": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents\\demo-documentation-reviewer.md",
+      "nativeRoot": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents",
+      "artifactKind": "agent-file",
+      "newBaseline": [
+        {
+          "path": ".",
+          "type": "file",
+          "length": 497,
+          "sha256": "28ec5859a8d338a92e4b50b3a5761da3590256720d62ab543eb265042d96c497",
+          "executable": false,
+          "readOnly": false
+        }
+      ],
+      "stagedPath": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\.agent-resource\\staging\\trx_82d022bfc57604a8baaff2f94ac5d17d\\0-demo-documentation-reviewer.md"
+    }
+  ],
+  "oldRecords": [],
+  "newRecords": [
+    {
+      "installationId": "ins_67217bd71192988e483ae1f4123e524c",
+      "artifactKind": "agent-file",
+      "scope": "project",
+      "nativeDestination": "native",
+      "nativeForm": "claude-agent-file",
+      "location": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents\\demo-documentation-reviewer.md",
+      "nativeRoot": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents",
+      "name": "demo-documentation-reviewer",
+      "nativeProfile": "claude",
+      "validatedProfiles": ["claude"],
+      "knownConsumers": ["claude"],
+      "baseline": [
+        {
+          "path": ".",
+          "type": "file",
+          "length": 497,
+          "sha256": "28ec5859a8d338a92e4b50b3a5761da3590256720d62ab543eb265042d96c497",
+          "executable": false,
+          "readOnly": false
+        }
+      ],
+      "origin": {
+        "status": "evidenced",
+        "schemaVersion": 1,
+        "source": {
+          "kind": "local",
+          "requestedLocator": "./agents/demo-documentation-reviewer.md",
+          "resolvedLocator": "C:\\Users\\bvlou\\projects\\agent_resource\\agents\\demo-documentation-reviewer.md",
+          "temporary": true,
+          "packageBoundary": "single-file"
+        },
+        "contentDigest": "471dca1f9ac12f0f1bda618bfca053211c0ff6567c7b6db5f2c497ed8d40ef4b",
+        "profile": "claude"
+      },
+      "lifecycle": "live",
+      "backupIds": [],
+      "transactionId": null
+    }
+  ],
+  "publishedIndices": [0],
+  "phase": "committed"
+}

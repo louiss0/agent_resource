@@ -9,23 +9,30 @@ import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/pack_lifecycle_service.dart';
 import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('PackLifecycleService', () {
-    late Directory sandbox;
-    late Directory project;
-    late Directory home;
-    late Directory source;
+    late fslib.FileSystem fs;
+    late fslib.Directory sandbox;
+    late fslib.Directory project;
+    late fslib.Directory home;
+    late fslib.Directory source;
 
     setUp(() {
-      sandbox = Directory.systemTemp.createTempSync('pack-lifecycle-test-');
-      project = Directory(p.join(sandbox.path, 'project'))..createSync();
-      home = Directory(p.join(sandbox.path, 'home'))..createSync();
-      source = Directory(p.join(sandbox.path, 'source'))..createSync();
-      File(p.join(source.path, 'agent-resources.toml')).writeAsStringSync('''
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      sandbox = fs.directory('/sandbox')..createSync();
+      project = fs.directory(fs.path.join(sandbox.path, 'project'))
+        ..createSync();
+      home = fs.directory(fs.path.join(sandbox.path, 'home'))..createSync();
+      source = fs.directory(fs.path.join(sandbox.path, 'source'))..createSync();
+      fs
+          .file(fs.path.join(source.path, 'agent-resources.toml'))
+          .writeAsStringSync('''
 schema_version = 1
 [[catalog.skills]]
 path = "skills/reviewer"
@@ -33,15 +40,16 @@ path = "skills/reviewer"
 path = "agents/reviewer.md"
 profile = "claude"
 ''');
-      final skill = Directory(p.join(source.path, 'skills', 'reviewer'))
-        ..createSync(recursive: true);
-      File(p.join(skill.path, 'SKILL.md')).writeAsStringSync('''---
+      final skill = fs.directory(
+        fs.path.join(source.path, 'skills', 'reviewer'),
+      )..createSync(recursive: true);
+      fs.file(fs.path.join(skill.path, 'SKILL.md')).writeAsStringSync('''---
 name: reviewer
 description: Reviews code.
 ---
 # Reviewer
 ''');
-      File(p.join(source.path, 'agents', 'reviewer.md'))
+      fs.file(fs.path.join(source.path, 'agents', 'reviewer.md'))
         ..createSync(recursive: true)
         ..writeAsStringSync('''---
 name: reviewer
@@ -49,7 +57,9 @@ description: Reviews code.
 ---
 Review changes.
 ''');
-      File(p.join(project.path, 'agent-resources.toml')).writeAsStringSync('''
+      fs
+          .file(fs.path.join(project.path, 'agent-resources.toml'))
+          .writeAsStringSync('''
 schema_version = 1
 [cli.install]
 targets = ["codex"]
@@ -92,8 +102,8 @@ track = { kind = "local" }
       environment: {
         'HOME': home.path,
         'USERPROFILE': home.path,
-        'APPDATA': p.join(home.path, 'AppData', 'Roaming'),
-        'LOCALAPPDATA': p.join(home.path, 'AppData', 'Local'),
+        'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
+        'LOCALAPPDATA': fs.path.join(home.path, 'AppData', 'Local'),
       },
       scope: LifecycleScope.project,
       cwd: project.path,
@@ -120,14 +130,14 @@ track = { kind = "local" }
     test(
       'validates consumer configuration without reading the source',
       () async {
-        final result = await PackLifecycleService().execute(
+        final result = await PackLifecycleService(fileSystem: fs).execute(
           PackLifecycleRequest(
             operation: PackOperation.configValidate,
             resourceType: PackResourceType.skill,
             processWorkingDirectory: sandbox.path,
             environment: {
               'HOME': home.path,
-              'APPDATA': p.join(home.path, 'AppData', 'Roaming'),
+              'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
             },
             scope: LifecycleScope.project,
             cwd: project.path,
@@ -138,14 +148,16 @@ track = { kind = "local" }
         expect(result.outcome, 'valid');
         expect(result.context['resolved'], isFalse);
         expect(
-          Directory(p.join(project.path, '.agent-resource')).existsSync(),
+          fs
+              .directory(fs.path.join(project.path, '.agent-resource'))
+              .existsSync(),
           isFalse,
         );
       },
     );
 
     test('installs a native Skill and Agent with source evidence', () async {
-      final service = PackLifecycleService();
+      final service = PackLifecycleService(fileSystem: fs);
       final skills = await service.execute(
         request(PackOperation.install, PackResourceType.skill),
       );
@@ -156,17 +168,36 @@ track = { kind = "local" }
       expect(skills.resources.single.disposition.wireName, 'installed');
       expect(agents.resources.single.disposition.wireName, 'installed');
       expect(
-        File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
             .existsSync(),
         isTrue,
       );
       expect(
-        File(p.join(project.path, '.claude', 'agents', 'reviewer.md'))
+        fs
+            .file(
+              fs.path.join(project.path, '.claude', 'agents', 'reviewer.md'),
+            )
             .existsSync(),
         isTrue,
       );
       final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agent-resource',
+                'installations.json',
+              ),
+            )
             .readAsStringSync(),
       ) as Map<String, Object?>;
       final installations = lock['installations']! as List<Object?>;
@@ -181,7 +212,7 @@ track = { kind = "local" }
     test(
       'ordinary install replays exact lock without reacquiring source',
       () async {
-        final service = PackLifecycleService();
+        final service = PackLifecycleService(fileSystem: fs);
         await service.execute(
           request(PackOperation.install, PackResourceType.skill),
         );
@@ -200,12 +231,19 @@ track = { kind = "local" }
     test(
       'no-save suppresses selection persistence but not operation evidence',
       () async {
-        final result = await PackLifecycleService().execute(
+        final result = await PackLifecycleService(fileSystem: fs).execute(
           request(PackOperation.install, PackResourceType.skill, noSave: true),
         );
         expect(result.resources.single.disposition.wireName, 'installed');
         final lock = jsonDecode(
-          File(p.join(project.path, '.agent-resource', 'installations.json'))
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agent-resource',
+                  'installations.json',
+                ),
+              )
               .readAsStringSync(),
         ) as Map<String, Object?>;
         expect(lock['selections'], isEmpty);
@@ -215,7 +253,7 @@ track = { kind = "local" }
 
     test('rejects unknown native names before any managed write', () async {
       expect(
-        () => PackLifecycleService().execute(
+        () => PackLifecycleService(fileSystem: fs).execute(
           request(
             PackOperation.install,
             PackResourceType.skill,
@@ -231,14 +269,19 @@ track = { kind = "local" }
         ),
       );
       expect(
-        Directory(p.join(project.path, '.agent-resource')).existsSync(),
+        fs
+            .directory(fs.path.join(project.path, '.agent-resource'))
+            .existsSync(),
         isFalse,
       );
-      expect(Directory(p.join(project.path, '.agents')).existsSync(), isFalse);
+      expect(
+        fs.directory(fs.path.join(project.path, '.agents')).existsSync(),
+        isFalse,
+      );
     });
 
     test('dry run publishes neither resources nor lock state', () async {
-      final result = await PackLifecycleService().execute(
+      final result = await PackLifecycleService(fileSystem: fs).execute(
         request(PackOperation.install, PackResourceType.skill, dryRun: true),
       );
 
@@ -258,19 +301,28 @@ track = { kind = "local" }
       );
       expect(result.resources.single.changedPaths.single.change, 'added');
       expect(
-        Directory(p.join(project.path, '.agent-resource')).existsSync(),
+        fs
+            .directory(fs.path.join(project.path, '.agent-resource'))
+            .existsSync(),
         isFalse,
       );
-      expect(Directory(p.join(project.path, '.agents')).existsSync(), isFalse);
+      expect(
+        fs.directory(fs.path.join(project.path, '.agents')).existsSync(),
+        isFalse,
+      );
     });
 
     test('blocked dry-run fails with a review plan and no writes', () async {
-      Directory(p.join(source.path, 'skills', 'reviewer', 'rules'))
+      fs
+          .directory(fs.path.join(source.path, 'skills', 'reviewer', 'rules'))
           .createSync();
-      final before = Directory(project.path).listSync(recursive: true).length;
+      final before = fs
+          .directory(project.path)
+          .listSync(recursive: true)
+          .length;
 
       expect(
-        () => PackLifecycleService().execute(
+        () => PackLifecycleService(fileSystem: fs).execute(
           request(PackOperation.install, PackResourceType.skill, dryRun: true),
         ),
         throwsA(
@@ -292,29 +344,36 @@ track = { kind = "local" }
               ),
         ),
       );
-      expect(Directory(project.path).listSync(recursive: true).length, before);
       expect(
-        Directory(p.join(project.path, '.agent-resource')).existsSync(),
+        fs.directory(project.path).listSync(recursive: true).length,
+        before,
+      );
+      expect(
+        fs
+            .directory(fs.path.join(project.path, '.agent-resource'))
+            .existsSync(),
         isFalse,
       );
     });
 
     test('requires bounded approval for an extra Skill root folder', () async {
-      Directory(p.join(source.path, 'skills', 'reviewer', 'rules'))
+      fs
+          .directory(fs.path.join(source.path, 'skills', 'reviewer', 'rules'))
           .createSync();
 
       expect(
-        () => PackLifecycleService().execute(
-          request(PackOperation.install, PackResourceType.skill),
-        ),
+        () => PackLifecycleService(fileSystem: fs)
+            .execute(request(PackOperation.install, PackResourceType.skill)),
         throwsA(isA<MambaException>()),
       );
       expect(
-        Directory(p.join(project.path, '.agent-resource')).existsSync(),
+        fs
+            .directory(fs.path.join(project.path, '.agent-resource'))
+            .existsSync(),
         isFalse,
       );
 
-      final result = await PackLifecycleService().execute(
+      final result = await PackLifecycleService(fileSystem: fs).execute(
         request(
           PackOperation.install,
           PackResourceType.skill,
@@ -323,18 +382,26 @@ track = { kind = "local" }
       );
       expect(result.resources.single.disposition.wireName, 'installed');
       expect(
-        Directory(
-          p.join(project.path, '.agents', 'skills', 'reviewer', 'rules'),
-        ).existsSync(),
+        fs
+            .directory(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'rules',
+              ),
+            )
+            .existsSync(),
         isTrue,
       );
 
-      final upstream = File(
-        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      final upstream = fs.file(
+        fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
       );
       upstream.writeAsStringSync('${upstream.readAsStringSync()}\nSecond.\n');
-      final lockFile = File(
-        p.join(project.path, '.agent-resource', 'installations.json'),
+      final lockFile = fs.file(
+        fs.path.join(project.path, '.agent-resource', 'installations.json'),
       );
       final before =
           jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
@@ -344,9 +411,8 @@ track = { kind = "local" }
         origin.remove('approvedExtraFolders');
       }
       lockFile.writeAsStringSync(jsonEncode(before));
-      final updated = await PackLifecycleService().execute(
-        request(PackOperation.update, PackResourceType.skill),
-      );
+      final updated = await PackLifecycleService(fileSystem: fs)
+          .execute(request(PackOperation.update, PackResourceType.skill));
       expect(updated.resources.single.disposition.wireName, 'updated');
       final lock =
           jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
@@ -356,13 +422,16 @@ track = { kind = "local" }
     });
 
     test('interactive install prompts for a missing Skill target', () async {
-      final config = File(p.join(project.path, 'agent-resources.toml'));
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
       config.writeAsStringSync(
         config.readAsStringSync().replaceFirst('targets = ["codex"]\n', ''),
       );
       final prompts = <String>[];
       final result =
           await PackLifecycleService.withDependencies(
+            fileSystem: fs,
             prompts: PackPrompts(
               confirmation: (label) async {
                 prompts.add(label);
@@ -386,7 +455,16 @@ track = { kind = "local" }
       expect(result.resources.single.disposition.wireName, 'installed');
       expect(prompts, contains(contains('Skill target')));
       expect(
-        File(p.join(project.path, '.claude', 'skills', 'reviewer', 'SKILL.md'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.claude',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
             .existsSync(),
         isTrue,
       );
@@ -395,9 +473,12 @@ track = { kind = "local" }
     test(
       'configured extra folders drive the interactive review prompt',
       () async {
-        Directory(p.join(source.path, 'skills', 'reviewer', 'rules'))
+        fs
+            .directory(fs.path.join(source.path, 'skills', 'reviewer', 'rules'))
             .createSync();
-        final config = File(p.join(project.path, 'agent-resources.toml'));
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
         config.writeAsStringSync('''
 ${config.readAsStringSync()}
 [packs."local/demo".resources.skills]
@@ -408,6 +489,7 @@ extra_folders = ["rules"]
         final prompts = <String>[];
         final result =
             await PackLifecycleService.withDependencies(
+              fileSystem: fs,
               prompts: PackPrompts(
                 confirmation: (label) async {
                   prompts.add(label);
@@ -426,7 +508,14 @@ extra_folders = ["rules"]
         expect(prompts, contains(contains('requests extra root folder rules')));
         expect(result.resources.single.disposition.wireName, 'installed');
         final lock = jsonDecode(
-          File(p.join(project.path, '.agent-resource', 'installations.json'))
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agent-resource',
+                  'installations.json',
+                ),
+              )
               .readAsStringSync(),
         ) as Map<String, Object?>;
         expect(
@@ -441,12 +530,12 @@ extra_folders = ["rules"]
     test(
       'ordinary install replays the lock instead of advancing changed source',
       () async {
-        final service = PackLifecycleService();
+        final service = PackLifecycleService(fileSystem: fs);
         await service.execute(
           request(PackOperation.install, PackResourceType.skill),
         );
-        final marker = File(
-          p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        final marker = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
         );
         marker.writeAsStringSync(
           '${marker.readAsStringSync()}\nUpstream edit.\n',
@@ -458,8 +547,14 @@ extra_folders = ["rules"]
 
         expect(replay.outcome, 'no-op');
         expect(replay.resources.single.disposition.wireName, 'unchanged');
-        final live = File(
-          p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+        final live = fs.file(
+          fs.path.join(
+            project.path,
+            '.agents',
+            'skills',
+            'reviewer',
+            'SKILL.md',
+          ),
         );
         expect(live.readAsStringSync(), isNot(contains('Upstream edit.')));
 
@@ -472,14 +567,16 @@ extra_folders = ["rules"]
     );
 
     test('target selects one same-name Skill installation', () async {
-      final config = File(p.join(project.path, 'agent-resources.toml'));
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
       config.writeAsStringSync(
         config.readAsStringSync().replaceFirst(
           'targets = ["codex"]',
           'targets = ["claude", "codex"]',
         ),
       );
-      final service = PackLifecycleService();
+      final service = PackLifecycleService(fileSystem: fs);
       await service.execute(
         request(
           PackOperation.install,
@@ -487,8 +584,8 @@ extra_folders = ["rules"]
           useDefaultTarget: false,
         ),
       );
-      final upstream = File(
-        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      final upstream = fs.file(
+        fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
       );
       upstream.writeAsStringSync('${upstream.readAsStringSync()}\nUpdate.\n');
 
@@ -498,12 +595,30 @@ extra_folders = ["rules"]
 
       expect(result.resources.single.disposition.wireName, 'updated');
       expect(
-        File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
             .readAsStringSync(),
         contains('Update.'),
       );
       expect(
-        File(p.join(project.path, '.claude', 'skills', 'reviewer', 'SKILL.md'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.claude',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
             .readAsStringSync(),
         isNot(contains('Update.')),
       );
@@ -519,7 +634,16 @@ extra_folders = ["rules"]
       );
       expect(rolledBack.resources.single.disposition.wireName, 'rolledBack');
       expect(
-        File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
             .readAsStringSync(),
         isNot(contains('Update.')),
       );
@@ -528,18 +652,24 @@ extra_folders = ["rules"]
     test(
       'update requires an explicit whole-resource local-edit choice',
       () async {
-        final service = PackLifecycleService();
+        final service = PackLifecycleService(fileSystem: fs);
         await service.execute(
           request(PackOperation.install, PackResourceType.skill),
         );
-        final upstream = File(
-          p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        final upstream = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
         );
         upstream.writeAsStringSync(
           '${upstream.readAsStringSync()}\nUpstream edit.\n',
         );
-        final live = File(
-          p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+        final live = fs.file(
+          fs.path.join(
+            project.path,
+            '.agents',
+            'skills',
+            'reviewer',
+            'SKILL.md',
+          ),
         );
         live.writeAsStringSync('${live.readAsStringSync()}\nLocal edit.\n');
 
@@ -573,18 +703,24 @@ extra_folders = ["rules"]
     test(
       'replace-local preserves edited bytes before publishing upstream',
       () async {
-        final service = PackLifecycleService();
+        final service = PackLifecycleService(fileSystem: fs);
         await service.execute(
           request(PackOperation.install, PackResourceType.skill),
         );
-        final upstream = File(
-          p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        final upstream = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
         );
         upstream.writeAsStringSync(
           '${upstream.readAsStringSync()}\nUpstream edit.\n',
         );
-        final live = File(
-          p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+        final live = fs.file(
+          fs.path.join(
+            project.path,
+            '.agents',
+            'skills',
+            'reviewer',
+            'SKILL.md',
+          ),
         );
         live.writeAsStringSync('${live.readAsStringSync()}\nLocal edit.\n');
 
@@ -600,7 +736,14 @@ extra_folders = ["rules"]
         expect(live.readAsStringSync(), contains('Upstream edit.'));
         expect(live.readAsStringSync(), isNot(contains('Local edit.')));
         final lock = jsonDecode(
-          File(p.join(project.path, '.agent-resource', 'installations.json'))
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agent-resource',
+                  'installations.json',
+                ),
+              )
               .readAsStringSync(),
         ) as Map<String, Object?>;
         final installation =
@@ -608,8 +751,8 @@ extra_folders = ["rules"]
                 as Map<String, Object?>;
         final backupIds = installation['backupIds']! as List<Object?>;
         expect(backupIds, hasLength(1));
-        final backup = File(
-          p.join(
+        final backup = fs.file(
+          fs.path.join(
             project.path,
             '.agent-resource',
             'backups',
@@ -623,7 +766,7 @@ extra_folders = ["rules"]
     );
 
     test('canonical replace-local preserves edits before updating', () async {
-      final service = PackLifecycleService();
+      final service = PackLifecycleService(fileSystem: fs);
       await service.execute(
         request(
           PackOperation.install,
@@ -631,12 +774,12 @@ extra_folders = ["rules"]
           method: 'canonical',
         ),
       );
-      final upstream = File(
-        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      final upstream = fs.file(
+        fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
       );
       upstream.writeAsStringSync('${upstream.readAsStringSync()}\nUpstream.\n');
-      final live = File(
-        p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+      final live = fs.file(
+        fs.path.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
       );
       live.writeAsStringSync('${live.readAsStringSync()}\nLocal edit.\n');
 
@@ -652,7 +795,14 @@ extra_folders = ["rules"]
       expect(live.readAsStringSync(), contains('Upstream.'));
       expect(live.readAsStringSync(), isNot(contains('Local edit.')));
       final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agent-resource',
+                'installations.json',
+              ),
+            )
             .readAsStringSync(),
       ) as Map<String, Object?>;
       expect(
@@ -681,23 +831,26 @@ extra_folders = ["rules"]
     test(
       'changed source configuration requires reviewed source change',
       () async {
-        final service = PackLifecycleService();
+        final service = PackLifecycleService(fileSystem: fs);
         await service.execute(
           request(PackOperation.install, PackResourceType.skill),
         );
-        final other = Directory(p.join(sandbox.path, 'other'))..createSync();
+        final other = fs.directory(fs.path.join(sandbox.path, 'other'))
+          ..createSync();
         for (final entity in source.listSync(recursive: true)) {
-          final relative = p.relative(entity.path, from: source.path);
-          final destination = p.join(other.path, relative);
-          if (entity is Directory) {
-            Directory(destination).createSync(recursive: true);
-          } else if (entity is File) {
-            File(destination)
+          final relative = fs.path.relative(entity.path, from: source.path);
+          final destination = fs.path.join(other.path, relative);
+          if (entity is fslib.Directory) {
+            fs.directory(destination).createSync(recursive: true);
+          } else if (entity is fslib.File) {
+            fs.file(destination)
               ..createSync(recursive: true)
               ..writeAsBytesSync(entity.readAsBytesSync());
           }
         }
-        final config = File(p.join(project.path, 'agent-resources.toml'));
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
         config.writeAsStringSync(
           config.readAsStringSync().replaceFirst(
             'path = "../source"',
@@ -721,14 +874,15 @@ extra_folders = ["rules"]
     );
 
     test('source associate binds a matching adopted installation', () async {
-      final destination = Directory(
-        p.join(project.path, '.agents', 'skills', 'reviewer'),
+      final destination = fs.directory(
+        fs.path.join(project.path, '.agents', 'skills', 'reviewer'),
       )..createSync(recursive: true);
-      final adoptedSource = p.join(source.path, 'skills', 'reviewer');
-      for (final entity in Directory(adoptedSource).listSync(recursive: true)) {
-        if (entity is! File) continue;
-        final relative = p.relative(entity.path, from: adoptedSource);
-        File(p.join(destination.path, relative))
+      final adoptedSource = fs.path.join(source.path, 'skills', 'reviewer');
+      for (final entity
+          in fs.directory(adoptedSource).listSync(recursive: true)) {
+        if (entity is! fslib.File) continue;
+        final relative = fs.path.relative(entity.path, from: adoptedSource);
+        fs.file(fs.path.join(destination.path, relative))
           ..createSync(recursive: true)
           ..writeAsBytesSync(entity.readAsBytesSync());
       }
@@ -739,7 +893,7 @@ extra_folders = ["rules"]
         home: home.path,
         approved: true,
       );
-      await SkillLifecycleService().adopt(
+      await SkillLifecycleService(fileSystem: fs).adopt(
         SkillInstallInput(
           options: options,
           source: destination.path,
@@ -747,11 +901,11 @@ extra_folders = ["rules"]
         ),
       );
 
-      final lockFile = File(
-        p.join(project.path, '.agent-resource', 'installations.json'),
+      final lockFile = fs.file(
+        fs.path.join(project.path, '.agent-resource', 'installations.json'),
       );
       final beforePreview = lockFile.readAsBytesSync();
-      final preview = await PackLifecycleService().execute(
+      final preview = await PackLifecycleService(fileSystem: fs).execute(
         request(
           PackOperation.sourceAssociate,
           PackResourceType.skill,
@@ -763,7 +917,7 @@ extra_folders = ["rules"]
       expect(preview.outcome, 'preview');
       expect(lockFile.readAsBytesSync(), beforePreview);
 
-      final result = await PackLifecycleService().execute(
+      final result = await PackLifecycleService(fileSystem: fs).execute(
         request(
           PackOperation.sourceAssociate,
           PackResourceType.skill,
@@ -784,24 +938,25 @@ extra_folders = ["rules"]
     });
 
     test('recovery failure stops removals and preserves its status', () async {
-      final writer = Directory(p.join(source.path, 'skills', 'writer'))
+      final writer = fs.directory(fs.path.join(source.path, 'skills', 'writer'))
         ..createSync(recursive: true);
-      File(p.join(writer.path, 'SKILL.md')).writeAsStringSync('''---
+      fs.file(fs.path.join(writer.path, 'SKILL.md')).writeAsStringSync('''---
 name: writer
 description: Writes docs.
 ---
 # Writer
 ''');
-      final catalog = File(p.join(source.path, 'agent-resources.toml'));
+      final catalog = fs.file(
+        fs.path.join(source.path, 'agent-resources.toml'),
+      );
       catalog.writeAsStringSync(
         '${catalog.readAsStringSync()}\n'
         '[[catalog.skills]]\npath = "skills/writer"\n',
       );
-      await PackLifecycleService().execute(
-        request(PackOperation.install, PackResourceType.skill),
-      );
-      final upstream = File(
-        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      await PackLifecycleService(fileSystem: fs)
+          .execute(request(PackOperation.install, PackResourceType.skill));
+      final upstream = fs.file(
+        fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
       );
       upstream.writeAsStringSync('${upstream.readAsStringSync()}\nUpdate.\n');
       writer.deleteSync(recursive: true);
@@ -812,6 +967,7 @@ description: Writes docs.
         ),
       );
       final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
         state: LifecycleStateService(io: _RecoveryRequiredIO()),
       );
 
@@ -832,20 +988,29 @@ description: Writes docs.
         ),
       );
       expect(
-        File(p.join(project.path, '.agents', 'skills', 'writer', 'SKILL.md'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'writer',
+                'SKILL.md',
+              ),
+            )
             .existsSync(),
         isTrue,
       );
     });
 
     test('rollback restores one stable Recorded snapshot ref', () async {
-      final service = PackLifecycleService();
+      final service = PackLifecycleService(fileSystem: fs);
       final installed = await service.execute(
         request(PackOperation.install, PackResourceType.skill),
       );
       final firstRef = installed.resources.single.snapshot!;
-      final upstream = File(
-        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      final upstream = fs.file(
+        fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
       );
       upstream.writeAsStringSync(
         '${upstream.readAsStringSync()}\nVersion two.\n',
@@ -872,12 +1037,28 @@ description: Writes docs.
         contains('SKILL.md'),
       );
       expect(
-        File(p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
             .readAsStringSync(),
         isNot(contains('Version two.')),
       );
       final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agent-resource',
+                'installations.json',
+              ),
+            )
             .readAsStringSync(),
       ) as Map<String, Object?>;
       final snapshots = lock['snapshots']! as List<Object?>;
@@ -889,65 +1070,21 @@ description: Writes docs.
     });
 
     test(
-      'source-link update observes but never overwrites the target',
-      () async {
-        final service = PackLifecycleService();
-        final installed = await service.execute(
-          request(
-            PackOperation.install,
-            PackResourceType.skill,
-            method: 'source-link',
-          ),
-        );
-        expect(installed.resources.single.linkOnly, isTrue);
-        final live = Link(
-          p.join(project.path, '.agents', 'skills', 'reviewer'),
-        );
-        expect(live.existsSync(), isTrue);
-        final target = File(
-          p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
-        );
-        target.writeAsStringSync(
-          '${target.readAsStringSync()}\nTarget edit.\n',
-        );
-
-        final observed = await service.execute(
-          request(
-            PackOperation.update,
-            PackResourceType.skill,
-            method: 'source-link',
-          ),
-        );
-
-        expect(observed.resources.single.disposition.wireName, 'observed');
-        expect(observed.resources.single.linkOnly, isTrue);
-        expect(target.readAsStringSync(), contains('Target edit.'));
-        expect(live.targetSync(), p.join(source.path, 'skills', 'reviewer'));
-        final lock = jsonDecode(
-          File(p.join(project.path, '.agent-resource', 'installations.json'))
-              .readAsStringSync(),
-        ) as Map<String, Object?>;
-        final installation =
-            (lock['installations']! as List<Object?>).single!
-                as Map<String, Object?>;
-        expect(installation['backupIds'], isEmpty);
-        expect(
-          (installation['origin']!
-              as Map<String, Object?>)['targetObservation'],
-          isNotNull,
-        );
-      },
-    );
-
-    test(
       'a removed resource can be reinstalled with a fresh identity',
       () async {
-        final service = PackLifecycleService();
+        final service = PackLifecycleService(fileSystem: fs);
         final installed = await service.execute(
           request(PackOperation.install, PackResourceType.skill),
         );
         final firstLock = jsonDecode(
-          File(p.join(project.path, '.agent-resource', 'installations.json'))
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agent-resource',
+                  'installations.json',
+                ),
+              )
               .readAsStringSync(),
         ) as Map<String, Object?>;
         final original =
@@ -967,7 +1104,14 @@ description: Writes docs.
 
         expect(reinstalled.resources.single.disposition.wireName, 'installed');
         final lock = jsonDecode(
-          File(p.join(project.path, '.agent-resource', 'installations.json'))
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agent-resource',
+                  'installations.json',
+                ),
+              )
               .readAsStringSync(),
         ) as Map<String, Object?>;
         final live = (lock['installations']! as List<Object?>)
@@ -975,9 +1119,17 @@ description: Writes docs.
             .singleWhere((record) => record['lifecycle'] == 'live');
         expect(live['installationId'], isNot(original));
         expect(
-          File(
-            p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
-          ).existsSync(),
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
           isTrue,
         );
         expect(installed.resources.single.disposition.wireName, 'installed');
@@ -987,19 +1139,22 @@ description: Writes docs.
     test(
       'new resources stay unselected until --only requests inclusion',
       () async {
-        final service = PackLifecycleService();
+        final service = PackLifecycleService(fileSystem: fs);
         await service.execute(
           request(PackOperation.install, PackResourceType.skill),
         );
-        final second = Directory(p.join(source.path, 'skills', 'writer'))
-          ..createSync(recursive: true);
-        File(p.join(second.path, 'SKILL.md')).writeAsStringSync('''---
+        final second = fs.directory(
+          fs.path.join(source.path, 'skills', 'writer'),
+        )..createSync(recursive: true);
+        fs.file(fs.path.join(second.path, 'SKILL.md')).writeAsStringSync('''---
 name: writer
 description: Writes docs.
 ---
 # Writer
 ''');
-        final catalog = File(p.join(source.path, 'agent-resources.toml'));
+        final catalog = fs.file(
+          fs.path.join(source.path, 'agent-resources.toml'),
+        );
         catalog.writeAsStringSync(
           '${catalog.readAsStringSync()}\n'
           '[[catalog.skills]]\npath = "skills/writer"\n',
@@ -1020,7 +1175,10 @@ description: Writes docs.
           contains('new-resource-unselected'),
         );
         expect(
-          Directory(p.join(project.path, '.agents', 'skills', 'writer'))
+          fs
+              .directory(
+                fs.path.join(project.path, '.agents', 'skills', 'writer'),
+              )
               .existsSync(),
           isFalse,
         );
@@ -1034,7 +1192,16 @@ description: Writes docs.
         );
         expect(selected.resources.single.disposition.wireName, 'installed');
         expect(
-          File(p.join(project.path, '.agents', 'skills', 'writer', 'SKILL.md'))
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'writer',
+                  'SKILL.md',
+                ),
+              )
               .existsSync(),
           isTrue,
         );
@@ -1054,26 +1221,29 @@ description: Writes docs.
 
     test('cancelling review does not persist a declined addition', () async {
       final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
         prompts: PackPrompts(confirmation: (label) async => false),
       );
       await service.execute(
         request(PackOperation.install, PackResourceType.skill),
       );
-      final second = Directory(p.join(source.path, 'skills', 'writer'))
+      final second = fs.directory(fs.path.join(source.path, 'skills', 'writer'))
         ..createSync(recursive: true);
-      File(p.join(second.path, 'SKILL.md')).writeAsStringSync('''---
+      fs.file(fs.path.join(second.path, 'SKILL.md')).writeAsStringSync('''---
 name: writer
 description: Writes docs.
 ---
 # Writer
 ''');
-      final catalog = File(p.join(source.path, 'agent-resources.toml'));
+      final catalog = fs.file(
+        fs.path.join(source.path, 'agent-resources.toml'),
+      );
       catalog.writeAsStringSync(
         '${catalog.readAsStringSync()}\n'
         '[[catalog.skills]]\npath = "skills/writer"\n',
       );
-      final lockFile = File(
-        p.join(project.path, '.agent-resource', 'installations.json'),
+      final lockFile = fs.file(
+        fs.path.join(project.path, '.agent-resource', 'installations.json'),
       );
       final beforeReview = lockFile.readAsBytesSync();
 
@@ -1096,6 +1266,202 @@ description: Writes docs.
       );
       expect(lockFile.readAsBytesSync(), beforeReview);
     });
+
+    test(
+      'cleanup protects current and prunes expired history visibly',
+      () async {
+        final service = PackLifecycleService(fileSystem: fs);
+        final installed = await service.execute(
+          request(PackOperation.install, PackResourceType.skill),
+        );
+        final firstRef = installed.resources.single.snapshot!;
+        final upstream = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        );
+        upstream.writeAsStringSync('${upstream.readAsStringSync()}\nSecond.\n');
+        await service.execute(
+          request(PackOperation.update, PackResourceType.skill),
+        );
+        final lockFile = fs.file(
+          fs.path.join(project.path, '.agent-resource', 'installations.json'),
+        );
+        final lock =
+            jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
+        final snapshots = lock['snapshots']! as List<Object?>;
+        final oldSnapshot = snapshots
+            .map((value) => value! as Map<String, Object?>)
+            .singleWhere((snapshot) => snapshot['ref'] == firstRef);
+        oldSnapshot['noncurrentAt'] = DateTime.now()
+            .toUtc()
+            .subtract(const Duration(days: 100))
+            .toIso8601String();
+        lockFile.writeAsStringSync(jsonEncode(lock));
+
+        final preview = await service.execute(
+          request(PackOperation.cleanup, PackResourceType.skill, dryRun: true),
+        );
+        expect(preview.outcome, 'preview');
+        expect(
+          (preview.source['prunedSnapshotRefs']! as List<Object?>),
+          contains(firstRef),
+        );
+        final artifact = fs.directory(
+          fs.path.join(
+            project.path,
+            '.agent-resource',
+            'snapshots',
+            oldSnapshot['contentDigest']! as String,
+            'artifact',
+          ),
+        );
+        expect(artifact.existsSync(), isTrue);
+
+        final cleaned = await service.execute(
+          request(PackOperation.cleanup, PackResourceType.skill),
+        );
+        expect(cleaned.outcome, 'completed');
+        expect(cleaned.plan!.cleanupRefs, contains(firstRef));
+        expect(artifact.existsSync(), isFalse);
+        final after =
+            jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
+        final pruned = (after['snapshots']! as List<Object?>)
+            .map((value) => value! as Map<String, Object?>)
+            .singleWhere((snapshot) => snapshot['ref'] == firstRef);
+        expect(pruned['contentAvailable'], isFalse);
+
+        final current = (after['snapshots']! as List<Object?>)
+            .map((value) => value! as Map<String, Object?>)
+            .singleWhere((snapshot) => snapshot['noncurrentAt'] == null);
+        expect(current['ref'], isNot(firstRef));
+      },
+    );
+
+    test('local-edit backups require explicit cleanup selection', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final upstream = fs.file(
+        fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+      );
+      upstream.writeAsStringSync('${upstream.readAsStringSync()}\nSecond.\n');
+      final live = fs.file(
+        fs.path.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+      );
+      live.writeAsStringSync('${live.readAsStringSync()}\nLocal.\n');
+      await service.execute(
+        request(
+          PackOperation.update,
+          PackResourceType.skill,
+          replaceLocal: const ['reviewer'],
+        ),
+      );
+      final lockFile = fs.file(
+        fs.path.join(project.path, '.agent-resource', 'installations.json'),
+      );
+      final lock =
+          jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
+      final edited = (lock['snapshots']! as List<Object?>)
+          .map((value) => value! as Map<String, Object?>)
+          .singleWhere((snapshot) => snapshot['retentionClass'] == 'localEdit');
+      edited['noncurrentAt'] = DateTime.now()
+          .toUtc()
+          .subtract(const Duration(days: 1000))
+          .toIso8601String();
+      lockFile.writeAsStringSync(jsonEncode(lock));
+
+      final ordinary = await service.execute(
+        request(PackOperation.cleanup, PackResourceType.skill),
+      );
+      expect(ordinary.outcome, 'no-op');
+      expect(ordinary.warnings, isEmpty);
+
+      final explicit = await service.execute(
+        request(
+          PackOperation.cleanup,
+          PackResourceType.skill,
+          localEdits: true,
+        ),
+      );
+      expect(explicit.outcome, 'completed');
+      expect(explicit.warnings.single.id, 'local-edit-cleanup');
+      expect(
+        (explicit.source['prunedSnapshotRefs']! as List<Object?>),
+        contains(edited['ref']),
+      );
+    });
+  });
+
+  group('PackLifecycleService host links', () {
+    late Directory sandbox;
+    late Directory project;
+    late Directory home;
+    late Directory source;
+
+    setUp(() {
+      sandbox = Directory.systemTemp.createTempSync('pack-host-link-');
+      project = Directory(p.join(sandbox.path, 'project'))..createSync();
+      home = Directory(p.join(sandbox.path, 'home'))..createSync();
+      source = Directory(p.join(sandbox.path, 'source'))..createSync();
+      File(p.join(source.path, 'agent-resources.toml')).writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/reviewer"
+''');
+      File(p.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('''---
+name: reviewer
+description: Reviews code.
+---
+# Reviewer
+''');
+      File(p.join(project.path, 'agent-resources.toml')).writeAsStringSync('''
+schema_version = 1
+[cli.install]
+targets = ["codex"]
+skill_method = "copy"
+[packs."local/demo".source]
+kind = "local"
+path = "../source"
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+    });
+
+    tearDown(() {
+      if (sandbox.existsSync()) sandbox.deleteSync(recursive: true);
+    });
+
+    PackLifecycleRequest request(
+      PackOperation operation,
+      PackResourceType type, {
+      List<String> only = const [],
+      String? snapshot,
+      String? method,
+      String? target,
+      bool useDefaultTarget = true,
+    }) => PackLifecycleRequest(
+      operation: operation,
+      resourceType: type,
+      pack: 'local/demo',
+      processWorkingDirectory: sandbox.path,
+      environment: {
+        'HOME': home.path,
+        'USERPROFILE': home.path,
+        'APPDATA': p.join(home.path, 'AppData', 'Roaming'),
+        'LOCALAPPDATA': p.join(home.path, 'AppData', 'Local'),
+      },
+      scope: LifecycleScope.project,
+      cwd: project.path,
+      projectRoot: project.path,
+      home: home.path,
+      only: only,
+      method: method ?? 'copy',
+      target: useDefaultTarget ? target ?? 'codex' : target,
+      snapshot: snapshot,
+      yes: true,
+    );
 
     test(
       'canonical rollback restores historical exposures and consumers',
@@ -1198,130 +1564,6 @@ description: Writes docs.
       expect(rolledBack.resources.single.linkOnly, isTrue);
       expect(link.targetSync(), originalTarget);
       expect(target.readAsStringSync(), contains('Edited target.'));
-    });
-
-    test(
-      'cleanup protects current and prunes expired history visibly',
-      () async {
-        final service = PackLifecycleService();
-        final installed = await service.execute(
-          request(PackOperation.install, PackResourceType.skill),
-        );
-        final firstRef = installed.resources.single.snapshot!;
-        final upstream = File(
-          p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
-        );
-        upstream.writeAsStringSync('${upstream.readAsStringSync()}\nSecond.\n');
-        await service.execute(
-          request(PackOperation.update, PackResourceType.skill),
-        );
-        final lockFile = File(
-          p.join(project.path, '.agent-resource', 'installations.json'),
-        );
-        final lock =
-            jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
-        final snapshots = lock['snapshots']! as List<Object?>;
-        final oldSnapshot = snapshots
-            .map((value) => value! as Map<String, Object?>)
-            .singleWhere((snapshot) => snapshot['ref'] == firstRef);
-        oldSnapshot['noncurrentAt'] = DateTime.now()
-            .toUtc()
-            .subtract(const Duration(days: 100))
-            .toIso8601String();
-        lockFile.writeAsStringSync(jsonEncode(lock));
-
-        final preview = await service.execute(
-          request(PackOperation.cleanup, PackResourceType.skill, dryRun: true),
-        );
-        expect(preview.outcome, 'preview');
-        expect(
-          (preview.source['prunedSnapshotRefs']! as List<Object?>),
-          contains(firstRef),
-        );
-        final artifact = Directory(
-          p.join(
-            project.path,
-            '.agent-resource',
-            'snapshots',
-            oldSnapshot['contentDigest']! as String,
-            'artifact',
-          ),
-        );
-        expect(artifact.existsSync(), isTrue);
-
-        final cleaned = await service.execute(
-          request(PackOperation.cleanup, PackResourceType.skill),
-        );
-        expect(cleaned.outcome, 'completed');
-        expect(cleaned.plan!.cleanupRefs, contains(firstRef));
-        expect(artifact.existsSync(), isFalse);
-        final after =
-            jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
-        final pruned = (after['snapshots']! as List<Object?>)
-            .map((value) => value! as Map<String, Object?>)
-            .singleWhere((snapshot) => snapshot['ref'] == firstRef);
-        expect(pruned['contentAvailable'], isFalse);
-
-        final current = (after['snapshots']! as List<Object?>)
-            .map((value) => value! as Map<String, Object?>)
-            .singleWhere((snapshot) => snapshot['noncurrentAt'] == null);
-        expect(current['ref'], isNot(firstRef));
-      },
-    );
-
-    test('local-edit backups require explicit cleanup selection', () async {
-      final service = PackLifecycleService();
-      await service.execute(
-        request(PackOperation.install, PackResourceType.skill),
-      );
-      final upstream = File(
-        p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
-      );
-      upstream.writeAsStringSync('${upstream.readAsStringSync()}\nSecond.\n');
-      final live = File(
-        p.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
-      );
-      live.writeAsStringSync('${live.readAsStringSync()}\nLocal.\n');
-      await service.execute(
-        request(
-          PackOperation.update,
-          PackResourceType.skill,
-          replaceLocal: const ['reviewer'],
-        ),
-      );
-      final lockFile = File(
-        p.join(project.path, '.agent-resource', 'installations.json'),
-      );
-      final lock =
-          jsonDecode(lockFile.readAsStringSync()) as Map<String, Object?>;
-      final edited = (lock['snapshots']! as List<Object?>)
-          .map((value) => value! as Map<String, Object?>)
-          .singleWhere((snapshot) => snapshot['retentionClass'] == 'localEdit');
-      edited['noncurrentAt'] = DateTime.now()
-          .toUtc()
-          .subtract(const Duration(days: 1000))
-          .toIso8601String();
-      lockFile.writeAsStringSync(jsonEncode(lock));
-
-      final ordinary = await service.execute(
-        request(PackOperation.cleanup, PackResourceType.skill),
-      );
-      expect(ordinary.outcome, 'no-op');
-      expect(ordinary.warnings, isEmpty);
-
-      final explicit = await service.execute(
-        request(
-          PackOperation.cleanup,
-          PackResourceType.skill,
-          localEdits: true,
-        ),
-      );
-      expect(explicit.outcome, 'completed');
-      expect(explicit.warnings.single.id, 'local-edit-cleanup');
-      expect(
-        (explicit.source['prunedSnapshotRefs']! as List<Object?>),
-        contains(edited['ref']),
-      );
     });
   });
 

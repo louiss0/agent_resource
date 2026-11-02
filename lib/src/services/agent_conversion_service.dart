@@ -2,8 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import '../agent_inspection.dart';
 import '../native_references.dart';
@@ -34,14 +35,16 @@ final class ConversionRequest {
 
 ConversionRequest parseConversionRequest(
   String requestFile,
-  String workingDirectory,
-) {
-  final path = p.normalize(
-    p.isAbsolute(requestFile)
+  String workingDirectory, {
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) {
+  final path = fileSystem.path.normalize(
+    fileSystem.path.isAbsolute(requestFile)
         ? requestFile
-        : p.join(workingDirectory, requestFile),
+        : fileSystem.path.join(workingDirectory, requestFile),
   );
-  if (skillEntityType(path, followLinks: false) != FileSystemEntityType.file) {
+  if (skillEntityType(path, followLinks: false, fs: fileSystem) !=
+      FileSystemEntityType.file) {
     throw MambaException(
       'The conversion request must be a regular file: $path',
     );
@@ -49,6 +52,7 @@ ConversionRequest parseConversionRequest(
   final bytes = readBoundedSkillMarker(
     path,
     maxBytes: maxManagementDocumentBytes,
+    fs: fileSystem,
   );
   if (bytes.length > maxManagementDocumentBytes) {
     throw MambaException('The conversion request exceeds 8 MiB.', exitCode: 3);
@@ -269,9 +273,14 @@ interface class AgentConversionService {
   AgentConversionService({
     AgentAuthoringService? authoring,
     AgentGraphService? graph,
-  }) : authoring = authoring ?? AgentAuthoringService(),
-       _graph = graph ?? AgentGraphService();
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : _fileSystem = fileSystem,
+       authoring = authoring ?? AgentAuthoringService(fileSystem: fileSystem),
+       _graph = graph ?? AgentGraphService(fileSystem: fileSystem);
 
+  fslib.FileSystem get fileSystem => _fileSystem;
+
+  final fslib.FileSystem _fileSystem;
   final AgentAuthoringService authoring;
   final AgentGraphService _graph;
 
@@ -280,8 +289,11 @@ interface class AgentConversionService {
     LifecycleOptions options, {
     bool showInstructions = false,
   }) async {
-    final context = LifecycleContext.resolve(options);
-    if (!p.equals(context.resolvePath(request.context), context.cwd)) {
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
+    if (!_fileSystem.path.equals(
+      context.resolvePath(request.context),
+      context.cwd,
+    )) {
       throw MambaException(
         'Conversion workingDirectory must agree with --cwd.',
       );
@@ -548,7 +560,7 @@ interface class AgentConversionService {
       output: planned.authoring.output,
       content: planned.authoring.content,
       body: (candidate) async {
-        if (base64Encode(File(candidate).readAsBytesSync()) !=
+        if (base64Encode(_fileSystem.file(candidate).readAsBytesSync()) !=
             base64Encode(utf8.encode(planned.authoring.content))) {
           throw MambaException(
             'The staged conversion candidate changed before publication.',
@@ -604,7 +616,7 @@ interface class AgentConversionService {
     Map<String, Object?> source,
     LifecycleOptions options,
   ) {
-    final context = LifecycleContext.resolve(options);
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
     switch (source['kind']) {
       case 'native-file':
         return inspectNativeAgent(
@@ -616,11 +628,13 @@ interface class AgentConversionService {
             cwd: context.cwd,
           ),
           operation: AgentOperation.inspect,
+          fileSystem: _fileSystem,
         );
       case 'codex-role':
         return CodexBindingInspection.read(
           configFile: context.resolvePath(source['configFile']! as String),
           workingDirectory: context.cwd,
+          fileSystem: _fileSystem,
         ).inspectRole(source['roleKey']! as String);
       case 'managed-agent':
         return authoring.lifecycle.inspectManagedSource(

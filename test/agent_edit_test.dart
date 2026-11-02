@@ -1,20 +1,35 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_authoring_service.dart';
+import 'package:agent_resource/src/services/agent_installation_service.dart';
+import 'package:agent_resource/src/services/agent_lifecycle_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
   group('agent edit', () {
+    late FileSystem fs;
+    late MambaExecutor<MambaExecutionResult> executor;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      executor = createExecutor(
+        agentAuthoring: AgentAuthoringService(fileSystem: fs),
+        agentLifecycle: AgentLifecycleService(fileSystem: fs),
+        agentInstallation: AgentInstallationService(fileSystem: fs),
+      ).fake();
+    });
     test('plans and applies an edit through a retained-backup replacement', () async {
-      final sandbox = await Directory.systemTemp.createTemp('agent-edit-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = File(p.join(sandbox.path, 'source.md'))
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
           ..writeAsStringSync('''---
 name: reviewer
 description: Original description.
@@ -23,19 +38,19 @@ Original instructions.
 ''');
         final context = <String>[
           '--cwd',
-          '${project.path}${p.separator}',
+          '${project.path}${fs.path.separator}',
           '--project-root',
-          '${project.path}${p.separator}',
+          '${project.path}${fs.path.separator}',
           '--home',
-          '${home.path}${p.separator}',
+          '${home.path}${fs.path.separator}',
           // Lifecycle coordination also covers the user state root. Keep this
           // test's lock and evidence isolated from concurrently running tests.
           '--state-dir',
-          '${p.join(sandbox.path, 'state')}${p.separator}',
+          '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
           '--format',
           'json',
         ];
-        final installed = await createExecutor().fake().execute([
+        final installed = await executor.execute([
           'agent',
           'install',
           source.path,
@@ -67,7 +82,7 @@ Original instructions.
         final entry =
             (unit['entries']! as List<Object?>).single! as Map<String, Object?>;
         final location = entry['path']! as String;
-        final request = File(p.join(sandbox.path, 'edit.json'))
+        final request = fs.file(fs.path.join(sandbox.path, 'edit.json'))
           ..writeAsStringSync(
             jsonEncode(<String, Object?>{
               'schemaVersion': 1,
@@ -88,8 +103,8 @@ Original instructions.
               'instructions': <Object?>['Edited instructions.'],
             }),
           );
-        final before = File(location).readAsBytesSync();
-        final result = await createExecutor().fake().execute([
+        final before = fs.file(location).readAsBytesSync();
+        final result = await executor.execute([
           'agent',
           'edit',
           request.path,
@@ -116,9 +131,9 @@ Original instructions.
           ),
         );
         expect(result.output, isNot(contains('Edited instructions.')));
-        expect(File(location).readAsBytesSync(), before);
+        expect(fs.file(location).readAsBytesSync(), before);
 
-        final applied = await createExecutor().fake().execute([
+        final applied = await executor.execute([
           'agent',
           'edit',
           request.path,
@@ -145,7 +160,7 @@ Original instructions.
         final appliedData = appliedReport['data']! as Map<String, Object?>;
         final backupId = appliedData['backupId'];
         expect(backupId, isA<String>());
-        expect(File(location).readAsStringSync(), '''---
+        expect(fs.file(location).readAsStringSync(), '''---
 description: "Edited description."
 name: "reviewer"
 ---
@@ -153,7 +168,7 @@ Original instructions.
 
 Edited instructions.''');
 
-        final backups = await createExecutor().fake().execute([
+        final backups = await executor.execute([
           'agent',
           'backup',
           'list',
@@ -166,6 +181,7 @@ Edited instructions.''');
             'exit code',
             0,
           ),
+          reason: backups is MambaFailureResult ? backups.message : null,
         );
         final backupReport = jsonDecode(
           (backups as MambaSuccessResult).output!,

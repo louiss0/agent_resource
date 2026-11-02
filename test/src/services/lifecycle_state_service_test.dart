@@ -1,13 +1,14 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 final class _FailAfterLedgerCommit extends LifecycleIO {
+  _FailAfterLedgerCommit(FileSystem fs) : super(fs: fs);
   var _armed = false;
   var _fail = true;
 
@@ -19,21 +20,21 @@ final class _FailAfterLedgerCommit extends LifecycleIO {
     }
     super.rename(source, destination);
     if (destination.endsWith('installations.json') &&
-        File(destination).readAsStringSync().contains('installationId')) {
+        fs.file(destination).readAsStringSync().contains('installationId')) {
       _armed = true;
     }
   }
 }
 
 final class _FailBeforeRestorePublish extends LifecycleIO {
-  _FailBeforeRestorePublish(this.livePath);
+  _FailBeforeRestorePublish(this.livePath, FileSystem fs) : super(fs: fs);
   final String livePath;
   var _fail = true;
 
   @override
   void rename(String source, String destination) {
     if (_fail &&
-        p.equals(destination, livePath) &&
+        fs.path.equals(destination, livePath) &&
         source.contains('staging')) {
       _fail = false;
       throw const FileSystemException('Injected publication failure');
@@ -44,10 +45,11 @@ final class _FailBeforeRestorePublish extends LifecycleIO {
 
 final class _FailOnceAfterInstall extends LifecycleIO {
   _FailOnceAfterInstall(
-    this.livePath, {
+    this.livePath,
+    FileSystem fs, {
     required this.preventRollback,
     this.editLiveBeforeFailure = false,
-  });
+  }) : super(fs: fs);
 
   final String livePath;
   final bool preventRollback;
@@ -60,13 +62,13 @@ final class _FailOnceAfterInstall extends LifecycleIO {
   void rename(String source, String destination) {
     if (preventRollback &&
         _published &&
-        p.equals(source, livePath) &&
+        fs.path.equals(source, livePath) &&
         _failRollback) {
       _failRollback = false;
       throw const FileSystemException('Injected rollback failure');
     }
     super.rename(source, destination);
-    if (p.equals(destination, livePath)) _published = true;
+    if (fs.path.equals(destination, livePath)) _published = true;
   }
 
   @override
@@ -74,7 +76,9 @@ final class _FailOnceAfterInstall extends LifecycleIO {
     if (_published && path.contains('.json') && _failJournal) {
       _failJournal = false;
       if (editLiveBeforeFailure) {
-        File(p.join(livePath, 'SKILL.md')).writeAsStringSync('new occupant');
+        fs
+            .file(fs.path.join(livePath, 'SKILL.md'))
+            .writeAsStringSync('new occupant');
       }
       throw const FileSystemException('Injected intent flush failure');
     }
@@ -84,17 +88,36 @@ final class _FailOnceAfterInstall extends LifecycleIO {
 
 void main() {
   group('LifecycleStateService', () {
-    test('dry-run creates no management or staging artifacts', () async {
-      final sandbox = await Directory.systemTemp.createTemp('lifecycle-dry-');
-      try {
-        final project = Directory(p.join(sandbox.path, 'project'))
-          ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = Directory(p.join(sandbox.path, 'source'))..createSync();
-        File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-          '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+    late MemoryFileSystem fs;
+    var sandboxId = 0;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
+
+    Directory createSandbox() =>
+        fs.directory(fs.path.join('/tmp', 'lifecycle-${++sandboxId}'))
+          ..createSync(recursive: true);
+
+    SkillLifecycleService createService({LifecycleStateService? state}) =>
+        SkillLifecycleService(
+          state: state ?? LifecycleStateService(io: LifecycleIO(fs: fs)),
         );
-        final result = await SkillLifecycleService().install(
+    test('dry-run creates no management or staging artifacts', () async {
+      final sandbox = createSandbox();
+      try {
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
+          ..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+          ..createSync();
+        fs
+            .file(fs.path.join(source.path, 'SKILL.md'))
+            .writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+        final result = await createService().install(
           SkillInstallInput(
             options: LifecycleOptions(
               processWorkingDirectory: project.path,
@@ -109,11 +132,13 @@ void main() {
         );
         expect(result.outcome, 'planned');
         expect(
-          Directory(p.join(project.path, '.agent-resource')).existsSync(),
+          fs
+              .directory(fs.path.join(project.path, '.agent-resource'))
+              .existsSync(),
           isFalse,
         );
         expect(
-          Directory(p.join(project.path, '.claude')).existsSync(),
+          fs.directory(fs.path.join(project.path, '.claude')).existsSync(),
           isFalse,
         );
       } finally {
@@ -122,45 +147,47 @@ void main() {
     });
 
     test('automatic rollback refuses a changed live occupant', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'lifecycle-occupant-',
-      );
+      final sandbox = createSandbox();
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = Directory(p.join(sandbox.path, 'source'))..createSync();
-        File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-          '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-        );
-        final live = p.join(project.path, '.claude', 'skills', 'review');
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+          ..createSync();
+        fs
+            .file(fs.path.join(source.path, 'SKILL.md'))
+            .writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+        final live = fs.path.join(project.path, '.claude', 'skills', 'review');
         final io = _FailOnceAfterInstall(
           live,
+          fs,
           preventRollback: false,
           editLiveBeforeFailure: true,
         );
         try {
-          await SkillLifecycleService(state: LifecycleStateService(io: io))
-              .install(
-                SkillInstallInput(
-                  options: LifecycleOptions(
-                    processWorkingDirectory: project.path,
-                    scope: LifecycleScope.project,
-                    cwd: project.path,
-                    projectRoot: project.path,
-                    home: home.path,
-                  ),
-                  source: source.path,
-                  destination: SkillDestination.claude,
-                ),
-              );
+          await createService(state: LifecycleStateService(io: io)).install(
+            SkillInstallInput(
+              options: LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+              ),
+              source: source.path,
+              destination: SkillDestination.claude,
+            ),
+          );
           fail('The injected failure did not surface.');
         } on MambaException catch (error) {
           expect(error.exitCode, 6);
           expect(error.message, contains('requires recovery'));
         }
         expect(
-          File(p.join(live, 'SKILL.md')).readAsStringSync(),
+          fs.file(fs.path.join(live, 'SKILL.md')).readAsStringSync(),
           'new occupant',
         );
       } finally {
@@ -171,19 +198,20 @@ void main() {
     test(
       'replacement rollback preserves a new occupant and original quarantine',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'replace-occupant-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           Directory source(String directory, String description) {
-            final result = Directory(p.join(sandbox.path, directory))
+            final result = fs.directory(fs.path.join(sandbox.path, directory))
               ..createSync();
-            File(p.join(result.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: $description\n---\nBody.\n',
-            );
+            fs
+                .file(fs.path.join(result.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: $description\n---\nBody.\n',
+                );
             return result;
           }
 
@@ -195,7 +223,7 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final service = SkillLifecycleService();
+          final service = createService();
           final installed = await service.install(
             SkillInstallInput(
               options: options(),
@@ -203,32 +231,44 @@ void main() {
               destination: SkillDestination.claude,
             ),
           );
-          final live = p.join(project.path, '.claude', 'skills', 'review');
+          final live = fs.path.join(
+            project.path,
+            '.claude',
+            'skills',
+            'review',
+          );
           final io = _FailOnceAfterInstall(
             live,
+            fs,
             preventRollback: false,
             editLiveBeforeFailure: true,
           );
           try {
-            await SkillLifecycleService(state: LifecycleStateService(io: io))
-                .replace(
-                  LifecycleReplaceInput(
-                    options: options(approved: true),
-                    installationId: installed.data['installationId']! as String,
-                    source: source('two', 'Second.').path,
-                  ),
-                );
+            await createService(state: LifecycleStateService(io: io)).replace(
+              LifecycleReplaceInput(
+                options: options(approved: true),
+                installationId: installed.data['installationId']! as String,
+                source: source('two', 'Second.').path,
+              ),
+            );
             fail('The injected replacement failure did not surface.');
           } on MambaException catch (error) {
             expect(error.exitCode, 6);
           }
           expect(
-            File(p.join(live, 'SKILL.md')).readAsStringSync(),
+            fs.file(fs.path.join(live, 'SKILL.md')).readAsStringSync(),
             'new occupant',
           );
-          final quarantines = Directory(
-            p.join(project.path, '.claude', '.agent-resource', 'quarantine'),
-          ).listSync(recursive: true);
+          final quarantines = fs
+              .directory(
+                fs.path.join(
+                  project.path,
+                  '.claude',
+                  '.agent-resource',
+                  'quarantine',
+                ),
+              )
+              .listSync(recursive: true);
           expect(
             quarantines.whereType<File>().map((file) => file.path),
             isNotEmpty,
@@ -245,19 +285,25 @@ void main() {
             ? 'fresh service completes only the evidenced installation publication'
             : 'fresh service rolls back an interrupted installation safely',
         () async {
-          final sandbox = await Directory.systemTemp.createTemp(
-            'lifecycle-fault-',
-          );
+          final sandbox = createSandbox();
           try {
-            final project = Directory(p.join(sandbox.path, 'project'))
+            final project = fs.directory(fs.path.join(sandbox.path, 'project'))
               ..createSync();
-            final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-            final source = Directory(p.join(sandbox.path, 'source'))
+            final home = fs.directory(fs.path.join(sandbox.path, 'home'))
               ..createSync();
-            File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+              ..createSync();
+            fs
+                .file(fs.path.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+                );
+            final live = fs.path.join(
+              project.path,
+              '.claude',
+              'skills',
+              'review',
             );
-            final live = p.join(project.path, '.claude', 'skills', 'review');
             LifecycleOptions options({bool approved = false}) =>
                 LifecycleOptions(
                   processWorkingDirectory: project.path,
@@ -267,17 +313,16 @@ void main() {
                   home: home.path,
                   approved: approved,
                 );
-            final io = _FailOnceAfterInstall(live, preventRollback: true);
+            final io = _FailOnceAfterInstall(live, fs, preventRollback: true);
             String transactionId = '';
             try {
-              await SkillLifecycleService(state: LifecycleStateService(io: io))
-                  .install(
-                    SkillInstallInput(
-                      options: options(),
-                      source: source.path,
-                      destination: SkillDestination.claude,
-                    ),
-                  );
+              await createService(state: LifecycleStateService(io: io)).install(
+                SkillInstallInput(
+                  options: options(),
+                  source: source.path,
+                  destination: SkillDestination.claude,
+                ),
+              );
               fail('The injected failure did not surface.');
             } on MambaException catch (error) {
               expect(error.exitCode, 6);
@@ -285,8 +330,8 @@ void main() {
                   .firstMatch(error.message)!
                   .group(1)!;
             }
-            expect(Directory(live).existsSync(), isTrue);
-            final recovered = await SkillLifecycleService().recover(
+            expect(fs.directory(live).existsSync(), isTrue);
+            final recovered = await createService().recover(
               options(approved: true),
               transactionId: transactionId,
               action: complete ? 'complete' : 'rollback',
@@ -296,12 +341,12 @@ void main() {
               recovered.data['stateEstablished'],
               complete ? 'committed' : 'rolledBack',
             );
-            expect(Directory(live).existsSync(), complete);
-            final records = SkillLifecycleService().state.records(
-              LifecycleContext.resolve(options()),
+            expect(fs.directory(live).existsSync(), complete);
+            final records = createService().state.records(
+              LifecycleContext.resolve(options(), fileSystem: fs),
             );
             expect(records, hasLength(complete ? 1 : 0));
-            final inspected = await SkillLifecycleService().recover(
+            final inspected = await createService().recover(
               options(),
               transactionId: transactionId,
             );
@@ -314,15 +359,16 @@ void main() {
       );
     }
     test('adoption rollback removes only management evidence', () async {
-      final sandbox = await Directory.systemTemp.createTemp('adopt-rollback-');
+      final sandbox = createSandbox();
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final skill = Directory(
-          p.join(project.path, '.claude', 'skills', 'review'),
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final skill = fs.directory(
+          fs.path.join(project.path, '.claude', 'skills', 'review'),
         )..createSync(recursive: true);
-        final marker = File(p.join(skill.path, 'SKILL.md'))
+        final marker = fs.file(fs.path.join(skill.path, 'SKILL.md'))
           ..writeAsStringSync(
             '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
           );
@@ -337,8 +383,8 @@ void main() {
         );
         String transactionId = '';
         try {
-          await SkillLifecycleService(
-            state: LifecycleStateService(io: _FailAfterLedgerCommit()),
+          await createService(
+            state: LifecycleStateService(io: _FailAfterLedgerCommit(fs)),
           ).adopt(
             SkillInstallInput(
               options: options(),
@@ -353,7 +399,7 @@ void main() {
               .firstMatch(error.message)!
               .group(0)!;
         }
-        final recovered = await SkillLifecycleService().recover(
+        final recovered = await createService().recover(
           options(approved: true),
           transactionId: transactionId,
           action: 'rollback',
@@ -361,15 +407,22 @@ void main() {
         expect(recovered.data['stateEstablished'], 'rolledBack');
         expect(marker.readAsBytesSync(), before);
         expect(
-          SkillLifecycleService().state.records(
-            LifecycleContext.resolve(options()),
+          createService().state.records(
+            LifecycleContext.resolve(options(), fileSystem: fs),
           ),
           isEmpty,
         );
         expect(
-          Directory(
-            p.join(project.path, '.claude', '.agent-resource', 'quarantine'),
-          ).existsSync(),
+          fs
+              .directory(
+                fs.path.join(
+                  project.path,
+                  '.claude',
+                  '.agent-resource',
+                  'quarantine',
+                ),
+              )
+              .existsSync(),
           isFalse,
         );
       } finally {
@@ -380,18 +433,19 @@ void main() {
     test(
       'restore completion publishes staged output after verified absence',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'restore-complete-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
-          );
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+              );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -400,7 +454,7 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final service = SkillLifecycleService();
+          final service = createService();
           final installed = await service.install(
             SkillInstallInput(
               options: options(),
@@ -412,11 +466,18 @@ void main() {
           final removed = await service.remove(
             LifecycleIdInput(options: options(approved: true), id: id),
           );
-          final live = p.join(project.path, '.claude', 'skills', 'review');
+          final live = fs.path.join(
+            project.path,
+            '.claude',
+            'skills',
+            'review',
+          );
           String transactionId = '';
           try {
-            await SkillLifecycleService(
-              state: LifecycleStateService(io: _FailBeforeRestorePublish(live)),
+            await createService(
+              state: LifecycleStateService(
+                io: _FailBeforeRestorePublish(live, fs),
+              ),
             ).restore(
               LifecycleIdInput(
                 options: options(approved: true),
@@ -429,7 +490,7 @@ void main() {
                 .firstMatch(error.message)!
                 .group(0)!;
           }
-          expect(Directory(live).existsSync(), isFalse);
+          expect(fs.directory(live).existsSync(), isFalse);
           final recovered = await service.recover(
             options(approved: true),
             transactionId: transactionId,
@@ -437,7 +498,7 @@ void main() {
           );
           expect(recovered.data['stateEstablished'], 'committed');
           expect(
-            File(p.join(live, 'SKILL.md')).readAsStringSync(),
+            fs.file(fs.path.join(live, 'SKILL.md')).readAsStringSync(),
             contains('Original.'),
           );
         } finally {
@@ -449,18 +510,19 @@ void main() {
     test(
       'removal completion rejects edited quarantine and remains inspectable',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'remove-complete-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
-          );
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+              );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -469,7 +531,7 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final service = SkillLifecycleService();
+          final service = createService();
           final installed = await service.install(
             SkillInstallInput(
               options: options(),
@@ -479,8 +541,8 @@ void main() {
           );
           String transactionId = '';
           try {
-            await SkillLifecycleService(
-              state: LifecycleStateService(io: _FailAfterLedgerCommit()),
+            await createService(
+              state: LifecycleStateService(io: _FailAfterLedgerCommit(fs)),
             ).remove(
               LifecycleIdInput(
                 options: options(approved: true),
@@ -494,8 +556,8 @@ void main() {
                 .firstMatch(error.message)!
                 .group(0)!;
           }
-          final quarantineRoot = Directory(
-            p.join(
+          final quarantineRoot = fs.directory(
+            fs.path.join(
               project.path,
               '.claude',
               '.agent-resource',
@@ -504,7 +566,8 @@ void main() {
               'review',
             ),
           );
-          File(p.join(quarantineRoot.path, 'SKILL.md'))
+          fs
+              .file(fs.path.join(quarantineRoot.path, 'SKILL.md'))
               .writeAsStringSync('edited');
           try {
             await service.recover(
@@ -517,7 +580,9 @@ void main() {
             expect(error.exitCode, 6);
           }
           expect(
-            File(p.join(quarantineRoot.path, 'SKILL.md')).readAsStringSync(),
+            fs
+                .file(fs.path.join(quarantineRoot.path, 'SKILL.md'))
+                .readAsStringSync(),
             'edited',
           );
           final inspected = await service.recover(
@@ -531,17 +596,19 @@ void main() {
       },
     );
     test('committed-pending completion refuses missing quarantine', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'missing-quarantine-',
-      );
+      final sandbox = createSandbox();
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = Directory(p.join(sandbox.path, 'source'))..createSync();
-        File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-          '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
-        );
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+          ..createSync();
+        fs
+            .file(fs.path.join(source.path, 'SKILL.md'))
+            .writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+            );
         LifecycleOptions options({bool approved = false}) => LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -550,7 +617,7 @@ void main() {
           home: home.path,
           approved: approved,
         );
-        final service = SkillLifecycleService();
+        final service = createService();
         final installed = await service.install(
           SkillInstallInput(
             options: options(),
@@ -560,8 +627,8 @@ void main() {
         );
         String transactionId = '';
         try {
-          await SkillLifecycleService(
-            state: LifecycleStateService(io: _FailAfterLedgerCommit()),
+          await createService(
+            state: LifecycleStateService(io: _FailAfterLedgerCommit(fs)),
           ).remove(
             LifecycleIdInput(
               options: options(approved: true),
@@ -574,8 +641,8 @@ void main() {
               .firstMatch(error.message)!
               .group(0)!;
         }
-        final transactionFile = File(
-          p.join(
+        final transactionFile = fs.file(
+          fs.path.join(
             project.path,
             '.agent-resource',
             'transactions',
@@ -587,15 +654,17 @@ void main() {
         ) as Map<String, Object?>;
         journal['phase'] = 'committedCleanupPending';
         transactionFile.writeAsStringSync(jsonEncode(journal));
-        Directory(
-          p.join(
-            project.path,
-            '.claude',
-            '.agent-resource',
-            'quarantine',
-            transactionId,
-          ),
-        ).deleteSync(recursive: true);
+        fs
+            .directory(
+              fs.path.join(
+                project.path,
+                '.claude',
+                '.agent-resource',
+                'quarantine',
+                transactionId,
+              ),
+            )
+            .deleteSync(recursive: true);
         try {
           await service.recover(
             options(approved: true),
@@ -615,18 +684,19 @@ void main() {
     test(
       'rollback recognizes an already-restored original installation',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'rollback-retry-',
-        );
+        final sandbox = createSandbox();
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
-          );
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+              );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -635,7 +705,7 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final service = SkillLifecycleService();
+          final service = createService();
           final installed = await service.install(
             SkillInstallInput(
               options: options(),
@@ -645,8 +715,8 @@ void main() {
           );
           String transactionId = '';
           try {
-            await SkillLifecycleService(
-              state: LifecycleStateService(io: _FailAfterLedgerCommit()),
+            await createService(
+              state: LifecycleStateService(io: _FailAfterLedgerCommit(fs)),
             ).remove(
               LifecycleIdInput(
                 options: options(approved: true),
@@ -659,11 +729,11 @@ void main() {
                 .firstMatch(error.message)!
                 .group(0)!;
           }
-          final live = Directory(
-            p.join(project.path, '.claude', 'skills', 'review'),
+          final live = fs.directory(
+            fs.path.join(project.path, '.claude', 'skills', 'review'),
           );
-          final quarantine = Directory(
-            p.join(
+          final quarantine = fs.directory(
+            fs.path.join(
               project.path,
               '.claude',
               '.agent-resource',
@@ -686,7 +756,7 @@ void main() {
           expect(
             service.state
                 .recordById(
-                  LifecycleContext.resolve(options()),
+                  LifecycleContext.resolve(options(), fileSystem: fs),
                   installed.data['installationId']! as String,
                 )
                 .lifecycle,

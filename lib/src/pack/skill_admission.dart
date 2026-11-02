@@ -1,7 +1,8 @@
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import '../skill_files.dart';
 import '../skill_validation.dart';
@@ -18,7 +19,10 @@ final class SkillAdmissionReport {
 }
 
 /// Validates the complete native Skill root without executing its contents.
-final class const SkillAdmission() {
+final class SkillAdmission {
+  const SkillAdmission({this.fileSystem = const local.LocalFileSystem()});
+
+  final fslib.FileSystem fileSystem;
   static const _supportedFolders = <String>{
     'references',
     'scripts',
@@ -34,7 +38,7 @@ final class const SkillAdmission() {
       if (folder.isEmpty ||
           folder == '.' ||
           folder == '..' ||
-          p.basename(folder) != folder ||
+          fileSystem.path.basename(folder) != folder ||
           folder == 'SKILL.md' ||
           _supportedFolders.contains(folder)) {
         throw MambaException(
@@ -43,7 +47,7 @@ final class const SkillAdmission() {
         );
       }
     }
-    if (skillEntityType(path, followLinks: false) !=
+    if (skillEntityType(path, followLinks: false, fs: fileSystem) !=
         FileSystemEntityType.directory) {
       throw MambaException(
         'A Skill pack entry must be a real directory: $path',
@@ -52,9 +56,13 @@ final class const SkillAdmission() {
     }
 
     final extras = <String>{};
-    for (final entity in listSkillDirectory(path)) {
-      final name = p.basename(entity.path);
-      final type = skillEntityType(entity.path, followLinks: false);
+    for (final entity in listSkillDirectory(path, fs: fileSystem)) {
+      final name = fileSystem.path.basename(entity.path);
+      final type = skillEntityType(
+        entity.path,
+        followLinks: false,
+        fs: fileSystem,
+      );
       if (name == 'SKILL.md') {
         if (type != FileSystemEntityType.file) {
           throw MambaException(
@@ -88,7 +96,7 @@ final class const SkillAdmission() {
 
     _checkRecursiveEntries(path);
     return SkillAdmissionReport(
-      name: readDeclaredSkillName(path),
+      name: readDeclaredSkillName(path, fs: fileSystem),
       approvedExtraFolders: Set<String>.unmodifiable(extras),
     );
   }
@@ -102,7 +110,7 @@ final class const SkillAdmission() {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
-      for (final entity in listSkillDirectory(path)) {
+      for (final entity in listSkillDirectory(path, fs: fileSystem)) {
         count++;
         if (count > 10000) {
           throw MambaException(
@@ -110,10 +118,14 @@ final class const SkillAdmission() {
             exitCode: PackProcessStatus.invalidInput.code,
           );
         }
-        final type = skillEntityType(entity.path, followLinks: false);
+        final type = skillEntityType(
+          entity.path,
+          followLinks: false,
+          fs: fileSystem,
+        );
         if (type == FileSystemEntityType.link) {
           throw MambaException(
-            'Linked Skill entries are not admitted: ${p.relative(entity.path, from: root)}',
+            'Linked Skill entries are not admitted: ${fileSystem.path.relative(entity.path, from: root)}',
             exitCode: PackProcessStatus.invalidInput.code,
           );
         }
@@ -121,7 +133,7 @@ final class const SkillAdmission() {
           visit(entity.path, depth + 1);
         } else if (type != FileSystemEntityType.file) {
           throw MambaException(
-            'Unsupported Skill entry: ${p.relative(entity.path, from: root)}',
+            'Unsupported Skill entry: ${fileSystem.path.relative(entity.path, from: root)}',
             exitCode: PackProcessStatus.invalidInput.code,
           );
         }

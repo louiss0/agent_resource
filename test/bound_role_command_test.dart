@@ -4,13 +4,17 @@ import 'dart:io';
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/services/bound_role_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:agent_resource/src/services/agent_lifecycle_service.dart';
+import 'package:agent_resource/src/services/parent_config_service.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 final class _Fixture {
-  const _Fixture(this.root, this.project, this.home, this.codex);
+  const _Fixture(this.fs, this.root, this.project, this.home, this.codex);
 
+  final fslib.FileSystem fs;
   final Directory root;
   final Directory project;
   final Directory home;
@@ -18,24 +22,26 @@ final class _Fixture {
 }
 
 Future<_Fixture> _fixture() async {
-  final root = await Directory.systemTemp.createTemp('bound-command-');
-  final project = Directory(p.join(root.path, 'project'))..createSync();
-  final home = Directory(p.join(root.path, 'home'))..createSync();
-  final codex = Directory(p.join(root.path, 'codex'))..createSync();
-  return _Fixture(root, project, home, codex);
+  final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+  final root = fs.directory('/sandbox')..createSync();
+  final project = fs.directory(fs.path.join(root.path, 'project'))
+    ..createSync();
+  final home = fs.directory(fs.path.join(root.path, 'home'))..createSync();
+  final codex = fs.directory(fs.path.join(root.path, 'codex'))..createSync();
+  return _Fixture(fs, root, project, home, codex);
 }
 
 List<String> _context(_Fixture fixture) => [
   '--scope',
   'project',
   '--cwd',
-  '${fixture.project.path}${Platform.pathSeparator}',
+  '${fixture.project.path}${fixture.fs.path.separator}',
   '--project-root',
-  '${fixture.project.path}${Platform.pathSeparator}',
+  '${fixture.project.path}${fixture.fs.path.separator}',
   '--home',
-  '${fixture.home.path}${Platform.pathSeparator}',
+  '${fixture.home.path}${fixture.fs.path.separator}',
   '--codex-home',
-  '${fixture.codex.path}${Platform.pathSeparator}',
+  '${fixture.codex.path}${fixture.fs.path.separator}',
 ];
 
 LifecycleOptions _options(_Fixture fixture, {bool approved = true}) =>
@@ -49,16 +55,25 @@ LifecycleOptions _options(_Fixture fixture, {bool approved = true}) =>
       approved: approved,
     );
 
-File _definition(_Fixture fixture) =>
-    File(p.join(fixture.project.path, '.codex', 'roles', 'reviewer.toml'))
+fslib.File _definition(_Fixture fixture) =>
+    fixture.fs.file(
+        fixture.fs.path.join(
+          fixture.project.path,
+          '.codex',
+          'roles',
+          'reviewer.toml',
+        ),
+      )
       ..createSync(recursive: true)
       ..writeAsStringSync(
         'name = "reviewer"\ndescription = "Reviews."\n'
         'developer_instructions = "Original."\n',
       );
 
-File _config(_Fixture fixture) =>
-    File(p.join(fixture.project.path, '.codex', 'config.toml'))
+fslib.File _config(_Fixture fixture) =>
+    fixture.fs.file(
+        fixture.fs.path.join(fixture.project.path, '.codex', 'config.toml'),
+      )
       ..createSync(recursive: true)
       ..writeAsStringSync(
         '[agents.reviewer]\n'
@@ -66,7 +81,7 @@ File _config(_Fixture fixture) =>
         'config_file = "roles/reviewer.toml"\n',
       );
 
-File _request(
+fslib.File _request(
   _Fixture fixture,
   String operation,
   BoundOwnership ownership, {
@@ -74,24 +89,29 @@ File _request(
   String? installationId,
   String? planId,
 }) {
-  final config = p.join(fixture.project.path, '.codex', 'config.toml');
-  return File(p.join(fixture.root.path, '$operation-request.json'))
-    ..writeAsStringSync(
-      jsonEncode({
-        'schemaVersion': 1,
-        'operation': operation,
-        'source': {
-          'kind': 'codex-role',
-          'configFile': config,
-          'roleKey': 'reviewer',
-        },
-        'ownership': ownership.name,
-        'definition': {'source': ?source, 'installationId': ?installationId},
-        'planId': ?planId,
-        if (operation == 'remove') 'affected': ['agents.reviewer'],
-        'clientsStopped': true,
-      }),
-    );
+  final config = fixture.fs.path.join(
+    fixture.project.path,
+    '.codex',
+    'config.toml',
+  );
+  return fixture.fs.file(
+    fixture.fs.path.join(fixture.root.path, '$operation-request.json'),
+  )..writeAsStringSync(
+    jsonEncode({
+      'schemaVersion': 1,
+      'operation': operation,
+      'source': {
+        'kind': 'codex-role',
+        'configFile': config,
+        'roleKey': 'reviewer',
+      },
+      'ownership': ownership.name,
+      'definition': {'source': ?source, 'installationId': ?installationId},
+      'planId': ?planId,
+      if (operation == 'remove') 'affected': ['agents.reviewer'],
+      'clientsStopped': true,
+    }),
+  );
 }
 
 Future<MambaSuccessResult> _success(MambaExecutionResult result) async {
@@ -105,9 +125,16 @@ Future<MambaSuccessResult> _success(MambaExecutionResult result) async {
   return result as MambaSuccessResult;
 }
 
-Future<String> _planId(_Fixture fixture, String command, File request) async {
+Future<String> _planId(
+  _Fixture fixture,
+  String command,
+  fslib.File request,
+) async {
   final result = await _success(
-    await createExecutor().fake().execute([
+    await createExecutor(
+      agentLifecycle: AgentLifecycleService(fileSystem: fixture.fs),
+      parentConfig: ParentConfigService(fileSystem: fixture.fs),
+    ).fake().execute([
       'agent',
       command,
       '--request',
@@ -130,7 +157,10 @@ Future<MambaSuccessResult> _apply(
   String command,
   File request,
 ) async => _success(
-  await createExecutor().fake().execute([
+  await createExecutor(
+    agentLifecycle: AgentLifecycleService(fileSystem: fixture.fs),
+    parentConfig: ParentConfigService(fileSystem: fixture.fs),
+  ).fake().execute([
     'agent',
     command,
     '--request',
@@ -147,7 +177,7 @@ Future<MambaSuccessResult> _apply(
 Future<String> _adopt(_Fixture fixture) async {
   _definition(fixture);
   final config = _config(fixture);
-  final service = BoundRoleService();
+  final service = BoundRoleService(fileSystem: fixture.fs);
   final request = BoundRoleRequest(
     operation: BoundOperation.adopt,
     configFile: config.path,
@@ -193,14 +223,16 @@ void main() {
                   jsonDecode(applied.output!) as Map<String, Object?>;
               expect(envelope['outcome'], 'adopted');
               expect(
-                File(
-                  p.join(
-                    fixture.project.path,
-                    '.codex',
-                    'roles',
-                    'reviewer.toml',
-                  ),
-                ).existsSync(),
+                fixture.fs
+                    .file(
+                      fixture.fs.path.join(
+                        fixture.project.path,
+                        '.codex',
+                        'roles',
+                        'reviewer.toml',
+                      ),
+                    )
+                    .existsSync(),
                 isTrue,
               );
             } finally {
@@ -218,11 +250,12 @@ void main() {
             try {
               final id = await _adopt(fixture);
               final replacement =
-                  File(p.join(fixture.root.path, 'replacement.toml'))
-                    ..writeAsStringSync(
-                      'name = "reviewer"\ndescription = "Replacement."\n'
-                      'developer_instructions = "Replacement body."\n',
-                    );
+                  fixture.fs.file(
+                    fixture.fs.path.join(fixture.root.path, 'replacement.toml'),
+                  )..writeAsStringSync(
+                    'name = "reviewer"\ndescription = "Replacement."\n'
+                    'developer_instructions = "Replacement body."\n',
+                  );
               final idPlan = await _planId(
                 fixture,
                 'replace',
@@ -249,8 +282,8 @@ void main() {
               final envelope =
                   jsonDecode(applied.output!) as Map<String, Object?>;
               expect(envelope['outcome'], 'replaced');
-              final definition = File(
-                p.join(
+              final definition = fixture.fs.file(
+                fixture.fs.path.join(
                   fixture.project.path,
                   '.codex',
                   'roles',
@@ -262,7 +295,14 @@ void main() {
                 contains('Replacement body'),
               );
               expect(
-                File(p.join(fixture.project.path, '.codex', 'config.toml'))
+                fixture.fs
+                    .file(
+                      fixture.fs.path.join(
+                        fixture.project.path,
+                        '.codex',
+                        'config.toml',
+                      ),
+                    )
                     .readAsStringSync(),
                 contains('description = "Replacement."'),
               );
@@ -304,8 +344,8 @@ void main() {
               final envelope =
                   jsonDecode(applied.output!) as Map<String, Object?>;
               expect(envelope['outcome'], 'removed');
-              final definition = File(
-                p.join(
+              final definition = fixture.fs.file(
+                fixture.fs.path.join(
                   fixture.project.path,
                   '.codex',
                   'roles',
@@ -315,7 +355,14 @@ void main() {
               expect(definition.existsSync(), isTrue);
               expect(definition.readAsStringSync(), contains('Original.'));
               expect(
-                File(p.join(fixture.project.path, '.codex', 'config.toml'))
+                fixture.fs
+                    .file(
+                      fixture.fs.path.join(
+                        fixture.project.path,
+                        '.codex',
+                        'config.toml',
+                      ),
+                    )
                     .readAsStringSync(),
                 isNot(contains('[agents.reviewer]')),
               );

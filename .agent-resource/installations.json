@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "installations": [
+    {
+      "installationId": "ins_3f838eba3afca13fdf64af83daa9566d",
+      "artifactKind": "agent-file",
+      "scope": "project",
+      "nativeDestination": "native",
+      "nativeForm": "codex-agent-file",
+      "location": "C:\\Users\\bvlou\\projects\\agent_resource\\.codex\\agents\\demo-release-checker.toml",
+      "nativeRoot": "C:\\Users\\bvlou\\projects\\agent_resource\\.codex\\agents",
+      "name": "demo-release-checker",
+      "nativeProfile": "codex",
+      "validatedProfiles": ["codex"],
+      "knownConsumers": ["codex"],
+      "baseline": [
+        {
+          "path": ".",
+          "type": "file",
+          "length": 518,
+          "sha256": "1e0a5b4a06f42be2e888ccf0e213c564c384822af920f8a0fea7bde2d3d82144",
+          "executable": false,
+          "readOnly": false
+        }
+      ],
+      "origin": {
+        "status": "evidenced",
+        "schemaVersion": 1,
+        "source": {
+          "kind": "local",
+          "requestedLocator": "./agents/demo-release-checker.toml",
+          "resolvedLocator": "C:\\Users\\bvlou\\projects\\agent_resource\\agents\\demo-release-checker.toml",
+          "temporary": true,
+          "packageBoundary": "single-file"
+        },
+        "contentDigest": "b37e4fa41e7ae1520a4a0b97b5d7e404096683dd7313b26f9391c7a4b4f9f9e9",
+        "profile": "codex"
+      },
+      "lifecycle": "removed",
+      "backupIds": ["bak_4fa1fd6961232bb3ee33b7efbb3289ec"],
+      "transactionId": null
+    },
+    {
+      "installationId": "ins_64ae5b99298294b6f4f3c591bfcf44b9",
+      "artifactKind": "skill-canonical",
+      "scope": "project",
+      "nativeDestination": "canonical",
+      "nativeForm": "skill-canonical",
+      "location": "C:\\Users\\bvlou\\projects\\agent_resource\\.agents\\skills\\web-design-guidelines",
+      "nativeRoot": "C:\\Users\\bvlou\\projects\\agent_resource\\.agents\\skills",
+      "name": "web-design-guidelines",
+      "nativeProfile": null,
+      "validatedProfiles": ["codex"],
+      "knownConsumers": ["codex"],
+      "baseline": [
+        {
+          "path": "SKILL.md",
+          "type": "file",
+          "length": 1231,
+          "sha256": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f",
+          "executable": false,
+          "readOnly": false
+        }
+      ],
+      "origin": {
+        "status": "evidenced",
+        "schemaVersion": 1,
+        "source": {
+          "kind": "git",
+          "requestedLocator": "vercel-labs/agent-skills",
+          "resolvedLocator": "https://github.com/vercel-labs/agent-skills?#",
+          "temporary": true,
+          "requestedRef": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62",
+          "resolvedCommit": "1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62"
+        },
+        "entryId": "skills/web-design-guidelines",
+        "contentDigest": "f0d839f1e6598fc8dc78846976765cab356912182eaa77cba779be9cddcf6804"
+      },
+      "lifecycle": "removed",
+      "backupIds": ["bak_06cda9603a45e76dbfa63c24bb72326c"],
+      "transactionId": null,
+      "recordSchemaVersion": 2,
+      "exposures": []
+    },
+    {
+      "installationId": "ins_67217bd71192988e483ae1f4123e524c",
+      "artifactKind": "agent-file",
+      "scope": "project",
+      "nativeDestination": "native",
+      "nativeForm": "claude-agent-file",
+      "location": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents\\demo-documentation-reviewer.md",
+      "nativeRoot": "C:\\Users\\bvlou\\projects\\agent_resource\\.claude\\agents",
+      "name": "demo-documentation-reviewer",
+      "nativeProfile": "claude",
+      "validatedProfiles": ["claude"],
+      "knownConsumers": ["claude"],
+      "baseline": [
+        {
+          "path": ".",
+          "type": "file",
+          "length": 497,
+          "sha256": "28ec5859a8d338a92e4b50b3a5761da3590256720d62ab543eb265042d96c497",
+          "executable": false,
+          "readOnly": false
+        }
+      ],
+      "origin": {
+        "status": "evidenced",
+        "schemaVersion": 1,
+        "source": {
+          "kind": "local",
+          "requestedLocator": "./agents/demo-documentation-reviewer.md",
+          "resolvedLocator": "C:\\Users\\bvlou\\projects\\agent_resource\\agents\\demo-documentation-reviewer.md",
+          "temporary": true,
+          "packageBoundary": "single-file"
+        },
+        "contentDigest": "471dca1f9ac12f0f1bda618bfca053211c0ff6567c7b6db5f2c497ed8d40ef4b",
+        "profile": "claude"
+      },
+      "lifecycle": "removed",
+      "backupIds": ["bak_5327441b3feb07ea061db17c2cb2ac9e"],
+      "transactionId": null
+    }
+  ]
+}

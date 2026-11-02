@@ -137,7 +137,8 @@ final class AgentInstallCommand extends Command {
       InstallationWorkflowRequest(
         source: source,
         options: LifecycleOptions(
-          processWorkingDirectory: Directory.current.path,
+          processWorkingDirectory:
+              _installation.fileSystem.currentDirectory.path,
           environment: Map<String, String>.unmodifiable(Platform.environment),
           scope: valueOf(_scope) ?? LifecycleScope.project,
           cwd: valueOf(_cwd),

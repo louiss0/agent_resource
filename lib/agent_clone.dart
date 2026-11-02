@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'authoring_command_support.dart';
@@ -12,7 +14,8 @@ final class AgentCloneCommand extends Command {
   AgentCloneCommand({
     AgentAuthoringService? service,
     this._confirmation = defaultAuthoringConfirmation,
-  }) : _service = service ?? AgentAuthoringService(),
+  }) : _fileSystem = service?.fileSystem ?? const local.LocalFileSystem(),
+       _service = service ?? AgentAuthoringService(),
        super(
          discretionaryPositionals: [_requestFile],
          options: [
@@ -38,6 +41,7 @@ final class AgentCloneCommand extends Command {
        );
 
   final AgentAuthoringService _service;
+  final fslib.FileSystem _fileSystem;
   final AuthoringConfirmation _confirmation;
 
   static final _requestFile = FilePathPositional.optional(
@@ -111,7 +115,7 @@ final class AgentCloneCommand extends Command {
       valueOf(_request),
     );
     var options = LifecycleOptions(
-      processWorkingDirectory: Directory.current.path,
+      processWorkingDirectory: _fileSystem.currentDirectory.path,
       environment: Map<String, String>.unmodifiable(Platform.environment),
       scope: valueOf(_scope),
       cwd: valueOf(_cwd),
@@ -127,6 +131,7 @@ final class AgentCloneCommand extends Command {
     final request = parseAuthoringRequest(
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
+      fileSystem: _fileSystem,
     );
     if (request.operation != AuthoringOperation.clone) {
       throw MambaException('The request operation must be clone.');

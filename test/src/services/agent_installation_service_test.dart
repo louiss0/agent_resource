@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:agent_resource/src/installation/installation_interaction.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/installation/installation_request.dart';
@@ -7,29 +5,35 @@ import 'package:agent_resource/src/installation/resource_catalog.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/agent_installation_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
-import 'package:path/path.dart' as p;
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('AgentInstallationService', () {
+    late FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     test(
       'plans an explicitly profiled native file copy without writes',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'agent-workflow-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final claude = Directory(p.join(sandbox.path, 'claude'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          final source = File(p.join(sandbox.path, 'reviewer.md'))
+          final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'reviewer.md'))
             ..writeAsStringSync(
               '---\nname: reviewer\ndescription: Reviews.\n---\nBody.\n',
             );
           final result =
               await AgentInstallationService(
+                fileSystem: fs,
                 interaction: InteractInstallationInteraction(
                   terminal: () => false,
                 ),

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'authoring_command_support.dart';
@@ -14,7 +16,8 @@ final class AgentCreateCommand extends Command {
     AgentAuthoringService? service,
     BoundRoleService? boundRoleService,
     this._confirmation = defaultAuthoringConfirmation,
-  }) : _service = service ?? AgentAuthoringService(),
+  }) : _fileSystem = service?.fileSystem ?? const local.LocalFileSystem(),
+       _service = service ?? AgentAuthoringService(),
        _boundRoleService = boundRoleService ?? BoundRoleService(),
        super(
          discretionaryPositionals: [_requestFile],
@@ -48,6 +51,7 @@ final class AgentCreateCommand extends Command {
        );
 
   final AgentAuthoringService _service;
+  final fslib.FileSystem _fileSystem;
   final BoundRoleService _boundRoleService;
   final AuthoringConfirmation _confirmation;
 
@@ -129,7 +133,7 @@ final class AgentCreateCommand extends Command {
     final named = valueOf(_request);
     final requestFile = selectOperationRequest(positional, named);
     var options = LifecycleOptions(
-      processWorkingDirectory: Directory.current.path,
+      processWorkingDirectory: _fileSystem.currentDirectory.path,
       environment: Map<String, String>.unmodifiable(Platform.environment),
       scope: valueOf(_scope),
       cwd: valueOf(_cwd),
@@ -148,6 +152,7 @@ final class AgentCreateCommand extends Command {
         isBoundRoleRequest(
           named,
           options.cwd ?? options.processWorkingDirectory,
+          fileSystem: _fileSystem,
         )) {
       if (valueOf(_apply) ||
           valueOf(_planId) != null ||
@@ -161,6 +166,7 @@ final class AgentCreateCommand extends Command {
       final request = parseBoundRoleRequest(
         named,
         options.cwd ?? options.processWorkingDirectory,
+        fileSystem: _fileSystem,
       );
       if (request.operation != BoundOperation.create) {
         throw MambaException(
@@ -182,6 +188,7 @@ final class AgentCreateCommand extends Command {
     final request = parseAuthoringRequest(
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
+      fileSystem: _fileSystem,
     );
     if (request.operation != AuthoringOperation.create) {
       throw MambaException('The request operation must be create.');

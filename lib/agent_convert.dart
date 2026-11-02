@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'authoring_command_support.dart';
@@ -12,7 +14,8 @@ final class AgentConvertCommand extends Command {
   AgentConvertCommand({
     AgentConversionService? service,
     this._confirmation = defaultAuthoringConfirmation,
-  }) : _service = service ?? AgentConversionService(),
+  }) : _fileSystem = service?.fileSystem ?? const local.LocalFileSystem(),
+       _service = service ?? AgentConversionService(),
        super(
          discretionaryPositionals: [_requestFile],
          options: [
@@ -37,6 +40,7 @@ final class AgentConvertCommand extends Command {
              'runtime-equivalent conversion is never claimed.',
        );
 
+  final fslib.FileSystem _fileSystem;
   final AgentConversionService _service;
   final AuthoringConfirmation _confirmation;
 
@@ -111,7 +115,7 @@ final class AgentConvertCommand extends Command {
       valueOf(_request),
     );
     var options = LifecycleOptions(
-      processWorkingDirectory: Directory.current.path,
+      processWorkingDirectory: _fileSystem.currentDirectory.path,
       environment: Map<String, String>.unmodifiable(Platform.environment),
       scope: valueOf(_scope),
       cwd: valueOf(_cwd),
@@ -127,6 +131,7 @@ final class AgentConvertCommand extends Command {
     final request = parseConversionRequest(
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
+      fileSystem: _fileSystem,
     );
     final apply = valueOf(_apply);
     var planId = valueOf(_planId);

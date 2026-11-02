@@ -2,8 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import '../../components/acquisition_progress.dart';
 import '../agent_inspection.dart';
@@ -21,16 +22,22 @@ import 'skill_installation_service.dart';
 /// not inferred formats or conversion requests.
 interface class AgentInstallationService {
   AgentInstallationService({
-    this._acquisition = const AcquisitionService(),
+    AcquisitionService? acquisition,
     AgentLifecycleService? lifecycle,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     InstallationInteraction? interaction,
     InstallationBatch? batch,
     InstallationProgress? progress,
-  }) : _lifecycle = lifecycle ?? AgentLifecycleService(),
+  }) : _fileSystem = fileSystem,
+       _acquisition = acquisition ?? AcquisitionService(fileSystem: fileSystem),
+       _lifecycle = lifecycle ?? AgentLifecycleService(fileSystem: fileSystem),
        _interaction = interaction ?? InteractInstallationInteraction(),
        _batch = batch ?? InstallationBatch(),
        _progress = progress ?? _agentProgress;
 
+  fslib.FileSystem get fileSystem => _fileSystem;
+
+  final fslib.FileSystem _fileSystem;
   final AcquisitionService _acquisition;
   final AgentLifecycleService _lifecycle;
   final InstallationInteraction _interaction;
@@ -77,7 +84,10 @@ interface class AgentInstallationService {
     if (source == null) {
       return const InstallationCancelledResult('agent install');
     }
-    final context = LifecycleContext.resolve(request.options);
+    final context = LifecycleContext.resolve(
+      request.options,
+      fileSystem: _fileSystem,
+    );
     final workspace = interactive
         ? await _progress(
             'Acquiring Agent source',
@@ -109,6 +119,7 @@ interface class AgentInstallationService {
         interaction: _interaction,
         resourceType: CatalogResourceType.agent,
         interactive: interactive,
+        fileSystem: _fileSystem,
       );
       if (candidates == null) {
         return const InstallationCancelledResult('agent install');
@@ -192,8 +203,13 @@ interface class AgentInstallationService {
     final resource = _lifecycle.installationResource(harness);
     final inspected = await resource.inspect(candidate.path, context);
     final digest = state.contentDigest(candidate.path, ArtifactKind.agentFile);
-    final root = p.normalize(_lifecycle.installRoot(context, harness));
-    final location = p.join(root, p.basename(candidate.path));
+    final root = _fileSystem.path.normalize(
+      _lifecycle.installRoot(context, harness),
+    );
+    final location = _fileSystem.path.join(
+      root,
+      _fileSystem.path.basename(candidate.path),
+    );
     final target = _target(profile);
     final origin = <String, Object?>{
       'status': 'evidenced',
@@ -216,7 +232,8 @@ interface class AgentInstallationService {
     final managed = records
         .where(
           (record) =>
-              record.lifecycle == 'live' && p.equals(record.location, location),
+              record.lifecycle == 'live' &&
+              _fileSystem.path.equals(record.location, location),
         )
         .toList();
     final ids = <String>[];
@@ -244,7 +261,7 @@ interface class AgentInstallationService {
         observedDigest: record.baseline.digest,
       );
       ids.add(record.installationId);
-    } else if (FileSystemEntity.typeSync(location, followLinks: false) !=
+    } else if (_fileSystem.typeSync(location, followLinks: false) !=
         FileSystemEntityType.notFound) {
       throw MambaException(
         'The Agent destination is occupied by an unmanaged or conflicting entry: $location',

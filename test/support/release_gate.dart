@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
+import 'https_git_gate.dart';
 import 'process_test_support.dart';
 
 /// Executes release evidence against the actual compiled production artifact.
@@ -35,28 +36,39 @@ Future<void> main(List<String> args) async {
     final work = Directory(p.join(sandbox.path, 'work'))..createSync();
     final home = Directory(p.join(sandbox.path, 'home'))..createSync();
     final environment = isolatedEnvironment(sandbox);
+    var sensitiveCredential = '';
     Future<CliProcessResult> run(
       String scenario,
       Directory cwd,
       List<String> arguments, {
       String? input,
+      Map<String, String>? processEnvironment,
     }) async {
       final result = await runProcess(
         executable.path,
         arguments,
         workingDirectory: cwd,
-        environment: environment,
-        timeout: const Duration(seconds: 30),
+        environment: processEnvironment ?? environment,
+        timeout: const Duration(seconds: 45),
         standardInput: input,
       );
       results.add(<String, Object?>{
         'scenario': scenario,
-        'arguments': arguments
-            .map((value) => value.replaceAll(sandbox.path, '<sandbox>'))
-            .toList(),
+        'arguments': arguments.map((value) {
+          final sanitized = value.replaceAll(sandbox.path, '<sandbox>');
+          return sensitiveCredential.isEmpty
+              ? sanitized
+              : sanitized.replaceAll(sensitiveCredential, '<redacted>');
+        }).toList(),
         'exitCode': result.exitCode,
         'stdoutBytes': utf8.encode(result.stdout).length,
         'stderrBytes': utf8.encode(result.stderr).length,
+        if (arguments.any(
+          (argument) =>
+              sensitiveCredential.isNotEmpty &&
+              argument.contains(sensitiveCredential),
+        ))
+          'credentialsRedacted': true,
         'rawStreamsRetained': false,
       });
       return result;
@@ -831,6 +843,12 @@ Canonical body.
         canonical,
       );
     }
+    final httpsEvidence = await runHttpsGitGate(
+      sandbox: sandbox,
+      environment: environment,
+      run: run,
+      onCredential: (value) => sensitiveCredential = value,
+    );
     if (Platform.isWindows && !linkCapability) {
       blockers.add(<String, Object?>{
         'code': 'WINDOWS_DIRECTORY_SYMLINK_UNAVAILABLE',
@@ -896,6 +914,7 @@ Canonical body.
         'serverUrl': Platform.environment['GITHUB_SERVER_URL'],
       },
       'results': results,
+      'httpsGitQualification': httpsEvidence,
       'observedStatuses': observed,
       'missingStatuses': missing,
       'deferredStatuses': deferred,

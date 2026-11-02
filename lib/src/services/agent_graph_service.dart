@@ -1,8 +1,9 @@
 import 'dart:collection';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import '../agent_inspection.dart';
 import '../skill_files.dart';
@@ -90,6 +91,12 @@ final class _GraphWork {
 /// commands, scripts, hooks, servers, models, and credential helpers are never
 /// executed or parsed for implicit dependencies.
 interface class AgentGraphService {
+  AgentGraphService({this._fileSystem = const local.LocalFileSystem()});
+
+  fslib.FileSystem get fileSystem => _fileSystem;
+
+  final fslib.FileSystem _fileSystem;
+
   static const maxDepth = 32;
   static const maxNodes = 1000;
   static const maxEdges = 5000;
@@ -104,6 +111,7 @@ interface class AgentGraphService {
         harness: input.harness,
       ),
       operation: AgentOperation.inspect,
+      fileSystem: _fileSystem,
     );
     return analyzeInspection(inspection);
   }
@@ -113,11 +121,11 @@ interface class AgentGraphService {
     final rootId =
         'agent:${definition ?? inspection.binding?['roleKey'] ?? 'metadata-only'}';
     final resolutionBase = definition == null
-        ? p.dirname(
+        ? _fileSystem.path.dirname(
             inspection.binding?['configFile'] as String? ??
-                Directory.current.path,
+                _fileSystem.currentDirectory.path,
           )
-        : p.dirname(definition);
+        : _fileSystem.path.dirname(definition);
     final nodesById = <String, Map<String, Object?>>{
       rootId: <String, Object?>{
         'id': rootId,
@@ -142,7 +150,11 @@ interface class AgentGraphService {
     }
 
     if (definition != null) {
-      final type = skillEntityType(definition, followLinks: false);
+      final type = skillEntityType(
+        definition,
+        followLinks: false,
+        fs: _fileSystem,
+      );
       if (!inspection.coverage.contains('in-memory-candidate') &&
           type != FileSystemEntityType.file) {
         throw MambaException(
@@ -176,7 +188,7 @@ interface class AgentGraphService {
           'configFile': config,
           'roleKey': binding['roleKey'],
         },
-        'resolutionBase': p.dirname(config),
+        'resolutionBase': _fileSystem.path.dirname(config),
         'coverage': 'resolved',
         'blocker': false,
       });
@@ -402,7 +414,7 @@ interface class AgentGraphService {
 
   int _sourceLength(String path) {
     try {
-      return File(path).lengthSync();
+      return _fileSystem.file(path).lengthSync();
     } on FileSystemException catch (error) {
       throw MambaException(
         'Required graph source could not be observed: ${error.message}',
@@ -413,7 +425,7 @@ interface class AgentGraphService {
 
   List<int> _readSkill(String path) {
     try {
-      return readBoundedSkillMarker(path, maxBytes: 1048576);
+      return readBoundedSkillMarker(path, maxBytes: 1048576, fs: _fileSystem);
     } on MambaException catch (error) {
       throw MambaException(
         'Required Skill graph coverage is incomplete: ${error.message}',
@@ -453,8 +465,12 @@ interface class AgentGraphService {
     }
     if (kind != 'skill') return (status: 'unresolved', path: null);
     for (final root in _skillRoots(inspection, base)) {
-      final candidate = p.join(root, name, 'SKILL.md');
-      final type = skillEntityType(candidate, followLinks: false);
+      final candidate = _fileSystem.path.join(root, name, 'SKILL.md');
+      final type = skillEntityType(
+        candidate,
+        followLinks: false,
+        fs: _fileSystem,
+      );
       if (type == FileSystemEntityType.file) {
         return (
           status: relationship == 'skill-exclusion'
@@ -477,32 +493,36 @@ interface class AgentGraphService {
     final nativeBase = _nativeBase(base);
     if (inspection.form == 'claude-agent-file') {
       return <String>[
-        p.join(nativeBase, '.claude', 'skills'),
-        p.join(nativeBase, '.agents', 'skills'),
+        _fileSystem.path.join(nativeBase, '.claude', 'skills'),
+        _fileSystem.path.join(nativeBase, '.agents', 'skills'),
       ];
     }
     if (inspection.form == 'codex-agent-file' ||
         inspection.form == 'codex-config-bound-role') {
       return <String>[
-        p.join(nativeBase, '.codex', 'skills'),
-        p.join(nativeBase, '.agents', 'skills'),
+        _fileSystem.path.join(nativeBase, '.codex', 'skills'),
+        _fileSystem.path.join(nativeBase, '.agents', 'skills'),
       ];
     }
-    return <String>[p.join(nativeBase, '.agents', 'skills')];
+    return <String>[_fileSystem.path.join(nativeBase, '.agents', 'skills')];
   }
 
   String _nativeBase(String base) {
-    var current = p.normalize(base);
+    var current = _fileSystem.path.normalize(base);
     for (var depth = 0; depth < 64; depth++) {
-      final parent = p.dirname(current);
-      if (p.basename(current) == 'agents' &&
-          (p.basename(parent) == '.claude' || p.basename(parent) == '.codex')) {
-        return p.dirname(parent);
+      final parent = _fileSystem.path.dirname(current);
+      if (_fileSystem.path.basename(current) == 'agents' &&
+          (_fileSystem.path.basename(parent) == '.claude' ||
+              _fileSystem.path.basename(parent) == '.codex')) {
+        return _fileSystem.path.dirname(parent);
       }
-      if (p.basename(current) == '.claude' || p.basename(current) == '.codex') {
+      if (_fileSystem.path.basename(current) == '.claude' ||
+          _fileSystem.path.basename(current) == '.codex') {
         return parent;
       }
-      if (p.equals(parent, current)) return p.normalize(base);
+      if (_fileSystem.path.equals(parent, current)) {
+        return _fileSystem.path.normalize(base);
+      }
       current = parent;
     }
     throw MambaException(

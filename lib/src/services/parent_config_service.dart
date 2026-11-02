@@ -4,8 +4,9 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 
 import 'lifecycle_state_service.dart';
@@ -116,8 +117,12 @@ final class ParentResult {
 }
 
 interface class ParentConfigService {
-  ParentConfigService({this.io = const LifecycleIO()});
+  ParentConfigService({
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : fs = fileSystem,
+       io = LifecycleIO(fs: fileSystem);
 
+  final fslib.FileSystem fs;
   final LifecycleIO io;
   static final _inProcess = <String, Future<void>>{};
 
@@ -125,7 +130,7 @@ interface class ParentConfigService {
     required ParentRequest request,
     required LifecycleOptions options,
   }) async {
-    final context = _ParentContext.resolve(request, options);
+    final context = _ParentContext.resolve(request, options, fs);
     final source = _readSource(context);
     if (context.harness == ParentHarness.pi) {
       return ParentResult(
@@ -191,7 +196,7 @@ interface class ParentConfigService {
         exitCode: 4,
       );
     }
-    final context = _ParentContext.resolve(request, options);
+    final context = _ParentContext.resolve(request, options, fs);
     final source = _readSource(context);
     final records = _readRecords(context.stateRoot);
     _checkOwnership(context, records, request);
@@ -284,7 +289,7 @@ interface class ParentConfigService {
       adopt: request.adopt,
       affected: request.affected,
     );
-    final context = _ParentContext.resolve(request, options);
+    final context = _ParentContext.resolve(request, options, fs);
     final current = _readSource(context);
     final records = _readRecords(context.stateRoot);
     _checkOwnership(context, records, request);
@@ -331,7 +336,7 @@ interface class ParentConfigService {
             );
       final parentId = _matchingParentId(context);
       final transactionId = _newId('ptr');
-      final transaction = p.join(
+      final transaction = fs.path.join(
         context.stateRoot,
         'parent-transactions',
         '$transactionId.json',
@@ -340,8 +345,8 @@ interface class ParentConfigService {
       var liveChanged = false;
       try {
         _privateDirectory(context.stateRoot);
-        _privateDirectory(p.dirname(transaction));
-        _privateDirectory(p.dirname(staged));
+        _privateDirectory(fs.path.dirname(transaction));
+        _privateDirectory(fs.path.dirname(staged));
         io.write(staged, candidate);
         _validateCandidate(
           context,
@@ -366,11 +371,11 @@ interface class ParentConfigService {
         if (io.type(context.file, followLinks: false) !=
             FileSystemEntityType.notFound) {
           final quarantine = _quarantinePath(context, transactionId);
-          _privateDirectory(p.dirname(quarantine));
+          _privateDirectory(fs.path.dirname(quarantine));
           io.rename(context.file, quarantine);
           liveChanged = true;
         }
-        io.createDirectory(p.dirname(context.file));
+        io.createDirectory(fs.path.dirname(context.file));
         io.rename(staged, context.file);
         _advance(transaction, 'published');
         final published = io.read(context.file, parentDocumentLimit);
@@ -457,10 +462,10 @@ interface class ParentConfigService {
   }
 
   List<Map<String, Object?>> records(LifecycleOptions options) =>
-      _readRecords(_optionsContext(options).stateRoot);
+      _readRecords(_optionsContext(options, fs).stateRoot);
 
   Future<ParentResult> backupList(LifecycleOptions options) async {
-    final context = _optionsContext(options);
+    final context = _optionsContext(options, fs);
     final backups = _readBackups(context.stateRoot)
         .where((backup) => backup['retention'] == 'retained')
         .map((backup) {
@@ -497,12 +502,12 @@ interface class ParentConfigService {
   }
 
   bool hasBackup(LifecycleOptions options, String backupId) {
-    final state = _optionsContext(options).stateRoot;
+    final state = _optionsContext(options, fs).stateRoot;
     return _readBackups(state).any((backup) => backup['backupId'] == backupId);
   }
 
   String restorePlanId(LifecycleOptions options, String backupId) {
-    final context = _optionsContext(options);
+    final context = _optionsContext(options, fs);
     final backup = _backupRecord(context.stateRoot, backupId);
     final source = _readPath(backup['file']! as String);
     final units = (backup['units']! as List<Object?>)
@@ -517,7 +522,7 @@ interface class ParentConfigService {
     required bool clientsStopped,
   }) async {
     if (options.dryRun) {
-      final context = _optionsContext(options);
+      final context = _optionsContext(options, fs);
       final backup = _backupRecord(context.stateRoot, backupId);
       final source = _readPath(backup['file']! as String);
       final units = (backup['units']! as List<Object?>)
@@ -553,7 +558,7 @@ interface class ParentConfigService {
         exitCode: 4,
       );
     }
-    final context = _optionsContext(options);
+    final context = _optionsContext(options, fs);
     final backup = _backupRecord(context.stateRoot, backupId);
     final file = backup['file']! as String;
     final scope = LifecycleScope.values.byName(backup['scope']! as String);
@@ -597,7 +602,7 @@ interface class ParentConfigService {
       changes: changes,
       adopt: true,
     );
-    final resolved = _ParentContext.resolve(contextRequest, options);
+    final resolved = _ParentContext.resolve(contextRequest, options, fs);
     if (currentSource == null) {
       throw MambaException(
         'The managed parent document is missing; restore cannot verify selected units.',
@@ -645,13 +650,13 @@ interface class ParentConfigService {
       );
       final transactionId = _newId('ptr');
       final staged = _stagingPath(resolved, transactionId);
-      final transaction = p.join(
+      final transaction = fs.path.join(
         context.stateRoot,
         'parent-transactions',
         '$transactionId.json',
       );
-      _privateDirectory(p.dirname(staged));
-      _privateDirectory(p.dirname(transaction));
+      _privateDirectory(fs.path.dirname(staged));
+      _privateDirectory(fs.path.dirname(transaction));
       io.write(staged, candidate);
       _writeJson(transaction, <String, Object?>{
         'schemaVersion': 1,
@@ -663,9 +668,9 @@ interface class ParentConfigService {
         'phase': 'prepared',
       });
       final quarantine = _quarantinePath(resolved, transactionId);
-      _privateDirectory(p.dirname(quarantine));
+      _privateDirectory(fs.path.dirname(quarantine));
       io.rename(file, quarantine);
-      io.createDirectory(p.dirname(file));
+      io.createDirectory(fs.path.dirname(file));
       io.rename(staged, file);
       _advance(transaction, 'published');
       final now = _readPath(file)!;
@@ -706,7 +711,7 @@ interface class ParentConfigService {
     required String backupId,
   }) async {
     if (options.dryRun) {
-      final context = _optionsContext(options);
+      final context = _optionsContext(options, fs);
       final backup = _backupRecord(context.stateRoot, backupId);
       return ParentResult(
         command: 'agent backup cleanup',
@@ -725,7 +730,7 @@ interface class ParentConfigService {
         exitCode: 4,
       );
     }
-    final context = _optionsContext(options);
+    final context = _optionsContext(options, fs);
     final backup = _backupRecord(context.stateRoot, backupId);
     if (backup['retention'] != 'retained') {
       throw MambaException('The parent backup is not retained.', exitCode: 4);
@@ -744,7 +749,12 @@ interface class ParentConfigService {
       }
       current['retention'] = 'cleaned';
       _writeJson(
-        p.join(context.stateRoot, 'parent-backups', backupId, 'backup.json'),
+        fs.path.join(
+          context.stateRoot,
+          'parent-backups',
+          backupId,
+          'backup.json',
+        ),
         current,
       );
       final record = _recordForBackup(context.stateRoot, backupId);
@@ -1419,9 +1429,9 @@ interface class ParentConfigService {
   }
 
   String _inspectionAuthority(String file) {
-    final normalized = p.normalize(file).toLowerCase();
-    if (p.basename(normalized) == 'auth.json' ||
-        p.basename(normalized) == 'requirements.toml' ||
+    final normalized = fs.path.normalize(file).toLowerCase();
+    if (fs.path.basename(normalized) == 'auth.json' ||
+        fs.path.basename(normalized) == 'requirements.toml' ||
         normalized.contains('managed') ||
         normalized.contains('program files') ||
         normalized.startsWith('/etc/')) {
@@ -1490,7 +1500,7 @@ interface class ParentConfigService {
   // --- Ledger and backups ------------------------------------------------
 
   List<Map<String, Object?>> _readRecords(String state) {
-    final file = p.join(state, 'parent-units.json');
+    final file = fs.path.join(state, 'parent-units.json');
     if (io.type(file, followLinks: false) == FileSystemEntityType.notFound) {
       return <Map<String, Object?>>[];
     }
@@ -1529,7 +1539,7 @@ interface class ParentConfigService {
       }.toList();
       records[index] = record;
     }
-    _writeJson(p.join(state, 'parent-units.json'), <String, Object?>{
+    _writeJson(fs.path.join(state, 'parent-units.json'), <String, Object?>{
       'schemaVersion': 1,
       'records': records,
     });
@@ -1542,7 +1552,7 @@ interface class ParentConfigService {
     required List<Map<String, Object?>> currentUnits,
   }) {
     final id = _newId('pbk');
-    final directory = p.join(context.stateRoot, 'parent-backups', id);
+    final directory = fs.path.join(context.stateRoot, 'parent-backups', id);
     _privateDirectory(directory);
     final units = [
       for (final unit in currentUnits)
@@ -1583,7 +1593,7 @@ interface class ParentConfigService {
       'retention': 'retained',
     };
     record['artifactDigest'] = _backupDigest(record);
-    _writeJson(p.join(directory, 'backup.json'), record);
+    _writeJson(fs.path.join(directory, 'backup.json'), record);
     return _ParentBackup(id, record);
   }
 
@@ -1611,7 +1621,7 @@ interface class ParentConfigService {
       : 'changed';
 
   List<Map<String, Object?>> _readBackups(String state) {
-    final root = p.join(state, 'parent-backups');
+    final root = fs.path.join(state, 'parent-backups');
     if (io.type(root, followLinks: false) == FileSystemEntityType.notFound) {
       return <Map<String, Object?>>[];
     }
@@ -1621,7 +1631,7 @@ interface class ParentConfigService {
           FileSystemEntityType.directory) {
         continue;
       }
-      final metadata = p.join(entity.path, 'backup.json');
+      final metadata = fs.path.join(entity.path, 'backup.json');
       if (io.type(metadata, followLinks: false) != FileSystemEntityType.file) {
         throw MambaException('Parent backup metadata is missing.', exitCode: 4);
       }
@@ -1659,17 +1669,18 @@ interface class ParentConfigService {
 
   // --- Filesystem/private/coordination -----------------------------------
 
-  String _stagingPath(_ParentContext context, String transactionId) => p.join(
-    p.dirname(context.file),
-    '.agent-resource-parent',
-    'staging',
-    transactionId,
-    'candidate',
-  );
+  String _stagingPath(_ParentContext context, String transactionId) =>
+      fs.path.join(
+        fs.path.dirname(context.file),
+        '.agent-resource-parent',
+        'staging',
+        transactionId,
+        'candidate',
+      );
 
   String _quarantinePath(_ParentContext context, String transactionId) =>
-      p.join(
-        p.dirname(context.file),
+      fs.path.join(
+        fs.path.dirname(context.file),
         '.agent-resource-parent',
         'quarantine',
         transactionId,
@@ -1686,6 +1697,7 @@ interface class ParentConfigService {
         exitCode: 4,
       );
     }
+    if (fs is! local.LocalFileSystem) return;
     if (Platform.isWindows) {
       final username = Platform.environment['USERNAME'];
       if (username == null || username.trim().isEmpty) {
@@ -1736,17 +1748,20 @@ interface class ParentConfigService {
   }
 
   Future<T> _serialized<T>(String state, Future<T> Function() body) async {
-    final key = p.normalize(state);
+    final key = fs.path.normalize(state);
     final previous = _inProcess[key] ?? Future<void>.value();
     final done = Completer<void>.sync();
     _inProcess[key] = done.future;
     await previous;
-    RandomAccessFile? lock;
+    fslib.RandomAccessFile? lock;
     try {
-      _privateDirectory(p.join(state, 'coordination'));
-      lock = File(p.join(state, 'coordination', 'parent.lock'))
-          .openSync(mode: FileMode.write);
-      lock.lockSync(FileLock.exclusive);
+      _privateDirectory(fs.path.join(state, 'coordination'));
+      if (fs is local.LocalFileSystem) {
+        lock = fs
+            .file(fs.path.join(state, 'coordination', 'parent.lock'))
+            .openSync(mode: FileMode.write);
+        lock.lockSync(FileLock.exclusive);
+      }
       return await body();
     } catch (error) {
       if (error is FileSystemException) {
@@ -1778,7 +1793,7 @@ interface class ParentConfigService {
         exitCode: 3,
       );
     }
-    _privateDirectory(p.dirname(path));
+    _privateDirectory(fs.path.dirname(path));
     final temporary = '$path.${_newId('tmp')}.tmp';
     io.write(temporary, bytes);
     io.rename(temporary, path);
@@ -1807,13 +1822,17 @@ Map<String, Object?> parseStrictJsonObject(String text) {
   return value;
 }
 
-ParentRequest parseParentRequest(String requestFile, String workingDirectory) {
-  final path = p.normalize(
-    p.isAbsolute(requestFile)
+ParentRequest parseParentRequest(
+  String requestFile,
+  String workingDirectory, {
+  fslib.FileSystem fs = const local.LocalFileSystem(),
+}) {
+  final path = fs.path.normalize(
+    fs.path.isAbsolute(requestFile)
         ? requestFile
-        : p.join(workingDirectory, requestFile),
+        : fs.path.join(workingDirectory, requestFile),
   );
-  final file = File(path);
+  final file = fs.file(path);
   if (!file.existsSync()) {
     throw MambaException('Parent request does not exist: $path');
   }
@@ -2011,6 +2030,7 @@ final class _ParentContext {
   factory _ParentContext.resolve(
     ParentRequest request,
     LifecycleOptions options,
+    fslib.FileSystem fs,
   ) {
     if (options.scope == LifecycleScope.all || options.scope != request.scope) {
       throw MambaException(
@@ -2018,7 +2038,7 @@ final class _ParentContext {
         exitCode: 4,
       );
     }
-    final lifecycle = LifecycleContext.resolve(options);
+    final lifecycle = LifecycleContext.resolve(options, fileSystem: fs);
     final file = lifecycle.resolvePath(request.file);
     final claudeRoot = lifecycle.claudeConfigRoot();
     final codexRoot = lifecycle.codexRoot();
@@ -2026,11 +2046,11 @@ final class _ParentContext {
     final home = lifecycle.requireHome();
     if (request.operation == ParentOperation.inspect) {
       final reserved = <String>[
-        p.join(projectRoot, '.agent-resource'),
-        p.join(home, '.agent-resource'),
+        fs.path.join(projectRoot, '.agent-resource'),
+        fs.path.join(home, '.agent-resource'),
       ];
       if (reserved.any(
-        (path) => p.equals(path, file) || p.isWithin(path, file),
+        (path) => fs.path.equals(path, file) || fs.path.isWithin(path, file),
       )) {
         throw MambaException(
           'Reserved management state cannot be inspected as parent configuration.',
@@ -2052,6 +2072,7 @@ final class _ParentContext {
       );
     }
     final inferred = _inferLayer(
+      fs,
       request,
       file,
       claudeRoot,
@@ -2065,7 +2086,15 @@ final class _ParentContext {
         exitCode: 4,
       );
     }
-    _requireEligible(file, request, projectRoot, home, claudeRoot, codexRoot);
+    _requireEligible(
+      fs,
+      file,
+      request,
+      projectRoot,
+      home,
+      claudeRoot,
+      codexRoot,
+    );
     return _ParentContext(
       harness: request.harness,
       scope: request.scope,
@@ -2094,13 +2123,13 @@ final class _ParentContext {
   final String codexRoot;
 }
 
-_ParentContext _optionsContext(LifecycleOptions options) {
-  final context = LifecycleContext.resolve(options);
+_ParentContext _optionsContext(LifecycleOptions options, fslib.FileSystem fs) {
+  final context = LifecycleContext.resolve(options, fileSystem: fs);
   return _ParentContext(
     harness: ParentHarness.claude,
     scope: options.scope,
     layer: ParentLayer.user,
-    file: p.join(context.claudeConfigRoot(), 'settings.json'),
+    file: fs.path.join(context.claudeConfigRoot(), 'settings.json'),
     stateRoot: context.stateRoot(),
     cwd: context.cwd,
     projectRoot: context.projectRoot,
@@ -2111,6 +2140,7 @@ _ParentContext _optionsContext(LifecycleOptions options) {
 }
 
 ParentLayer _inferLayer(
+  fslib.FileSystem fs,
   ParentRequest request,
   String file,
   String claudeRoot,
@@ -2118,27 +2148,33 @@ ParentLayer _inferLayer(
   String projectRoot,
   String home,
 ) {
-  final normalized = p.normalize(file);
+  final normalized = fs.path.normalize(file);
   if (request.harness == ParentHarness.claude) {
-    if (p.equals(normalized, p.join(claudeRoot, 'settings.json'))) {
+    if (fs.path.equals(normalized, fs.path.join(claudeRoot, 'settings.json'))) {
       return ParentLayer.user;
     }
-    if (p.equals(normalized, p.join(projectRoot, '.claude', 'settings.json')) ||
-        p.equals(normalized, p.join(projectRoot, '.mcp.json'))) {
+    if (fs.path.equals(
+          normalized,
+          fs.path.join(projectRoot, '.claude', 'settings.json'),
+        ) ||
+        fs.path.equals(normalized, fs.path.join(projectRoot, '.mcp.json'))) {
       return ParentLayer.project;
     }
   } else {
-    if (p.equals(normalized, p.join(codexRoot, 'config.toml'))) {
+    if (fs.path.equals(normalized, fs.path.join(codexRoot, 'config.toml'))) {
       return ParentLayer.user;
     }
     if (request.profile != null &&
-        p.equals(
+        fs.path.equals(
           normalized,
-          p.join(codexRoot, '${request.profile}.config.toml'),
+          fs.path.join(codexRoot, '${request.profile}.config.toml'),
         )) {
       return ParentLayer.profile;
     }
-    if (p.equals(normalized, p.join(projectRoot, '.codex', 'config.toml'))) {
+    if (fs.path.equals(
+      normalized,
+      fs.path.join(projectRoot, '.codex', 'config.toml'),
+    )) {
       return ParentLayer.project;
     }
   }
@@ -2149,6 +2185,7 @@ ParentLayer _inferLayer(
 }
 
 void _requireEligible(
+  fslib.FileSystem fs,
   String file,
   ParentRequest request,
   String projectRoot,
@@ -2156,21 +2193,22 @@ void _requireEligible(
   String claudeRoot,
   String codexRoot,
 ) {
-  final normalized = p.normalize(file);
+  final normalized = fs.path.normalize(file);
   final reserved = <String>[
-    p.join(projectRoot, '.agent-resource'),
-    p.join(home, '.agent-resource'),
+    fs.path.join(projectRoot, '.agent-resource'),
+    fs.path.join(home, '.agent-resource'),
   ];
   if (reserved.any(
-    (path) => p.equals(path, normalized) || p.isWithin(path, normalized),
+    (path) =>
+        fs.path.equals(path, normalized) || fs.path.isWithin(path, normalized),
   )) {
     throw MambaException(
       'Reserved management state cannot be acquired as parent configuration.',
       exitCode: 4,
     );
   }
-  if (p.basename(normalized) == 'auth.json' ||
-      p.basename(normalized) == 'requirements.toml' ||
+  if (fs.path.basename(normalized) == 'auth.json' ||
+      fs.path.basename(normalized) == 'requirements.toml' ||
       normalized.toLowerCase().contains('managed') ||
       normalized.toLowerCase().contains('program files') ||
       normalized.startsWith('/etc/')) {
@@ -2181,7 +2219,7 @@ void _requireEligible(
   }
   if (request.harness == ParentHarness.codex &&
       request.scope == LifecycleScope.project &&
-      normalized == p.join(projectRoot, '.codex', 'config.toml')) {
+      normalized == fs.path.join(projectRoot, '.codex', 'config.toml')) {
     // Project provider keys are explicitly ineffective in Codex.
     for (final change in request.changes) {
       if (change.unit == 'model_provider' ||

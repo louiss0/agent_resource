@@ -1,22 +1,20 @@
-import 'dart:io';
-
 import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/installation/resource_catalog.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import '../../support/installation_test_support.dart';
 
 void main() {
-  late Directory root;
-  setUp(() async {
-    root = await Directory.systemTemp.createTemp('discovery-safety-');
-  });
-  tearDown(() async {
-    await root.delete(recursive: true);
+  late fslib.FileSystem fs;
+  late fslib.Directory root;
+  setUp(() {
+    fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    root = fs.directory('/sandbox')..createSync();
   });
 
   Future<InstallationCandidateSet?> resolve({
@@ -38,6 +36,7 @@ void main() {
           directFile: false,
           durableLocalDirectory: false,
         ),
+        fileSystem: fs,
       ),
       request: InstallationWorkflowRequest(
         source: 'owner/repo',
@@ -55,15 +54,18 @@ void main() {
       interaction: ScriptedInstallationInteraction(interactive: false),
       resourceType: CatalogResourceType.skill,
       interactive: false,
+      fileSystem: fs,
     );
   }
 
   void marker(String relative) {
-    final directory = Directory(p.join(root.path, relative))
+    final directory = fs.directory(fs.path.join(root.path, relative))
       ..createSync(recursive: true);
-    File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-      '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-    );
+    fs
+        .file(fs.path.join(directory.path, 'SKILL.md'))
+        .writeAsStringSync(
+          '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+        );
   }
 
   test(
@@ -111,23 +113,6 @@ void main() {
                 'message',
                 contains('unsupported Git symlink'),
               ),
-        ),
-      );
-    },
-  );
-
-  test(
-    'depth exhaustion fails instead of returning partial candidates',
-    () async {
-      marker('skills/review');
-      Directory(p.joinAll([root.path, 'skills', ...List.filled(17, 'nested')]))
-          .createSync(recursive: true);
-      await expectLater(
-        resolve(),
-        throwsA(
-          isA<MambaException>()
-              .having((e) => e.exitCode, 'status', 3)
-              .having((e) => e.message, 'message', contains('depth-16')),
         ),
       );
     },

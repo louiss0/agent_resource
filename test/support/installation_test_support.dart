@@ -11,6 +11,7 @@ final class ScriptedInstallationInteraction implements InstallationInteraction {
   final bool interactive;
   final sources = <String?>[];
   final resourceSelections = <List<String>>[];
+  final resourceGroups = <String?>[];
   final targetSelections = <List<InstallationTarget>>[];
   final profiles = <NativeAgentProfile?>[];
   final approvals = <bool>[];
@@ -29,8 +30,10 @@ final class ScriptedInstallationInteraction implements InstallationInteraction {
 
   @override
   Future<InteractionAnswer<List<CatalogOffering>>> selectResources(
-    List<CatalogOffering> offerings,
-  ) async {
+    List<CatalogOffering> offerings, {
+    String? group,
+  }) async {
+    resourceGroups.add(group);
     final ids = resourceSelections.removeAt(0);
     if (ids.isEmpty) return InteractionAnswer.empty();
     return InteractionAnswer.value([

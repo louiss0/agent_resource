@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -71,7 +73,10 @@ final class _SimulatedLinkIO extends LifecycleIO {
 
 // Simulates records created before the current installation-layout policy.
 final class _LegacySkillResource implements LifecycleResource {
-  final delegate = SkillLifecycleService();
+  _LegacySkillResource(fslib.FileSystem fileSystem)
+    : delegate = SkillLifecycleService(fileSystem: fileSystem);
+
+  final SkillLifecycleService delegate;
   @override
   ArtifactKind get kind => ArtifactKind.skillCopy;
   @override
@@ -109,20 +114,29 @@ final class _LegacySkillResource implements LifecycleResource {
 
 void main() {
   group('SkillLifecycleService', () {
+    late fslib.FileSystem fs;
+
+    setUp(() {
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+    });
     test(
       'legacy recorded trees can be removed, restored, and cleaned',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('skill-legacy-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Legacy.\n---\nBody.\n',
-          );
-          File(p.join(source.path, 'README.md'))
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Legacy.\n---\nBody.\n',
+              );
+          fs
+              .file(fs.path.join(source.path, 'README.md'))
               .writeAsStringSync('legacy bytes');
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
@@ -132,16 +146,17 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final root = p.join(project.path, '.agents', 'skills');
-          final installed = await LifecycleStateService().install(
-            resource: _LegacySkillResource(),
-            context: LifecycleContext.resolve(options()),
-            source: source.path,
-            location: p.join(root, 'review'),
-            nativeRoot: root,
-            nativeDestination: 'shared',
-          );
-          final service = SkillLifecycleService();
+          final root = fs.path.join(project.path, '.agents', 'skills');
+          final installed = await LifecycleStateService(io: LifecycleIO(fs: fs))
+              .install(
+                resource: _LegacySkillResource(fs),
+                context: LifecycleContext.resolve(options(), fileSystem: fs),
+                source: source.path,
+                location: fs.path.join(root, 'review'),
+                nativeRoot: root,
+                nativeDestination: 'shared',
+              );
+          final service = SkillLifecycleService(fileSystem: fs);
           final id = installed.data['installationId']! as String;
           final removed = await service.remove(
             LifecycleIdInput(options: options(approved: true), id: id),
@@ -152,9 +167,17 @@ void main() {
           );
           expect(restored.outcome, 'restored');
           expect(
-            File(
-              p.join(project.path, '.agents', 'skills', 'review', 'README.md'),
-            ).readAsStringSync(),
+            fs
+                .file(
+                  fs.path.join(
+                    project.path,
+                    '.agents',
+                    'skills',
+                    'review',
+                    'README.md',
+                  ),
+                )
+                .readAsStringSync(),
             'legacy bytes',
           );
           expect(
@@ -172,16 +195,19 @@ void main() {
     test(
       'adoption and replacement reject unsupported root entries before writes',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('skill-layout-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Valid.\n---\nBody.\n',
-          );
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Valid.\n---\nBody.\n',
+              );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -190,14 +216,16 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final service = SkillLifecycleService();
-          final adoptedPath = Directory(
-            p.join(project.path, '.agents', 'skills', 'adopt'),
+          final service = SkillLifecycleService(fileSystem: fs);
+          final adoptedPath = fs.directory(
+            fs.path.join(project.path, '.agents', 'skills', 'adopt'),
           )..createSync(recursive: true);
-          File(p.join(adoptedPath.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: adopt\ndescription: Valid.\n---\nBody.\n',
-          );
-          Directory(p.join(adoptedPath.path, 'rules')).createSync();
+          fs
+              .file(fs.path.join(adoptedPath.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: adopt\ndescription: Valid.\n---\nBody.\n',
+              );
+          fs.directory(fs.path.join(adoptedPath.path, 'rules')).createSync();
           await expectLater(
             service.adopt(
               SkillInstallInput(
@@ -215,7 +243,9 @@ void main() {
             ),
           );
           expect(
-            Directory(p.join(project.path, '.agent-resource')).existsSync(),
+            fs
+                .directory(fs.path.join(project.path, '.agent-resource'))
+                .existsSync(),
             isFalse,
           );
           final installed = await service.install(
@@ -226,7 +256,8 @@ void main() {
             ),
           );
           final id = installed.data['installationId']! as String;
-          File(p.join(source.path, 'README.md'))
+          fs
+              .file(fs.path.join(source.path, 'README.md'))
               .writeAsStringSync('unsupported');
           await expectLater(
             service.replace(
@@ -245,9 +276,17 @@ void main() {
             ),
           );
           expect(
-            File(
-              p.join(project.path, '.claude', 'skills', 'review', 'README.md'),
-            ).existsSync(),
+            fs
+                .file(
+                  fs.path.join(
+                    project.path,
+                    '.claude',
+                    'skills',
+                    'review',
+                    'README.md',
+                  ),
+                )
+                .existsSync(),
             isFalse,
           );
           expect(
@@ -262,22 +301,23 @@ void main() {
     test(
       'install copies the complete tree and records an unchanged baseline',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-lifecycle-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews changes.\n---\nReview.\n',
-          );
-          File(p.join(source.path, 'assets', 'fixture.bin'))
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews changes.\n---\nReview.\n',
+              );
+          fs.file(fs.path.join(source.path, 'assets', 'fixture.bin'))
             ..createSync(recursive: true)
             ..writeAsBytesSync(const [0, 1, 2, 255]);
-          final service = SkillLifecycleService();
+          final service = SkillLifecycleService(fileSystem: fs);
           final result = await service.install(
             SkillInstallInput(
               options: LifecycleOptions(
@@ -293,18 +333,29 @@ void main() {
           );
 
           expect(result.outcome, 'installed');
-          final destination = Directory(
-            p.join(project.path, '.claude', 'skills', 'review'),
+          final destination = fs.directory(
+            fs.path.join(project.path, '.claude', 'skills', 'review'),
           );
           expect(destination.existsSync(), isTrue);
           expect(
-            File(p.join(destination.path, 'assets', 'fixture.bin'))
+            fs
+                .file(fs.path.join(destination.path, 'assets', 'fixture.bin'))
                 .readAsBytesSync(),
             const [0, 1, 2, 255],
           );
-          expect(File(p.join(source.path, 'SKILL.md')).existsSync(), isTrue);
+          expect(
+            fs.file(fs.path.join(source.path, 'SKILL.md')).existsSync(),
+            isTrue,
+          );
           final ledger = jsonDecode(
-            File(p.join(project.path, '.agent-resource', 'installations.json'))
+            fs
+                .file(
+                  fs.path.join(
+                    project.path,
+                    '.agent-resource',
+                    'installations.json',
+                  ),
+                )
                 .readAsStringSync(),
           ) as Map<String, Object?>;
           final installations = ledger['installations']! as List<Object?>;
@@ -322,20 +373,21 @@ void main() {
     test(
       'adoption preserves native bytes and re-adoption preserves identity',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('skill-adopt-');
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final skill = Directory(
-            p.join(project.path, '.agents', 'skills', 'review'),
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final skill = fs.directory(
+            fs.path.join(project.path, '.agents', 'skills', 'review'),
           )..createSync(recursive: true);
-          final marker = File(p.join(skill.path, 'SKILL.md'))
+          final marker = fs.file(fs.path.join(skill.path, 'SKILL.md'))
             ..writeAsStringSync(
               '---\nname: review\ndescription: Reviews changes.\n---\n\r\nKeep exact bytes.\r\n',
             );
           final before = marker.readAsBytesSync();
-          final service = SkillLifecycleService();
+          final service = SkillLifecycleService(fileSystem: fs);
           LifecycleOptions options() => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -357,7 +409,9 @@ void main() {
           expect(again.data['installationId'], adopted.data['installationId']);
           expect(marker.readAsBytesSync(), before);
           expect(
-            Directory(p.join(skill.path, '.agent-resource')).existsSync(),
+            fs
+                .directory(fs.path.join(skill.path, '.agent-resource'))
+                .existsSync(),
             isFalse,
           );
         } finally {
@@ -366,12 +420,13 @@ void main() {
       },
     );
     test('replacement preserves identity and removal retains independent backups', () async {
-      final sandbox = await Directory.systemTemp.createTemp('skill-replace-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        Directory(p.join(sandbox.path, 'outside')).createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        fs.directory(fs.path.join(sandbox.path, 'outside')).createSync();
         LifecycleOptions options({bool approved = false}) => LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -380,15 +435,18 @@ void main() {
           home: home.path,
           approved: approved,
         );
-        Directory source(String name, String description) {
-          final directory = Directory(p.join(sandbox.path, name))..createSync();
-          File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: $description\n---\n$description\n',
-          );
+        fslib.Directory source(String name, String description) {
+          final directory = fs.directory(fs.path.join(sandbox.path, name))
+            ..createSync();
+          fs
+              .file(fs.path.join(directory.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: $description\n---\n$description\n',
+              );
           return directory;
         }
 
-        final service = SkillLifecycleService();
+        final service = SkillLifecycleService(fileSystem: fs);
         final installed = await service.install(
           SkillInstallInput(
             options: options(),
@@ -406,8 +464,8 @@ void main() {
         );
         expect(replaced.outcome, 'replaced');
         expect(replaced.data['installationId'], id);
-        final replacementBackup = Directory(
-          p.join(
+        final replacementBackup = fs.directory(
+          fs.path.join(
             project.path,
             '.agent-resource',
             'backups',
@@ -416,7 +474,9 @@ void main() {
           ),
         );
         expect(
-          File(p.join(replacementBackup.path, 'SKILL.md')).readAsStringSync(),
+          fs
+              .file(fs.path.join(replacementBackup.path, 'SKILL.md'))
+              .readAsStringSync(),
           contains('First version.'),
         );
         final removed = await service.remove(
@@ -424,16 +484,22 @@ void main() {
         );
         expect(removed.outcome, 'removed');
         expect(
-          Directory(p.join(project.path, '.claude', 'skills', 'review'))
+          fs
+              .directory(
+                fs.path.join(project.path, '.claude', 'skills', 'review'),
+              )
               .existsSync(),
           isFalse,
         );
         final backups = await service.backupList(options());
         expect(backups.data['backups']! as List<Object?>, hasLength(2));
-        File(p.join(replacementBackup.path, 'SKILL.md'))
+        fs
+            .file(fs.path.join(replacementBackup.path, 'SKILL.md'))
             .writeAsStringSync('backup-only edit');
         expect(
-          Directory(p.join(project.path, '.claude', 'skills')).existsSync(),
+          fs
+              .directory(fs.path.join(project.path, '.claude', 'skills'))
+              .existsSync(),
           isTrue,
         );
       } finally {
@@ -441,15 +507,19 @@ void main() {
       }
     });
     test('restore after removal preserves identity and cleanup requires intact evidence', () async {
-      final sandbox = await Directory.systemTemp.createTemp('skill-restore-');
+      final sandbox = (fs.directory('/sandbox')..createSync());
       try {
-        final project = Directory(p.join(sandbox.path, 'project'))
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
           ..createSync();
-        final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-        final source = Directory(p.join(sandbox.path, 'source'))..createSync();
-        File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-          '---\nname: review\ndescription: Restorable.\n---\nOriginal bytes.\n',
-        );
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+          ..createSync();
+        fs
+            .file(fs.path.join(source.path, 'SKILL.md'))
+            .writeAsStringSync(
+              '---\nname: review\ndescription: Restorable.\n---\nOriginal bytes.\n',
+            );
         LifecycleOptions options({bool approved = false}) => LifecycleOptions(
           processWorkingDirectory: project.path,
           scope: LifecycleScope.project,
@@ -458,7 +528,7 @@ void main() {
           home: home.path,
           approved: approved,
         );
-        final service = SkillLifecycleService();
+        final service = SkillLifecycleService(fileSystem: fs);
         final installed = await service.install(
           SkillInstallInput(
             options: options(),
@@ -476,8 +546,8 @@ void main() {
         );
         expect(restored.outcome, 'restored');
         expect(restored.data['installationId'], id);
-        final restoredMarker = File(
-          p.join(project.path, '.agents', 'skills', 'review', 'SKILL.md'),
+        final restoredMarker = fs.file(
+          fs.path.join(project.path, '.agents', 'skills', 'review', 'SKILL.md'),
         );
         expect(restoredMarker.readAsStringSync(), contains('Original bytes.'));
         final cleaned = await service.cleanup(
@@ -493,19 +563,20 @@ void main() {
     test(
       'linked dry-run exposes entry and consumer observations without writes',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-link-plan-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-          );
-          final result = await SkillLifecycleService().install(
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
+          final result = await SkillLifecycleService(fileSystem: fs).install(
             SkillInstallInput(
               options: LifecycleOptions(
                 processWorkingDirectory: project.path,
@@ -531,15 +602,17 @@ void main() {
           expect(result.data['consumerEffects'], ['claude']);
           expect(result.data['ownership'], 'verifiedAbsent');
           expect(
-            Directory(p.join(project.path, '.claude')).existsSync(),
+            fs.directory(fs.path.join(project.path, '.claude')).existsSync(),
             isFalse,
           );
           expect(
-            Directory(p.join(project.path, '.agent-resource')).existsSync(),
+            fs
+                .directory(fs.path.join(project.path, '.agent-resource'))
+                .existsSync(),
             isFalse,
           );
 
-          final shared = await SkillLifecycleService().install(
+          final shared = await SkillLifecycleService(fileSystem: fs).install(
             SkillInstallInput(
               options: LifecycleOptions(
                 processWorkingDirectory: project.path,
@@ -558,7 +631,7 @@ void main() {
           expect(shared.data['validatedProfiles'], ['claude']);
           expect(shared.data['consumerEffects'], ['claude', 'codex']);
           expect(
-            Directory(p.join(project.path, '.agents')).existsSync(),
+            fs.directory(fs.path.join(project.path, '.agents')).existsSync(),
             isFalse,
           );
         } finally {
@@ -570,13 +643,12 @@ void main() {
     test(
       'requested profiles add blocking reserved-name and sidecar gates',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-profiles-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
           LifecycleOptions options() => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -585,16 +657,18 @@ void main() {
             home: home.path,
             dryRun: true,
           );
-          Directory source(String directory, String name) {
-            final source = Directory(p.join(sandbox.path, directory))
+          fslib.Directory source(String directory, String name) {
+            final source = fs.directory(fs.path.join(sandbox.path, directory))
               ..createSync();
-            File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: $name\ndescription: Fixture.\n---\nBody.\n',
-            );
+            fs
+                .file(fs.path.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: $name\ndescription: Fixture.\n---\nBody.\n',
+                );
             return source;
           }
 
-          final service = SkillLifecycleService();
+          final service = SkillLifecycleService(fileSystem: fs);
           for (final (input, token) in [
             (
               SkillInstallInput(
@@ -614,7 +688,7 @@ void main() {
             ),
           ]) {
             if (input.destination == SkillDestination.codex) {
-              File(p.join(input.source, 'agents', 'openai.yaml'))
+              fs.file(fs.path.join(input.source, 'agents', 'openai.yaml'))
                 ..createSync(recursive: true)
                 ..writeAsStringSync('policy: []');
             }
@@ -627,11 +701,11 @@ void main() {
             }
           }
           expect(
-            Directory(p.join(project.path, '.claude')).existsSync(),
+            fs.directory(fs.path.join(project.path, '.claude')).existsSync(),
             isFalse,
           );
           expect(
-            Directory(p.join(project.path, '.codex')).existsSync(),
+            fs.directory(fs.path.join(project.path, '.codex')).existsSync(),
             isFalse,
           );
         } finally {
@@ -643,18 +717,19 @@ void main() {
     test(
       'stored IDs cannot redirect mutation to a crafted native root',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-authority-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-          );
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -663,7 +738,7 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final service = SkillLifecycleService();
+          final service = SkillLifecycleService(fileSystem: fs);
           final installed = await service.install(
             SkillInstallInput(
               options: options(),
@@ -671,22 +746,33 @@ void main() {
               destination: SkillDestination.claude,
             ),
           );
-          final ledgerFile = File(
-            p.join(project.path, '.agent-resource', 'installations.json'),
+          final ledgerFile = fs.file(
+            fs.path.join(project.path, '.agent-resource', 'installations.json'),
           );
           final ledger =
               jsonDecode(ledgerFile.readAsStringSync()) as Map<String, Object?>;
           final record =
               (ledger['installations']! as List<Object?>).single!
                   as Map<String, Object?>;
-          final outside = Directory(p.join(sandbox.path, 'outside', 'review'))
-            ..createSync(recursive: true);
-          File(p.join(outside.path, 'SKILL.md')).writeAsStringSync(
-            File(
-              p.join(project.path, '.claude', 'skills', 'review', 'SKILL.md'),
-            ).readAsStringSync(),
-          );
-          record['nativeRoot'] = p.dirname(outside.path);
+          final outside = fs.directory(
+            fs.path.join(sandbox.path, 'outside', 'review'),
+          )..createSync(recursive: true);
+          fs
+              .file(fs.path.join(outside.path, 'SKILL.md'))
+              .writeAsStringSync(
+                fs
+                    .file(
+                      fs.path.join(
+                        project.path,
+                        '.claude',
+                        'skills',
+                        'review',
+                        'SKILL.md',
+                      ),
+                    )
+                    .readAsStringSync(),
+              );
+          record['nativeRoot'] = fs.path.dirname(outside.path);
           record['location'] = outside.path;
           ledgerFile.writeAsStringSync(jsonEncode(ledger));
           try {
@@ -710,18 +796,19 @@ void main() {
     test(
       'fresh install after removal gets a new ID and blocks old restore',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-fresh-id-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-          );
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -730,7 +817,7 @@ void main() {
             home: home.path,
             approved: approved,
           );
-          final service = SkillLifecycleService();
+          final service = SkillLifecycleService(fileSystem: fs);
           SkillInstallInput install() => SkillInstallInput(
             options: options(),
             source: source.path,
@@ -744,8 +831,14 @@ void main() {
           final second = await service.install(install());
           final secondId = second.data['installationId']! as String;
           expect(secondId, isNot(firstId));
-          final liveMarker = File(
-            p.join(project.path, '.claude', 'skills', 'review', 'SKILL.md'),
+          final liveMarker = fs.file(
+            fs.path.join(
+              project.path,
+              '.claude',
+              'skills',
+              'review',
+              'SKILL.md',
+            ),
           );
           final before = liveMarker.readAsBytesSync();
           try {
@@ -762,7 +855,9 @@ void main() {
           }
           expect(liveMarker.readAsBytesSync(), before);
           expect(
-            service.state.records(LifecycleContext.resolve(options())),
+            service.state.records(
+              LifecycleContext.resolve(options(), fileSystem: fs),
+            ),
             hasLength(2),
           );
         } finally {

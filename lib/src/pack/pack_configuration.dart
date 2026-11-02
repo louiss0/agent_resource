@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:file/file.dart';
+import 'package:file/local.dart';
 import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 import 'package:zema/zema.dart';
@@ -278,12 +280,15 @@ final class PackConfiguration {
     String? workingDirectory,
     Map<String, String>? environment,
     String? operatingSystem,
+    FileSystem? fileSystem,
   }) {
-    final cwd = workingDirectory ?? Directory.current.path;
+    final fs = fileSystem ?? LocalFileSystem();
+    final path = fs.path;
+    final cwd = workingDirectory ?? fs.currentDirectory.path;
     final configPath = explicitPath == null
         ? switch (scope) {
-            PackConfigurationScope.project => p.join(
-              _requiredProjectRoot(projectRoot, cwd),
+            PackConfigurationScope.project => path.join(
+              _requiredProjectRoot(projectRoot, cwd, path),
               packConfigurationFileName,
             ),
             PackConfigurationScope.user => userConfigPath(
@@ -291,7 +296,7 @@ final class PackConfiguration {
               operatingSystem: operatingSystem,
             ),
           }
-        : _resolvePath(explicitPath, cwd);
+        : _resolvePath(explicitPath, cwd, path);
 
     var inherited = CliPreferences.defaults;
     if (scope == PackConfigurationScope.project) {
@@ -299,7 +304,7 @@ final class PackConfiguration {
         environment: environment,
         operatingSystem: operatingSystem,
       );
-      if (p.equals(userPath, configPath)) {
+      if (path.equals(userPath, configPath)) {
         throw PackConfigurationException(const [
           PackConfigurationIssue(
             'config',
@@ -307,21 +312,23 @@ final class PackConfiguration {
           ),
         ], configPath: configPath);
       }
-      if (File(userPath).existsSync()) {
+      if (fs.file(userPath).existsSync()) {
         inherited = _parse(
-          _readConfig(userPath),
+          _readConfig(fs, userPath),
           configPath: userPath,
           scope: PackConfigurationScope.user,
           inheritedPreferences: CliPreferences.defaults,
+          pathContext: path,
         ).cli;
       }
     }
 
     return _parse(
-      _readConfig(configPath),
+      _readConfig(fs, configPath),
       configPath: configPath,
       scope: scope,
       inheritedPreferences: inherited,
+      pathContext: path,
     );
   }
 
@@ -388,6 +395,7 @@ final class PackConfiguration {
   static String _requiredProjectRoot(
     String? projectRoot,
     String workingDirectory,
+    p.Context pathContext,
   ) {
     if (projectRoot == null || projectRoot.trim().isEmpty) {
       throw PackConfigurationException(const [
@@ -397,7 +405,7 @@ final class PackConfiguration {
         ),
       ]);
     }
-    return _resolvePath(projectRoot, workingDirectory);
+    return _resolvePath(projectRoot, workingDirectory, pathContext);
   }
 
   static String _absoluteHome(
@@ -422,7 +430,9 @@ final class PackConfiguration {
     required PackConfigurationScope scope,
     required CliPreferences inheritedPreferences,
     CatalogResourceType? catalogType,
+    p.Context? pathContext,
   }) {
+    pathContext ??= p.Context();
     final Map<String, dynamic> document;
     try {
       document = TomlDocument.parse(source).toMap();
@@ -449,14 +459,14 @@ final class PackConfiguration {
         PackConfigurationIssue('syntax', 'invalid TOML value'),
       ], configPath: configPath);
     }
-    final parser = _Parser(configPath, inheritedPreferences)
+    final parser = _Parser(configPath, inheritedPreferences, pathContext)
       ..issues.addAll(_shapeIssues(document, catalogType: catalogType));
     return parser.parse(document, scope, catalogType: catalogType);
   }
 
-  static String _readConfig(String path) {
+  static String _readConfig(FileSystem fileSystem, String path) {
     try {
-      return File(path).readAsStringSync();
+      return fileSystem.file(path).readAsStringSync();
     } on FileSystemException catch (error) {
       throw PackConfigurationException([
         PackConfigurationIssue('file', error.message),
@@ -699,7 +709,9 @@ String _schemaPath(Iterable<Object?> segments) {
 }
 
 final class _Parser {
-  _Parser(this.configPath, this.inheritedPreferences);
+  _Parser(this.configPath, this.inheritedPreferences, this.path);
+
+  final p.Context path;
 
   final String configPath;
   final CliPreferences inheritedPreferences;
@@ -946,7 +958,11 @@ final class _Parser {
           return null;
         }
         return LocalPackSource(
-          path: _resolvePath(localPath, p.dirname(configPath)),
+          path: _resolvePath(
+            localPath,
+            this.path.dirname(configPath),
+            this.path,
+          ),
           subpath: subpath,
         );
     }
@@ -1478,8 +1494,12 @@ final class _Parser {
   }
 }
 
-String _resolvePath(String path, String base) =>
-    p.normalize(p.isAbsolute(path) ? path : p.join(base, path));
+String _resolvePath(String path, String base, [p.Context? pathContext]) {
+  pathContext ??= p.Context();
+  return pathContext.normalize(
+    pathContext.isAbsolute(path) ? path : pathContext.join(base, path),
+  );
+}
 
 String _normalizePackKey(String key) => key.toLowerCase();
 
