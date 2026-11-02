@@ -1,0 +1,166 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary: agent_resource
+          - os: macos-15
+            goos: darwin
+            goarch: arm64
+            binary: agent_resource
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary: agent_resource.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dart-lang/setup-dart@v1.8.1
+        with:
+          sdk: 3.13.2
+      - name: Verify committed dependency resolution
+        run: dart pub get --enforce-lockfile
+      - name: Verify tag and package versions agree
+        shell: bash
+        run: dart run tool/verify_release_version.dart "${GITHUB_REF_NAME#v}"
+      - name: Verify release fixture prerequisites
+        shell: bash
+        run: |
+          git --version
+          openssl version
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            python --version
+          else
+            python3 --version
+          fi
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib bin test tool
+      - name: Analyze
+        run: dart analyze
+      - name: Test
+        run: dart test
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        with:
+          distribution: goreleaser
+          version: 2.14.3
+          install-only: true
+      - name: Build the native executable through GoReleaser
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p build/native
+          goreleaser build --clean --single-target --id agent_resource_${{ matrix.goos }} \
+            --output "build/native/${{ matrix.binary }}"
+      - name: Smoke the native executable and release version
+        shell: bash
+        run: |
+          output=$(./build/native/${{ matrix.binary }} --version)
+          printf '%s\n' "$output"
+          case "$output" in
+            *"${GITHUB_REF_NAME#v}"*) ;;
+            *) printf 'Release version missing from executable output.\n' >&2; exit 1 ;;
+          esac
+      - name: Qualify the exact native executable
+        shell: bash
+        run: >-
+          dart run test/support/release_gate.dart
+          build/native/${{ matrix.binary }} build/release-evidence.json
+          --require-qualified
+      - name: Retain the qualified native executable
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: native-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/native/${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 1
+      - name: Retain sanitized native evidence
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-evidence-${{ matrix.goos }}
+          path: build/release-evidence.json
+          if-no-files-found: error
+          retention-days: 1
+
+  release-decision:
+    needs: build-and-qualify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dart-lang/setup-dart@v1.8.1
+        with:
+          sdk: 3.13.2
+      - name: Verify committed dependency resolution
+        run: dart pub get --enforce-lockfile
+      - name: Download all native evidence
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: release-evidence-*
+          path: evidence
+      - name: Decide integrated native release qualification
+        run: >-
+          dart run test/support/release_decision.dart
+          build/release-decision.json
+          evidence/release-evidence-windows/release-evidence.json
+          evidence/release-evidence-darwin/release-evidence.json
+          evidence/release-evidence-linux/release-evidence.json
+      - name: Retain the integrated release decision
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-decision
+          path: build/release-decision.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: release-decision
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dart-lang/setup-dart@v1.8.1
+        with:
+          sdk: 3.13.2
+      - name: Verify committed dependency resolution
+        run: dart pub get --enforce-lockfile
+      - name: Download the qualified native executables
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: native-*
+          path: prebuilt
+      - name: Package and publish with GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
+        with:
+          distribution: goreleaser
+          version: 2.14.3
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          AGENT_RESOURCE_PREBUILT_DIR: prebuilt

@@ -1,5 +1,6 @@
 name: agent_resource
 description: Manage resources consumed by AI coding harnesses.
+version: 0.1.0
 environment:
   sdk: ^3.13.2
 dependencies:

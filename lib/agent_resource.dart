@@ -10,6 +10,11 @@ import 'src/services/agent_installation_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 import 'src/services/skill_installation_service.dart';
 
+const applicationVersion = String.fromEnvironment(
+  'AGENT_RESOURCE_VERSION',
+  defaultValue: '0.1.0',
+);
+
 /// Creates a fresh executor for the Agent Resource command-line application.
 ///
 /// Keeping composition here lets the production executable and application
@@ -22,7 +27,7 @@ Executor createExecutor({
 }) => Executor(
   'agent_resource',
   'Manage resources consumed by AI coding harnesses.',
-  '0.0.0',
+  applicationVersion,
   [
     SkillCommand(installation: skillInstallation),
     AgentCommand(installation: agentInstallation),

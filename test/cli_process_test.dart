@@ -134,7 +134,10 @@ void main() {
         final process = await _runCli(sandbox, ['--version']);
         final fake = await _fakeSuccess(['--version']);
         expect(fake.exitCode, 0);
-        expect(fake.output, allOf(isNotNull, isNotEmpty, contains('0.0.0')));
+        expect(
+          fake.output,
+          allOf(isNotNull, isNotEmpty, contains(applicationVersion)),
+        );
 
         expect(process.exitCode, 0);
         expect(process.stderr, isEmpty);
@@ -160,7 +163,7 @@ void main() {
         final result = await _runCli(sandbox, ['--version']);
 
         expect(result.exitCode, 0);
-        expect(result.stdout, contains('0.0.0'));
+        expect(result.stdout, contains(applicationVersion));
         expect(result.stderr, isEmpty);
       });
     });

@@ -1,0 +1,109 @@
+version: 2
+
+project_name: agent_resource
+report_sizes: true
+
+builds:
+  - &dart_build
+    id: agent_resource_darwin
+    # GoReleaser's Go builder supplies the target matrix and output path. The
+    # adapter replaces the actual compilation with Dart, or imports a native
+    # binary when AGENT_RESOURCE_PREBUILT_DIR is set.
+    tool: dart
+    command: run
+    main: bin/agent_resource.dart
+    flags:
+      - tool/goreleaser_dart.dart
+    # Suppress Go's default -s -w linker flags. The adapter ignores the
+    # resulting empty -ldflags= argument.
+    ldflags: [""]
+    env:
+      - AGENT_RESOURCE_VERSION={{ .Version }}
+    binary: agent_resource
+    targets: [darwin_arm64]
+    no_main_check: true
+  - <<: *dart_build
+    id: agent_resource_linux
+    targets: [linux_amd64]
+  - <<: *dart_build
+    id: agent_resource_windows
+    targets: [windows_amd64]
+
+archives:
+  - &dart_archive
+    id: agent_resource_darwin
+    ids: [agent_resource_darwin]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    wrap_in_directory: false
+    files:
+      - LICENSE
+      - README.md
+  - <<: *dart_archive
+    id: agent_resource_linux
+    ids: [agent_resource_linux]
+  - <<: *dart_archive
+    id: agent_resource_windows
+    ids: [agent_resource_windows]
+    formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  github:
+    owner: louiss0
+    name: agent_resource
+  prerelease: auto
+
+homebrew_casks:
+  - name: agent-resource
+    ids: [agent_resource_darwin]
+    binaries: [agent_resource]
+    homepage: https://github.com/louiss0/agent_resource
+    description: Manage resources consumed by AI coding harnesses.
+    license: MIT
+    caveats: |
+      agent_resource is not currently signed or notarized. If macOS blocks the
+      binary, inspect it and then remove its quarantine attribute explicitly:
+        xattr -dr com.apple.quarantine $(brew --prefix)/Caskroom/agent-resource/{{ .Version }}/agent_resource
+    repository:
+      owner: louiss0
+      name: homebrew-the-code-fixer-23
+      token: "{{ .Env.RELEASE_TOKEN }}"
+    skip_upload: auto
+
+winget:
+  - name: agent_resource
+    ids: [agent_resource_windows]
+    package_name: Agent Resource
+    package_identifier: louiss0.AgentResource
+    publisher: louiss0
+    publisher_url: https://github.com/louiss0
+    publisher_support_url: https://github.com/louiss0/agent_resource/issues
+    homepage: https://github.com/louiss0/agent_resource
+    short_description: Manage resources consumed by AI coding harnesses.
+    description: Agent Resource manages Skills, Agents, and packs consumed by AI coding harnesses.
+    license: MIT
+    license_url: https://github.com/louiss0/agent_resource/blob/main/LICENSE
+    release_notes_url: https://github.com/louiss0/agent_resource/releases/tag/{{ .Tag }}
+    tags:
+      - ai
+      - cli
+      - dart
+      - developer-tools
+    repository:
+      owner: louiss0
+      name: winget-pkgs
+      token: "{{ .Env.RELEASE_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+    skip_upload: auto
+
+changelog:
+  use: git

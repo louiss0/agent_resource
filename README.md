@@ -14,6 +14,24 @@ profile remain distinct native contracts.
 
 - Dart SDK 3.13.2 or newer
 
+## Install a published release
+
+On macOS with Homebrew:
+
+```text
+brew tap louiss0/the-code-fixer-23
+brew install --cask agent-resource
+```
+
+On Windows, after the release's WinGet pull request has been merged:
+
+```text
+winget install --id louiss0.AgentResource --exact
+```
+
+Release archives and checksums are also attached to GitHub releases. See
+`docs/releasing.md` for supported targets and the release process.
+
 ## Get dependencies
 
 From the package root, resolve the Dart dependencies:

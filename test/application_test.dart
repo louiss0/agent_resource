@@ -187,10 +187,10 @@ void main() {
     });
 
     for (final control in ['--version', '-v']) {
-      test('$control reports version 0.0.0 successfully', () async {
+      test('$control reports the application version successfully', () async {
         final result = _expectSuccess(
           await createExecutor().fake().execute([control]),
-          allOf(isNotEmpty, contains('0.0.0')),
+          allOf(isNotEmpty, contains(applicationVersion)),
         );
         final output = result.output!;
 
@@ -209,7 +209,7 @@ void main() {
     test('long and short version controls produce equivalent output', () async {
       final longControl = _expectSuccess(
         await createExecutor().fake().execute(['--version']),
-        allOf(isNotEmpty, contains('0.0.0')),
+        allOf(isNotEmpty, contains(applicationVersion)),
       );
       final shortControl = _expectSuccess(
         await createExecutor().fake().execute(['-v']),
@@ -223,7 +223,7 @@ void main() {
       final adapter = createExecutor().fake();
       final first = _expectSuccess(
         await adapter.execute(['--version']),
-        allOf(isNotEmpty, contains('0.0.0')),
+        allOf(isNotEmpty, contains(applicationVersion)),
       );
       final second = _expectSuccess(
         await adapter.execute(['--version']),
@@ -243,7 +243,7 @@ void main() {
         );
         final firstVersion = _expectSuccess(
           await adapter.execute(['--version']),
-          allOf(isNotEmpty, contains('0.0.0')),
+          allOf(isNotEmpty, contains(applicationVersion)),
         );
         _expectFailure(
           await adapter.execute(['unsupported-command']),
@@ -266,7 +266,7 @@ void main() {
     test('fresh executors report the same version', () async {
       final first = _expectSuccess(
         await createExecutor().fake().execute(['--version']),
-        allOf(isNotEmpty, contains('0.0.0')),
+        allOf(isNotEmpty, contains(applicationVersion)),
       );
       final second = _expectSuccess(
         await createExecutor().fake().execute(['--version']),
