@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
