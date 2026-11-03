@@ -214,9 +214,16 @@ void main() {
                     ),
                   )
                   .createSync(recursive: true);
-              Directory(
-                fs.path.join(project.path, '.claude', 'skills', 'claude-only'),
-              ).createSync(recursive: true);
+              fs
+                  .directory(
+                    fs.path.join(
+                      project.path,
+                      '.claude',
+                      'skills',
+                      'claude-only',
+                    ),
+                  )
+                  .createSync(recursive: true);
               final separator = fs.path.separator;
               final report = _successReport(
                 await _list([
