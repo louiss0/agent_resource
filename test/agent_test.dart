@@ -644,13 +644,7 @@ void main() {
             final file = _write(sandbox, 'agent.md', _claudeDefinition());
             final request = _writeRequest(sandbox);
             final result = _expectFailure(
-              await _inspect([
-                file.path,
-                '--harness',
-                'claude',
-                '--request',
-                request.path,
-              ]),
+              await _inspect([file.path, '--request', request.path]),
               exitCode: 1,
               phase: MambaExecutionPhase.run,
               leaf: 'inspect',
@@ -1860,7 +1854,7 @@ void main() {
                 'codex',
               ]),
               exitCode: 1,
-              phase: MambaExecutionPhase.run,
+              phase: MambaExecutionPhase.parse,
               leaf: 'inspect',
             );
           });

@@ -152,6 +152,7 @@ final class InspectCommand(final InspectOperation _inspect) extends Command {
 
   static final _inspectSkill = StringOption.required(
     'skill',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
     description: 'Skill directory to inspect.',
   );
 
@@ -164,10 +165,6 @@ final class InspectCommand(final InspectOperation _inspect) extends Command {
   @override
   String run(ValueOf valueOf, List<String> args) {
     final skill = valueOf(_inspectSkill);
-    if (skill.trim().isEmpty) {
-      throw MambaException('The --skill directory must not be blank.');
-    }
-
     return _inspect(skill);
   }
 }
@@ -244,6 +241,7 @@ final class ValidateCommand(final ValidateOperation _validate) extends Command {
 
   static final _validateSkill = StringOption.required(
     'skill',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
     description: 'Skill directory to validate.',
   );
 
@@ -256,10 +254,6 @@ final class ValidateCommand(final ValidateOperation _validate) extends Command {
   @override
   String run(ValueOf valueOf, List<String> args) {
     final skill = valueOf(_validateSkill);
-    if (skill.trim().isEmpty) {
-      throw MambaException('The --skill directory must not be blank.');
-    }
-
     final report = _validate(skill);
     final output = jsonEncode(report.toJson());
     if (!report.valid) {

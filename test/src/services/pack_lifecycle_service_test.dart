@@ -94,38 +94,54 @@ track = { kind = "local" }
       bool interactive = false,
       bool noSave = false,
       bool useDefaultTarget = true,
-    }) => PackLifecycleRequest(
-      operation: operation,
-      resourceType: type,
-      pack: 'local/demo',
-      processWorkingDirectory: sandbox.path,
-      environment: {
-        'HOME': home.path,
-        'USERPROFILE': home.path,
-        'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
-        'LOCALAPPDATA': fs.path.join(home.path, 'AppData', 'Local'),
-      },
-      scope: LifecycleScope.project,
-      cwd: project.path,
-      projectRoot: project.path,
-      home: home.path,
-      only: only,
-      method: type == PackResourceType.skill ? method ?? 'copy' : null,
-      target: type == PackResourceType.skill && useDefaultTarget
-          ? target ?? 'codex'
-          : target,
-      allowFolder: allowFolder,
-      keepLocal: keepLocal,
-      replaceLocal: replaceLocal,
-      approveRemoval: approveRemoval,
-      to: to,
-      snapshot: snapshot,
-      localEdits: localEdits,
-      noSave: noSave,
-      dryRun: dryRun,
-      yes: yes,
-      interactive: interactive,
-    );
+      bool skipNew = false,
+      bool savePolicy = false,
+      List<PackResourceType>? resourceTypes,
+    }) {
+      final selectedTypes = resourceTypes ?? [type];
+      return PackLifecycleRequest(
+        operation: operation,
+        resourceType: type,
+        resourceTypes: resourceTypes ?? const [],
+        pack: 'local/demo',
+        processWorkingDirectory: sandbox.path,
+        environment: {
+          'HOME': home.path,
+          'USERPROFILE': home.path,
+          'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
+          'LOCALAPPDATA': fs.path.join(home.path, 'AppData', 'Local'),
+        },
+        scope: LifecycleScope.project,
+        cwd: project.path,
+        projectRoot: project.path,
+        home: home.path,
+        only: only,
+        method:
+            !selectedTypes.contains(PackResourceType.agent) &&
+                type == PackResourceType.skill
+            ? method ?? 'copy'
+            : null,
+        target:
+            !selectedTypes.contains(PackResourceType.agent) &&
+                type == PackResourceType.skill &&
+                useDefaultTarget
+            ? target ?? 'codex'
+            : target,
+        allowFolder: allowFolder,
+        keepLocal: keepLocal,
+        replaceLocal: replaceLocal,
+        approveRemoval: approveRemoval,
+        to: to,
+        snapshot: snapshot,
+        localEdits: localEdits,
+        noSave: noSave,
+        skipNew: skipNew,
+        savePolicy: savePolicy,
+        dryRun: dryRun,
+        yes: yes,
+        interactive: interactive,
+      );
+    }
 
     test(
       'validates consumer configuration without reading the source',
@@ -207,6 +223,148 @@ track = { kind = "local" }
             (value! as Map<String, Object?>)['origin']! as Map<String, Object?>;
         expect(origin['packKey'], 'local/demo');
       }
+    });
+
+    test('mixed interactive approval publishes both types', () async {
+      final confirmations = <String>[];
+      final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
+        prompts: PackPrompts(
+          confirmation: (label) async {
+            confirmations.add(label);
+            return true;
+          },
+        ),
+      );
+
+      final result = await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          resourceTypes: PackResourceType.values,
+          yes: false,
+          interactive: true,
+        ),
+      );
+
+      expect(result.operation, 'pack.install');
+      expect(result.resources, hasLength(2));
+      expect(confirmations, hasLength(1));
+      expect(
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
+            .existsSync(),
+        isTrue,
+      );
+      expect(
+        fs
+            .file(
+              fs.path.join(project.path, '.claude', 'agents', 'reviewer.md'),
+            )
+            .existsSync(),
+        isTrue,
+      );
+    });
+
+    test('mixed interactive cancellation publishes no type or state', () async {
+      final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
+        prompts: const PackPrompts(),
+      );
+
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.install,
+            PackResourceType.skill,
+            resourceTypes: PackResourceType.values,
+            yes: false,
+            interactive: true,
+          ),
+        ),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.exitCode,
+            'exit code',
+            PackProcessStatus.cancelled.code,
+          ),
+        ),
+      );
+      expect(
+        fs.directory(fs.path.join(project.path, '.agents')).existsSync(),
+        isFalse,
+      );
+      expect(
+        fs.directory(fs.path.join(project.path, '.claude')).existsSync(),
+        isFalse,
+      );
+      expect(
+        fs
+            .directory(fs.path.join(project.path, '.agent-resource'))
+            .existsSync(),
+        isFalse,
+      );
+    });
+
+    test('mixed interactive prompt failure releases every review', () async {
+      final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
+        prompts: PackPrompts(
+          confirmation: (label) async =>
+              throw StateError('confirmation unavailable'),
+        ),
+      );
+
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.install,
+            PackResourceType.skill,
+            resourceTypes: PackResourceType.values,
+            yes: false,
+            interactive: true,
+          ),
+        ),
+        throwsStateError,
+      );
+      expect(
+        fs.directory(fs.path.join(project.path, '.agents')).existsSync(),
+        isFalse,
+      );
+      expect(
+        fs.directory(fs.path.join(project.path, '.claude')).existsSync(),
+        isFalse,
+      );
+      expect(
+        fs
+            .directory(fs.path.join(project.path, '.agent-resource'))
+            .existsSync(),
+        isFalse,
+      );
+    });
+
+    test('typed requests preserve inapplicable save-policy warnings', () async {
+      final result = await PackLifecycleService(fileSystem: fs).execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          resourceTypes: const [PackResourceType.skill],
+          savePolicy: true,
+        ),
+      );
+
+      expect(
+        result.warnings.map((warning) => warning.message),
+        contains(contains('--save-policy applies to update')),
+      );
     });
 
     test(
@@ -872,6 +1030,58 @@ extra_folders = ["rules"]
         );
       },
     );
+
+    test('mixed source change preserves an empty public only filter', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          resourceTypes: PackResourceType.values,
+        ),
+      );
+      final other = fs.directory(fs.path.join(sandbox.path, 'other'))
+        ..createSync();
+      for (final entity in source.listSync(recursive: true)) {
+        final relative = fs.path.relative(entity.path, from: source.path);
+        final destination = fs.path.join(other.path, relative);
+        if (entity is fslib.Directory) {
+          fs.directory(destination).createSync(recursive: true);
+        } else if (entity is fslib.File) {
+          fs.file(destination)
+            ..createSync(recursive: true)
+            ..writeAsBytesSync(entity.readAsBytesSync());
+        }
+      }
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync('''
+${config.readAsStringSync()}
+[packs."local/other".source]
+kind = "local"
+path = "../other"
+[packs."local/other".update]
+track = { kind = "local" }
+''');
+
+      final result = await service.execute(
+        request(
+          PackOperation.sourceChange,
+          PackResourceType.skill,
+          resourceTypes: PackResourceType.values,
+          to: 'local/other',
+          skipNew: true,
+        ),
+      );
+
+      expect(result.operation, 'pack.source.change');
+      expect(result.resources, hasLength(2));
+      expect(
+        result.resources.map((resource) => resource.type),
+        containsAll(['skill', 'agent']),
+      );
+    });
 
     test('source associate binds a matching adopted installation', () async {
       final destination = fs.directory(
@@ -1617,9 +1827,12 @@ track = { kind = "release", artifact = "archive" }
       bool savePolicy = false,
       bool yes = true,
       bool interactive = false,
+      bool noSave = false,
+      List<PackResourceType> resourceTypes = const [],
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: PackResourceType.skill,
+      resourceTypes: resourceTypes,
       pack: pack,
       processWorkingDirectory: project.path,
       environment: {
@@ -1635,6 +1848,7 @@ track = { kind = "release", artifact = "archive" }
       bump: bump,
       includePrerelease: includePrerelease,
       savePolicy: savePolicy,
+      noSave: noSave,
       yes: yes,
       interactive: interactive,
     );
@@ -1715,6 +1929,30 @@ track = { kind = "release", artifact = "archive" }
         'host': 'github.example.test',
         'repositoryId': 42,
       });
+    });
+
+    test('typed requests preserve save-policy conflicts', () async {
+      await expectLater(
+        PackLifecycleService.withDependencies(
+          acquisition: _LocalAcquisition(source.path),
+          releaseResolver: _FakeReleases(),
+        ).execute(
+          request(
+            operation: PackOperation.update,
+            bump: 'minor',
+            savePolicy: true,
+            noSave: true,
+            resourceTypes: const [PackResourceType.skill],
+          ),
+        ),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('--no-save and --save-policy'),
+          ),
+        ),
+      );
     });
 
     test('release update requires an explicit or saved bump', () async {

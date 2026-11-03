@@ -32,6 +32,9 @@ final class AgentEditCommand extends Command {
            _planId,
          ],
          flags: const [_apply, _dryRun, _yes, _interactive, _showInstructions],
+         conflicts: const {
+           'apply': ['dry-run'],
+         },
          longDescription:
              'Edit an unchanged managed Agent through its recorded identity. '
              'Unmanaged occurrences require explicit adoption. Planning is '
@@ -101,12 +104,7 @@ final class AgentEditCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(_format);
     final interactive = valueOf(_interactive);
-    validateAuthoringMode(
-      apply: valueOf(_apply),
-      dryRun: valueOf(_dryRun),
-      interactive: interactive,
-      format: format,
-    );
+    validateAuthoringMode(interactive: interactive, format: format);
     final requestFile = selectOperationRequest(
       valueOf(_requestFile),
       valueOf(_request),

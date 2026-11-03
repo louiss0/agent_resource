@@ -6,8 +6,9 @@ and version reporting, management-aware Skill and Agent inventories, native
 inspection/validation, bounded dependency/capability graphs, native Agent
 create/clone/edit/compose workflows, all-six conversion, canonical, copied,
 and source-linked Skill installation, native Agent copies and adoption,
-unchanged-only replacement/removal, retained backups, explicit
-restore/cleanup, and evidence-backed transaction recovery. Claude, Codex, and the common Pi
+source-aware mixed Skill/Agent pack installation, reviewable updates,
+snapshots and rollback, retained backups, explicit restore/cleanup, and
+evidence-backed transaction recovery. Claude, Codex, and the common Pi
 profile remain distinct native contracts.
 
 ## Requirements
@@ -51,11 +52,13 @@ dart run bin/agent_resource.dart --version
 ```
 
 The no-argument and `--help` invocations show root help. Root help lists the
-`skill` and `agent` groups. Each group provides `list`, `inspect`, `validate`,
-`install`, `adopt`, `replace`, `remove`, `backup`, and `recover` paths. There
-are no root-level aliases, and `skill discover` is not retained as a second
-inventory verb. Unsupported commands and options fail with a nonzero exit
-status.
+singular `skill` and `agent` groups for native resource operations, `pack` for
+source-aware lifecycle operations, `config` for configuration validation, and
+the deprecated plural compatibility groups. Each singular group provides
+`list`, `inspect`, `validate`, `install`, `adopt`, `replace`, `remove`,
+`backup`, and `recover` paths. There are no root-level aliases, and
+`skill discover` is not retained as a second inventory verb. Unsupported commands
+and options fail with a nonzero exit status.
 
 ```text
 dart run bin/agent_resource.dart skill --help
@@ -230,6 +233,78 @@ or `unchanged`. Failures emit no success JSON and leave stdout empty; Mamba
 reports human-readable aggregate diagnostics and recovery guidance on stderr
 with a nonzero status. Human text and Mamba errors may use normal terminal
 color; JSON success data is plain and contains no prompts or progress output.
+
+### Manage source-aware packs
+
+Declare consumer packs in a project-level or user-level
+`agent-resources.toml`. A pack records its Resource origin and accepted update
+track separately from machine-local installation evidence:
+
+```toml
+schema_version = 1
+
+[cli.install]
+targets = ["codex"]
+skill_method = "copy"
+
+[packs."owner/repository".source]
+kind = "github"
+repository = "owner/repository"
+
+[packs."owner/repository".update]
+track = { kind = "branch", name = "main" }
+```
+
+Local sources use `kind = "local"` and `path = "../pack"` with a
+`track = { kind = "local" }`. Git sources can follow a branch or pin an exact
+tag or commit. GitHub release tracks support exact releases and explicit
+SemVer bump policies; ordinary install never advances an existing exact lock.
+
+```text
+agent_resource config validate [--resolve]
+agent_resource pack validate <pack> [--type skill|agent] [--only <name> ...]
+agent_resource pack install <pack> [--type skill|agent] [--only <name> ...]
+agent_resource pack update <pack> [--type skill|agent] [--only <name> ...]
+agent_resource pack remove <pack> --only <name> [--only <name> ...]
+agent_resource pack source associate <pack> --only <name> [--only <name> ...]
+agent_resource pack source change <pack> --to <configured-pack>
+agent_resource pack rollback <pack> --only <name> --snapshot <recorded-ref>
+agent_resource pack cleanup <pack> [--only <name> ...]
+```
+
+Canonical pack operations default to both resource types. Repeat `--type` to
+select more than one explicitly, or select one type to disambiguate a native
+name shared by a Skill and an Agent. `--only` uses native names, not catalog
+IDs, source paths, or installation IDs. Unknown names and cross-type ambiguous
+selections are rejected before publication. Newly discovered update resources
+remain unselected unless explicitly included or selected by name.
+
+Mutations require an interactive review or explicit unattended context:
+`--scope project|user`, all required choices, and `--yes`. `--dry-run` performs
+inert acquisition and review without publishing managed state. `--yes` does
+not infer resource selection, local-edit decisions, extra-folder admission, or
+changed same-release attachment consent. Use `--keep-local` or
+`--replace-local` for whole-resource edit decisions and
+`--approve-removal <name>` for reviewed upstream removals.
+
+Skill roots admit `SKILL.md`, `references/`, `scripts/`, `assets/`, and
+`agents/`. Additional root folders require bounded approval through review or
+`--allow-folder <skill-name>:<root-folder>`; unexpected loose root files reject
+the complete Skill rather than installing a filtered subset. Agents retain
+their native-copy behavior and profiles.
+
+Machine-local state is recorded in `.agent-resource/installations.json` or the
+selected user state directory. It contains source evidence, complete
+installation baselines, selections, approvals, operation evidence, and stable
+Recorded snapshot refs. Rollback restores one resource from a recorded
+snapshot. Source-link management owns only the link, never the user-owned
+target. Ordinary noncurrent snapshots are eligible for retention cleanup after
+90 days; locally edited backups require explicit reviewed cleanup.
+
+Text output is deterministic by default. `--format json` emits one versioned
+success envelope; failures and partial failures emit no success JSON and use
+stderr with a nonzero status. The plural `skills` and `agents` forms remain
+fixed-type compatibility commands and print deprecation guidance on stderr.
 
 ### Adopt, replace, remove, back up, and recover
 

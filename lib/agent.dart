@@ -129,6 +129,9 @@ final class AgentInspectCommand(
         discretionaryPositionals: [_nativeFile],
         options: [_request, _harness, _format, _cwd],
         flags: [_showInstructions],
+        conflicts: const {
+          'request': ['harness'],
+        },
         longDescription:
             'Read-only inspection of one native agent definition or one '
             'Codex config-bound role selected by a version-1 request '
@@ -233,6 +236,9 @@ final class AgentValidateCommand(final AgentInspectionOperation _operation)
     : super(
         discretionaryPositionals: [_nativeFile],
         options: [_request, _harness, _format, _cwd],
+        conflicts: const {
+          'request': ['harness'],
+        },
         longDescription:
             'Explicit correctness gate for one native agent definition or '
             'one Codex config-bound role selected by a version-1 request '
@@ -327,24 +333,9 @@ AgentInspectionInput _inspectionInput({
   required String? cwd,
   required bool showInstructions,
 }) {
-  if (nativeFile != null && nativeFile.trim().isEmpty) {
-    throw MambaException('The native file path must not be blank.');
-  }
-  if (requestFile != null && requestFile.trim().isEmpty) {
-    throw MambaException('The --request path must not be blank.');
-  }
-  if (cwd != null && cwd.trim().isEmpty) {
-    throw MambaException('The --cwd directory must not be blank.');
-  }
   if (nativeFile != null && requestFile != null) {
     throw MambaException(
       'Provide either a native file or --request, not both.',
-    );
-  }
-  if (requestFile != null && harness != null) {
-    throw MambaException(
-      'A --request envelope selects a Codex config-bound role and cannot '
-      'be combined with --harness.',
     );
   }
   if (nativeFile == null && requestFile == null) {

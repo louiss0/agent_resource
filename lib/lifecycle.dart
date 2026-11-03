@@ -205,7 +205,15 @@ final class LifecycleActionCommand extends Command {
            if (_operation == _Operation.recover) _transactionId,
          ],
          options: [
-           if (_resource == _Resource.skill) _skillScope else _agentScope,
+           if (_operation == _Operation.recover)
+             if (_resource == _Resource.skill)
+               _skillRecoveryScope
+             else
+               _agentRecoveryScope
+           else if (_resource == _Resource.skill)
+             _skillScope
+           else
+             _agentScope,
            if (_operation == _Operation.adopt)
              if (_resource == _Resource.skill)
                _skillDestination
@@ -278,24 +286,46 @@ final class LifecycleActionCommand extends Command {
     suffixes: const ['.md', '.toml'],
     description: 'Native regular-file Agent definition.',
   );
-  static final _installationId = NormalPositional('installation-id');
+  static final _installationId = NormalPositional(
+    'installation-id',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
   static final _agentInstallationId = NormalPositional.optional(
     'installation-id',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
   );
-  static final _backupId = NormalPositional('backup-id');
-  static final _transactionId = NormalPositional.optional('transaction-id');
+  static final _backupId = NormalPositional(
+    'backup-id',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
+  static final _transactionId = NormalPositional.optional(
+    'transaction-id',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
 
   static final _skillScope = ChoiceOption.withDefault(
     'scope',
-    choices: LifecycleScope.values,
+    choices: const [LifecycleScope.project, LifecycleScope.user],
     defaultValue: LifecycleScope.user,
-    description: 'Selected installation scope; mutations do not permit all.',
+    description: 'Selected installation scope.',
   );
   static final _agentScope = ChoiceOption.withDefault(
     'scope',
+    choices: const [LifecycleScope.project, LifecycleScope.user],
+    defaultValue: LifecycleScope.project,
+    description: 'Selected installation scope.',
+  );
+  static final _skillRecoveryScope = ChoiceOption.withDefault(
+    'scope',
+    choices: LifecycleScope.values,
+    defaultValue: LifecycleScope.user,
+    description: 'Selected recovery scope, including all scopes.',
+  );
+  static final _agentRecoveryScope = ChoiceOption.withDefault(
+    'scope',
     choices: LifecycleScope.values,
     defaultValue: LifecycleScope.project,
-    description: 'Selected installation scope; mutations do not permit all.',
+    description: 'Selected recovery scope, including all scopes.',
   );
   static final _skillDestination = ChoiceOption.required(
     'destination',
@@ -439,7 +469,13 @@ final class LifecycleActionCommand extends Command {
             .currentDirectory
             .path,
     environment: Map<String, String>.unmodifiable(Platform.environment),
-    scope: valueOf(_resource == _Resource.skill ? _skillScope : _agentScope),
+    scope: _operation == _Operation.recover
+        ? valueOf(
+            _resource == _Resource.skill
+                ? _skillRecoveryScope
+                : _agentRecoveryScope,
+          )
+        : valueOf(_resource == _Resource.skill ? _skillScope : _agentScope),
     cwd: valueOf(_cwd),
     projectRoot: valueOf(_projectRoot),
     home: valueOf(_home),
@@ -478,12 +514,6 @@ final class LifecycleActionCommand extends Command {
     ValueOf valueOf,
     LifecycleOptions options,
   ) async {
-    if (options.scope == LifecycleScope.all &&
-        _operation != _Operation.recover) {
-      throw MambaException(
-        'This operation selects exactly one scope, not all.',
-      );
-    }
     if (_resource == _Resource.skill) {
       final service = _skill!;
       switch (_operation) {

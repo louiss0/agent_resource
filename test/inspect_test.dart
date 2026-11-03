@@ -216,8 +216,8 @@ void main() {
         test('rejects a blank skill value at command level', () async {
           _expectFailure(
             await _execute(const ['--skill', '']),
-            phase: MambaExecutionPhase.run,
-            diagnostic: contains('blank'),
+            phase: MambaExecutionPhase.parse,
+            diagnostic: contains('--skill'),
           );
         });
 

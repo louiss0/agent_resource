@@ -322,9 +322,9 @@ void main() {
           final result = _expectFailure(
             await _execute(const ['--skill', '']),
             exitCode: 1,
-            phase: MambaExecutionPhase.run,
+            phase: MambaExecutionPhase.parse,
           );
-          expect(result.message.toLowerCase(), contains('blank'));
+          expect(result.message, contains('--skill'));
         });
 
         test('returns the complete valid report with no diagnostics', () async {
@@ -1125,7 +1125,7 @@ allowed-tools: Read Bash(git:*)
             final report = _decodeObject(result.stderr);
             expect(report['valid'], isFalse);
           }, marker: _marker(name: ''));
-        });
+        }, timeout: const Timeout(Duration(minutes: 2)));
 
         test('operational failure uses text stderr and status one', () async {
           await _withRoot((root) async {

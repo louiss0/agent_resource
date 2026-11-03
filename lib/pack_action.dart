@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:mamba/mamba.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
+import 'src/installation/installation_plan.dart';
+import 'src/pack/release_policy.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 
@@ -48,30 +50,48 @@ final class PackActionCommand extends Command {
            _home,
            _state,
            _config,
-           _target,
-           _only,
+           if (_operation != PackOperation.validate) _target,
+           switch (_operation) {
+             PackOperation.rollback => _rollbackOnly,
+             PackOperation.remove ||
+             PackOperation.sourceAssociate => _requiredOnly,
+             _ => _only,
+           },
            if (canonical) _type,
-           _method,
+           if (_operation != PackOperation.validate) _method,
            _release,
-           _bump,
-           _keepLocal,
-           _replaceLocal,
-           _approveRemoval,
-           _allowFolder,
-           _to,
-           _snapshot,
+           if (_operation != PackOperation.validate) _bump,
+           if (_operation != PackOperation.validate) ...[
+             _keepLocal,
+             _replaceLocal,
+             _approveRemoval,
+             _allowFolder,
+           ],
+           if (_operation == PackOperation.sourceChange) _requiredTo,
+           if (_operation == PackOperation.rollback) _requiredSnapshot,
            _format,
          ],
-         flags: const [
+         flags: [
            _includePrerelease,
-           _savePolicy,
-           _noSave,
-           _skipNew,
-           _includeNew,
-           _localEdits,
+           if (_operation != PackOperation.validate) ...const [
+             _savePolicy,
+             _noSave,
+             _skipNew,
+             _includeNew,
+             _localEdits,
+           ],
            _dryRun,
-           _yes,
+           if (_operation != PackOperation.validate) _yes,
          ],
+         conflicts: {
+           if (_operation != PackOperation.validate)
+             'include-new': const ['skip-new'],
+           if (_operation == PackOperation.install ||
+               _operation == PackOperation.update ||
+               _operation == PackOperation.cleanup ||
+               _operation == PackOperation.sourceChange)
+             'only': const ['skip-new'],
+         },
        );
 
   final bool _canonical;
@@ -82,6 +102,7 @@ final class PackActionCommand extends Command {
 
   static final _pack = NormalPositional(
     'pack',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
     description: 'Configured pack key, such as owner/repository.',
   );
   static final _scope = ChoiceOption(
@@ -96,7 +117,18 @@ final class PackActionCommand extends Command {
   static final _target = StringOption('target');
   static final _only = RepeatableStringOption(
     'only',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
     description: 'Filter by native item name.',
+  );
+  static final _requiredOnly = RepeatableStringOption.required(
+    'only',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+    description: 'Filter by native item name.',
+  );
+  static final _rollbackOnly = RepeatableStringOption.required(
+    'only',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+    description: 'Select exactly one native item.',
   );
   static final _type = RepeatableChoiceOption(
     'type',
@@ -104,21 +136,36 @@ final class PackActionCommand extends Command {
     unique: true,
     description: 'Select resource kinds; defaults to skill and agent.',
   );
-  static final _method = StringOption(
+  static final _method = ChoiceOption(
     'method',
-    regex: RegExp(r'^(canonical|copy|source-link)$'),
+    choices: InstallationMethod.values,
   );
   static final _release = StringOption('release');
-  static final _bump = StringOption(
-    'bump',
-    regex: RegExp(r'^(patch|minor|major)$'),
+  static final _bump = ChoiceOption('bump', choices: ReleaseBump.values);
+  static final _keepLocal = RepeatableStringOption(
+    'keep-local',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
   );
-  static final _keepLocal = RepeatableStringOption('keep-local');
-  static final _replaceLocal = RepeatableStringOption('replace-local');
-  static final _approveRemoval = RepeatableStringOption('approve-removal');
-  static final _allowFolder = RepeatableStringOption('allow-folder');
-  static final _to = StringOption('to');
-  static final _snapshot = StringOption('snapshot');
+  static final _replaceLocal = RepeatableStringOption(
+    'replace-local',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
+  static final _approveRemoval = RepeatableStringOption(
+    'approve-removal',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
+  static final _allowFolder = RepeatableStringOption(
+    'allow-folder',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
+  static final _requiredTo = StringOption.required(
+    'to',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
+  static final _requiredSnapshot = StringOption.required(
+    'snapshot',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
   static final _format = ChoiceOption.withDefault(
     'format',
     choices: LifecycleOutputFormat.values,
@@ -167,15 +214,20 @@ final class PackActionCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    if (valueOf(_includeNew) && valueOf(_skipNew)) {
-      throw MambaException('--include-new and --skip-new cannot be combined.');
-    }
     if (!_canonical) {
       _warning(
         'Warning: ${_resourceType.name}s commands are deprecated; use pack with --type ${_resourceType.name}.',
       );
     }
     final format = valueOf(_format);
+    final mutating = _operation != PackOperation.validate;
+    final yes = mutating && valueOf(_yes);
+    final only = switch (_operation) {
+      PackOperation.rollback => valueOf(_rollbackOnly),
+      PackOperation.remove ||
+      PackOperation.sourceAssociate => valueOf(_requiredOnly),
+      _ => valueOf(_only) ?? const <String>[],
+    };
     final result = await _service.execute(
       PackLifecycleRequest(
         operation: _operation,
@@ -183,7 +235,7 @@ final class PackActionCommand extends Command {
         resourceTypes: _canonical
             ? (valueOf(_type) ?? PackResourceType.values)
             : [_resourceType],
-        includeNew: valueOf(_includeNew),
+        includeNew: mutating && valueOf(_includeNew),
         pack: valueOf(_pack),
         processWorkingDirectory: Directory.current.path,
         environment: Map<String, String>.unmodifiable(Platform.environment),
@@ -193,28 +245,38 @@ final class PackActionCommand extends Command {
         home: valueOf(_home),
         stateDir: valueOf(_state),
         configPath: valueOf(_config),
-        target: valueOf(_target),
-        only: valueOf(_only) ?? const <String>[],
-        method: valueOf(_method),
+        target: mutating ? valueOf(_target) : null,
+        only: only,
+        method: mutating ? valueOf(_method)?.wireName : null,
         release: valueOf(_release),
-        bump: valueOf(_bump),
+        bump: mutating ? valueOf(_bump)?.name : null,
         includePrerelease: valueOf(_includePrerelease),
-        savePolicy: valueOf(_savePolicy),
-        noSave: valueOf(_noSave),
-        skipNew: valueOf(_skipNew),
-        keepLocal: valueOf(_keepLocal) ?? const <String>[],
-        replaceLocal: valueOf(_replaceLocal) ?? const <String>[],
-        approveRemoval: valueOf(_approveRemoval) ?? const <String>[],
-        allowFolder: valueOf(_allowFolder) ?? const <String>[],
-        to: valueOf(_to),
-        snapshot: valueOf(_snapshot),
-        localEdits: valueOf(_localEdits),
+        savePolicy: mutating && valueOf(_savePolicy),
+        noSave: mutating && valueOf(_noSave),
+        skipNew: mutating && valueOf(_skipNew),
+        keepLocal: mutating
+            ? valueOf(_keepLocal) ?? const <String>[]
+            : const <String>[],
+        replaceLocal: mutating
+            ? valueOf(_replaceLocal) ?? const <String>[]
+            : const <String>[],
+        approveRemoval: mutating
+            ? valueOf(_approveRemoval) ?? const <String>[]
+            : const <String>[],
+        allowFolder: mutating
+            ? valueOf(_allowFolder) ?? const <String>[]
+            : const <String>[],
+        to: _operation == PackOperation.sourceChange
+            ? valueOf(_requiredTo)
+            : null,
+        snapshot: _operation == PackOperation.rollback
+            ? valueOf(_requiredSnapshot)
+            : null,
+        localEdits: mutating && valueOf(_localEdits),
         dryRun: valueOf(_dryRun),
-        yes: valueOf(_yes),
+        yes: yes,
         interactive:
-            stdin.hasTerminal &&
-            !valueOf(_yes) &&
-            format == LifecycleOutputFormat.text,
+            stdin.hasTerminal && !yes && format == LifecycleOutputFormat.text,
       ),
     );
     return switch (format) {

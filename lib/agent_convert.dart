@@ -32,6 +32,9 @@ final class AgentConvertCommand extends Command {
            _planId,
          ],
          flags: const [_apply, _dryRun, _yes, _interactive, _showInstructions],
+         conflicts: const {
+           'apply': ['dry-run'],
+         },
          longDescription:
              'Preview-first conversion between Claude, Codex standalone or '
              'config-bound roles, and the common Pi profile. Explicit native '
@@ -104,12 +107,7 @@ final class AgentConvertCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(_format);
     final interactive = valueOf(_interactive);
-    validateAuthoringMode(
-      apply: valueOf(_apply),
-      dryRun: valueOf(_dryRun),
-      interactive: interactive,
-      format: format,
-    );
+    validateAuthoringMode(interactive: interactive, format: format);
     final requestFile = selectOperationRequest(
       valueOf(_requestFile),
       valueOf(_request),

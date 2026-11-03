@@ -120,6 +120,7 @@ final class SkillInstallCommand extends Command {
 
   static final _source = NormalPositional.optional(
     'source',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
     description:
         'Local path, Git URL, GitHub owner/repo, download, or archive.',
   );
@@ -127,10 +128,12 @@ final class SkillInstallCommand extends Command {
     'resource',
     description: 'Exact catalog ID or discovered relative path; repeat to select several.',
   );
-  static final _targets = RepeatableChoiceOption('target', const [
-    InstallationTarget.claude,
-    InstallationTarget.codex,
-  ], description: 'Consuming harness; repeat to select both.');
+  static final _targets = RepeatableChoiceOption(
+    'target',
+    const [InstallationTarget.claude, InstallationTarget.codex],
+    unique: true,
+    description: 'Consuming harness; repeat to select both.',
+  );
   static final _scope = ChoiceOption(
     'scope',
     choices: const [LifecycleScope.project, LifecycleScope.user],
@@ -189,9 +192,6 @@ final class SkillInstallCommand extends Command {
     _rejectRetired(valueOf);
     final format = valueOf(_format);
     final source = valueOf(_source);
-    if (source != null && source.trim().isEmpty) {
-      throw MambaException('The installation source must not be blank.');
-    }
     final result = await _installation.run(
       InstallationWorkflowRequest(
         source: source,
@@ -212,9 +212,7 @@ final class SkillInstallCommand extends Command {
         sourceKind: valueOf(_sourceKind),
         resourceIds: (valueOf(_resources) ?? const <String>[]).toSet().toList(),
         allResources: valueOf(_allResources),
-        targets: (valueOf(_targets) ?? const <InstallationTarget>[])
-            .toSet()
-            .toList(),
+        targets: valueOf(_targets) ?? const <InstallationTarget>[],
         method: valueOf(_method),
         profile: null,
         ref: valueOf(_ref),

@@ -43,6 +43,9 @@ final class AgentCreateCommand extends Command {
            _ackClientsStopped,
            _clientsStopped,
          ],
+         conflicts: const {
+           'apply': ['dry-run'],
+         },
          longDescription:
              'Create a native Agent from explicit declarations or preserve '
              'the version-1 Codex bound-role creation request workflow. The '
@@ -123,12 +126,7 @@ final class AgentCreateCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(_format);
     final interactive = valueOf(_interactive);
-    validateAuthoringMode(
-      apply: valueOf(_apply),
-      dryRun: valueOf(_dryRun),
-      interactive: interactive,
-      format: format,
-    );
+    validateAuthoringMode(interactive: interactive, format: format);
     final positional = valueOf(_requestFile);
     final named = valueOf(_request);
     final requestFile = selectOperationRequest(positional, named);

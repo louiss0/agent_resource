@@ -26,16 +26,11 @@ String selectOperationRequest(String? positional, String? named) {
 }
 
 void validateAuthoringMode({
-  required bool apply,
-  required bool dryRun,
   required bool interactive,
   required LifecycleOutputFormat format,
 }) {
   if (interactive && format == LifecycleOutputFormat.json) {
     throw MambaException('--interactive and --format json conflict.');
-  }
-  if (apply && dryRun) {
-    throw MambaException('--apply and --dry-run conflict.');
   }
 }
 

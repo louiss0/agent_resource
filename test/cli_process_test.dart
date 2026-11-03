@@ -418,7 +418,7 @@ track = { kind = "local" }
           expect(validation['outcome'], 'valid');
 
           final dryRun = await _runCli(sandbox, [
-            'skills',
+            'pack',
             'install',
             'local/demo',
             ...context,
@@ -432,7 +432,7 @@ track = { kind = "local" }
           expect(preview['dryRun'], isTrue);
 
           final missingScope = await _runCli(sandbox, [
-            'skills',
+            'pack',
             'install',
             'local/demo',
             '--cwd',
@@ -449,7 +449,7 @@ track = { kind = "local" }
           expect(missingScope.stderr, contains('--scope'));
 
           final rejected = await _runCli(sandbox, [
-            'skills',
+            'pack',
             'install',
             'local/demo',
             ...context,

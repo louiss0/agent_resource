@@ -57,6 +57,7 @@ final class AgentInstallCommand extends Command {
 
   static final _source = NormalPositional.optional(
     'source',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
     description: 'Local path, Git locator, direct download, or archive.',
   );
   static final _resources = RepeatableStringOption(
@@ -66,6 +67,7 @@ final class AgentInstallCommand extends Command {
   static final _targets = RepeatableChoiceOption(
     'target',
     InstallationTarget.values,
+    unique: true,
     description: 'Consuming harness filter: claude, codex, or pi.',
   );
   static final _profile = ChoiceOption(
@@ -130,9 +132,6 @@ final class AgentInstallCommand extends Command {
     _rejectRetired(valueOf);
     final format = valueOf(_format);
     final source = valueOf(_source);
-    if (source != null && source.trim().isEmpty) {
-      throw MambaException('The installation source must not be blank.');
-    }
     final result = await _installation.run(
       InstallationWorkflowRequest(
         source: source,
@@ -155,9 +154,7 @@ final class AgentInstallCommand extends Command {
         sourceKind: valueOf(_sourceKind),
         resourceIds: (valueOf(_resources) ?? const <String>[]).toSet().toList(),
         allResources: valueOf(_allResources),
-        targets: (valueOf(_targets) ?? const <InstallationTarget>[])
-            .toSet()
-            .toList(),
+        targets: valueOf(_targets) ?? const <InstallationTarget>[],
         method: null,
         profile: valueOf(_profile),
         ref: valueOf(_ref),

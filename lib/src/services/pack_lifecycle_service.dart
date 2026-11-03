@@ -73,6 +73,7 @@ final class const PackLifecycleRequest({
   final String? bump,
   final bool includePrerelease = false,
   final bool savePolicy = false,
+  final bool persistPolicy = true,
   final bool noSave = false,
   final bool skipNew = false,
   final List<String> keepLocal = const <String>[],
@@ -86,6 +87,7 @@ final class const PackLifecycleRequest({
   final bool dryRun = false,
   final bool yes = false,
   final bool interactive = false,
+  final Future<bool> Function(PackPlan plan)? planReview,
 });
 
 interface class PackLifecycleService {
@@ -136,6 +138,10 @@ interface class PackLifecycleService {
 
   Future<PackOperationResult> execute(PackLifecycleRequest request) async {
     _validateRequest(request);
+    if (request.operation != PackOperation.validate &&
+        request.resourceTypes.isNotEmpty) {
+      return _executeTypedPackRequest(request);
+    }
     final context = _context(request);
     final configuration = _loadConfiguration(request, context);
     if (request.operation == PackOperation.configValidate) {
@@ -214,6 +220,467 @@ interface class PackLifecycleService {
       );
     }
   }
+
+  Future<PackOperationResult> _executeTypedPackRequest(
+    PackLifecycleRequest request,
+  ) async {
+    final types = _requestResourceTypes(request);
+    final namesByType = await _routeNamesByType(request, types);
+    final completed = <({PackResourceType type, PackOperationResult result})>[];
+    final failures = <({PackResourceType type, MambaException error})>[];
+    final typedRequests =
+        <({PackResourceType type, PackLifecycleRequest request})>[];
+    for (final type in types) {
+      final routedNames = namesByType?[type];
+      if (namesByType != null && (routedNames == null || routedNames.isEmpty)) {
+        continue;
+      }
+      final only = request.only.isEmpty
+          ? request.only
+          : routedNames ?? request.only;
+      typedRequests.add((
+        type: type,
+        request: _requestForType(request, type, only: only),
+      ));
+    }
+    if (request.interactive &&
+        !request.yes &&
+        !request.dryRun &&
+        typedRequests.length > 1) {
+      final outcome = await _executeReviewedTypedRequests(
+        request,
+        typedRequests,
+      );
+      completed.addAll(outcome.completed);
+      failures.addAll(outcome.failures);
+    } else {
+      for (final entry in typedRequests) {
+        try {
+          final result = await execute(entry.request);
+          completed.add((type: entry.type, result: result));
+        } on MambaException catch (error) {
+          failures.add((type: entry.type, error: error));
+          if (error.exitCode == PackProcessStatus.recoveryRequired.code ||
+              error.exitCode == PackProcessStatus.cancelled.code ||
+              error.exitCode == PackProcessStatus.interrupted.code) {
+            break;
+          }
+        }
+      }
+    }
+    if (failures.isNotEmpty) {
+      final exitCode =
+          failures.any(
+            (failure) =>
+                failure.error.exitCode ==
+                PackProcessStatus.recoveryRequired.code,
+          )
+          ? PackProcessStatus.recoveryRequired.code
+          : failures.any(
+              (failure) =>
+                  failure.error.exitCode == PackProcessStatus.failure.code,
+            )
+          ? PackProcessStatus.failure.code
+          : failures.first.error.exitCode;
+      throw MambaException(
+        'Pack operation failed for one or more resource types:\n'
+        '${failures.map((failure) => '- ${failure.type.name}: ${failure.error.message}').join('\n')}',
+        exitCode: exitCode,
+      );
+    }
+
+    final context = _context(request);
+    final configuration = _loadConfiguration(request, context);
+    final pack = configuration.findPack(request.pack!)!;
+    if (!request.dryRun &&
+        request.operation == PackOperation.update &&
+        request.savePolicy &&
+        !request.noSave) {
+      _savePolicy(configuration, pack, request);
+    }
+
+    final resources = [
+      for (final entry in completed) ...entry.result.resources,
+    ];
+    final warnings = <PackWarning>[];
+    final warningKeys = <String>{};
+    for (final entry in completed) {
+      for (final warning in entry.result.warnings) {
+        if (warningKeys.add(jsonEncode(warning.toJson()))) {
+          warnings.add(warning);
+        }
+      }
+    }
+    final operation = switch (request.operation) {
+      PackOperation.sourceAssociate => 'pack.source.associate',
+      PackOperation.sourceChange => 'pack.source.change',
+      _ => 'pack.${request.operation.name}',
+    };
+    final firstSource = completed.isEmpty
+        ? null
+        : completed.first.result.source;
+    final sharedSource =
+        firstSource != null &&
+        completed.every(
+          (entry) => jsonEncode(entry.result.source) == jsonEncode(firstSource),
+        );
+    final source = <String, Object?>{
+      if (sharedSource)
+        ...firstSource
+      else ...{
+        'pack': pack.key,
+        'track': _trackJson(pack.update.track),
+        if (completed.isNotEmpty)
+          'byType': {
+            for (final entry in completed) entry.type.name: entry.result.source,
+          },
+      },
+    };
+    final resultContext = completed.isEmpty
+        ? _contextJson(request, context, configuration)
+        : completed.first.result.context;
+    final plan = PackPlan.create(
+      operation: operation,
+      context: resultContext,
+      source: source,
+      resources: [
+        for (final entry in completed) ...?entry.result.plan?.resources,
+      ],
+      warnings: warnings,
+      policy: _policyChange(request, pack),
+      cleanupRefs: [
+        for (final entry in completed) ...?entry.result.plan?.cleanupRefs,
+      ],
+    );
+    return PackOperationResult(
+      operation: operation,
+      outcome: request.dryRun
+          ? 'preview'
+          : resources.every(
+              (result) => result.disposition == PackDisposition.unchanged,
+            )
+          ? 'no-op'
+          : 'completed',
+      context: resultContext,
+      source: source,
+      resources: resources,
+      warnings: warnings,
+      dryRun: request.dryRun,
+      plan: plan,
+    );
+  }
+
+  Future<
+    ({
+      List<({PackResourceType type, PackOperationResult result})> completed,
+      List<({PackResourceType type, MambaException error})> failures,
+    })
+  >
+  _executeReviewedTypedRequests(
+    PackLifecycleRequest request,
+    List<({PackResourceType type, PackLifecycleRequest request})> requests,
+  ) async {
+    final completed = <({PackResourceType type, PackOperationResult result})>[];
+    final failures = <({PackResourceType type, MambaException error})>[];
+    final pending =
+        <
+          ({
+            PackResourceType type,
+            PackPlan plan,
+            Completer<bool> approval,
+            Future<PackOperationResult> execution,
+          })
+        >[];
+
+    Future<void> cancelPending() async {
+      Object? cleanupError;
+      StackTrace? cleanupStack;
+      for (final operation in pending) {
+        if (!operation.approval.isCompleted) {
+          operation.approval.complete(false);
+        }
+      }
+      for (final operation in pending) {
+        try {
+          await operation.execution;
+        } on MambaException {
+          // Cancellation before publication is the expected outcome here.
+        } catch (error, stackTrace) {
+          cleanupError ??= error;
+          cleanupStack ??= stackTrace;
+        }
+      }
+      if (cleanupError != null) {
+        Error.throwWithStackTrace(cleanupError, cleanupStack!);
+      }
+    }
+
+    try {
+      for (final entry in requests) {
+        final ready = Completer<PackPlan>();
+        final approval = Completer<bool>();
+        Future<bool> review(PackPlan plan) {
+          if (!ready.isCompleted) ready.complete(plan);
+          return approval.future;
+        }
+
+        final execution = execute(
+          _requestForType(
+            entry.request,
+            entry.type,
+            only: entry.request.only,
+            planReview: review,
+          ),
+        );
+        try {
+          final event =
+              await Future.any<({PackPlan? plan, PackOperationResult? result})>(
+                [
+                  ready.future.then((plan) => (plan: plan, result: null)),
+                  execution.then((result) => (plan: null, result: result)),
+                ],
+              );
+          final plan = event.plan;
+          if (plan == null) {
+            completed.add((type: entry.type, result: event.result!));
+          } else {
+            pending.add((
+              type: entry.type,
+              plan: plan,
+              approval: approval,
+              execution: execution,
+            ));
+          }
+        } on MambaException catch (error) {
+          failures.add((type: entry.type, error: error));
+          await cancelPending();
+          return (completed: completed, failures: failures);
+        }
+      }
+
+      if (pending.isNotEmpty) {
+        final context = _context(request);
+        final configuration = _loadConfiguration(request, context);
+        final pack = configuration.findPack(request.pack!)!;
+        final plans = [
+          ...completed.map((entry) => entry.result.plan),
+          ...pending.map((entry) => entry.plan),
+        ].whereType<PackPlan>().toList();
+        final operation = switch (request.operation) {
+          PackOperation.sourceAssociate => 'pack.source.associate',
+          PackOperation.sourceChange => 'pack.source.change',
+          _ => 'pack.${request.operation.name}',
+        };
+        final reviewPlan = PackPlan.create(
+          operation: operation,
+          context: plans.first.context,
+          source: plans.first.source,
+          resources: [for (final plan in plans) ...plan.resources],
+          warnings: [for (final plan in plans) ...plan.warnings],
+          policy: _policyChange(request, pack),
+          cleanupRefs: [for (final plan in plans) ...plan.cleanupRefs],
+        );
+        stdout.writeln(reviewPlan.renderText());
+        if (!await _promptYesNo(
+          'Apply this reviewed pack ${request.operation.name}?',
+        )) {
+          await cancelPending();
+          throw MambaException(
+            'Operation cancelled; no pack or installation state was published.',
+            exitCode: PackProcessStatus.cancelled.code,
+          );
+        }
+      }
+
+      var stop = false;
+      for (final operation in pending) {
+        if (stop) {
+          operation.approval.complete(false);
+          try {
+            await operation.execution;
+          } on MambaException {
+            // Shared recovery failures prevent later types from starting.
+          }
+          continue;
+        }
+        operation.approval.complete(true);
+        try {
+          final result = await operation.execution;
+          completed.add((type: operation.type, result: result));
+        } on MambaException catch (error) {
+          failures.add((type: operation.type, error: error));
+          if (error.exitCode == PackProcessStatus.recoveryRequired.code ||
+              error.exitCode == PackProcessStatus.interrupted.code) {
+            stop = true;
+          }
+        }
+      }
+      return (completed: completed, failures: failures);
+    } catch (error, stackTrace) {
+      await cancelPending();
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+  }
+
+  Future<Map<PackResourceType, List<String>>?> _routeNamesByType(
+    PackLifecycleRequest request,
+    List<PackResourceType> types,
+  ) async {
+    final sourceRouting =
+        (request.operation == PackOperation.install ||
+            request.operation == PackOperation.update) &&
+        request.only.isNotEmpty;
+    final recordRouting =
+        request.only.isNotEmpty ||
+        request.operation == PackOperation.sourceChange;
+    if (!sourceRouting && !recordRouting) return null;
+
+    final context = _context(request);
+    final configuration = _loadConfiguration(request, context);
+    final pack = configuration.findPack(request.pack!);
+    if (pack == null) {
+      throw MambaException(
+        'No configured pack matches ${request.pack} in ${configuration.configPath}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final matches = <PackResourceType, Set<String>>{
+      for (final type in types) type: <String>{},
+    };
+    void match(PackResourceType type, String name) {
+      if (request.only.isEmpty || request.only.contains(name)) {
+        matches[type]!.add(name);
+      }
+    }
+
+    for (final type in types) {
+      final expectedKinds = type == PackResourceType.skill
+          ? const {
+              ArtifactKind.skillCopy,
+              ArtifactKind.skillLink,
+              ArtifactKind.skillCanonical,
+            }
+          : const {ArtifactKind.agentFile};
+      final records = request.operation == PackOperation.sourceAssociate
+          ? _lifecycleState
+                .records(context)
+                .where(
+                  (record) =>
+                      expectedKinds.contains(record.kind) &&
+                      record.lifecycle == 'live' &&
+                      record.origin['status'] == 'unknown',
+                )
+          : _packRecords(context, pack.key, type).where(
+              (record) =>
+                  request.operation == PackOperation.cleanup ||
+                  record.lifecycle == 'live',
+            );
+      for (final record in records) {
+        match(type, record.name);
+      }
+    }
+
+    if (sourceRouting) {
+      final acquired = await _acquire(
+        pack,
+        configuration,
+        request: request,
+        existing: [
+          for (final type in types) ..._packRecords(context, pack.key, type),
+        ],
+      );
+      try {
+        for (final type in types) {
+          for (final candidate in await _validationCandidates(
+            acquired.workspace,
+            pack,
+            type,
+          )) {
+            final inspected = _inspectPackResource(candidate, pack);
+            final name = inspected.name;
+            if (name != null) match(type, name);
+          }
+        }
+      } finally {
+        await acquired.workspace.close();
+      }
+    }
+
+    if (request.only.isNotEmpty) {
+      final unknown = request.only
+          .where(
+            (name) => matches.values.every((names) => !names.contains(name)),
+          )
+          .toList();
+      if (unknown.isNotEmpty) {
+        throw MambaException(
+          'Unknown native name(s) in pack ${pack.key}: ${unknown.join(', ')}.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      final ambiguous = request.only
+          .where(
+            (name) =>
+                matches.values.where((names) => names.contains(name)).length >
+                1,
+          )
+          .toList();
+      if (ambiguous.isNotEmpty) {
+        throw MambaException(
+          'Ambiguous native name(s) across selected types: '
+          '${ambiguous.join(', ')}; select one --type.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+    } else if (matches.values.every((names) => names.isEmpty)) {
+      return null;
+    }
+    return {
+      for (final entry in matches.entries) entry.key: entry.value.toList(),
+    };
+  }
+
+  PackLifecycleRequest _requestForType(
+    PackLifecycleRequest request,
+    PackResourceType type, {
+    required List<String> only,
+    Future<bool> Function(PackPlan plan)? planReview,
+  }) => PackLifecycleRequest(
+    operation: request.operation,
+    resourceType: type,
+    includeNew: request.includeNew,
+    processWorkingDirectory: request.processWorkingDirectory,
+    environment: request.environment,
+    pack: request.pack,
+    scope: request.scope,
+    cwd: request.cwd,
+    projectRoot: request.projectRoot,
+    home: request.home,
+    stateDir: request.stateDir,
+    configPath: request.configPath,
+    target: request.target,
+    only: only,
+    method: request.method,
+    release: request.release,
+    bump: request.bump,
+    includePrerelease: request.includePrerelease,
+    savePolicy: request.savePolicy,
+    persistPolicy: false,
+    noSave: request.noSave,
+    skipNew: request.skipNew,
+    keepLocal: request.keepLocal,
+    replaceLocal: request.replaceLocal,
+    approveRemoval: request.approveRemoval,
+    allowFolder: request.allowFolder,
+    to: request.to,
+    snapshot: request.snapshot,
+    localEdits: request.localEdits,
+    resolve: request.resolve,
+    dryRun: request.dryRun,
+    yes: request.yes,
+    interactive: request.interactive,
+    planReview: planReview ?? request.planReview,
+  );
 
   Future<PackOperationResult> _validatePack(
     PackLifecycleRequest request,
@@ -766,6 +1233,7 @@ interface class PackLifecycleService {
       if (!request.dryRun &&
           request.operation == PackOperation.update &&
           request.savePolicy &&
+          request.persistPolicy &&
           !request.noSave) {
         _savePolicy(configuration, pack, request);
       }
@@ -3029,10 +3497,13 @@ interface class PackLifecycleService {
 
   Future<void> _confirmPlan(PackLifecycleRequest request, PackPlan plan) async {
     if (!request.interactive || request.yes || request.dryRun) return;
-    stdout.writeln(plan.renderText());
-    final approved = await _promptYesNo(
-      'Apply this reviewed pack ${request.operation.name}?',
-    );
+    final review = request.planReview;
+    if (review == null) stdout.writeln(plan.renderText());
+    final approved =
+        await (review?.call(plan) ??
+            _promptYesNo(
+              'Apply this reviewed pack ${request.operation.name}?',
+            ));
     if (!approved) {
       throw MambaException(
         'Operation cancelled; no pack or installation state was published.',
@@ -3653,21 +4124,11 @@ interface class PackLifecycleService {
   }
 
   void _validateRequest(PackLifecycleRequest request) {
-    if (request.operation == PackOperation.validate) {
-      _validateReadOnlyRequest(request);
-    } else if (request.resourceTypes.isNotEmpty &&
-        (request.resourceTypes.length != 1 ||
-            request.resourceTypes.single != request.resourceType)) {
-      throw MambaException(
-        'Multi-type pack operations are not yet supported.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
     void unique(Iterable<String> values, String option) {
       final seen = <String>{};
-      if (values.any((value) => value.trim().isEmpty || !seen.add(value))) {
+      if (values.any((value) => !seen.add(value))) {
         throw MambaException(
-          '$option requires unique, nonblank native names.',
+          '$option requires unique native names.',
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
@@ -3692,37 +4153,17 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    if (request.resourceType == PackResourceType.agent &&
+    if (_requestResourceTypes(request).contains(PackResourceType.agent) &&
         request.method != null) {
       throw MambaException(
         '--method is Skill-only; Agents retain native-copy behavior.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    if (request.resourceType == PackResourceType.agent &&
+    if (_requestResourceTypes(request).contains(PackResourceType.agent) &&
         request.allowFolder.isNotEmpty) {
       throw MambaException(
         '--allow-folder is Skill-only.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-    if (request.operation == PackOperation.remove && request.only.isEmpty) {
-      throw MambaException(
-        'remove requires at least one --only native name.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-    if (request.operation == PackOperation.sourceAssociate &&
-        request.only.isEmpty) {
-      throw MambaException(
-        'source associate requires at least one --only native name.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-    if (request.operation == PackOperation.sourceChange &&
-        (request.to == null || request.to!.trim().isEmpty)) {
-      throw MambaException(
-        'source change requires --to <configured-pack-key>.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
@@ -3730,46 +4171,6 @@ interface class PackLifecycleService {
         (request.only.length != 1 || request.snapshot == null)) {
       throw MambaException(
         'rollback requires exactly one --only name and --snapshot ref.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-    if (request.operation != PackOperation.configValidate &&
-        request.pack?.trim().isEmpty != false) {
-      throw MambaException(
-        'A configured pack key is required.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-  }
-
-  void _validateReadOnlyRequest(PackLifecycleRequest request) {
-    if (request.resourceTypes.toSet().length != request.resourceTypes.length) {
-      throw MambaException(
-        '--type requires unique resource kinds.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-    final rejected = <String>[
-      if (request.target != null) '--target',
-      if (request.method != null) '--method',
-      if (request.bump != null) '--bump',
-      if (request.savePolicy) '--save-policy',
-      if (request.noSave) '--no-save',
-      if (request.skipNew) '--skip-new',
-      if (request.includeNew) '--include-new',
-      if (request.keepLocal.isNotEmpty) '--keep-local',
-      if (request.replaceLocal.isNotEmpty) '--replace-local',
-      if (request.approveRemoval.isNotEmpty) '--approve-removal',
-      if (request.allowFolder.isNotEmpty) '--allow-folder',
-      if (request.to != null) '--to',
-      if (request.snapshot != null) '--snapshot',
-      if (request.localEdits) '--local-edits',
-      if (request.yes) '--yes',
-    ];
-    if (rejected.isNotEmpty) {
-      throw MambaException(
-        'pack validate is read-only and does not accept mutation-only '
-        'option(s): ${rejected.join(', ')}.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }

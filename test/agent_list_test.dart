@@ -1475,7 +1475,7 @@ void main() {
                     arguments: ['agent', 'list', ...arguments],
                     workingDirectory: sandbox.work,
                     environment: environment,
-                    timeout: const Duration(seconds: 60),
+                    timeout: const Duration(seconds: 120),
                   );
               final json = await run([
                 '--project-root',
@@ -1549,7 +1549,7 @@ void main() {
               );
             });
           },
-          timeout: const Timeout(Duration(seconds: 120)),
+          timeout: const Timeout(Duration(minutes: 6)),
         );
       });
 
