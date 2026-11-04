@@ -99,30 +99,16 @@ Future<Map<String, Object?>> runHttpsGitGate({
         'GIT_TERMINAL_PROMPT': '0',
         'GIT_ASKPASS': '',
         'SSH_ASKPASS': '',
-        if (Platform.isWindows || Platform.isMacOS) ...{
+        if (Platform.isWindows) ...{
           // The fixture CA is PEM. This selects only the child Git backend;
           // it neither installs trust nor relaxes certificate verification.
-          'GIT_CONFIG_COUNT': options['trusted'] != false ? '2' : '1',
+          'GIT_CONFIG_COUNT': '1',
           'GIT_CONFIG_KEY_0': 'http.sslBackend',
           'GIT_CONFIG_VALUE_0': 'openssl',
-          if (options['trusted'] != false) ...{
-            'GIT_CONFIG_KEY_1': 'http.sslCAInfo',
-            'GIT_CONFIG_VALUE_1': ca,
-          },
         },
         if (options['trusted'] != false) 'GIT_SSL_CAINFO': ca,
       };
       onCredential(uri.toString());
-      CliProcessResult? transportProbe;
-      if (name == 'authenticated-success') {
-        transportProbe = await runProcess(
-          'git',
-          ['ls-remote', uri.toString()],
-          workingDirectory: project,
-          environment: childEnvironment,
-          timeout: const Duration(seconds: 45),
-        );
-      }
       final CliProcessResult result;
       try {
         result = await run(name, project, [
@@ -156,18 +142,10 @@ Future<Map<String, Object?>> runHttpsGitGate({
               .replaceAll(credential, '<redacted>'),
         );
       }
-      String sanitize(String value) => value
-          .replaceAll(uri.toString(), '<redacted-url>')
-          .replaceAll(source.toString(), '<redacted-source>')
-          .replaceAll(secret, '<redacted>')
-          .replaceAll(credential, '<redacted>')
-          .replaceAll(username, '<redacted-user>')
-          .replaceAllMapped(RegExp(r'https?://\S+'), (_) => '<redacted-url>');
       _require(
         result.exitCode == options['expectedStatus'],
         '$name returned ${result.exitCode}, expected ${options['expectedStatus']}: '
-        '${sanitize(result.stderr)}'
-        '${transportProbe == null ? '' : '\nDirect Git probe returned ${transportProbe.exitCode}: ${sanitize(transportProbe.stderr)}'}',
+        '${result.stderr.replaceAll(secret, '<redacted>').replaceAll(credential, '<redacted>')}',
       );
       _require(
         !result.stdout.contains(secret) &&

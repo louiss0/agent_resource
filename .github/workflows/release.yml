@@ -22,7 +22,7 @@ jobs:
             goos: linux
             goarch: amd64
             binary: agent_resource
-          - os: macos-15
+          - os: macos-latest
             goos: darwin
             goarch: arm64
             binary: agent_resource
