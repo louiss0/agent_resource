@@ -109,6 +109,16 @@ Future<Map<String, Object?>> runHttpsGitGate({
         if (options['trusted'] != false) 'GIT_SSL_CAINFO': ca,
       };
       onCredential(uri.toString());
+      CliProcessResult? transportProbe;
+      if (name == 'authenticated-success') {
+        transportProbe = await runProcess(
+          'git',
+          ['ls-remote', uri.toString()],
+          workingDirectory: project,
+          environment: childEnvironment,
+          timeout: const Duration(seconds: 45),
+        );
+      }
       final CliProcessResult result;
       try {
         result = await run(name, project, [
@@ -142,10 +152,18 @@ Future<Map<String, Object?>> runHttpsGitGate({
               .replaceAll(credential, '<redacted>'),
         );
       }
+      String sanitize(String value) => value
+          .replaceAll(uri.toString(), '<redacted-url>')
+          .replaceAll(source.toString(), '<redacted-source>')
+          .replaceAll(secret, '<redacted>')
+          .replaceAll(credential, '<redacted>')
+          .replaceAll(username, '<redacted-user>')
+          .replaceAllMapped(RegExp(r'https?://\S+'), (_) => '<redacted-url>');
       _require(
         result.exitCode == options['expectedStatus'],
         '$name returned ${result.exitCode}, expected ${options['expectedStatus']}: '
-        '${result.stderr.replaceAll(secret, '<redacted>').replaceAll(credential, '<redacted>')}',
+        '${sanitize(result.stderr)}'
+        '${transportProbe == null ? '' : '\nDirect Git probe returned ${transportProbe.exitCode}: ${sanitize(transportProbe.stderr)}'}',
       );
       _require(
         !result.stdout.contains(secret) &&
