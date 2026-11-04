@@ -99,7 +99,7 @@ Future<Map<String, Object?>> runHttpsGitGate({
         'GIT_TERMINAL_PROMPT': '0',
         'GIT_ASKPASS': '',
         'SSH_ASKPASS': '',
-        if (Platform.isWindows) ...{
+        if (Platform.isWindows || Platform.isMacOS) ...{
           // The fixture CA is PEM. This selects only the child Git backend;
           // it neither installs trust nor relaxes certificate verification.
           'GIT_CONFIG_COUNT': '1',
