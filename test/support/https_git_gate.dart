@@ -102,9 +102,13 @@ Future<Map<String, Object?>> runHttpsGitGate({
         if (Platform.isWindows || Platform.isMacOS) ...{
           // The fixture CA is PEM. This selects only the child Git backend;
           // it neither installs trust nor relaxes certificate verification.
-          'GIT_CONFIG_COUNT': '1',
+          'GIT_CONFIG_COUNT': options['trusted'] != false ? '2' : '1',
           'GIT_CONFIG_KEY_0': 'http.sslBackend',
           'GIT_CONFIG_VALUE_0': 'openssl',
+          if (options['trusted'] != false) ...{
+            'GIT_CONFIG_KEY_1': 'http.sslCAInfo',
+            'GIT_CONFIG_VALUE_1': ca,
+          },
         },
         if (options['trusted'] != false) 'GIT_SSL_CAINFO': ca,
       };
