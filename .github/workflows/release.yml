@@ -159,7 +159,7 @@ jobs:
         uses: actions/download-artifact@v8.0.2
         with:
           pattern: native-*
-          path: prebuilt
+          path: ${{ runner.temp }}/prebuilt
       - name: Load publishing deploy keys from 1Password
         uses: 1password/load-secrets-action@v5.0.1
         with:
@@ -188,4 +188,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AGENT_RESOURCE_PREBUILT_DIR: prebuilt
+          AGENT_RESOURCE_PREBUILT_DIR: ${{ runner.temp }}/prebuilt
