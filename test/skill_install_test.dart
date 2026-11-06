@@ -1,5 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' as io;
+
+import 'package:file/file.dart';
+import 'package:file/local.dart';
+import 'package:file/memory.dart';
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
@@ -7,18 +11,19 @@ import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_installation_service.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
+
 import 'package:test/test.dart';
 
 import 'support/installation_test_support.dart';
 
 final class _CountingAcquisition implements AcquisitionService {
   var calls = 0;
+  late FileSystem fileSystem;
 
   @override
   Future<AcquisitionWorkspace> acquire(AcquisitionRequest request) {
     calls++;
-    return const AcquisitionService().acquire(request);
+    return AcquisitionService(fileSystem: fileSystem).acquire(request);
   }
 }
 
@@ -26,6 +31,7 @@ void main() {
   group('agent_resource', () {
     group('skill', () {
       group('install', () {
+        late FileSystem fs;
         late Directory sandbox;
         late Directory project;
         late Directory home;
@@ -33,19 +39,35 @@ void main() {
         late _CountingAcquisition acquisition;
 
         setUp(() async {
-          sandbox = await Directory.systemTemp.createTemp('skill-install-cli-');
-          project = Directory(p.join(sandbox.path, 'project'))..createSync();
-          home = Directory(p.join(sandbox.path, 'home'))..createSync();
+          fs = MemoryFileSystem(style: FileSystemStyle.posix)
+            ..currentDirectory = '/';
+          sandbox = fs.systemTempDirectory.createTempSync('skill-install-cli-');
+          project = fs.directory(fs.path.join(sandbox.path, 'project'))
+            ..createSync();
+          home = fs.directory(fs.path.join(sandbox.path, 'home'))..createSync();
           interaction = ScriptedInstallationInteraction();
-          acquisition = _CountingAcquisition();
+          acquisition = _CountingAcquisition()..fileSystem = fs;
         });
 
         tearDown(() async {
           if (sandbox.existsSync()) await sandbox.delete(recursive: true);
         });
 
+        void useLocalFileSystem() {
+          fs = const LocalFileSystem();
+          sandbox = fs.systemTempDirectory.createTempSync(
+            'skill-install-local-',
+          );
+          project = fs.directory(fs.path.join(sandbox.path, 'project'))
+            ..createSync();
+          home = fs.directory(fs.path.join(sandbox.path, 'home'))..createSync();
+          acquisition.fileSystem = fs;
+        }
+
         Executor executor() => createExecutor(
+          fileSystem: fs,
           skillInstallation: SkillInstallationService(
+            fileSystem: fs,
             acquisition: acquisition,
             interaction: interaction,
             progress: noInstallationProgress,
@@ -53,10 +75,13 @@ void main() {
         );
 
         Directory skill(String name, {String nativeName = 'review'}) {
-          final directory = Directory(p.join(sandbox.path, name))..createSync();
-          File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: $nativeName\ndescription: Reviews.\n---\nBody.\n',
-          );
+          final directory = fs.directory(fs.path.join(sandbox.path, name))
+            ..createSync();
+          fs
+              .file(fs.path.join(directory.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: $nativeName\ndescription: Reviews.\n---\nBody.\n',
+              );
           return directory;
         }
 
@@ -64,26 +89,28 @@ void main() {
           '--scope',
           scope,
           '--cwd',
-          '${project.path}${Platform.pathSeparator}',
+          '${project.path}${fs.path.separator}',
           '--project-root',
-          '${project.path}${Platform.pathSeparator}',
+          '${project.path}${fs.path.separator}',
           '--home',
-          '${home.path}${Platform.pathSeparator}',
+          '${home.path}${fs.path.separator}',
           '--claude-config-dir',
-          '${p.join(sandbox.path, 'claude')}${Platform.pathSeparator}',
+          '${fs.path.join(sandbox.path, 'claude')}${fs.path.separator}',
           '--codex-home',
-          '${p.join(sandbox.path, 'codex')}${Platform.pathSeparator}',
+          '${fs.path.join(sandbox.path, 'codex')}${fs.path.separator}',
           '--state-dir',
-          '${p.join(sandbox.path, 'state')}${Platform.pathSeparator}',
+          '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
         ];
 
         for (final entry in ['metadata.json', 'rules']) {
           test('rejects unsupported root entry $entry before writes', () async {
             final source = skill('source');
             if (entry.contains('.')) {
-              File(p.join(source.path, entry)).writeAsStringSync('extra');
+              fs
+                  .file(fs.path.join(source.path, entry))
+                  .writeAsStringSync('extra');
             } else {
-              Directory(p.join(source.path, entry)).createSync();
+              fs.directory(fs.path.join(source.path, entry)).createSync();
             }
             final result = await executor().fake().execute([
               'skill',
@@ -108,7 +135,7 @@ void main() {
             );
             expect(project.listSync(recursive: true), isEmpty);
             expect(
-              Directory(p.join(sandbox.path, 'state')).existsSync(),
+              fs.directory(fs.path.join(sandbox.path, 'state')).existsSync(),
               isFalse,
             );
           });
@@ -117,16 +144,20 @@ void main() {
         test(
           'mixed discovered batch rejects rules before any writes',
           () async {
-            final repository = Directory(p.join(sandbox.path, 'repository'))
-              ..createSync();
+            final repository = fs.directory(
+              fs.path.join(sandbox.path, 'repository'),
+            )..createSync();
             for (final name in ['valid', 'invalid']) {
-              final dir = Directory(p.join(repository.path, 'skills', name))
-                ..createSync(recursive: true);
-              File(p.join(dir.path, 'SKILL.md')).writeAsStringSync(
-                '---\nname: $name\ndescription: Valid.\n---\nBody.\n',
-              );
+              final dir = fs.directory(
+                fs.path.join(repository.path, 'skills', name),
+              )..createSync(recursive: true);
+              fs
+                  .file(fs.path.join(dir.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: $name\ndescription: Valid.\n---\nBody.\n',
+                  );
               if (name == 'invalid') {
-                Directory(p.join(dir.path, 'rules')).createSync();
+                fs.directory(fs.path.join(dir.path, 'rules')).createSync();
               }
             }
             final result = await executor().fake().execute([
@@ -153,7 +184,7 @@ void main() {
             );
             expect(project.listSync(recursive: true), isEmpty);
             expect(
-              Directory(p.join(sandbox.path, 'state')).existsSync(),
+              fs.directory(fs.path.join(sandbox.path, 'state')).existsSync(),
               isFalse,
             );
           },
@@ -164,9 +195,12 @@ void main() {
           () async {
             final source = skill('source');
             for (final name in ['references', 'scripts', 'assets']) {
-              final nested = Directory(p.join(source.path, name, 'nested'))
-                ..createSync(recursive: true);
-              File(p.join(nested.path, 'content')).writeAsStringSync('content');
+              final nested = fs.directory(
+                fs.path.join(source.path, name, 'nested'),
+              )..createSync(recursive: true);
+              fs
+                  .file(fs.path.join(nested.path, 'content'))
+                  .writeAsStringSync('content');
             }
             final result = await executor().fake().execute([
               'skill',
@@ -185,17 +219,19 @@ void main() {
             );
             for (final name in ['references', 'scripts', 'assets']) {
               expect(
-                File(
-                  p.join(
-                    project.path,
-                    '.agents',
-                    'skills',
-                    'review',
-                    name,
-                    'nested',
-                    'content',
-                  ),
-                ).existsSync(),
+                fs
+                    .file(
+                      fs.path.join(
+                        project.path,
+                        '.agents',
+                        'skills',
+                        'review',
+                        name,
+                        'nested',
+                        'content',
+                      ),
+                    )
+                    .existsSync(),
                 isTrue,
               );
             }
@@ -204,7 +240,8 @@ void main() {
 
         test('rejects a file in place of a permitted directory', () async {
           final source = skill('source');
-          File(p.join(source.path, 'scripts'))
+          fs
+              .file(fs.path.join(source.path, 'scripts'))
               .writeAsStringSync('not a directory');
           final result = await executor().fake().execute([
             'skill',
@@ -232,11 +269,12 @@ void main() {
 
         test('initializes user state containing only coordination', () async {
           final source = skill('source');
-          final coordination = Directory(
-            p.join(sandbox.path, 'state', 'coordination'),
+          final coordination = fs.directory(
+            fs.path.join(sandbox.path, 'state', 'coordination'),
           )..createSync(recursive: true);
-          final lock = File(p.join(coordination.path, 'lifecycle.lock'))
-            ..writeAsStringSync('');
+          final lock = fs.file(
+            fs.path.join(coordination.path, 'lifecycle.lock'),
+          )..writeAsStringSync('');
           final result = await executor().fake().execute([
             'skill',
             'install',
@@ -250,12 +288,22 @@ void main() {
           ]);
           expect(result, isA<MambaSuccessResult>());
           expect(
-            File(p.join(home.path, '.agents', 'skills', 'review', 'SKILL.md'))
+            fs
+                .file(
+                  fs.path.join(
+                    home.path,
+                    '.agents',
+                    'skills',
+                    'review',
+                    'SKILL.md',
+                  ),
+                )
                 .existsSync(),
             isTrue,
           );
           expect(
-            File(p.join(sandbox.path, 'state', 'installations.json'))
+            fs
+                .file(fs.path.join(sandbox.path, 'state', 'installations.json'))
                 .existsSync(),
             isTrue,
           );
@@ -264,8 +312,9 @@ void main() {
 
         test('refuses missing ledger when other state entries exist', () async {
           final source = skill('source');
-          final state = Directory(p.join(sandbox.path, 'state'))..createSync();
-          final sentinel = File(p.join(state.path, 'sentinel'))
+          final state = fs.directory(fs.path.join(sandbox.path, 'state'))
+            ..createSync();
+          final sentinel = fs.file(fs.path.join(state.path, 'sentinel'))
             ..writeAsStringSync('preserve');
           final result = await executor().fake().execute([
             'skill',
@@ -289,7 +338,10 @@ void main() {
                 ),
           );
           expect(sentinel.readAsStringSync(), 'preserve');
-          expect(Directory(p.join(home.path, '.agents')).existsSync(), isFalse);
+          expect(
+            fs.directory(fs.path.join(home.path, '.agents')).existsSync(),
+            isFalse,
+          );
         });
 
         test('help and parser conflicts cause no acquisition or filesystem effects', () async {
@@ -399,7 +451,7 @@ void main() {
             expect(unit['entries'], hasLength(3));
             expect(project.listSync(recursive: true), isEmpty);
             expect(
-              Directory(p.join(sandbox.path, 'state')).existsSync(),
+              fs.directory(fs.path.join(sandbox.path, 'state')).existsSync(),
               isFalse,
             );
           },
@@ -483,17 +535,25 @@ void main() {
         );
 
         test('discovers nested skills without a catalog and installs selected content', () async {
-          final repository = Directory(p.join(sandbox.path, 'repository'))
-            ..createSync();
+          final repository = fs.directory(
+            fs.path.join(sandbox.path, 'repository'),
+          )..createSync();
           for (final path in ['skills/review', 'skills/category/other']) {
-            final directory = Directory(p.join(repository.path, path))
+            final directory = fs.directory(fs.path.join(repository.path, path))
               ..createSync(recursive: true);
-            final name = p.basename(directory.path);
-            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: $name\ndescription: A skill.\n---\nBody.\n',
-            );
-            Directory(p.join(directory.path, 'references')).createSync();
-            File(p.join(directory.path, 'references', 'reference.txt'))
+            final name = fs.path.basename(directory.path);
+            fs
+                .file(fs.path.join(directory.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: $name\ndescription: A skill.\n---\nBody.\n',
+                );
+            fs
+                .directory(fs.path.join(directory.path, 'references'))
+                .createSync();
+            fs
+                .file(
+                  fs.path.join(directory.path, 'references', 'reference.txt'),
+                )
                 .writeAsStringSync('Bundled reference');
           }
           interaction.resourceSelections
@@ -518,20 +578,25 @@ void main() {
           expect((result as MambaSuccessResult).output, contains('installed'));
           expect(interaction.resourceSelections, isEmpty);
           expect(
-            File(
-              p.join(
-                project.path,
-                '.agents',
-                'skills',
-                'other',
-                'references',
-                'reference.txt',
-              ),
-            ).readAsStringSync(),
+            fs
+                .file(
+                  fs.path.join(
+                    project.path,
+                    '.agents',
+                    'skills',
+                    'other',
+                    'references',
+                    'reference.txt',
+                  ),
+                )
+                .readAsStringSync(),
             'Bundled reference',
           );
           expect(
-            Directory(p.join(project.path, '.agents', 'skills', 'review'))
+            fs
+                .directory(
+                  fs.path.join(project.path, '.agents', 'skills', 'review'),
+                )
                 .existsSync(),
             isFalse,
           );
@@ -540,14 +605,17 @@ void main() {
         test(
           'unattended discovery requires explicit resource selection',
           () async {
-            final repository = Directory(p.join(sandbox.path, 'repository'))
-              ..createSync();
-            final directory = Directory(
-              p.join(repository.path, 'skills', 'review'),
+            final repository = fs.directory(
+              fs.path.join(sandbox.path, 'repository'),
+            )..createSync();
+            final directory = fs.directory(
+              fs.path.join(repository.path, 'skills', 'review'),
             )..createSync(recursive: true);
-            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-            );
+            fs
+                .file(fs.path.join(directory.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+                );
             final result = await executor().fake().execute([
               'skill',
               'install',
@@ -593,13 +661,17 @@ void main() {
           test(
             'discovers $sourcePath with explicit unattended selection',
             () async {
-              final repository = Directory(p.join(sandbox.path, 'repository'))
-                ..createSync();
-              final directory = Directory(p.join(repository.path, sourcePath))
-                ..createSync(recursive: true);
-              File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-              );
+              final repository = fs.directory(
+                fs.path.join(sandbox.path, 'repository'),
+              )..createSync();
+              final directory = fs.directory(
+                fs.path.join(repository.path, sourcePath),
+              )..createSync(recursive: true);
+              fs
+                  .file(fs.path.join(directory.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+                  );
               final result = await executor().fake().execute([
                 'skill',
                 'install',
@@ -641,15 +713,19 @@ void main() {
         test(
           'curated catalog remains authoritative over discovered skills',
           () async {
-            final repository = Directory(p.join(sandbox.path, 'repository'))
-              ..createSync();
-            final directory = Directory(
-              p.join(repository.path, 'skills', 'review'),
+            final repository = fs.directory(
+              fs.path.join(sandbox.path, 'repository'),
+            )..createSync();
+            final directory = fs.directory(
+              fs.path.join(repository.path, 'skills', 'review'),
             )..createSync(recursive: true);
-            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-            );
-            File(p.join(repository.path, 'agent-resources.toml'))
+            fs
+                .file(fs.path.join(directory.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+                );
+            fs
+                .file(fs.path.join(repository.path, 'agent-resources.toml'))
                 .writeAsStringSync(
                   'schema_version = 1\n[[skills]]\nid = "curated-review"\npath = "skills/review"\n',
                 );
@@ -683,20 +759,24 @@ void main() {
         );
 
         test('discovery stops at package boundaries and skips hidden dependency trees', () async {
-          final repository = Directory(p.join(sandbox.path, 'repository'))
-            ..createSync();
+          final repository = fs.directory(
+            fs.path.join(sandbox.path, 'repository'),
+          )..createSync();
           for (final sourcePath in [
             'skills/review',
             'skills/review/references/nested',
             'skills/.hidden/hidden',
             'skills/node_modules/dependency',
           ]) {
-            final directory = Directory(p.join(repository.path, sourcePath))
-              ..createSync(recursive: true);
-            final name = p.basename(directory.path);
-            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
-            );
+            final directory = fs.directory(
+              fs.path.join(repository.path, sourcePath),
+            )..createSync(recursive: true);
+            final name = fs.path.basename(directory.path);
+            fs
+                .file(fs.path.join(directory.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
+                );
           }
           final result = await executor().fake().execute([
             'skill',
@@ -726,18 +806,22 @@ void main() {
         test(
           'subpath discovery cannot select Skills outside the selected root',
           () async {
-            final repository = Directory(p.join(sandbox.path, 'repository'))
-              ..createSync();
+            final repository = fs.directory(
+              fs.path.join(sandbox.path, 'repository'),
+            )..createSync();
             for (final sourcePath in [
               'packages/chosen/skills/review',
               'skills/outside',
             ]) {
-              final directory = Directory(p.join(repository.path, sourcePath))
-                ..createSync(recursive: true);
-              final name = p.basename(directory.path);
-              File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-                '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
-              );
+              final directory = fs.directory(
+                fs.path.join(repository.path, sourcePath),
+              )..createSync(recursive: true);
+              final name = fs.path.basename(directory.path);
+              fs
+                  .file(fs.path.join(directory.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
+                  );
             }
             final result = await executor().fake().execute([
               'skill',
@@ -776,15 +860,19 @@ void main() {
         test(
           'conventional skills folder takes precedence over fallback tree',
           () async {
-            final repository = Directory(p.join(sandbox.path, 'repository'))
-              ..createSync();
+            final repository = fs.directory(
+              fs.path.join(sandbox.path, 'repository'),
+            )..createSync();
             for (final sourcePath in ['skills/review', 'examples/outside']) {
-              final directory = Directory(p.join(repository.path, sourcePath))
-                ..createSync(recursive: true);
-              final name = p.basename(directory.path);
-              File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-                '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
-              );
+              final directory = fs.directory(
+                fs.path.join(repository.path, sourcePath),
+              )..createSync(recursive: true);
+              final name = fs.path.basename(directory.path);
+              fs
+                  .file(fs.path.join(directory.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: $name\ndescription: Reviews.\n---\nBody.\n',
+                  );
             }
             final result = await executor().fake().execute([
               'skill',
@@ -818,16 +906,19 @@ void main() {
         test(
           'interactive single-offering collection still requires selection',
           () async {
-            final collection = Directory(
-              p.join(sandbox.path, 'single-collection'),
+            final collection = fs.directory(
+              fs.path.join(sandbox.path, 'single-collection'),
             )..createSync();
-            final selected = Directory(
-              p.join(collection.path, 'skills', 'review'),
+            final selected = fs.directory(
+              fs.path.join(collection.path, 'skills', 'review'),
             )..createSync(recursive: true);
-            File(p.join(selected.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-            );
-            File(p.join(collection.path, 'agent-resources.toml'))
+            fs
+                .file(fs.path.join(selected.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+                );
+            fs
+                .file(fs.path.join(collection.path, 'agent-resources.toml'))
                 .writeAsStringSync('''
 schema_version = 1
 [[skills]]
@@ -849,20 +940,27 @@ path = "skills/review"
         );
 
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {
-          final collection = Directory(p.join(sandbox.path, 'collection'))
-            ..createSync();
-          final selected = Directory(
-            p.join(collection.path, 'skills', 'review'),
+          final collection = fs.directory(
+            fs.path.join(sandbox.path, 'collection'),
+          )..createSync();
+          final selected = fs.directory(
+            fs.path.join(collection.path, 'skills', 'review'),
           )..createSync(recursive: true);
-          File(p.join(selected.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-          );
-          final other = Directory(p.join(collection.path, 'skills', 'other'))
-            ..createSync(recursive: true);
-          File(p.join(other.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: other\ndescription: Other.\n---\nBody.\n',
-          );
-          File(p.join(collection.path, 'agent-resources.toml'))
+          fs
+              .file(fs.path.join(selected.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
+          final other = fs.directory(
+            fs.path.join(collection.path, 'skills', 'other'),
+          )..createSync(recursive: true);
+          fs
+              .file(fs.path.join(other.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: other\ndescription: Other.\n---\nBody.\n',
+              );
+          fs
+              .file(fs.path.join(collection.path, 'agent-resources.toml'))
               .writeAsStringSync('''
 schema_version = 1
 [[skills]]
@@ -892,9 +990,12 @@ path = "skills/other"
           expect(output, contains('Method: canonical'));
           expect(output, contains('code-review'));
           expect(interaction.approvals, isEmpty);
-          expect(Directory(p.join(home.path, '.agents')).existsSync(), isFalse);
           expect(
-            Directory(p.join(sandbox.path, 'state')).existsSync(),
+            fs.directory(fs.path.join(home.path, '.agents')).existsSync(),
+            isFalse,
+          );
+          expect(
+            fs.directory(fs.path.join(sandbox.path, 'state')).existsSync(),
             isFalse,
           );
         });
@@ -926,6 +1027,7 @@ path = "skills/other"
         );
 
         test('consumer-only canonical addition records Codex without rewriting content', () async {
+          useLocalFileSystem();
           final source = skill('consumer-addition');
           List<String> install(List<String> targets) => [
             'skill',
@@ -943,8 +1045,15 @@ path = "skills/other"
           ];
           final first = await executor().fake().execute(install(['claude']));
           expect(first, isA<MambaSuccessResult>());
-          final content = p.join(project.path, '.agents', 'skills', 'review');
-          final before = File(p.join(content, 'SKILL.md')).readAsBytesSync();
+          final content = fs.path.join(
+            project.path,
+            '.agents',
+            'skills',
+            'review',
+          );
+          final before = fs
+              .file(fs.path.join(content, 'SKILL.md'))
+              .readAsBytesSync();
           final second = await executor().fake().execute(
             install(['claude', 'codex']),
           );
@@ -957,7 +1066,10 @@ path = "skills/other"
             (second as MambaSuccessResult).output!,
           ) as Map<String, Object?>;
           expect(envelope['outcome'], 'installed');
-          expect(File(p.join(content, 'SKILL.md')).readAsBytesSync(), before);
+          expect(
+            fs.file(fs.path.join(content, 'SKILL.md')).readAsBytesSync(),
+            before,
+          );
           final records = LifecycleStateService().records(
             LifecycleContext.resolve(
               LifecycleOptions(
@@ -979,12 +1091,13 @@ path = "skills/other"
           'direct SKILL.md installs only that file and discloses the boundary',
           () async {
             final directory = skill('direct-file');
-            File(p.join(directory.path, 'notes.md'))
+            fs
+                .file(fs.path.join(directory.path, 'notes.md'))
                 .writeAsStringSync('Not part of the direct-file package.\n');
             final result = await executor().fake().execute([
               'skill',
               'install',
-              p.join(directory.path, 'SKILL.md'),
+              fs.path.join(directory.path, 'SKILL.md'),
               '--source-kind',
               'resource',
               '--target',
@@ -1016,7 +1129,7 @@ path = "skills/other"
             final installed = await executor().fake().execute([
               'skill',
               'install',
-              p.join(directory.path, 'SKILL.md'),
+              fs.path.join(directory.path, 'SKILL.md'),
               '--source-kind',
               'resource',
               '--target',
@@ -1035,22 +1148,26 @@ path = "skills/other"
                   ? installed.message
                   : null,
             );
-            final content = Directory(
-              p.join(project.path, '.agents', 'skills', 'review'),
+            final content = fs.directory(
+              fs.path.join(project.path, '.agents', 'skills', 'review'),
             );
-            expect(File(p.join(content.path, 'SKILL.md')).existsSync(), isTrue);
             expect(
-              File(p.join(content.path, 'notes.md')).existsSync(),
+              fs.file(fs.path.join(content.path, 'SKILL.md')).existsSync(),
+              isTrue,
+            );
+            expect(
+              fs.file(fs.path.join(content.path, 'notes.md')).existsSync(),
               isFalse,
             );
             expect(
-              content.listSync().map((entity) => p.basename(entity.path)),
+              content.listSync().map((entity) => fs.path.basename(entity.path)),
               ['SKILL.md'],
             );
           },
         );
 
         test('canonical apply and verified repeat produce installed then unchanged', () async {
+          useLocalFileSystem();
           final source = skill('exact');
           final args = [
             'skill',
@@ -1079,14 +1196,27 @@ path = "skills/other"
             (first as MambaSuccessResult).output!,
           ) as Map<String, Object?>;
           expect(installed['outcome'], 'installed');
-          final content = p.join(project.path, '.agents', 'skills', 'review');
-          final exposure = p.join(project.path, '.claude', 'skills', 'review');
-          expect(File(p.join(content, 'SKILL.md')).existsSync(), isTrue);
-          expect(
-            FileSystemEntity.typeSync(exposure, followLinks: false),
-            FileSystemEntityType.link,
+          final content = fs.path.join(
+            project.path,
+            '.agents',
+            'skills',
+            'review',
           );
-          expect(Link(exposure).targetSync(), content);
+          final exposure = fs.path.join(
+            project.path,
+            '.claude',
+            'skills',
+            'review',
+          );
+          expect(
+            fs.file(fs.path.join(content, 'SKILL.md')).existsSync(),
+            isTrue,
+          );
+          expect(
+            io.FileSystemEntity.typeSync(exposure, followLinks: false),
+            io.FileSystemEntityType.link,
+          );
+          expect(io.Link(exposure).targetSync(), content);
 
           final second = await executor().fake().execute(args);
           expect(
@@ -1108,20 +1238,27 @@ path = "skills/other"
               (secondData['units']! as List<Object?>).single!
                   as Map<String, Object?>;
           expect(secondUnit['installationIds'], firstUnit['installationIds']);
-          expect(File(p.join(content, 'SKILL.md')).existsSync(), isTrue);
+          expect(
+            fs.file(fs.path.join(content, 'SKILL.md')).existsSync(),
+            isTrue,
+          );
         });
 
         test('general batch preflight conflicts use status one', () async {
-          final collection = Directory(p.join(sandbox.path, 'conflicts'))
-            ..createSync();
+          final collection = fs.directory(
+            fs.path.join(sandbox.path, 'conflicts'),
+          )..createSync();
           for (final id in ['one', 'two']) {
-            final directory = Directory(p.join(collection.path, id))
+            final directory = fs.directory(fs.path.join(collection.path, id))
               ..createSync();
-            File(p.join(directory.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: Same native name.\n---\nBody.\n',
-            );
+            fs
+                .file(fs.path.join(directory.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Same native name.\n---\nBody.\n',
+                );
           }
-          File(p.join(collection.path, 'agent-resources.toml'))
+          fs
+              .file(fs.path.join(collection.path, 'agent-resources.toml'))
               .writeAsStringSync('''
 schema_version = 1
 [[skills]]
@@ -1155,18 +1292,24 @@ path = "two"
         test(
           'full preflight blocks every selected unit when one is invalid',
           () async {
-            final collection = Directory(p.join(sandbox.path, 'collection'))
+            final collection = fs.directory(
+              fs.path.join(sandbox.path, 'collection'),
+            )..createSync();
+            final valid = fs.directory(fs.path.join(collection.path, 'valid'))
               ..createSync();
-            final valid = Directory(p.join(collection.path, 'valid'))
-              ..createSync();
-            File(p.join(valid.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: valid\ndescription: Valid.\n---\nBody.\n',
-            );
-            final invalid = Directory(p.join(collection.path, 'invalid'))
-              ..createSync();
-            File(p.join(invalid.path, 'SKILL.md'))
+            fs
+                .file(fs.path.join(valid.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: valid\ndescription: Valid.\n---\nBody.\n',
+                );
+            final invalid = fs.directory(
+              fs.path.join(collection.path, 'invalid'),
+            )..createSync();
+            fs
+                .file(fs.path.join(invalid.path, 'SKILL.md'))
                 .writeAsStringSync('not a skill');
-            File(p.join(collection.path, 'agent-resources.toml'))
+            fs
+                .file(fs.path.join(collection.path, 'agent-resources.toml'))
                 .writeAsStringSync('''
 schema_version = 1
 [[skills]]

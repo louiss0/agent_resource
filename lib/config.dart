@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
@@ -8,8 +10,15 @@ import 'src/services/lifecycle_state_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 
 final class ConfigCommand extends GroupCommand {
-  new({PackLifecycleService? service})
-    : super([ConfigValidateCommand(service ?? PackLifecycleService())]);
+  new({
+    PackLifecycleService? service,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : super([
+         ConfigValidateCommand(
+           service ?? PackLifecycleService(fileSystem: fileSystem),
+           fileSystem: fileSystem,
+         ),
+       ]);
 
   @override
   String get name => 'config';
@@ -19,13 +28,16 @@ final class ConfigCommand extends GroupCommand {
 }
 
 final class ConfigValidateCommand extends Command {
-  ConfigValidateCommand(this._service)
-    : super(
-        options: [_scope, _cwd, _projectRoot, _home, _config, _format],
-        flags: const [_resolve],
-      );
+  ConfigValidateCommand(
+    this._service, {
+    this._fileSystem = const local.LocalFileSystem(),
+  }) : super(
+         options: [_scope, _cwd, _projectRoot, _home, _config, _format],
+         flags: const [_resolve],
+       );
 
   final PackLifecycleService _service;
+  final fslib.FileSystem _fileSystem;
 
   static final _scope = ChoiceOption(
     'scope',
@@ -56,7 +68,7 @@ final class ConfigValidateCommand extends Command {
       PackLifecycleRequest(
         operation: PackOperation.configValidate,
         resourceType: PackResourceType.skill,
-        processWorkingDirectory: Directory.current.path,
+        processWorkingDirectory: _fileSystem.currentDirectory.path,
         environment: Map<String, String>.unmodifiable(Platform.environment),
         scope: valueOf(_scope),
         cwd: valueOf(_cwd),

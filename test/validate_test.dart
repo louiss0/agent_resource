@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:file/file.dart' as f;
+import 'package:file/local.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
+import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
@@ -17,8 +21,11 @@ const _baseline = '69ef37e9424c0a7ea9dd2293b559e43ec8176379';
 late final String _entrypoint;
 late final String _packageConfig;
 
+f.FileSystem get _fs =>
+    Zone.current[#fs] as f.FileSystem? ?? const LocalFileSystem();
+path.Context get p => _fs.path;
 String _absoluteLexical(String value) =>
-    p.normalize(Directory(value).absolute.path);
+    p.normalize(_fs.directory(value).absolute.path);
 
 String _sizedFrontmatter(int bytes, {bool multibyte = false}) {
   const prefix = 'name: valid-skill\ndescription: valid\n#';
@@ -61,59 +68,68 @@ String _marker({
   return '---\n${lines.join('\n')}\n---\n$body';
 }
 
-Future<T> _withParent<T>(Future<T> Function(Directory parent) body) async {
-  final parent = await Directory.systemTemp.createTemp(
+Future<T> _withParent<T>(Future<T> Function(f.Directory parent) body) async {
+  final fs = MemoryFileSystem.test(style: FileSystemStyle.posix);
+  final parent = fs.directory('/sandbox')..createSync();
+  fs.currentDirectory = parent;
+  return runZoned(() => body(parent), zoneValues: {#fs: fs});
+}
+
+Future<T> _withLocalParent<T>(
+  Future<T> Function(f.Directory parent) body,
+) async {
+  const fs = LocalFileSystem();
+  final parent = await fs.systemTempDirectory.createTemp(
     'agent-resource-validate-',
   );
   try {
-    return await body(parent);
+    return await runZoned(() => body(parent), zoneValues: {#fs: fs});
   } finally {
     await parent.delete(recursive: true);
   }
 }
 
 Future<T> _withSkill<T>(
-  Future<T> Function(Directory skill) body, {
+  Future<T> Function(f.Directory skill) body, {
   String directoryName = 'valid-skill',
   List<int>? bytes,
   String? marker,
-}) => _withParent((parent) async {
-  final skill = Directory(p.join(parent.path, directoryName))
+  bool local = false,
+}) => (local ? _withLocalParent : _withParent)((parent) async {
+  final skill = _fs.directory(p.join(parent.path, directoryName))
     ..createSync(recursive: true);
   if (bytes != null || marker != null) {
-    File(p.join(skill.path, 'SKILL.md'))
+    _fs
+        .file(p.join(skill.path, 'SKILL.md'))
         .writeAsBytesSync(bytes ?? utf8.encode(marker!));
   }
   return body(skill);
 });
 
-Future<T> _withRoot<T>(Future<T> Function(Directory root) body) async {
-  final root = await Directory.systemTemp.createTemp(
-    'agent-resource-validate-',
-  );
-  try {
-    return await body(root);
-  } finally {
-    await root.delete(recursive: true);
-  }
-}
+Future<T> _withRoot<T>(Future<T> Function(f.Directory root) body) =>
+    _withParent(body);
+Future<T> _withLocalRoot<T>(Future<T> Function(f.Directory root) body) =>
+    _withLocalParent(body);
 
-Map<String, String> _snapshot(Directory root) {
+Map<String, String> _snapshot(f.Directory root) {
   final entries = <String, String>{'.': 'directory'};
 
-  void visit(Directory directory) {
+  void visit(f.Directory directory) {
     for (final entity in directory.listSync(followLinks: false)) {
       final relative = p.relative(entity.path, from: root.path);
-      final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
+      final type = _fs.typeSync(entity.path, followLinks: false);
       entries[relative] = switch (type) {
         FileSystemEntityType.directory => 'directory',
         FileSystemEntityType.file =>
-          'file:${base64Encode(File(entity.path).readAsBytesSync())}',
-        FileSystemEntityType.link => 'link:${Link(entity.path).targetSync()}',
+          'file:${base64Encode(_fs.file(entity.path).readAsBytesSync())}',
+        FileSystemEntityType.link =>
+          'link:${_fs.link(entity.path).targetSync()}',
         FileSystemEntityType.notFound => 'not-found',
         _ => 'other',
       };
-      if (type == FileSystemEntityType.directory) visit(Directory(entity.path));
+      if (type == FileSystemEntityType.directory) {
+        visit(_fs.directory(entity.path));
+      }
     }
   }
 
@@ -125,7 +141,7 @@ Map<String, String> _snapshot(Directory root) {
 Future<MambaExecutionResult> _execute(
   List<String> arguments, {
   Executor? executor,
-}) => (executor ?? createExecutor()).fake().execute([
+}) => (executor ?? createExecutor(fileSystem: _fs)).fake().execute([
   'skill',
   'validate',
   ...arguments,
@@ -239,7 +255,7 @@ void _expectDiagnostic(
 
 Future<bool> _tryCreateLink(String link, String target) async {
   try {
-    await Link(link).create(target);
+    await _fs.link(link).create(target);
     return true;
   } on FileSystemException {
     return false;
@@ -249,9 +265,9 @@ Future<bool> _tryCreateLink(String link, String target) async {
 }
 
 String _findProjectRoot() {
-  var candidate = Directory.current.absolute;
+  var candidate = _fs.currentDirectory.absolute;
   while (true) {
-    if (File(p.join(candidate.path, 'pubspec.yaml')).existsSync()) {
+    if (_fs.file(p.join(candidate.path, 'pubspec.yaml')).existsSync()) {
       return candidate.path;
     }
     final parent = candidate.parent;
@@ -263,7 +279,7 @@ String _findProjectRoot() {
 }
 
 Future<CliProcessResult> _runProduction(
-  Directory workingDirectory,
+  f.Directory workingDirectory,
   List<String> arguments,
 ) => runDartScript(
   script: _entrypoint,
@@ -352,7 +368,7 @@ Future<void> main() async {
             await _withSkill((skill) async {
               final argument = p.relative(
                 p.join(skill.path, '.', '..', p.basename(skill.path)),
-                from: Directory.current.path,
+                from: _fs.currentDirectory.path,
               );
               final report = _reportFromSuccess(
                 _expectSuccess(await _execute(['--skill', argument])),
@@ -384,7 +400,7 @@ Future<void> main() async {
 
         test('reused adapters do not retain diagnostics across valid and invalid runs', () async {
           await _withSkill((skill) async {
-            final adapter = createExecutor().fake();
+            final adapter = createExecutor(fileSystem: _fs).fake();
             final valid = _expectSuccess(
               await adapter.execute([
                 'skill',
@@ -395,7 +411,8 @@ Future<void> main() async {
             );
             expect(_reportFromSuccess(valid)['diagnostics'], isEmpty);
 
-            File(p.join(skill.path, 'SKILL.md'))
+            _fs
+                .file(p.join(skill.path, 'SKILL.md'))
                 .writeAsStringSync('---\ndescription: invalid\n---\n');
             final invalid = _expectFailure(
               await adapter.execute([
@@ -409,7 +426,9 @@ Future<void> main() async {
             );
             expect(_reportFromInvalid(invalid)['valid'], isFalse);
 
-            File(p.join(skill.path, 'SKILL.md')).writeAsStringSync(_marker());
+            _fs
+                .file(p.join(skill.path, 'SKILL.md'))
+                .writeAsStringSync(_marker());
             final validAgain = _expectSuccess(
               await adapter.execute([
                 'skill',
@@ -427,13 +446,15 @@ Future<void> main() async {
         test('marker body is opaque and resources are not read', () async {
           await _withSkill(
             (skill) async {
-              Directory(p.join(skill.path, 'references', 'unreadable'))
+              _fs
+                  .directory(p.join(skill.path, 'references', 'unreadable'))
                   .createSync(recursive: true);
-              File(p.join(skill.path, 'references', 'not-a-file'))
+              _fs
+                  .file(p.join(skill.path, 'references', 'not-a-file'))
                   .writeAsStringSync(
                     'this is intentionally not a resource for validation',
                   );
-              File(p.join(skill.path, 'scripts', 'run.sh'))
+              _fs.file(p.join(skill.path, 'scripts', 'run.sh'))
                 ..parent.createSync(recursive: true)
                 ..writeAsStringSync('exit 99\n');
               final report = _reportFromSuccess(
@@ -455,23 +476,29 @@ Future<void> main() async {
           'success, invalid, help, and parser failures preserve seeded files',
           () async {
             await _withParent((parent) async {
-              final skill = Directory(p.join(parent.path, 'valid-skill'))
+              final skill = _fs.directory(p.join(parent.path, 'valid-skill'))
                 ..createSync();
-              File(p.join(skill.path, 'SKILL.md')).writeAsStringSync(_marker());
-              Directory(p.join(parent.path, 'references')).createSync();
-              File(p.join(parent.path, 'references', 'sentinel.txt'))
+              _fs
+                  .file(p.join(skill.path, 'SKILL.md'))
+                  .writeAsStringSync(_marker());
+              _fs.directory(p.join(parent.path, 'references')).createSync();
+              _fs
+                  .file(p.join(parent.path, 'references', 'sentinel.txt'))
                   .writeAsStringSync('do not change');
               final before = _snapshot(parent);
 
               _expectSuccess(await _execute(['--skill', skill.path]));
-              File(p.join(skill.path, 'SKILL.md'))
+              _fs
+                  .file(p.join(skill.path, 'SKILL.md'))
                   .writeAsStringSync('---\ndescription: invalid\n---\n');
               _expectFailure(
                 await _execute(['--skill', skill.path]),
                 exitCode: 2,
                 phase: MambaExecutionPhase.run,
               );
-              File(p.join(skill.path, 'SKILL.md')).writeAsStringSync(_marker());
+              _fs
+                  .file(p.join(skill.path, 'SKILL.md'))
+                  .writeAsStringSync(_marker());
               _expectSuccess(await _execute(const ['--help']));
               _expectFailure(
                 await _execute(const ['--unknown']),
@@ -486,41 +513,45 @@ Future<void> main() async {
         test(
           'marker handles close before rename after success and invalid reads',
           () async {
-            await _withSkill((skill) async {
-              final marker = File(p.join(skill.path, 'SKILL.md'));
-              _expectSuccess(await _execute(['--skill', skill.path]));
-              final renamed = p.join(skill.path, 'SKILL.md.after-success');
-              await marker.rename(renamed);
-              await File(renamed).rename(marker.path);
+            await _withSkill(
+              (skill) async {
+                final marker = _fs.file(p.join(skill.path, 'SKILL.md'));
+                _expectSuccess(await _execute(['--skill', skill.path]));
+                final renamed = p.join(skill.path, 'SKILL.md.after-success');
+                await marker.rename(renamed);
+                await _fs.file(renamed).rename(marker.path);
 
-              marker.writeAsBytesSync(<int>[0x2D, 0x2D, 0x2D, 0x0A, 0xFF]);
-              _expectFailure(
-                await _execute(['--skill', skill.path]),
-                exitCode: 2,
-                phase: MambaExecutionPhase.run,
-              );
-              final renamedAfterInvalid = p.join(
-                skill.path,
-                'SKILL.md.after-invalid',
-              );
-              await marker.rename(renamedAfterInvalid);
-              await File(renamedAfterInvalid).rename(marker.path);
+                marker.writeAsBytesSync(<int>[0x2D, 0x2D, 0x2D, 0x0A, 0xFF]);
+                _expectFailure(
+                  await _execute(['--skill', skill.path]),
+                  exitCode: 2,
+                  phase: MambaExecutionPhase.run,
+                );
+                final renamedAfterInvalid = p.join(
+                  skill.path,
+                  'SKILL.md.after-invalid',
+                );
+                await marker.rename(renamedAfterInvalid);
+                await _fs.file(renamedAfterInvalid).rename(marker.path);
 
-              marker.writeAsBytesSync(
-                List<int>.filled(_markerSizeLimit + 1, 0x78),
-              );
-              _expectFailure(
-                await _execute(['--skill', skill.path]),
-                exitCode: 2,
-                phase: MambaExecutionPhase.run,
-              );
-              final renamedAfterOversize = p.join(
-                skill.path,
-                'SKILL.md.after-oversize',
-              );
-              await marker.rename(renamedAfterOversize);
-              await File(renamedAfterOversize).rename(marker.path);
-            }, marker: _marker());
+                marker.writeAsBytesSync(
+                  List<int>.filled(_markerSizeLimit + 1, 0x78),
+                );
+                _expectFailure(
+                  await _execute(['--skill', skill.path]),
+                  exitCode: 2,
+                  phase: MambaExecutionPhase.run,
+                );
+                final renamedAfterOversize = p.join(
+                  skill.path,
+                  'SKILL.md.after-oversize',
+                );
+                await marker.rename(renamedAfterOversize);
+                await _fs.file(renamedAfterOversize).rename(marker.path);
+              },
+              marker: _marker(),
+              local: true,
+            );
           },
         );
 
@@ -528,7 +559,7 @@ Future<void> main() async {
           await _withSkill((skill) async {
             final text = _marker().replaceAll('\n', '\r\n');
             final bytes = <int>[0xEF, 0xBB, 0xBF, ...utf8.encode(text)];
-            File(p.join(skill.path, 'SKILL.md')).writeAsBytesSync(bytes);
+            _fs.file(p.join(skill.path, 'SKILL.md')).writeAsBytesSync(bytes);
             final report = _reportFromSuccess(
               _expectSuccess(await _execute(['--skill', skill.path])),
             );
@@ -740,7 +771,7 @@ zeta: false
 
         test('directory marker is not read as a file', () async {
           await _withSkill((skill) async {
-            Directory(p.join(skill.path, 'SKILL.md')).createSync();
+            _fs.directory(p.join(skill.path, 'SKILL.md')).createSync();
             final report = _reportFromInvalid(
               _expectFailure(
                 await _execute(['--skill', skill.path]),
@@ -755,10 +786,11 @@ zeta: false
         test(
           'explicit root links preserve their lexical selected path',
           () async {
-            await _withParent((parent) async {
-              final target = Directory(p.join(parent.path, 'valid-skill'))
+            await _withLocalParent((parent) async {
+              final target = _fs.directory(p.join(parent.path, 'valid-skill'))
                 ..createSync();
-              File(p.join(target.path, 'SKILL.md'))
+              _fs
+                  .file(p.join(target.path, 'SKILL.md'))
                   .writeAsStringSync(_marker(name: 'selected-link'));
               final linkPath = p.join(parent.path, 'selected-link');
               if (!await _tryCreateLink(linkPath, target.path)) {
@@ -775,10 +807,10 @@ zeta: false
         );
 
         test('linked marker is rejected before its target is read', () async {
-          await _withParent((parent) async {
-            final skill = Directory(p.join(parent.path, 'valid-skill'))
+          await _withLocalParent((parent) async {
+            final skill = _fs.directory(p.join(parent.path, 'valid-skill'))
               ..createSync();
-            final target = File(p.join(parent.path, 'target.md'))
+            final target = _fs.file(p.join(parent.path, 'target.md'))
               ..writeAsStringSync(_marker());
             final link = p.join(skill.path, 'SKILL.md');
             if (!await _tryCreateLink(link, target.path)) {
@@ -1057,7 +1089,7 @@ allowed-tools: Read Bash(git:*)
 
         test('regular-file root is text failure with status one', () async {
           await _withRoot((root) async {
-            final file = File(p.join(root.path, 'root.txt'))
+            final file = _fs.file(p.join(root.path, 'root.txt'))
               ..writeAsStringSync('x');
             final result = _expectFailure(
               await _execute(['--skill', file.path]),
@@ -1077,7 +1109,7 @@ allowed-tools: Read Bash(git:*)
               );
               return;
             }
-            await _withRoot((root) async {
+            await _withLocalRoot((root) async {
               final changed = await Process.run('chmod', ['000', root.path]);
               if (changed.exitCode != 0) {
                 markTestSkipped('chmod is unavailable');
@@ -1098,41 +1130,49 @@ allowed-tools: Read Bash(git:*)
         );
 
         test('valid report uses stdout and status zero', () async {
-          await _withSkill((skill) async {
-            final result = await _runProduction(skill.parent, [
-              'skill',
-              'validate',
-              '--skill',
-              skill.path,
-            ]);
-            expect(
-              result.exitCode,
-              0,
-              reason: 'stdout=${result.stdout} stderr=${result.stderr}',
-            );
-            expect(result.stderr, isEmpty);
-            final report = _decodeObject(result.stdout);
-            expect(report['valid'], isTrue);
-          }, marker: _marker());
+          await _withSkill(
+            (skill) async {
+              final result = await _runProduction(skill.parent, [
+                'skill',
+                'validate',
+                '--skill',
+                skill.path,
+              ]);
+              expect(
+                result.exitCode,
+                0,
+                reason: 'stdout=${result.stdout} stderr=${result.stderr}',
+              );
+              expect(result.stderr, isEmpty);
+              final report = _decodeObject(result.stdout);
+              expect(report['valid'], isTrue);
+            },
+            marker: _marker(),
+            local: true,
+          );
         });
 
         test('invalid report uses stderr and status two', () async {
-          await _withSkill((skill) async {
-            final result = await _runProduction(skill.parent, [
-              'skill',
-              'validate',
-              '--skill',
-              skill.path,
-            ]);
-            expect(result.exitCode, 2);
-            expect(result.stdout, isEmpty);
-            final report = _decodeObject(result.stderr);
-            expect(report['valid'], isFalse);
-          }, marker: _marker(name: ''));
+          await _withSkill(
+            (skill) async {
+              final result = await _runProduction(skill.parent, [
+                'skill',
+                'validate',
+                '--skill',
+                skill.path,
+              ]);
+              expect(result.exitCode, 2);
+              expect(result.stdout, isEmpty);
+              final report = _decodeObject(result.stderr);
+              expect(report['valid'], isFalse);
+            },
+            marker: _marker(name: ''),
+            local: true,
+          );
         }, timeout: const Timeout(Duration(minutes: 2)));
 
         test('operational failure uses text stderr and status one', () async {
-          await _withRoot((root) async {
+          await _withLocalRoot((root) async {
             final result = await _runProduction(root, [
               'skill',
               'validate',

@@ -2576,6 +2576,7 @@ interface class PackLifecycleService {
             harness: _harness(candidate.profile!),
           ),
           operation: AgentOperation.validate,
+          fileSystem: _fileSystem,
         );
         final identity = report.identity['name'];
         if (identity is Map<String, Object?>) {

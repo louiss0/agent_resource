@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
@@ -14,6 +16,7 @@ List<Command> packLifecycleCommands(
   PackLifecycleService service, {
   bool canonical = false,
   void Function(String)? warning,
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
 }) => [
   for (final operation in [
     PackOperation.install,
@@ -29,6 +32,7 @@ List<Command> packLifecycleCommands(
       service,
       canonical: canonical,
       warning: warning,
+      fileSystem: fileSystem,
     ),
 ];
 
@@ -39,6 +43,7 @@ final class PackActionCommand extends Command {
     this._service, {
     bool canonical = false,
     void Function(String)? warning,
+    this._fileSystem = const local.LocalFileSystem(),
   }) : _canonical = canonical,
        _warning = warning ?? stderr.writeln,
        super(
@@ -94,6 +99,7 @@ final class PackActionCommand extends Command {
          },
        );
 
+  final fslib.FileSystem _fileSystem;
   final bool _canonical;
   final void Function(String) _warning;
   final PackResourceType _resourceType;
@@ -237,7 +243,7 @@ final class PackActionCommand extends Command {
             : [_resourceType],
         includeNew: mutating && valueOf(_includeNew),
         pack: valueOf(_pack),
-        processWorkingDirectory: Directory.current.path,
+        processWorkingDirectory: _fileSystem.currentDirectory.path,
         environment: Map<String, String>.unmodifiable(Platform.environment),
         scope: valueOf(_scope),
         cwd: valueOf(_cwd),

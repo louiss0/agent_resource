@@ -164,7 +164,10 @@ final class _FailAfterFirstPublication extends LifecycleIO {
 }
 
 void main() {
-  group('LifecycleStateService resource units', () {
+  // Every unit publishes a canonical skill and a native exposure link. These
+  // transaction and recovery cases exercise real link creation, inspection,
+  // removal, and restoration rather than an in-memory link approximation.
+  group('LifecycleStateService resource units (host native links)', () {
     late Directory sandbox;
     late Directory project;
     late Directory home;

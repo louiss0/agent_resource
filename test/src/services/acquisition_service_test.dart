@@ -5,12 +5,180 @@ import 'package:agent_resource/src/installation/resource_catalog.dart';
 import 'package:archive/archive.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:crypto/crypto.dart';
+import 'package:file/memory.dart';
+import 'package:file/file.dart' as fs;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 void main() {
-  group('AcquisitionService', () {
+  group('AcquisitionService memory filesystem', () {
+    late MemoryFileSystem fileSystem;
+    late fs.Directory sandbox;
+
+    setUp(() {
+      fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+      sandbox = fileSystem.directory('/sandbox')..createSync();
+    });
+
+    AcquisitionRequest request(
+      String locator, {
+      String? subpath,
+      String? ref,
+      AcquisitionSourceKind? sourceKind,
+      Duration deadline = acquisitionDeadline,
+    }) => AcquisitionRequest(
+      locator: locator,
+      cwd: sandbox.path,
+      resourceType: CatalogResourceType.skill,
+      subpath: subpath,
+      ref: ref,
+      sourceKind: sourceKind,
+      deadline: deadline,
+    );
+
+    test(
+      'selects a local collection root without scanning or cleanup',
+      () async {
+        final collection = fileSystem.directory(
+          fileSystem.path.join(sandbox.path, 'collection'),
+        )..createSync();
+        fileSystem
+            .file(fileSystem.path.join(collection.path, sourceConfigFileName))
+            .writeAsStringSync('schema_version = 1\n');
+        final nested = fileSystem.directory(
+          fileSystem.path.join(collection.path, 'nested'),
+        )..createSync();
+        fileSystem
+            .file(fileSystem.path.join(nested.path, 'sentinel.txt'))
+            .writeAsStringSync('unchanged');
+
+        final workspace = await AcquisitionService(fileSystem: fileSystem)
+            .acquire(
+              request(
+                'collection',
+                sourceKind: AcquisitionSourceKind.collection,
+              ),
+            );
+        await workspace.close();
+
+        expect(workspace.selectedRoot, collection.path);
+        expect(workspace.provenance.kind, AcquisitionLocatorKind.local);
+        expect(workspace.provenance.requestedLocator, 'collection');
+        expect(workspace.provenance.durableLocalDirectory, isTrue);
+        expect(workspace.provenance.temporary, isFalse);
+        expect(nested.existsSync(), isTrue);
+        expect(
+          fileSystem
+              .file(fileSystem.path.join(nested.path, 'sentinel.txt'))
+              .readAsStringSync(),
+          'unchanged',
+        );
+      },
+    );
+
+    test('applies an explicit subpath and refuses traversal', () async {
+      fileSystem
+          .directory(
+            fileSystem.path.join(sandbox.path, 'repo', 'skills', 'review'),
+          )
+          .createSync(recursive: true);
+      final workspace = await AcquisitionService(fileSystem: fileSystem)
+          .acquire(request('repo', subpath: 'skills/review'));
+      expect(
+        workspace.selectedRoot,
+        fileSystem.path.join(sandbox.path, 'repo', 'skills', 'review'),
+      );
+      await workspace.close();
+
+      for (final subpath in [
+        '../outside',
+        '/absolute',
+        r'..\outside',
+        'missing',
+      ]) {
+        expect(
+          () =>
+              AcquisitionService(fileSystem: fileSystem)
+                  .acquire(request('repo', subpath: subpath)),
+          throwsA(isA<MambaException>()),
+        );
+      }
+    });
+
+    test('retains direct-file boundaries and refuses a subpath', () async {
+      final marker = fileSystem.file(
+        fileSystem.path.join(sandbox.path, 'SKILL.md'),
+      )..writeAsStringSync('---\nname: review\ndescription: Reviews.\n---\n');
+      final workspace = await AcquisitionService(fileSystem: fileSystem)
+          .acquire(
+            request(marker.path, sourceKind: AcquisitionSourceKind.resource),
+          );
+      expect(workspace.selectedFile, isNot(marker.path));
+      expect(workspace.selectedRoot, isNot(sandbox.path));
+      expect(workspace.provenance.directFile, isTrue);
+      expect(workspace.provenance.durableLocalDirectory, isFalse);
+      final staged = workspace.selectedFile!;
+      await workspace.close();
+      expect(marker.existsSync(), isTrue);
+      expect(fileSystem.file(staged).existsSync(), isFalse);
+
+      expect(
+        () =>
+            AcquisitionService(fileSystem: fileSystem)
+                .acquire(request(marker.path, subpath: 'sibling')),
+        throwsA(isA<MambaException>()),
+      );
+    });
+
+    test(
+      'prefers existing relative paths and explicit paths over shorthand',
+      () async {
+        final local = fileSystem.directory(
+          fileSystem.path.join(sandbox.path, 'example', 'repository'),
+        )..createSync(recursive: true);
+        for (final locator in ['example/repository', './example/repository']) {
+          final workspace = await AcquisitionService(fileSystem: fileSystem)
+              .acquire(request(locator));
+          expect(workspace.provenance.kind, AcquisitionLocatorKind.local);
+          expect(workspace.selectedRoot, local.path);
+          await workspace.close();
+        }
+        await expectLater(
+          AcquisitionService(fileSystem: fileSystem)
+              .acquire(request('./missing/repository')),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('does not exist'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('rejects refs for local sources before any writes', () {
+      expect(
+        () =>
+            AcquisitionService(fileSystem: fileSystem)
+                .acquire(request('.', ref: 'main')),
+        throwsA(
+          isA<MambaException>()
+              .having((error) => error.exitCode, 'status', 1)
+              .having((error) => error.message, 'message', contains('--ref')),
+        ),
+      );
+      expect(
+        fileSystem
+            .directory(fileSystem.path.join(sandbox.path, '.agent-resource'))
+            .existsSync(),
+        isFalse,
+      );
+    });
+  });
+
+  group('AcquisitionService host integration', () {
     late Directory sandbox;
 
     setUp(() async {
@@ -36,61 +204,6 @@ void main() {
       sourceKind: sourceKind,
       deadline: deadline,
     );
-
-    test(
-      'selects a local collection root without scanning or cleanup',
-      () async {
-        final collection = Directory(p.join(sandbox.path, 'collection'))
-          ..createSync();
-        File(p.join(collection.path, sourceConfigFileName))
-            .writeAsStringSync('schema_version = 1\n');
-        final nested = Directory(p.join(collection.path, 'nested'))
-          ..createSync();
-        File(p.join(nested.path, 'sentinel.txt'))
-            .writeAsStringSync('unchanged');
-
-        final workspace = await AcquisitionService().acquire(
-          request('collection', sourceKind: AcquisitionSourceKind.collection),
-        );
-        await workspace.close();
-
-        expect(workspace.selectedRoot, collection.path);
-        expect(workspace.provenance.kind, AcquisitionLocatorKind.local);
-        expect(workspace.provenance.requestedLocator, 'collection');
-        expect(workspace.provenance.durableLocalDirectory, isTrue);
-        expect(workspace.provenance.temporary, isFalse);
-        expect(nested.existsSync(), isTrue);
-        expect(
-          File(p.join(nested.path, 'sentinel.txt')).readAsStringSync(),
-          'unchanged',
-        );
-      },
-    );
-
-    test('applies an explicit subpath and refuses traversal', () async {
-      Directory(p.join(sandbox.path, 'repo', 'skills', 'review'))
-          .createSync(recursive: true);
-      final workspace = await AcquisitionService().acquire(
-        request('repo', subpath: 'skills/review'),
-      );
-      expect(
-        workspace.selectedRoot,
-        p.join(sandbox.path, 'repo', 'skills', 'review'),
-      );
-      await workspace.close();
-
-      for (final subpath in [
-        '../outside',
-        '/absolute',
-        r'..\outside',
-        'missing',
-      ]) {
-        expect(
-          () => AcquisitionService().acquire(request('repo', subpath: subpath)),
-          throwsA(isA<MambaException>()),
-        );
-      }
-    });
 
     test('does not follow a Git HTTPS downgrade to plaintext', () async {
       final fixture = await _GitFixture.create(sandbox);
@@ -127,29 +240,6 @@ void main() {
       );
       expect(plaintextRequests, 0);
     }, timeout: const Timeout(Duration(seconds: 30)));
-
-    test('retains direct-file boundaries and refuses a subpath', () async {
-      final marker = File(p.join(sandbox.path, 'SKILL.md'))
-        ..writeAsStringSync('---\nname: review\ndescription: Reviews.\n---\n');
-      final workspace = await AcquisitionService().acquire(
-        request(marker.path, sourceKind: AcquisitionSourceKind.resource),
-      );
-      expect(workspace.selectedFile, isNot(marker.path));
-      expect(workspace.selectedRoot, isNot(sandbox.path));
-      expect(workspace.provenance.directFile, isTrue);
-      expect(workspace.provenance.durableLocalDirectory, isFalse);
-      final staged = workspace.selectedFile!;
-      await workspace.close();
-      expect(marker.existsSync(), isTrue);
-      expect(File(staged).existsSync(), isFalse);
-
-      expect(
-        () => AcquisitionService().acquire(
-          request(marker.path, subpath: 'sibling'),
-        ),
-        throwsA(isA<MambaException>()),
-      );
-    });
 
     test(
       'materializes an immutable Git revision without running source helpers',
@@ -690,32 +780,6 @@ void main() {
     });
 
     test(
-      'prefers existing relative paths and explicit paths over shorthand',
-      () async {
-        final local = Directory(p.join(sandbox.path, 'example', 'repository'))
-          ..createSync(recursive: true);
-        for (final locator in ['example/repository', './example/repository']) {
-          final workspace = await AcquisitionService().acquire(
-            request(locator),
-          );
-          expect(workspace.provenance.kind, AcquisitionLocatorKind.local);
-          expect(workspace.selectedRoot, local.path);
-          await workspace.close();
-        }
-        await expectLater(
-          AcquisitionService().acquire(request('./missing/repository')),
-          throwsA(
-            isA<MambaException>().having(
-              (error) => error.message,
-              'message',
-              contains('does not exist'),
-            ),
-          ),
-        );
-      },
-    );
-
-    test(
       'rejects GitHub tree and blob pages with repository guidance',
       () async {
         for (final page in ['tree', 'blob']) {
@@ -734,21 +798,6 @@ void main() {
         }
       },
     );
-
-    test('rejects refs for local sources before any writes', () {
-      expect(
-        () => AcquisitionService().acquire(request('.', ref: 'main')),
-        throwsA(
-          isA<MambaException>()
-              .having((error) => error.exitCode, 'status', 1)
-              .having((error) => error.message, 'message', contains('--ref')),
-        ),
-      );
-      expect(
-        Directory(p.join(sandbox.path, '.agent-resource')).existsSync(),
-        isFalse,
-      );
-    });
   });
 }
 

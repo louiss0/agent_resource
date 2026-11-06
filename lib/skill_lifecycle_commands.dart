@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Directory, Platform;
+import 'dart:io' show Platform;
 
 import 'package:mamba/mamba.dart';
 
@@ -20,6 +20,7 @@ Future<bool> _defaultConfirmation(String prompt) =>
     InstallationApprovalComponent(label: prompt).render();
 
 LifecycleOptions _options(
+  String processWorkingDirectory,
   LifecycleScope scope,
   String? cwd,
   String? projectRoot,
@@ -31,7 +32,7 @@ LifecycleOptions _options(
   bool dryRun,
   bool approved,
 ) => LifecycleOptions(
-  processWorkingDirectory: Directory.current.path,
+  processWorkingDirectory: processWorkingDirectory,
   environment: Map<String, String>.unmodifiable(Platform.environment),
   scope: scope,
   cwd: cwd,
@@ -196,7 +197,8 @@ final class SkillInstallCommand extends Command {
       InstallationWorkflowRequest(
         source: source,
         options: LifecycleOptions(
-          processWorkingDirectory: Directory.current.path,
+          processWorkingDirectory:
+              _installation.state.io.fs.currentDirectory.path,
           environment: Map<String, String>.unmodifiable(Platform.environment),
           scope: valueOf(_scope) ?? LifecycleScope.user,
           cwd: valueOf(_cwd),
@@ -320,6 +322,7 @@ final class SkillAdoptCommand extends Command {
     final result = await _service.adopt(
       SkillInstallInput(
         options: _options(
+          _service.state.io.fs.currentDirectory.path,
           valueOf(_scope),
           valueOf(_cwd),
           valueOf(_projectRoot),
@@ -399,6 +402,7 @@ final class SkillReplaceCommand extends Command {
     LifecycleReplaceInput input(bool planned, bool approved) =>
         LifecycleReplaceInput(
           options: _options(
+            _service.state.io.fs.currentDirectory.path,
             valueOf(_scope),
             valueOf(_cwd),
             valueOf(_projectRoot),
@@ -489,6 +493,7 @@ final class SkillRemoveCommand extends Command {
     final yes = valueOf(_yes);
     LifecycleIdInput input(bool planned, bool approved) => LifecycleIdInput(
       options: _options(
+        _service.state.io.fs.currentDirectory.path,
         valueOf(_scope),
         valueOf(_cwd),
         valueOf(_projectRoot),
@@ -574,6 +579,7 @@ final class SkillRecoverCommand extends Command {
     final dryRun = valueOf(_dryRun);
     final yes = valueOf(_yes);
     LifecycleOptions options(bool planned, bool approved) => _options(
+      _service.state.io.fs.currentDirectory.path,
       valueOf(_scope),
       valueOf(_cwd),
       valueOf(_projectRoot),
@@ -664,6 +670,7 @@ final class SkillBackupListCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final result = await _service.backupList(
       _options(
+        _service.state.io.fs.currentDirectory.path,
         valueOf(_scope),
         valueOf(_cwd),
         valueOf(_projectRoot),
@@ -735,6 +742,7 @@ final class SkillBackupRestoreCommand extends Command {
     final yes = valueOf(_yes);
     LifecycleIdInput input(bool planned, bool approved) => LifecycleIdInput(
       options: _options(
+        _service.state.io.fs.currentDirectory.path,
         valueOf(_scope),
         valueOf(_cwd),
         valueOf(_projectRoot),
@@ -815,6 +823,7 @@ final class SkillBackupCleanupCommand extends Command {
     final yes = valueOf(_yes);
     LifecycleIdInput input(bool planned, bool approved) => LifecycleIdInput(
       options: _options(
+        _service.state.io.fs.currentDirectory.path,
         valueOf(_scope),
         valueOf(_cwd),
         valueOf(_projectRoot),

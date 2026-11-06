@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/services/pack_lifecycle_service.dart';
 import 'package:file/file.dart' as fslib;
-import 'package:file/local.dart' as local;
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
 
@@ -211,8 +211,9 @@ void main() {
         late fslib.File agentFile;
 
         setUp(() {
-          fs = const local.LocalFileSystem();
-          sandbox = fs.systemTempDirectory.createTempSync('pack-command-test-');
+          fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          sandbox = fs.directory('/pack-command-test')..createSync();
+          fs.currentDirectory = sandbox;
           project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync(recursive: true);
           home = fs.directory(fs.path.join(sandbox.path, 'home'))
@@ -304,9 +305,9 @@ track = { kind = "local" }
         Future<Map<String, Object?>> runSuccessfully(
           List<String> arguments,
         ) async {
-          final result = await createExecutor(
-            packLifecycle: PackLifecycleService(fileSystem: fs),
-          ).fake().execute(arguments);
+          final result = await createExecutor(fileSystem: fs)
+              .fake()
+              .execute(arguments);
           expect(
             result,
             isA<MambaSuccessResult>().having(
@@ -395,9 +396,9 @@ Review changes.
 ''');
           await runSuccessfully(invocation('install'));
 
-          final result = await createExecutor(
-            packLifecycle: PackLifecycleService(fileSystem: fs),
-          ).fake().execute([...invocation('remove'), '--only', 'reviewer']);
+          final result = await createExecutor(fileSystem: fs)
+              .fake()
+              .execute([...invocation('remove'), '--only', 'reviewer']);
 
           expect(
             result,

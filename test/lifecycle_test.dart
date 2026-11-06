@@ -1,9 +1,11 @@
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:file/file.dart';
+import 'package:file/memory.dart';
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
+
 import 'package:test/test.dart';
 
 MambaSuccessResult _success(MambaExecutionResult result) {
@@ -41,11 +43,16 @@ MambaFailureResult _failure(
 }
 
 void main() {
+  final fs = MemoryFileSystem(style: FileSystemStyle.posix)
+    ..currentDirectory = '/';
+  final p = fs.path;
   group('agent_resource', () {
     group('skill', () {
       test('help lists lifecycle commands and no discover alias', () async {
         final output = _success(
-          await createExecutor().fake().execute(['skill', '--help']),
+          await createExecutor(fileSystem: fs)
+              .fake()
+              .execute(['skill', '--help']),
         ).output!;
         for (final command in [
           'list',
@@ -66,21 +73,22 @@ void main() {
 
       group('install', () {
         test('dry-run is planned and creates no artifacts', () async {
-          final sandbox = await Directory.systemTemp.createTemp(
-            'lifecycle-cli-',
-          );
+          final sandbox = fs.systemTempDirectory.createTempSync('lifecycle-');
           try {
-            final project = Directory(p.join(sandbox.path, 'project'))
+            final project = fs.directory(p.join(sandbox.path, 'project'))
               ..createSync();
-            final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-            final source = Directory(p.join(sandbox.path, 'source'))
+            final home = fs.directory(p.join(sandbox.path, 'home'))
               ..createSync();
-            File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-            );
-            final separator = Platform.pathSeparator;
+            final source = fs.directory(p.join(sandbox.path, 'source'))
+              ..createSync();
+            fs
+                .file(p.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+                );
+            final separator = p.separator;
             final result = _success(
-              await createExecutor().fake().execute([
+              await createExecutor(fileSystem: fs).fake().execute([
                 'skill',
                 'install',
                 '${source.path}$separator',
@@ -107,11 +115,13 @@ void main() {
             expect(envelope['command'], 'skill install');
             expect(envelope['outcome'], 'planned');
             expect(
-              Directory(p.join(project.path, '.agent-resource')).existsSync(),
+              fs
+                  .directory(p.join(project.path, '.agent-resource'))
+                  .existsSync(),
               isFalse,
             );
             expect(
-              Directory(p.join(project.path, '.claude')).existsSync(),
+              fs.directory(p.join(project.path, '.claude')).existsSync(),
               isFalse,
             );
           } finally {
@@ -122,22 +132,22 @@ void main() {
         test(
           'link mode is explicit and reported in a read-only plan',
           () async {
-            final sandbox = await Directory.systemTemp.createTemp(
-              'lifecycle-mode-',
-            );
+            final sandbox = fs.systemTempDirectory.createTempSync('lifecycle-');
             try {
-              final project = Directory(p.join(sandbox.path, 'project'))
+              final project = fs.directory(p.join(sandbox.path, 'project'))
                 ..createSync();
-              final home = Directory(p.join(sandbox.path, 'home'))
+              final home = fs.directory(p.join(sandbox.path, 'home'))
                 ..createSync();
-              final source = Directory(p.join(sandbox.path, 'source'))
+              final source = fs.directory(p.join(sandbox.path, 'source'))
                 ..createSync();
-              File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-              );
-              final separator = Platform.pathSeparator;
+              fs
+                  .file(p.join(source.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+                  );
+              final separator = p.separator;
               final result = _success(
-                await createExecutor().fake().execute([
+                await createExecutor(fileSystem: fs).fake().execute([
                   'skill',
                   'install',
                   '${source.path}$separator',
@@ -180,7 +190,7 @@ void main() {
               );
               expect(entry['path'], contains('.claude'));
               expect(
-                Directory(p.join(project.path, '.claude')).existsSync(),
+                fs.directory(p.join(project.path, '.claude')).existsSync(),
                 isFalse,
               );
             } finally {
@@ -192,11 +202,9 @@ void main() {
         test(
           'unknown options and retired interactive input reject before effects',
           () async {
-            final result = await createExecutor().fake().execute([
-              'skill',
-              'install',
-              '--not-an-input',
-            ]);
+            final result = await createExecutor(fileSystem: fs)
+                .fake()
+                .execute(['skill', 'install', '--not-an-input']);
             _failure(
               result,
               1,
@@ -205,13 +213,15 @@ void main() {
               commandPath: const ['agent_resource', 'skill', 'install'],
             );
 
-            final conflict = await createExecutor().fake().execute([
-              'skill',
-              'install',
-              '--interactive',
-              '--format',
-              'json',
-            ]);
+            final conflict = await createExecutor(fileSystem: fs)
+                .fake()
+                .execute([
+                  'skill',
+                  'install',
+                  '--interactive',
+                  '--format',
+                  'json',
+                ]);
             _failure(
               conflict,
               1,
@@ -225,10 +235,10 @@ void main() {
 
       group('adopt', () {
         test('rejects a mode selector', () async {
-          final result = await createExecutor().fake().execute([
+          final result = await createExecutor(fileSystem: fs).fake().execute([
             'skill',
             'adopt',
-            'source${Platform.pathSeparator}',
+            'source${p.separator}',
             '--destination',
             'claude',
             '--mode',
@@ -247,7 +257,7 @@ void main() {
       group('backup', () {
         group('restore', () {
           test('rejects a mode selector', () async {
-            final result = await createExecutor().fake().execute([
+            final result = await createExecutor(fileSystem: fs).fake().execute([
               'skill',
               'backup',
               'restore',
@@ -275,13 +285,9 @@ void main() {
         test(
           'action without an ID rejects before filesystem effects',
           () async {
-            final result = await createExecutor().fake().execute([
-              'skill',
-              'recover',
-              '--action',
-              'rollback',
-              '--yes',
-            ]);
+            final result = await createExecutor(fileSystem: fs)
+                .fake()
+                .execute(['skill', 'recover', '--action', 'rollback', '--yes']);
             _failure(
               result,
               1,
@@ -299,7 +305,9 @@ void main() {
         'help lists lifecycle, authoring, and conversion commands',
         () async {
           final output = _success(
-            await createExecutor().fake().execute(['agent', '--help']),
+            await createExecutor(fileSystem: fs)
+                .fake()
+                .execute(['agent', '--help']),
           ).output!;
           for (final command in [
             'list',
@@ -328,22 +336,24 @@ void main() {
 
       group('create', () {
         test('plans a reviewed bound-role creation without effects', () async {
-          final sandbox = await Directory.systemTemp.createTemp('create-cli-');
+          final sandbox = fs.systemTempDirectory.createTempSync('lifecycle-');
           try {
-            final project = Directory(p.join(sandbox.path, 'project'))
+            final project = fs.directory(p.join(sandbox.path, 'project'))
               ..createSync();
-            final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-            final codex = Directory(p.join(sandbox.path, 'codex'))
+            final home = fs.directory(p.join(sandbox.path, 'home'))
               ..createSync();
-            Directory(p.join(project.path, '.codex')).createSync();
-            File(p.join(project.path, '.codex', 'config.toml'))
+            final codex = fs.directory(p.join(sandbox.path, 'codex'))
+              ..createSync();
+            fs.directory(p.join(project.path, '.codex')).createSync();
+            fs
+                .file(p.join(project.path, '.codex', 'config.toml'))
                 .writeAsStringSync('# keep\n');
-            final source = File(p.join(sandbox.path, 'reviewer.toml'))
+            final source = fs.file(p.join(sandbox.path, 'reviewer.toml'))
               ..writeAsStringSync(
                 'name = "reviewer"\ndescription = "Reviews."\n'
                 'developer_instructions = "Review."\n',
               );
-            final request = File(p.join(sandbox.path, 'bound.json'))
+            final request = fs.file(p.join(sandbox.path, 'bound.json'))
               ..writeAsStringSync(
                 jsonEncode(<String, Object?>{
                   'schemaVersion': 1,
@@ -357,9 +367,9 @@ void main() {
                   'definition': <String, Object?>{'source': source.path},
                 }),
               );
-            final separator = Platform.pathSeparator;
+            final separator = p.separator;
             final result = _success(
-              await createExecutor().fake().execute([
+              await createExecutor(fileSystem: fs).fake().execute([
                 'agent',
                 'create',
                 '--request',
@@ -386,12 +396,16 @@ void main() {
               isA<String>(),
             );
             expect(
-              File(p.join(project.path, '.codex', 'agents', 'reviewer.toml'))
+              fs
+                  .file(
+                    p.join(project.path, '.codex', 'agents', 'reviewer.toml'),
+                  )
                   .existsSync(),
               isFalse,
             );
             expect(
-              File(p.join(project.path, '.codex', 'config.toml'))
+              fs
+                  .file(p.join(project.path, '.codex', 'config.toml'))
                   .readAsStringSync(),
               '# keep\n',
             );
@@ -408,10 +422,10 @@ void main() {
         late File request;
 
         setUp(() {
-          sandbox = Directory.systemTemp.createTempSync('config-cli-');
-          project = Directory(p.join(sandbox.path, 'project'))..createSync();
-          home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          request = File(p.join(sandbox.path, 'plan.json'))
+          sandbox = fs.systemTempDirectory.createTempSync('config-');
+          project = fs.directory(p.join(sandbox.path, 'project'))..createSync();
+          home = fs.directory(p.join(sandbox.path, 'home'))..createSync();
+          request = fs.file(p.join(sandbox.path, 'plan.json'))
             ..writeAsStringSync(
               jsonEncode(<String, Object?>{
                 'schemaVersion': 1,
@@ -441,16 +455,16 @@ void main() {
           '--scope',
           'project',
           '--cwd',
-          '${project.path}${Platform.pathSeparator}',
+          '${project.path}${p.separator}',
           '--project-root',
-          '${project.path}${Platform.pathSeparator}',
+          '${project.path}${p.separator}',
           '--home',
-          '${home.path}${Platform.pathSeparator}',
+          '${home.path}${p.separator}',
         ];
 
         Future<String> plan() async {
           final planned = _success(
-            await createExecutor().fake().execute([
+            await createExecutor(fileSystem: fs).fake().execute([
               'agent',
               'config',
               'plan',
@@ -464,7 +478,9 @@ void main() {
           final envelope = jsonDecode(planned.output!) as Map<String, Object?>;
           expect(envelope['outcome'], 'planned');
           expect(
-            File(p.join(project.path, '.claude', 'settings.json')).existsSync(),
+            fs
+                .file(p.join(project.path, '.claude', 'settings.json'))
+                .existsSync(),
             isFalse,
           );
           return (envelope['data']! as Map<String, Object?>)['planId']!
@@ -484,7 +500,7 @@ void main() {
             'requires quiescence acknowledgement before publication',
             () async {
               final planId = await plan();
-              final applyRequest = File(p.join(sandbox.path, 'apply.json'))
+              final applyRequest = fs.file(p.join(sandbox.path, 'apply.json'))
                 ..writeAsStringSync(
                   jsonEncode(<String, Object?>{
                     'schemaVersion': 1,
@@ -506,15 +522,17 @@ void main() {
                     'clientsStopped': false,
                   }),
                 );
-              final refusal = await createExecutor().fake().execute([
-                'agent',
-                'config',
-                'apply',
-                '--request',
-                applyRequest.path,
-                ...common(),
-                '--yes',
-              ]);
+              final refusal = await createExecutor(fileSystem: fs)
+                  .fake()
+                  .execute([
+                    'agent',
+                    'config',
+                    'apply',
+                    '--request',
+                    applyRequest.path,
+                    ...common(),
+                    '--yes',
+                  ]);
               _failure(
                 refusal,
                 4,
@@ -549,7 +567,7 @@ void main() {
                 }),
               );
               final applied = _success(
-                await createExecutor().fake().execute([
+                await createExecutor(fileSystem: fs).fake().execute([
                   'agent',
                   'config',
                   'apply',
@@ -565,7 +583,7 @@ void main() {
               final appliedEnvelope =
                   jsonDecode(applied.output!) as Map<String, Object?>;
               expect(appliedEnvelope['outcome'], 'applied');
-              final settings = File(
+              final settings = fs.file(
                 p.join(project.path, '.claude', 'settings.json'),
               );
               expect(
@@ -580,11 +598,9 @@ void main() {
 
       group('install', () {
         test('native source requires explicit unattended scope', () async {
-          final result = await createExecutor().fake().execute([
-            'agent',
-            'install',
-            'definition.md',
-          ]);
+          final result = await createExecutor(fileSystem: fs)
+              .fake()
+              .execute(['agent', 'install', 'definition.md']);
           _failure(
             result,
             1,

@@ -1,3 +1,5 @@
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'pack_action.dart';
@@ -9,6 +11,7 @@ final class PackSourceCommand extends GroupCommand {
     PackLifecycleService service, {
     bool canonical = false,
     void Function(String)? warning,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   }) : super([
          PackActionCommand(
            resourceType,
@@ -16,6 +19,7 @@ final class PackSourceCommand extends GroupCommand {
            service,
            canonical: canonical,
            warning: warning,
+           fileSystem: fileSystem,
          ),
          PackActionCommand(
            resourceType,
@@ -23,6 +27,7 @@ final class PackSourceCommand extends GroupCommand {
            service,
            canonical: canonical,
            warning: warning,
+           fileSystem: fileSystem,
          ),
        ]);
 

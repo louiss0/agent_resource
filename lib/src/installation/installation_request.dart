@@ -440,7 +440,7 @@ Future<List<CatalogOffering>> _discoverSkills(
   final offerings = <SkillOffering>[];
   final budget = SkillDiscoveryBudget();
   for (final directory in roots.isEmpty ? [root] : roots) {
-    final relative = p
+    final relative = fileSystem.path
         .relative(directory, from: root)
         .split(fileSystem.path.separator)
         .join('/');

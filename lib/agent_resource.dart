@@ -1,3 +1,5 @@
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'agent.dart';
@@ -26,6 +28,7 @@ const applicationVersion = String.fromEnvironment(
 /// Keeping composition here lets the production executable and application
 /// tests exercise the same metadata and command registration.
 Executor createExecutor({
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   SkillInstallationService? skillInstallation,
   SkillLifecycleService? skillLifecycle,
   AgentInstallationService? agentInstallation,
@@ -41,8 +44,13 @@ Executor createExecutor({
   'Manage resources consumed by AI coding harnesses.',
   applicationVersion,
   [
-    SkillCommand(installation: skillInstallation, lifecycle: skillLifecycle),
+    SkillCommand(
+      installation: skillInstallation,
+      lifecycle: skillLifecycle,
+      fileSystem: fileSystem,
+    ),
     AgentCommand(
+      fileSystem: fileSystem,
       installation: agentInstallation,
       lifecycle: agentLifecycle,
       graph: agentGraph,
@@ -50,9 +58,17 @@ Executor createExecutor({
       authoring: agentAuthoring,
       conversion: agentConversion,
     ),
-    PackCommand(service: packLifecycle),
-    SkillsCommand(service: packLifecycle, warning: deprecationWarning),
-    AgentsCommand(service: packLifecycle, warning: deprecationWarning),
-    ConfigCommand(service: packLifecycle),
+    PackCommand(service: packLifecycle, fileSystem: fileSystem),
+    SkillsCommand(
+      service: packLifecycle,
+      warning: deprecationWarning,
+      fileSystem: fileSystem,
+    ),
+    AgentsCommand(
+      service: packLifecycle,
+      warning: deprecationWarning,
+      fileSystem: fileSystem,
+    ),
+    ConfigCommand(service: packLifecycle, fileSystem: fileSystem),
   ],
 );

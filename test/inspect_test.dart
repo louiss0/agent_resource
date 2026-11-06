@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:file/file.dart' as f;
+import 'package:file/local.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
+import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
@@ -14,22 +18,37 @@ const _markerLimit = 1048576;
 late final String _entrypoint;
 late final String _packageConfig;
 
-Future<T> _withDirectory<T>(Future<T> Function(Directory root) body) async {
-  final root = await Directory.systemTemp.createTemp('agent-resource-inspect-');
+f.FileSystem get _fs =>
+    Zone.current[#fs] as f.FileSystem? ?? const LocalFileSystem();
+path.Context get p => _fs.path;
+Future<T> _withDirectory<T>(Future<T> Function(f.Directory root) body) async {
+  final fs = MemoryFileSystem.test(style: FileSystemStyle.posix);
+  final root = fs.directory('/sandbox')..createSync();
+  fs.currentDirectory = root;
+  return runZoned(() => body(root), zoneValues: {#fs: fs});
+}
+
+Future<T> _withLocalDirectory<T>(
+  Future<T> Function(f.Directory root) body,
+) async {
+  const fs = LocalFileSystem();
+  final root = await fs.systemTempDirectory.createTemp(
+    'agent-resource-inspect-',
+  );
   try {
-    return await body(root);
+    return await runZoned(() => body(root), zoneValues: {#fs: fs});
   } finally {
     await root.delete(recursive: true);
   }
 }
 
-Directory _selected(Directory root, [String name = 'skill']) =>
-    Directory(p.join(root.path, name))..createSync(recursive: true);
+f.Directory _selected(f.Directory root, [String name = 'skill']) =>
+    _fs.directory(p.join(root.path, name))..createSync(recursive: true);
 
 Future<MambaExecutionResult> _execute(
   List<String> arguments, {
   Executor? executor,
-}) => (executor ?? createExecutor()).fake().execute([
+}) => (executor ?? createExecutor(fileSystem: _fs)).fake().execute([
   'skill',
   'inspect',
   ...arguments,
@@ -78,24 +97,27 @@ Map<String, Object?> _inspection(MambaSuccessResult result) {
 }
 
 String _absoluteLexical(String value) =>
-    p.normalize(Directory(value).absolute.path);
+    p.normalize(_fs.directory(value).absolute.path);
 
-Map<String, String> _snapshot(Directory root) {
+Map<String, String> _snapshot(f.Directory root) {
   final entries = <String, String>{};
 
-  void visit(Directory directory) {
+  void visit(f.Directory directory) {
     for (final entity in directory.listSync(followLinks: false)) {
       final relative = p.relative(entity.path, from: root.path);
-      final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
+      final type = _fs.typeSync(entity.path, followLinks: false);
       entries[relative] = switch (type) {
         FileSystemEntityType.directory => 'directory',
         FileSystemEntityType.file =>
-          'file:${base64Encode(File(entity.path).readAsBytesSync())}',
-        FileSystemEntityType.link => 'link:${Link(entity.path).targetSync()}',
+          'file:${base64Encode(_fs.file(entity.path).readAsBytesSync())}',
+        FileSystemEntityType.link =>
+          'link:${_fs.link(entity.path).targetSync()}',
         FileSystemEntityType.notFound => 'not-found',
         _ => 'other',
       };
-      if (type == FileSystemEntityType.directory) visit(Directory(entity.path));
+      if (type == FileSystemEntityType.directory) {
+        visit(_fs.directory(entity.path));
+      }
     }
   }
 
@@ -106,7 +128,7 @@ Map<String, String> _snapshot(Directory root) {
 
 Future<bool> _tryCreateLink(String link, String target) async {
   try {
-    await Link(link).create(target);
+    await _fs.link(link).create(target);
     return true;
   } on FileSystemException {
     return false;
@@ -116,15 +138,15 @@ Future<bool> _tryCreateLink(String link, String target) async {
 }
 
 String _findProjectRoot() {
-  var candidate = Directory.current.absolute;
+  var candidate = _fs.currentDirectory.absolute;
   while (true) {
-    if (File(p.join(candidate.path, 'pubspec.yaml')).existsSync()) {
+    if (_fs.file(p.join(candidate.path, 'pubspec.yaml')).existsSync()) {
       return candidate.path;
     }
     final parent = candidate.parent;
     if (parent.path == candidate.path) {
       throw StateError(
-        'Could not locate the package root from ${Directory.current.path}.',
+        'Could not locate the package root from ${_fs.currentDirectory.path}.',
       );
     }
     candidate = parent;
@@ -132,7 +154,7 @@ String _findProjectRoot() {
 }
 
 Future<CliProcessResult> _runProduction(
-  Directory workingDirectory,
+  f.Directory workingDirectory,
   List<String> arguments,
 ) => runDartScript(
   script: _entrypoint,
@@ -152,6 +174,48 @@ Future<void> main() async {
 
   group('agent_resource', () {
     group('skill', () {
+      group('list', () {
+        test('root filesystem reaches default inventory', () async {
+          await _withDirectory((root) async {
+            final project = _fs.directory(p.join(root.path, 'project'))
+              ..createSync();
+            final result = await createExecutor(fileSystem: _fs)
+                .fake()
+                .execute([
+                  'skill',
+                  'list',
+                  '--scope',
+                  'project',
+                  '--cwd',
+                  '${project.path}/',
+                  '--project-root',
+                  '${project.path}/',
+                  '--format',
+                  'json',
+                ]);
+            final report = jsonDecode(_expectSuccess(result).output!);
+            expect(report, {
+              'schemaVersion': 1,
+              'command': 'skill list',
+              'outcome': 'inventoried',
+              'data': {
+                'scope': 'project',
+                'verification': 'notVerified',
+                'occurrences': <Object?>[],
+                'coverage': {
+                  'status': 'complete',
+                  'rootsScanned': 0,
+                  'rootsAbsent': 3,
+                  'entries': 0,
+                  'limits': {'entries': 10000},
+                },
+              },
+              'diagnostics': <Object?>[],
+            });
+          });
+        });
+      });
+
       group('inspect', () {
         test(
           'help explains the inspection contract and required option',
@@ -245,8 +309,10 @@ Future<void> main() async {
               );
               return;
             }
-            await _withDirectory((root) async {
-              File(p.join(root.path, 'SKILL.md')).writeAsStringSync('content');
+            await _withLocalDirectory((root) async {
+              _fs
+                  .file(p.join(root.path, 'SKILL.md'))
+                  .writeAsStringSync('content');
               final changed = await Process.run('chmod', ['000', root.path]);
               if (changed.exitCode != 0) {
                 markTestSkipped('chmod is unavailable');
@@ -276,7 +342,7 @@ Future<void> main() async {
 
         test('rejects an ordinary file selected as the root', () async {
           await _withDirectory((root) async {
-            final file = File(p.join(root.path, 'not-a-directory'))
+            final file = _fs.file(p.join(root.path, 'not-a-directory'))
               ..writeAsStringSync('sentinel');
             _expectFailure(
               await _execute(['--skill', file.path]),
@@ -287,17 +353,20 @@ Future<void> main() async {
         });
 
         test('returns the exact three-field JSON contract', () async {
-          await _withDirectory((root) async {
-            final selected = _selected(root);
-            final result = _expectSuccess(
-              await _execute(['--skill', selected.path]),
-            );
-            final value = _inspection(result);
-            expect(value, {
-              'path': _absoluteLexical(selected.path),
-              'hasSkillFile': false,
-              'content': null,
-            });
+          final fs = MemoryFileSystem.test(style: FileSystemStyle.posix);
+          final selected = fs.directory('/sandbox/skill')
+            ..createSync(recursive: true);
+          final result = _expectSuccess(
+            await _execute([
+              '--skill',
+              selected.path,
+            ], executor: createExecutor(fileSystem: fs)),
+          );
+          final value = _inspection(result);
+          expect(value, {
+            'path': selected.path,
+            'hasSkillFile': false,
+            'content': null,
           });
         });
 
@@ -324,7 +393,7 @@ Future<void> main() async {
             final selected = _selected(root, 'relative');
             final argument = p.relative(
               selected.path,
-              from: Directory.current.path,
+              from: _fs.currentDirectory.path,
             );
             final value = _inspection(
               _expectSuccess(await _execute(['--skill', argument])),
@@ -351,8 +420,8 @@ Future<void> main() async {
         });
 
         test('production success emits JSON on stdout only', () async {
-          await _withDirectory((root) async {
-            final marker = File(p.join(root.path, 'SKILL.md'))
+          await _withLocalDirectory((root) async {
+            final marker = _fs.file(p.join(root.path, 'SKILL.md'))
               ..writeAsStringSync('process success\n');
             final result = await _runProduction(root, [
               'skill',
@@ -371,7 +440,7 @@ Future<void> main() async {
         });
 
         test('production failure emits stderr without partial JSON', () async {
-          await _withDirectory((root) async {
+          await _withLocalDirectory((root) async {
             final missing = p.join(root.path, 'missing');
             final result = await _runProduction(root, [
               'skill',
@@ -388,14 +457,12 @@ Future<void> main() async {
         test(
           'accepts a directory link as the explicitly selected root',
           () async {
-            final parent = await Directory.systemTemp.createTemp(
-              'agent-resource-inspect-root-link-',
-            );
-            final target = Directory(p.join(parent.path, 'target'))
-              ..createSync(recursive: true);
-            final alias = p.join(parent.path, 'alias');
-            try {
-              File(p.join(target.path, 'SKILL.md'))
+            await _withLocalDirectory((parent) async {
+              final target = _fs.directory(p.join(parent.path, 'target'))
+                ..createSync(recursive: true);
+              final alias = p.join(parent.path, 'alias');
+              _fs
+                  .file(p.join(target.path, 'SKILL.md'))
                   .writeAsStringSync('linked root');
               if (!await _tryCreateLink(alias, target.path)) {
                 markTestSkipped('directory symlink creation is unavailable');
@@ -409,9 +476,7 @@ Future<void> main() async {
                 'hasSkillFile': true,
                 'content': 'linked root',
               });
-            } finally {
-              await parent.delete(recursive: true);
-            }
+            });
           },
         );
 
@@ -435,7 +500,7 @@ Future<void> main() async {
         for (final textCase in textCases) {
           test('preserves ${textCase.name}', () async {
             await _withDirectory((root) async {
-              final marker = File(p.join(root.path, 'SKILL.md'))
+              final marker = _fs.file(p.join(root.path, 'SKILL.md'))
                 ..writeAsBytesSync(textCase.bytes);
               final value = _inspection(
                 _expectSuccess(await _execute(['--skill', root.path])),
@@ -459,7 +524,7 @@ Future<void> main() async {
 
         test('reports a marker directory as false and null', () async {
           await _withDirectory((root) async {
-            Directory(p.join(root.path, 'SKILL.md')).createSync();
+            _fs.directory(p.join(root.path, 'SKILL.md')).createSync();
             final value = _inspection(
               _expectSuccess(await _execute(['--skill', root.path])),
             );
@@ -470,7 +535,7 @@ Future<void> main() async {
 
         test('rejects malformed UTF-8 without replacement text', () async {
           await _withDirectory((root) async {
-            final marker = File(p.join(root.path, 'SKILL.md'))
+            final marker = _fs.file(p.join(root.path, 'SKILL.md'))
               ..writeAsBytesSync(const <int>[0xC3, 0x28]);
             _expectFailure(
               await _execute(['--skill', root.path]),
@@ -484,7 +549,7 @@ Future<void> main() async {
         test('accepts exactly the one MiB marker byte limit', () async {
           await _withDirectory((root) async {
             final bytes = List<int>.filled(_markerLimit, 0x41);
-            final marker = File(p.join(root.path, 'SKILL.md'))
+            final marker = _fs.file(p.join(root.path, 'SKILL.md'))
               ..writeAsBytesSync(bytes);
             final value = _inspection(
               _expectSuccess(await _execute(['--skill', root.path])),
@@ -498,7 +563,7 @@ Future<void> main() async {
         test('rejects a marker one byte over the limit', () async {
           await _withDirectory((root) async {
             final bytes = List<int>.filled(_markerLimit + 1, 0x41);
-            final marker = File(p.join(root.path, 'SKILL.md'))
+            final marker = _fs.file(p.join(root.path, 'SKILL.md'))
               ..writeAsBytesSync(bytes);
             final before = marker.readAsBytesSync();
             _expectFailure(
@@ -523,7 +588,7 @@ Future<void> main() async {
               0xAC,
             ];
             expect(bytes.length, _markerLimit + 2);
-            File(p.join(root.path, 'SKILL.md')).writeAsBytesSync(bytes);
+            _fs.file(p.join(root.path, 'SKILL.md')).writeAsBytesSync(bytes);
             _expectFailure(
               await _execute(['--skill', root.path]),
               phase: MambaExecutionPhase.run,
@@ -538,8 +603,11 @@ Future<void> main() async {
 
         test('does not recurse to a nested marker', () async {
           await _withDirectory((root) async {
-            final nested = Directory(p.join(root.path, 'nested'))..createSync();
-            File(p.join(nested.path, 'SKILL.md')).writeAsStringSync('nested');
+            final nested = _fs.directory(p.join(root.path, 'nested'))
+              ..createSync();
+            _fs
+                .file(p.join(nested.path, 'SKILL.md'))
+                .writeAsStringSync('nested');
             final value = _inspection(
               _expectSuccess(await _execute(['--skill', root.path])),
             );
@@ -549,8 +617,9 @@ Future<void> main() async {
         });
 
         test('does not traverse a nested link cycle', () async {
-          await _withDirectory((root) async {
-            final nested = Directory(p.join(root.path, 'nested'))..createSync();
+          await _withLocalDirectory((root) async {
+            final nested = _fs.directory(p.join(root.path, 'nested'))
+              ..createSync();
             if (!await _tryCreateLink(p.join(nested.path, 'loop'), root.path)) {
               markTestSkipped('directory symlink creation is unavailable');
               return;
@@ -564,9 +633,9 @@ Future<void> main() async {
         });
 
         test('excludes a linked marker without reading its target', () async {
-          await _withDirectory((root) async {
+          await _withLocalDirectory((root) async {
             final selected = _selected(root, 'selected');
-            final target = File(p.join(root.path, 'external-marker.md'))
+            final target = _fs.file(p.join(root.path, 'external-marker.md'))
               ..writeAsBytesSync([0xff, 0xfe, 0x80]);
             final link = p.join(selected.path, 'SKILL.md');
             if (!await _tryCreateLink(link, target.path)) {
@@ -586,10 +655,13 @@ Future<void> main() async {
         test('preserves all selected-directory entries on success', () async {
           await _withDirectory((root) async {
             final selected = _selected(root);
-            File(p.join(selected.path, 'SKILL.md')).writeAsStringSync('text');
-            File(p.join(selected.path, 'sentinel.txt'))
+            _fs
+                .file(p.join(selected.path, 'SKILL.md'))
+                .writeAsStringSync('text');
+            _fs
+                .file(p.join(selected.path, 'sentinel.txt'))
                 .writeAsStringSync('unchanged');
-            Directory(p.join(selected.path, 'nested')).createSync();
+            _fs.directory(p.join(selected.path, 'nested')).createSync();
             final before = _snapshot(selected);
             final value = _inspection(
               _expectSuccess(await _execute(['--skill', selected.path])),
@@ -606,9 +678,11 @@ Future<void> main() async {
         test('preserves sentinels after invalid UTF-8 failure', () async {
           await _withDirectory((root) async {
             final selected = _selected(root);
-            File(p.join(selected.path, 'SKILL.md'))
-                .writeAsBytesSync(const <int>[0xFF]);
-            File(p.join(selected.path, 'sentinel.txt'))
+            _fs.file(p.join(selected.path, 'SKILL.md')).writeAsBytesSync(
+              const <int>[0xFF],
+            );
+            _fs
+                .file(p.join(selected.path, 'sentinel.txt'))
                 .writeAsStringSync('unchanged');
             final before = _snapshot(selected);
             _expectFailure(
@@ -623,9 +697,11 @@ Future<void> main() async {
         test('preserves sentinels after over-limit failure', () async {
           await _withDirectory((root) async {
             final selected = _selected(root);
-            File(p.join(selected.path, 'SKILL.md'))
+            _fs
+                .file(p.join(selected.path, 'SKILL.md'))
                 .writeAsBytesSync(List<int>.filled(_markerLimit + 1, 0x42));
-            File(p.join(selected.path, 'sentinel.txt'))
+            _fs
+                .file(p.join(selected.path, 'sentinel.txt'))
                 .writeAsStringSync('unchanged');
             final before = _snapshot(selected);
             _expectFailure(
@@ -643,12 +719,14 @@ Future<void> main() async {
 
         test('unrelated entries do not affect marker inspection', () async {
           await _withDirectory((root) async {
-            final marker = File(p.join(root.path, 'SKILL.md'))
+            final marker = _fs.file(p.join(root.path, 'SKILL.md'))
               ..writeAsStringSync('marker');
             final first = _inspection(
               _expectSuccess(await _execute(['--skill', root.path])),
             );
-            File(p.join(root.path, 'ordinary.txt')).writeAsStringSync('other');
+            _fs
+                .file(p.join(root.path, 'ordinary.txt'))
+                .writeAsStringSync('other');
             final second = _inspection(
               _expectSuccess(await _execute(['--skill', root.path])),
             );
@@ -661,11 +739,13 @@ Future<void> main() async {
           await _withDirectory((root) async {
             final firstDirectory = _selected(root, 'first');
             final secondDirectory = _selected(root, 'second');
-            File(p.join(firstDirectory.path, 'SKILL.md'))
+            _fs
+                .file(p.join(firstDirectory.path, 'SKILL.md'))
                 .writeAsStringSync('first');
-            File(p.join(secondDirectory.path, 'SKILL.md'))
+            _fs
+                .file(p.join(secondDirectory.path, 'SKILL.md'))
                 .writeAsStringSync('second');
-            final adapter = createExecutor().fake();
+            final adapter = createExecutor(fileSystem: _fs).fake();
             final first = _inspection(
               _expectSuccess(
                 await adapter.execute([
@@ -696,7 +776,7 @@ Future<void> main() async {
           'reuses one adapter across invalid and valid selections',
           () async {
             await _withDirectory((root) async {
-              final adapter = createExecutor().fake();
+              final adapter = createExecutor(fileSystem: _fs).fake();
               final missing = p.join(root.path, 'missing');
               _expectFailure(
                 await adapter.execute(['skill', 'inspect', '--skill', missing]),
@@ -724,8 +804,10 @@ Future<void> main() async {
             await _withDirectory((root) async {
               final first = _selected(root, 'first');
               final second = _selected(root, 'second');
-              File(p.join(first.path, 'SKILL.md')).writeAsStringSync('stale');
-              final adapter = createExecutor().fake();
+              _fs
+                  .file(p.join(first.path, 'SKILL.md'))
+                  .writeAsStringSync('stale');
+              final adapter = createExecutor(fileSystem: _fs).fake();
               final firstValue = _inspection(
                 _expectSuccess(
                   await adapter.execute([
@@ -757,7 +839,7 @@ Future<void> main() async {
           'help and parser rejection leave filesystem sentinels unchanged',
           () async {
             await _withDirectory((root) async {
-              final sentinel = File(p.join(root.path, 'sentinel.txt'))
+              final sentinel = _fs.file(p.join(root.path, 'sentinel.txt'))
                 ..writeAsStringSync('unchanged');
               final before = _snapshot(root);
               final help = _expectSuccess(

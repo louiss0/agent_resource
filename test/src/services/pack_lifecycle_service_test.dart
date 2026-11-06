@@ -1777,31 +1777,39 @@ track = { kind = "local" }
     });
   });
 
-  group('PackLifecycleService releases', () {
-    late Directory sandbox;
-    late Directory project;
-    late Directory home;
-    late Directory source;
+  group('PackLifecycleService releases (memory filesystem)', () {
+    late fslib.FileSystem fs;
+    late fslib.Directory sandbox;
+    late fslib.Directory project;
+    late fslib.Directory home;
+    late fslib.Directory source;
 
     setUp(() {
-      sandbox = Directory.systemTemp.createTempSync('pack-release-test-');
-      project = Directory(p.join(sandbox.path, 'project'))..createSync();
-      home = Directory(p.join(sandbox.path, 'home'))..createSync();
-      source = Directory(p.join(sandbox.path, 'source'))..createSync();
-      File(p.join(source.path, 'agent-resources.toml')).writeAsStringSync('''
+      fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      sandbox = fs.directory('/sandbox')..createSync();
+      project = fs.directory(fs.path.join(sandbox.path, 'project'))
+        ..createSync();
+      home = fs.directory(fs.path.join(sandbox.path, 'home'))..createSync();
+      source = fs.directory(fs.path.join(sandbox.path, 'source'))..createSync();
+      fs
+          .file(fs.path.join(source.path, 'agent-resources.toml'))
+          .writeAsStringSync('''
 schema_version = 1
 [[catalog.skills]]
 path = "skills/reviewer"
 ''');
-      final skill = Directory(p.join(source.path, 'skills', 'reviewer'))
-        ..createSync(recursive: true);
-      File(p.join(skill.path, 'SKILL.md')).writeAsStringSync('''---
+      final skill = fs.directory(
+        fs.path.join(source.path, 'skills', 'reviewer'),
+      )..createSync(recursive: true);
+      fs.file(fs.path.join(skill.path, 'SKILL.md')).writeAsStringSync('''---
 name: reviewer
 description: Reviews code.
 ---
 # Reviewer
 ''');
-      File(p.join(project.path, 'agent-resources.toml')).writeAsStringSync('''
+      fs
+          .file(fs.path.join(project.path, 'agent-resources.toml'))
+          .writeAsStringSync('''
 schema_version = 1
 [cli.install]
 targets = ["codex"]
@@ -1838,7 +1846,7 @@ track = { kind = "release", artifact = "archive" }
       environment: {
         'HOME': home.path,
         'USERPROFILE': home.path,
-        'APPDATA': p.join(home.path, 'AppData', 'Roaming'),
+        'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
       },
       scope: LifecycleScope.project,
       cwd: project.path,
@@ -1856,7 +1864,8 @@ track = { kind = "release", artifact = "archive" }
     test('first release install requires an exact literal tag', () async {
       expect(
         () => PackLifecycleService.withDependencies(
-          acquisition: _LocalAcquisition(source.path),
+          fileSystem: fs,
+          acquisition: _LocalAcquisition(source.path, fileSystem: fs),
           releaseResolver: _FakeReleases(),
         ).execute(request()),
         throwsA(
@@ -1871,13 +1880,21 @@ track = { kind = "release", artifact = "archive" }
 
     test('records provider, release, and source evidence separately', () async {
       final result = await PackLifecycleService.withDependencies(
-        acquisition: _LocalAcquisition(source.path),
+        fileSystem: fs,
+        acquisition: _LocalAcquisition(source.path, fileSystem: fs),
         releaseResolver: _FakeReleases(),
       ).execute(request(release: 'v1.2.0'));
 
       expect(result.resources.single.disposition.wireName, 'installed');
       final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agent-resource',
+                'installations.json',
+              ),
+            )
             .readAsStringSync(),
       ) as Map<String, Object?>;
       final installation =
@@ -1897,7 +1914,9 @@ track = { kind = "release", artifact = "archive" }
     });
 
     test('records the verified enterprise provider host', () async {
-      final config = File(p.join(project.path, 'agent-resources.toml'));
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
       config.writeAsStringSync(
         config
             .readAsStringSync()
@@ -1911,14 +1930,22 @@ track = { kind = "release", artifact = "archive" }
             ),
       );
       await PackLifecycleService.withDependencies(
-        acquisition: _LocalAcquisition(source.path),
+        fileSystem: fs,
+        acquisition: _LocalAcquisition(source.path, fileSystem: fs),
         releaseResolver: _FakeReleases(host: 'github.example.test'),
       ).execute(
         request(pack: 'github.example.test/owner/demo', release: 'v1.2.0'),
       );
 
       final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agent-resource',
+                'installations.json',
+              ),
+            )
             .readAsStringSync(),
       ) as Map<String, Object?>;
       final installation =
@@ -1934,7 +1961,8 @@ track = { kind = "release", artifact = "archive" }
     test('typed requests preserve save-policy conflicts', () async {
       await expectLater(
         PackLifecycleService.withDependencies(
-          acquisition: _LocalAcquisition(source.path),
+          fileSystem: fs,
+          acquisition: _LocalAcquisition(source.path, fileSystem: fs),
           releaseResolver: _FakeReleases(),
         ).execute(
           request(
@@ -1957,7 +1985,8 @@ track = { kind = "release", artifact = "archive" }
 
     test('release update requires an explicit or saved bump', () async {
       final service = PackLifecycleService.withDependencies(
-        acquisition: _LocalAcquisition(source.path),
+        fileSystem: fs,
+        acquisition: _LocalAcquisition(source.path, fileSystem: fs),
         releaseResolver: _FakeReleases(),
       );
       await service.execute(request(release: 'v1.2.0'));
@@ -1976,7 +2005,8 @@ track = { kind = "release", artifact = "archive" }
 
     test('release and bump cannot be combined', () async {
       final service = PackLifecycleService.withDependencies(
-        acquisition: _LocalAcquisition(source.path),
+        fileSystem: fs,
+        acquisition: _LocalAcquisition(source.path, fileSystem: fs),
         releaseResolver: _FakeReleases(),
       );
       await service.execute(request(release: 'v1.2.0'));
@@ -2000,7 +2030,9 @@ track = { kind = "release", artifact = "archive" }
     });
 
     test('a new release does not require same-attachment acceptance', () async {
-      final config = File(p.join(project.path, 'agent-resources.toml'));
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
       config.writeAsStringSync(
         config.readAsStringSync().replaceFirst(
           'artifact = "archive"',
@@ -2009,7 +2041,8 @@ track = { kind = "release", artifact = "archive" }
       );
       final releases = _AttachmentReleases('old-digest', advanceOnBump: true);
       final service = PackLifecycleService.withDependencies(
-        acquisition: _LocalAcquisition(source.path),
+        fileSystem: fs,
+        acquisition: _LocalAcquisition(source.path, fileSystem: fs),
         releaseResolver: releases,
       );
       await service.execute(request(release: 'v1.2.0'));
@@ -2022,7 +2055,14 @@ track = { kind = "release", artifact = "archive" }
       expect(updated.outcome, 'completed');
       expect(updated.resources.single.disposition.wireName, 'updated');
       final lock = jsonDecode(
-        File(p.join(project.path, '.agent-resource', 'installations.json'))
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agent-resource',
+                'installations.json',
+              ),
+            )
             .readAsStringSync(),
       ) as Map<String, Object?>;
       final installation =
@@ -2039,7 +2079,9 @@ track = { kind = "release", artifact = "archive" }
     test(
       'rejects attachment bytes that disagree with provider evidence',
       () async {
-        final config = File(p.join(project.path, 'agent-resources.toml'));
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
         config.writeAsStringSync(
           config.readAsStringSync().replaceFirst(
             'artifact = "archive"',
@@ -2047,7 +2089,12 @@ track = { kind = "release", artifact = "archive" }
           ),
         );
         final service = PackLifecycleService.withDependencies(
-          acquisition: _LocalAcquisition(source.path, downloadDigest: 'actual'),
+          fileSystem: fs,
+          acquisition: _LocalAcquisition(
+            source.path,
+            fileSystem: fs,
+            downloadDigest: 'actual',
+          ),
           releaseResolver: _AttachmentReleases('sha256:expected'),
         );
 
@@ -2062,14 +2109,18 @@ track = { kind = "release", artifact = "archive" }
           ),
         );
         expect(
-          Directory(p.join(project.path, '.agent-resource')).existsSync(),
+          fs
+              .directory(fs.path.join(project.path, '.agent-resource'))
+              .existsSync(),
           isFalse,
         );
       },
     );
 
     test('changed attachment bytes require injected live acceptance', () async {
-      final config = File(p.join(project.path, 'agent-resources.toml'));
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
       config.writeAsStringSync(
         config.readAsStringSync().replaceFirst(
           'artifact = "archive"',
@@ -2079,7 +2130,8 @@ track = { kind = "release", artifact = "archive" }
       final releases = _AttachmentReleases('old-digest');
       final prompts = <String>[];
       final service = PackLifecycleService.withDependencies(
-        acquisition: _LocalAcquisition(source.path),
+        fileSystem: fs,
+        acquisition: _LocalAcquisition(source.path, fileSystem: fs),
         releaseResolver: releases,
         prompts: PackPrompts(
           confirmation: (label) async {
@@ -2106,7 +2158,8 @@ track = { kind = "release", artifact = "archive" }
 
       releases.digest = 'declined-digest';
       final declined = PackLifecycleService.withDependencies(
-        acquisition: _LocalAcquisition(source.path),
+        fileSystem: fs,
+        acquisition: _LocalAcquisition(source.path, fileSystem: fs),
         releaseResolver: releases,
         prompts: PackPrompts(
           confirmation: (label) async =>
@@ -2142,12 +2195,13 @@ track = { kind = "release", artifact = "archive" }
       'save-policy persists release eligibility only after success',
       () async {
         final service = PackLifecycleService.withDependencies(
-          acquisition: _LocalAcquisition(source.path),
+          fileSystem: fs,
+          acquisition: _LocalAcquisition(source.path, fileSystem: fs),
           releaseResolver: _FakeReleases(),
         );
         await service.execute(request(release: 'v1.2.0'));
-        final marker = File(
-          p.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        final marker = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
         );
         marker.writeAsStringSync('${marker.readAsStringSync()}\nSecond.\n');
 
@@ -2164,18 +2218,19 @@ track = { kind = "release", artifact = "archive" }
         expect(updated.plan!.policy, isNotNull);
         expect(updated.plan!.policy!.bump, 'minor');
         expect(updated.plan!.policy!.includePrerelease, isTrue);
-        final configuration = File(p.join(project.path, 'agent-resources.toml'))
+        final configuration = fs
+            .file(fs.path.join(project.path, 'agent-resources.toml'))
             .readAsStringSync();
         expect(configuration, contains('bump = "minor"'));
         expect(configuration, contains('include_prerelease = true'));
-        final validated = await PackLifecycleService().execute(
+        final validated = await PackLifecycleService(fileSystem: fs).execute(
           PackLifecycleRequest(
             operation: PackOperation.configValidate,
             resourceType: PackResourceType.skill,
             processWorkingDirectory: project.path,
             environment: {
               'HOME': home.path,
-              'APPDATA': p.join(home.path, 'AppData', 'Roaming'),
+              'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
             },
             scope: LifecycleScope.project,
             cwd: project.path,
@@ -2208,9 +2263,10 @@ final class _RecoveryRequiredIO extends LifecycleIO {
 }
 
 final class _LocalAcquisition implements AcquisitionService {
-  _LocalAcquisition(this.path, {this.downloadDigest});
+  _LocalAcquisition(this.path, {required this.fileSystem, this.downloadDigest});
 
   final String path;
+  final fslib.FileSystem fileSystem;
   final String? downloadDigest;
 
   @override
@@ -2218,6 +2274,7 @@ final class _LocalAcquisition implements AcquisitionService {
     return AcquisitionWorkspace(
       selectedRoot: path,
       selectedFile: null,
+      fileSystem: fileSystem,
       provenance: AcquisitionProvenance(
         kind: AcquisitionLocatorKind.local,
         requestedLocator: request.locator,

@@ -46,6 +46,7 @@ final class AgentCommand extends GroupCommand {
     AgentInspectionOperation operation = inspectNativeAgent,
     AgentInventoryOperation inventory = listNativeAgents,
     AgentLifecycleService? lifecycle,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     AgentGraphService? graph,
     AgentInstallationService? installation,
     ParentConfigService? parentConfig,
@@ -56,6 +57,7 @@ final class AgentCommand extends GroupCommand {
            operation,
            inventory,
            lifecycle,
+           fileSystem,
            graph,
            installation,
            parentConfig,
@@ -68,6 +70,7 @@ final class AgentCommand extends GroupCommand {
     AgentInspectionOperation operation,
     AgentInventoryOperation inventory,
     AgentLifecycleService? lifecycle,
+    fslib.FileSystem fileSystem,
     AgentGraphService? graph,
     AgentInstallationService? installation,
     ParentConfigService? parentConfig,
@@ -81,22 +84,37 @@ final class AgentCommand extends GroupCommand {
               installation?.fileSystem ??
               authoring?.fileSystem ??
               conversion?.fileSystem ??
-              const local.LocalFileSystem(),
+              fileSystem,
+        );
+    final authoringService =
+        authoring ?? AgentAuthoringService(fileSystem: service.fileSystem);
+    final conversionService =
+        conversion ??
+        AgentConversionService(
+          fileSystem: service.fileSystem,
+          authoring: authoringService,
         );
     return [
       AgentListCommand(inventory, service),
       AgentConfigCommand(
         parentConfig ?? ParentConfigService(fileSystem: service.fileSystem),
       ),
-      AgentCreateCommand(service: authoring),
-      AgentComposeCommand(service: authoring),
-      AgentCloneCommand(service: authoring),
-      AgentEditCommand(service: authoring),
-      AgentConvertCommand(service: conversion),
-      AgentInspectCommand(operation, graph: graph),
-      AgentValidateCommand(operation),
+      AgentCreateCommand(service: authoringService),
+      AgentComposeCommand(service: authoringService),
+      AgentCloneCommand(service: authoringService),
+      AgentEditCommand(service: authoringService),
+      AgentConvertCommand(service: conversionService),
+      AgentInspectCommand(
+        operation,
+        graph: graph ?? AgentGraphService(fileSystem: service.fileSystem),
+      ),
+      AgentValidateCommand(operation, fileSystem: service.fileSystem),
       AgentInstallCommand(
-        installation ?? AgentInstallationService(lifecycle: service),
+        installation ??
+            AgentInstallationService(
+              lifecycle: service,
+              fileSystem: service.fileSystem,
+            ),
       ),
       LifecycleActionCommand.agentAdopt(service),
       LifecycleActionCommand.agentReplace(service),
@@ -230,8 +248,11 @@ final class AgentInspectCommand(
   }
 }
 
-final class AgentValidateCommand(final AgentInspectionOperation _operation)
-    extends Command {
+final class AgentValidateCommand(
+  final AgentInspectionOperation _operation, {
+  fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+}) extends Command {
+  final fslib.FileSystem _fileSystem = fileSystem;
   this
     : super(
         discretionaryPositionals: [_nativeFile],
@@ -310,7 +331,11 @@ final class AgentValidateCommand(final AgentInspectionOperation _operation)
     );
 
     const operation = AgentOperation.validate;
-    final report = _operation(input, operation: operation);
+    final report = _operation(
+      input,
+      operation: operation,
+      fileSystem: _fileSystem,
+    );
     if (report.hasErrors) {
       throw MambaException(report.renderText(operation), exitCode: 2);
     }

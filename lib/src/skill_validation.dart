@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 import 'package:zema/zema.dart';
 
@@ -253,7 +252,8 @@ ValidationReport validateSkill(
     frontmatterMap,
     selectedPath,
     diagnostics,
-    expectedDirectoryName: expectedDirectoryName,
+    expectedDirectoryName:
+        expectedDirectoryName ?? fs.path.basename(selectedPath),
   );
 
   return _report(selectedPath, diagnostics);
@@ -560,7 +560,7 @@ void _validateNameSemantics(
       ),
     );
   }
-  if ((expectedDirectoryName ?? p.basename(selectedPath)) != value) {
+  if (expectedDirectoryName != value) {
     diagnostics.add(
       _diagnostic(
         code: 'NAME_DIRECTORY',

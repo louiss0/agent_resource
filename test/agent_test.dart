@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as f;
+import 'package:file/local.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
-import 'package:path/path.dart' as p;
+import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
@@ -39,8 +43,11 @@ const _ambientHomeSentinel = 'SENTINEL-AMBIENT-HOME-e7a1 never read.';
 late final String _entrypoint;
 late final String _packageConfig;
 
+f.FileSystem get _fs =>
+    Zone.current[#fs] as f.FileSystem? ?? const LocalFileSystem();
+path.Context get p => _fs.path;
 String _absoluteLexical(String value) =>
-    p.normalize(Directory(value).absolute.path);
+    p.normalize(_fs.directory(value).absolute.path);
 
 // ---------------------------------------------------------------------------
 // Fixture builders
@@ -108,22 +115,22 @@ description = "Reviews code from the file."
 developer_instructions = "$_boundSentinel"
 ''';
 
-File _write(Directory sandbox, String relativePath, String content) {
-  final file = File(p.join(sandbox.path, relativePath));
+f.File _write(f.Directory sandbox, String relativePath, String content) {
+  final file = _fs.file(p.join(sandbox.path, relativePath));
   file.parent.createSync(recursive: true);
   file.writeAsStringSync(content);
   return file;
 }
 
-File _writeBytes(Directory sandbox, String relativePath, List<int> bytes) {
-  final file = File(p.join(sandbox.path, relativePath));
+f.File _writeBytes(f.Directory sandbox, String relativePath, List<int> bytes) {
+  final file = _fs.file(p.join(sandbox.path, relativePath));
   file.parent.createSync(recursive: true);
   file.writeAsBytesSync(bytes);
   return file;
 }
 
-({File config, File role}) _writeBound(
-  Directory sandbox, {
+({f.File config, f.File role}) _writeBound(
+  f.Directory sandbox, {
   String configToml = _boundConfig,
   String roleToml = _boundRole,
 }) {
@@ -160,7 +167,7 @@ String _requestEnvelope({
   return jsonEncode(envelope);
 }
 
-File _writeRequest(Directory sandbox, {String? raw, String? operation}) =>
+f.File _writeRequest(f.Directory sandbox, {String? raw, String? operation}) =>
     _write(
       sandbox,
       'request.json',
@@ -197,34 +204,45 @@ List<int> _definitionBytes(int bytes, {bool multibyte = false}) {
 // Sandbox and snapshot helpers
 // ---------------------------------------------------------------------------
 
-Future<T> _withSandbox<T>(Future<T> Function(Directory sandbox) body) async {
-  final sandbox = await Directory.systemTemp.createTemp(
+Future<T> _withSandbox<T>(Future<T> Function(f.Directory sandbox) body) async {
+  final fs = MemoryFileSystem.test(style: FileSystemStyle.posix);
+  final sandbox = fs.directory('/sandbox')..createSync();
+  fs.currentDirectory = sandbox;
+  return runZoned(() => body(sandbox), zoneValues: {#fs: fs});
+}
+
+Future<T> _withLocalSandbox<T>(
+  Future<T> Function(f.Directory sandbox) body,
+) async {
+  const fs = LocalFileSystem();
+  final sandbox = await fs.systemTempDirectory.createTemp(
     'agent-resource-agent-',
   );
   try {
-    return await body(sandbox);
+    return await runZoned(() => body(sandbox), zoneValues: {#fs: fs});
   } finally {
     await sandbox.delete(recursive: true);
   }
 }
 
-Map<String, String> _snapshot(Directory root) {
+Map<String, String> _snapshot(f.Directory root) {
   final entries = <String, String>{'.': 'directory'};
 
-  void visit(Directory directory) {
+  void visit(f.Directory directory) {
     for (final entity in directory.listSync(followLinks: false)) {
       final relative = p.relative(entity.path, from: root.path);
-      final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
+      final type = _fs.typeSync(entity.path, followLinks: false);
       entries[relative] = switch (type) {
         FileSystemEntityType.directory => 'directory',
         FileSystemEntityType.file =>
-          'file:${base64Encode(File(entity.path).readAsBytesSync())}',
-        FileSystemEntityType.link => 'link:${Link(entity.path).targetSync()}',
+          'file:${base64Encode(_fs.file(entity.path).readAsBytesSync())}',
+        FileSystemEntityType.link =>
+          'link:${_fs.link(entity.path).targetSync()}',
         FileSystemEntityType.notFound => 'not-found',
         _ => 'other',
       };
       if (type == FileSystemEntityType.directory) {
-        visit(Directory(entity.path));
+        visit(_fs.directory(entity.path));
       }
     }
   }
@@ -236,7 +254,7 @@ Map<String, String> _snapshot(Directory root) {
 
 Future<bool> _tryCreateLink(String link, String target) async {
   try {
-    await Link(link).create(target);
+    await _fs.link(link).create(target);
     return true;
   } on FileSystemException {
     return false;
@@ -252,7 +270,10 @@ Future<bool> _tryCreateLink(String link, String target) async {
 Future<MambaExecutionResult> _execute(
   List<String> arguments, {
   Executor? executor,
-}) => (executor ?? createExecutor()).fake().execute(['agent', ...arguments]);
+}) => (executor ?? createExecutor(fileSystem: _fs)).fake().execute([
+  'agent',
+  ...arguments,
+]);
 
 Future<MambaExecutionResult> _inspect(
   List<String> arguments, {
@@ -407,9 +428,9 @@ String _sha256Hex(String text) => sha256.convert(utf8.encode(text)).toString();
 // ---------------------------------------------------------------------------
 
 String _findProjectRoot() {
-  var candidate = Directory.current.absolute;
+  var candidate = _fs.currentDirectory.absolute;
   while (true) {
-    if (File(p.join(candidate.path, 'pubspec.yaml')).existsSync()) {
+    if (_fs.file(p.join(candidate.path, 'pubspec.yaml')).existsSync()) {
       return candidate.path;
     }
     final parent = candidate.parent;
@@ -421,7 +442,7 @@ String _findProjectRoot() {
 }
 
 Future<CliProcessResult> _runProduction(
-  Directory workingDirectory,
+  f.Directory workingDirectory,
   List<String> arguments,
 ) => runDartScript(
   script: _entrypoint,
@@ -445,6 +466,56 @@ Future<void> main() async {
 
   group('agent_resource', () {
     group('agent', () {
+      group('create', () {
+        test('root filesystem reaches default authoring', () async {
+          await _withSandbox((sandbox) async {
+            final project = _fs.directory(p.join(sandbox.path, 'project'))
+              ..createSync();
+            final home = _fs.directory(p.join(sandbox.path, 'home'))
+              ..createSync();
+            final request = _write(
+              sandbox,
+              'create.json',
+              jsonEncode({
+                'schemaVersion': 1,
+                'operation': 'create',
+                'target': {
+                  'harness': 'pi',
+                  'destination': 'shared',
+                  'output': '.agents/agents/worker.md',
+                },
+                'context': {'workingDirectory': './'},
+                'definition': {
+                  'name': 'worker',
+                  'description': 'Works.',
+                  'model': 'kimi-coding/k3',
+                  'tools': 'read',
+                },
+                'instructions': ['Work.'],
+              }),
+            );
+            final result = await createExecutor(fileSystem: _fs)
+                .fake()
+                .execute([
+                  'agent',
+                  'create',
+                  request.path,
+                  '--cwd',
+                  '${project.path}/',
+                  '--project-root',
+                  '${project.path}/',
+                  '--home',
+                  '${home.path}/',
+                  '--format',
+                  'json',
+                ]);
+            final report = _decodeObject(_expectSuccess(result).output!);
+            expect(report['command'], 'agent create');
+            expect(_dataOf(report)['ready'], isTrue);
+          });
+        });
+      });
+
       group('command tree and help', () {
         test('root help lists skill and agent but no leaf aliases', () async {
           for (final arguments in [
@@ -673,8 +744,9 @@ Future<void> main() async {
               );
               _expectNotJson(missing.message);
 
-              final directory = Directory(p.join(sandbox.path, 'directory.md'))
-                ..createSync();
+              final directory = _fs.directory(
+                p.join(sandbox.path, 'directory.md'),
+              )..createSync();
               _expectFailure(
                 await _validate([directory.path, '--harness', 'claude']),
                 exitCode: 1,
@@ -690,7 +762,7 @@ Future<void> main() async {
           () async {
             await _withSandbox((sandbox) async {
               _write(sandbox, 'agent.md', _claudeDefinition());
-              final cwd = '${sandbox.path}${Platform.pathSeparator}';
+              final cwd = '${sandbox.path}${_fs.path.separator}';
               final result = _expectSuccess(
                 await _inspect([
                   'agent.md',
@@ -773,7 +845,7 @@ Future<void> main() async {
                   '--harness',
                   'claude',
                   '--cwd',
-                  '${sandbox.path}${Platform.pathSeparator}',
+                  '${sandbox.path}${_fs.path.separator}',
                   '--format',
                   'json',
                   '--show-instructions',
@@ -1007,7 +1079,7 @@ Future<void> main() async {
                       'x-unknown-field: $_secretUnknown\n',
                 ),
               );
-              final marker = File(p.join(sandbox.path, 'pwned-marker'));
+              final marker = _fs.file(p.join(sandbox.path, 'pwned-marker'));
 
               for (final leaf in ['inspect', 'validate']) {
                 final result = _expectSuccess(
@@ -1049,7 +1121,7 @@ Future<void> main() async {
           () async {
             await _withSandbox((sandbox) async {
               final file = _write(sandbox, 'agent.md', _claudeDefinition());
-              final adapter = createExecutor().fake();
+              final adapter = createExecutor(fileSystem: _fs).fake();
 
               final first = _expectSuccess(
                 await adapter.execute([
@@ -1781,7 +1853,7 @@ Future<void> main() async {
             await _withSandbox((sandbox) async {
               final bound = _writeBound(sandbox);
               final request = _writeRequest(sandbox);
-              final cwd = '${sandbox.path}${Platform.pathSeparator}';
+              final cwd = '${sandbox.path}${_fs.path.separator}';
               final report = _decodeObject(
                 _expectSuccess(
                   await _inspect([
@@ -1833,7 +1905,7 @@ Future<void> main() async {
                     '--request',
                     request.path,
                     '--cwd',
-                    '${sandbox.path}${Platform.pathSeparator}',
+                    '${sandbox.path}${_fs.path.separator}',
                     '--format',
                     'json',
                   ]),
@@ -1853,7 +1925,7 @@ Future<void> main() async {
                 '--request',
                 request.path,
                 '--cwd',
-                '${sandbox.path}${Platform.pathSeparator}',
+                '${sandbox.path}${_fs.path.separator}',
                 '--harness',
                 'codex',
               ]),
@@ -1867,7 +1939,7 @@ Future<void> main() async {
         test('a conflicting cwd context fails before inspection', () async {
           await _withSandbox((sandbox) async {
             _writeBound(sandbox);
-            final other = Directory(p.join(sandbox.path, 'other'))
+            final other = _fs.directory(p.join(sandbox.path, 'other'))
               ..createSync();
             final request = _writeRequest(
               sandbox,
@@ -1878,7 +1950,7 @@ Future<void> main() async {
                 '--request',
                 request.path,
                 '--cwd',
-                '${other.path}${Platform.pathSeparator}',
+                '${other.path}${_fs.path.separator}',
               ]),
               exitCode: 1,
               phase: MambaExecutionPhase.run,
@@ -1902,7 +1974,7 @@ Future<void> main() async {
                     '--request',
                     request.path,
                     '--cwd',
-                    '${sandbox.path}${Platform.pathSeparator}',
+                    '${sandbox.path}${_fs.path.separator}',
                     '--format',
                     'json',
                   ]),
@@ -1929,7 +2001,7 @@ Future<void> main() async {
                   'config_file = "agents/reviewer.toml"\n',
               roleToml: 'developer_instructions = "$_boundSentinel"\n',
             );
-            final cwd = '${sandbox.path}${Platform.pathSeparator}';
+            final cwd = '${sandbox.path}${_fs.path.separator}';
 
             final inspectRequest = _writeRequest(sandbox);
             final inspected = _decodeObject(
@@ -2017,7 +2089,7 @@ Future<void> main() async {
                     '--request',
                     request.path,
                     '--cwd',
-                    '${sandbox.path}${Platform.pathSeparator}',
+                    '${sandbox.path}${_fs.path.separator}',
                     '--format',
                     'json',
                   ]),
@@ -2045,7 +2117,7 @@ Future<void> main() async {
                     '--request',
                     request.path,
                     '--cwd',
-                    '${sandbox.path}${Platform.pathSeparator}',
+                    '${sandbox.path}${_fs.path.separator}',
                     '--format',
                     'json',
                   ]),
@@ -2067,7 +2139,7 @@ Future<void> main() async {
           () async {
             await _withSandbox((sandbox) async {
               _writeBound(sandbox);
-              final cwd = '${sandbox.path}${Platform.pathSeparator}';
+              final cwd = '${sandbox.path}${_fs.path.separator}';
 
               final missingConfig = _writeRequest(
                 sandbox,
@@ -2128,7 +2200,7 @@ Future<void> main() async {
                 '--request',
                 request.path,
                 '--cwd',
-                '${sandbox.path}${Platform.pathSeparator}',
+                '${sandbox.path}${_fs.path.separator}',
               ]),
               exitCode: 3,
               phase: MambaExecutionPhase.run,
@@ -2154,7 +2226,7 @@ Future<void> main() async {
                     '--request',
                     request.path,
                     '--cwd',
-                    '${sandbox.path}${Platform.pathSeparator}',
+                    '${sandbox.path}${_fs.path.separator}',
                     '--format',
                     'json',
                     '--show-instructions',
@@ -2170,7 +2242,7 @@ Future<void> main() async {
 
         group('request envelope', () {
           Future<void> expectRequestRejected(
-            Directory sandbox,
+            f.Directory sandbox,
             String raw, {
             int exitCode = 1,
           }) async {
@@ -2181,7 +2253,7 @@ Future<void> main() async {
                 '--request',
                 request.path,
                 '--cwd',
-                '${sandbox.path}${Platform.pathSeparator}',
+                '${sandbox.path}${_fs.path.separator}',
               ]),
               exitCode: exitCode,
               phase: MambaExecutionPhase.run,
@@ -2392,7 +2464,7 @@ Future<void> main() async {
 
         test('a linked selection is refused with status four without reading '
             'its target', () async {
-          await _withSandbox((sandbox) async {
+          await _withLocalSandbox((sandbox) async {
             final target = _write(sandbox, 'target.md', _claudeDefinition());
             final link = p.join(sandbox.path, 'linked.md');
             if (!await _tryCreateLink(link, target.path)) {
@@ -2416,7 +2488,7 @@ Future<void> main() async {
             );
             return;
           }
-          await _withSandbox((sandbox) async {
+          await _withLocalSandbox((sandbox) async {
             final file = _write(sandbox, 'agent.md', _claudeDefinition());
             final changed = await Process.run('chmod', ['000', file.path]);
             if (changed.exitCode != 0) {
@@ -2446,7 +2518,7 @@ Future<void> main() async {
               final sentinel = _write(sandbox, 'sentinel.txt', 'do not change');
               final before = _snapshot(sandbox);
 
-              final cwd = '${sandbox.path}${Platform.pathSeparator}';
+              final cwd = '${sandbox.path}${_fs.path.separator}';
               _expectSuccess(
                 await _inspect([claude.path, '--harness', 'claude']),
               );
@@ -2485,13 +2557,13 @@ Future<void> main() async {
         test(
           'definitions are closed after success, malformed, and over-cap reads',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               final file = _write(sandbox, 'agent.md', _claudeDefinition());
 
               Future<void> expectClosed(String suffix) async {
                 final renamed = p.join(sandbox.path, 'agent.md.$suffix');
                 await file.rename(renamed);
-                await File(renamed).rename(file.path);
+                await _fs.file(renamed).rename(file.path);
               }
 
               _expectSuccess(
@@ -2521,7 +2593,7 @@ Future<void> main() async {
         test(
           'json inspect streams the privacy-preserving envelope on stdout',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               final file = _write(sandbox, 'agent.md', _claudeDefinition());
               final result = await _runProduction(sandbox, [
                 'agent',
@@ -2553,7 +2625,7 @@ Future<void> main() async {
         test(
           'validate rejects a failed candidate on stderr with status two',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               final file = _write(
                 sandbox,
                 'agent.md',
@@ -2579,7 +2651,7 @@ Future<void> main() async {
         test(
           'text inspect with --show-instructions prints the exact body',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               final file = _write(sandbox, 'agent.md', _claudeDefinition());
               final result = await _runProduction(sandbox, [
                 'agent',
@@ -2601,7 +2673,7 @@ Future<void> main() async {
         );
 
         test('a bound-role json request inspects the selected role', () async {
-          await _withSandbox((sandbox) async {
+          await _withLocalSandbox((sandbox) async {
             _writeBound(sandbox);
             final request = _writeRequest(sandbox);
             final result = await _runProduction(sandbox, [
@@ -2610,7 +2682,7 @@ Future<void> main() async {
               '--request',
               request.path,
               '--cwd',
-              '${sandbox.path}${Platform.pathSeparator}',
+              '${sandbox.path}${_fs.path.separator}',
               '--format',
               'json',
             ]);
@@ -2635,7 +2707,7 @@ Future<void> main() async {
         test(
           'an over-cap definition fails incompletely with status three',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               final file = _writeBytes(
                 sandbox,
                 'over.md',

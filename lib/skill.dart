@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
-import 'package:path/path.dart' as p;
 
 import 'src/skill_files.dart';
 import 'src/skill_validation.dart';
@@ -19,25 +20,39 @@ typedef ValidateOperation = ValidationReport Function(String skill);
 /// children.
 final class SkillCommand extends GroupCommand {
   SkillCommand({
-    InspectOperation inspect = inspectSkill,
-    ValidateOperation validate = validateSkill,
+    InspectOperation? inspect,
+    ValidateOperation? validate,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     SkillLifecycleService? lifecycle,
     SkillInstallationService? installation,
-  }) : super(_children(inspect, validate, lifecycle, installation));
+  }) : super(
+         _children(
+           inspect ?? ((skill) => inspectSkill(skill, fs: fileSystem)),
+           validate ?? ((skill) => validateSkill(skill, fs: fileSystem)),
+           lifecycle,
+           installation,
+           fileSystem,
+         ),
+       );
 
   static List<Command> _children(
     InspectOperation inspect,
     ValidateOperation validate,
     SkillLifecycleService? lifecycle,
     SkillInstallationService? installation,
+    fslib.FileSystem fileSystem,
   ) {
-    final service = lifecycle ?? SkillLifecycleService();
+    final service = lifecycle ?? SkillLifecycleService(fileSystem: fileSystem);
     return [
       SkillListCommand(service),
       InspectCommand(inspect),
       ValidateCommand(validate),
       SkillInstallCommand(
-        installation ?? SkillInstallationService(lifecycle: service),
+        installation ??
+            SkillInstallationService(
+              lifecycle: service,
+              fileSystem: fileSystem,
+            ),
       ),
       SkillAdoptCommand(service),
       SkillReplaceCommand(service),
@@ -169,12 +184,15 @@ final class InspectCommand(final InspectOperation _inspect) extends Command {
   }
 }
 
-String inspectSkill(String skill) {
-  final skillPath = p.normalize(Directory(skill).absolute.path);
-  _requireInspectDirectory(skillPath);
+String inspectSkill(
+  String skill, {
+  fslib.FileSystem fs = const local.LocalFileSystem(),
+}) {
+  final skillPath = fs.path.normalize(fs.directory(skill).absolute.path);
+  _requireInspectDirectory(skillPath, fs);
 
-  final markerPath = p.join(skillPath, 'SKILL.md');
-  final markerType = skillEntityType(markerPath, followLinks: false);
+  final markerPath = fs.path.join(skillPath, 'SKILL.md');
+  final markerType = skillEntityType(markerPath, followLinks: false, fs: fs);
   if (markerType != FileSystemEntityType.file) {
     return jsonEncode({
       'path': skillPath,
@@ -186,6 +204,7 @@ String inspectSkill(String skill) {
   final bytes = readBoundedSkillMarker(
     markerPath,
     maxBytes: _maxSkillFileBytes,
+    fs: fs,
   );
   if (bytes.length > _maxSkillFileBytes) {
     throw MambaException(
@@ -206,8 +225,8 @@ String inspectSkill(String skill) {
   });
 }
 
-void _requireInspectDirectory(String skillPath) {
-  final type = skillEntityType(skillPath, followLinks: true);
+void _requireInspectDirectory(String skillPath, fslib.FileSystem fs) {
+  final type = skillEntityType(skillPath, followLinks: true, fs: fs);
   if (type == FileSystemEntityType.directory) {
     return;
   }

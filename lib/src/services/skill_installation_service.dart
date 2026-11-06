@@ -106,6 +106,7 @@ interface class SkillInstallationService {
         interaction: _interaction,
         resourceType: CatalogResourceType.skill,
         interactive: interactive,
+        fileSystem: _fileSystem,
       );
       if (candidates == null) {
         return const InstallationCancelledResult('skill install');

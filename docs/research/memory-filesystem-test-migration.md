@@ -72,7 +72,7 @@ Acquisition remains mixed: local-copy behavior can eventually use the injected
 filesystem, while Git, HTTP, archives, and process execution remain integration
 adapters.
 
-## Tests that should migrate
+## Original test migration inventory
 
 ### Direct memory-filesystem candidates
 
@@ -198,3 +198,40 @@ The migration is complete when:
 - native-link, permission, process, Git, HTTP, archive, and atomic-local tests
   remain visibly real integration tests
 - the complete suite passes locally and in native CI
+
+## Fixture audit and retained integration coverage
+
+Ordinary fixtures use POSIX memory filesystems and their own path contexts.
+`createExecutor(fileSystem: ...)` supplies the filesystem to the default command
+services and read-only inspection/validation operations; explicit service
+injections remain available. Tests that inject collaborating services must pass
+the same filesystem to each of them.
+
+Mixed inspection/validation suites use memory helpers by default and explicitly
+named local helpers for host capabilities. Local acquisition cases are separate
+from Git, HTTP, and archive integration. Fake release-selection scenarios do not
+require host files just because they exercise release policy.
+
+Retain these host-backed boundaries rather than replacing native behavior with
+memory links or process fakes:
+
+| Suite/helper | Host capability being verified |
+| --- | --- |
+| `agent_list_test.dart` | Native links, permissions, handle cleanup, and production process behavior |
+| `agent_test.dart`, `inspect_test.dart`, `validate_test.dart` | Native links, permissions, real file-handle cleanup, and production processes |
+| `cli_process_test.dart`, `support/compiled_cli_test_support.dart` | CLI compilation, process streams, exit codes, environment, cleanup, and timeout behavior |
+| `native_link_service_test.dart` | Native link/reparse-point classification and refusal semantics |
+| `resource_unit_transaction_test.dart` | Canonical content plus real native exposures, including restart recovery, drift, and rollback across the entire unit |
+| Local cases in `skill_install_test.dart` and `skill_lifecycle_service_test.dart` | Publishing/adopting native harness exposure links and preserving their ownership |
+| Host-link group in `pack_lifecycle_service_test.dart` | Native exposure publication and rollback |
+| Host-integration group in `acquisition_service_test.dart` | Git, HTTP, redirects/deadlines, archive extraction, and streaming |
+| `support/release_gate.dart` and HTTPS Git qualification helpers | Compiled production executable and real release transport |
+
+The transaction cases intentionally remain whole integration scenarios: even
+schema/restart assertions first publish a canonical unit with native exposures.
+Ordinary state serialization and recovery behavior also has separate
+memory-backed coverage in `lifecycle_state_service_test.dart`.
+
+Local validation does not replace the Windows/Linux/macOS CI matrix. Record the
+actual local run separately, and do not infer a cross-platform pass from the
+memory fixtures.

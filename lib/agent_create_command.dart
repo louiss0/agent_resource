@@ -18,7 +18,11 @@ final class AgentCreateCommand extends Command {
     this._confirmation = defaultAuthoringConfirmation,
   }) : _fileSystem = service?.fileSystem ?? const local.LocalFileSystem(),
        _service = service ?? AgentAuthoringService(),
-       _boundRoleService = boundRoleService ?? BoundRoleService(),
+       _boundRoleService =
+           boundRoleService ??
+           BoundRoleService(
+             fileSystem: service?.fileSystem ?? const local.LocalFileSystem(),
+           ),
        super(
          discretionaryPositionals: [_requestFile],
          options: [

@@ -8,6 +8,7 @@ import 'src/services/lifecycle_state_service.dart';
 import 'src/services/parent_config_service.dart';
 
 LifecycleOptions _options(
+  String processWorkingDirectory,
   ValueOf valueOf,
   FolderPathOption cwd,
   FolderPathOption projectRoot,
@@ -18,7 +19,7 @@ LifecycleOptions _options(
   LifecycleScope scope, {
   required bool approved,
 }) => LifecycleOptions(
-  processWorkingDirectory: Directory.current.path,
+  processWorkingDirectory: processWorkingDirectory,
   environment: Map<String, String>.unmodifiable(Platform.environment),
   scope: scope,
   cwd: valueOf(cwd),
@@ -85,6 +86,7 @@ final class AgentConfigInspectCommand extends Command {
     final format = valueOf(_format);
     final scope = valueOf(_scope);
     final options = _options(
+      _service.fs.currentDirectory.path,
       valueOf,
       _cwd,
       _projectRoot,
@@ -98,6 +100,7 @@ final class AgentConfigInspectCommand extends Command {
     final request = parseParentRequest(
       valueOf(_request),
       options.cwd ?? options.processWorkingDirectory,
+      fs: _service.fs,
     );
     if (request.operation != ParentOperation.inspect) {
       throw MambaException(
@@ -165,6 +168,7 @@ final class AgentConfigPlanCommand extends Command {
     final format = valueOf(_format);
     final scope = valueOf(_scope);
     final options = _options(
+      _service.fs.currentDirectory.path,
       valueOf,
       _cwd,
       _projectRoot,
@@ -178,6 +182,7 @@ final class AgentConfigPlanCommand extends Command {
     final request = parseParentRequest(
       valueOf(_request),
       options.cwd ?? options.processWorkingDirectory,
+      fs: _service.fs,
     );
     if (request.operation != ParentOperation.plan) {
       throw MambaException(
@@ -255,6 +260,7 @@ final class AgentConfigApplyCommand extends Command {
     final format = valueOf(_format);
     final scope = valueOf(_scope);
     final options = _options(
+      _service.fs.currentDirectory.path,
       valueOf,
       _cwd,
       _projectRoot,
@@ -268,6 +274,7 @@ final class AgentConfigApplyCommand extends Command {
     final request = parseParentRequest(
       valueOf(_request),
       options.cwd ?? options.processWorkingDirectory,
+      fs: _service.fs,
     );
     if (request.operation != ParentOperation.apply) {
       throw MambaException(
