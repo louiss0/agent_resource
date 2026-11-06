@@ -6,6 +6,7 @@ import 'package:mamba/executor.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
 
 const _markerLimit = 1048576;
@@ -141,10 +142,13 @@ Future<CliProcessResult> _runProduction(
   environment: isolatedEnvironment(workingDirectory),
 );
 
-void main() {
+Future<void> main() async {
   final projectRoot = _findProjectRoot();
-  _entrypoint = p.join(projectRoot, 'bin', 'agent_resource.dart');
   _packageConfig = p.join(projectRoot, '.dart_tool', 'package_config.json');
+  _entrypoint = await compileTestCli(
+    script: p.join(projectRoot, 'bin', 'agent_resource.dart'),
+    packageConfig: _packageConfig,
+  );
 
   group('agent_resource', () {
     group('skill', () {

@@ -19,11 +19,13 @@ bool _tryDirectoryLink(String path, String target) {
 }
 
 /// Deterministic supported-directory-link simulation for hosts where creating
-/// native links is unavailable. Content still uses the real filesystem.
+/// native links is unavailable. Ordinary content uses the injected filesystem.
 final class _SimulatedLinkIO extends LifecycleIO {
+  _SimulatedLinkIO(fslib.FileSystem fileSystem) : super(fs: fileSystem);
+
   final links = <String, String>{};
 
-  String _key(String path) => p.normalize(path);
+  String _key(String path) => fs.path.normalize(path);
 
   @override
   FileSystemEntityType type(String path, {required bool followLinks}) {
@@ -1051,25 +1053,26 @@ void main() {
     test(
       'deterministic link semantics cover mode retention and conversion',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-sim-link-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          Directory source(String directory, String body) {
-            final result = Directory(p.join(sandbox.path, directory))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          fslib.Directory source(String directory, String body) {
+            final result = fs.directory(fs.path.join(sandbox.path, directory))
               ..createSync();
-            File(p.join(result.path, 'SKILL.md')).writeAsStringSync(
-              '---\nname: review\ndescription: Reviews.\n---\n$body\n',
-            );
+            fs
+                .file(fs.path.join(result.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\n$body\n',
+                );
             return result;
           }
 
           final first = source('first', 'First.');
           final second = source('second', 'Second.');
-          final io = _SimulatedLinkIO();
+          final io = _SimulatedLinkIO(fs);
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -1090,15 +1093,25 @@ void main() {
             ),
           );
           final id = installed.data['installationId']! as String;
-          final live = p.join(project.path, '.claude', 'skills', 'review');
+          final live = fs.path.join(
+            project.path,
+            '.claude',
+            'skills',
+            'review',
+          );
           expect(io.type(live, followLinks: false), FileSystemEntityType.link);
           expect(io.readLink(live), first.path);
-          File(p.join(first.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nEdited.\n',
-          );
+          fs
+              .file(fs.path.join(first.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nEdited.\n',
+              );
           expect(
             service.state.verify(
-              service.state.recordById(LifecycleContext.resolve(options()), id),
+              service.state.recordById(
+                LifecycleContext.resolve(options(), fileSystem: fs),
+                id,
+              ),
             ),
             ModificationStatus.unchanged,
           );
@@ -1126,7 +1139,7 @@ void main() {
             FileSystemEntityType.directory,
           );
           expect(
-            File(p.join(live, 'SKILL.md')).readAsStringSync(),
+            fs.file(fs.path.join(live, 'SKILL.md')).readAsStringSync(),
             contains('Second.'),
           );
           final linked = await service.replace(
@@ -1171,22 +1184,27 @@ void main() {
     test(
       'deterministic relative-link backup retains original-parent semantics',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-sim-relative-',
-        );
+        final sandbox = (fs.directory('/sandbox')..createSync());
         try {
-          final project = Directory(p.join(sandbox.path, 'project'))
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
-          final home = Directory(p.join(sandbox.path, 'home'))..createSync();
-          final source = Directory(p.join(sandbox.path, 'source'))
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
             ..createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+          final source = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nOriginal.\n',
+              );
+          final live = fs.path.join(project.path, '.codex', 'skills', 'review');
+          fs.directory(fs.path.dirname(live)).createSync(recursive: true);
+          final relative = fs.path.relative(
+            source.path,
+            from: fs.path.dirname(live),
           );
-          final live = p.join(project.path, '.codex', 'skills', 'review');
-          Directory(p.dirname(live)).createSync(recursive: true);
-          final relative = p.relative(source.path, from: p.dirname(live));
-          final io = _SimulatedLinkIO()..links[p.normalize(live)] = relative;
+          final io = _SimulatedLinkIO(fs)
+            ..links[fs.path.normalize(live)] = relative;
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
             scope: LifecycleScope.project,
@@ -1223,12 +1241,15 @@ void main() {
             // Current target validation is mandatory for normal restore.
           }
           source.createSync();
-          File(p.join(source.path, 'SKILL.md')).writeAsStringSync(
-            '---\nname: review\ndescription: Reviews.\n---\nRecreated.\n',
-          );
-          final sidecar = File(p.join(source.path, 'agents', 'openai.yaml'))
-            ..createSync(recursive: true)
-            ..writeAsStringSync('policy: []');
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nRecreated.\n',
+              );
+          final sidecar =
+              fs.file(fs.path.join(source.path, 'agents', 'openai.yaml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync('policy: []');
           try {
             await service.restore(
               LifecycleIdInput(

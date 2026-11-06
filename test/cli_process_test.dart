@@ -6,6 +6,7 @@ import 'package:mamba/executor.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
 
 late final String _entrypoint;
@@ -119,14 +120,15 @@ String _relativePath(String root, String child) {
       : normalizedChild;
 }
 
-void main() {
+Future<void> main() async {
   final projectRoot = _findProjectRoot();
-  _entrypoint = File(
-    '${projectRoot.path}${Platform.pathSeparator}bin${Platform.pathSeparator}agent_resource.dart',
-  ).absolute.path;
   _packageConfig = File(
     '${projectRoot.path}${Platform.pathSeparator}.dart_tool${Platform.pathSeparator}package_config.json',
   ).absolute.path;
+  _entrypoint = await compileTestCli(
+    script: p.join(projectRoot.path, 'bin', 'agent_resource.dart'),
+    packageConfig: _packageConfig,
+  );
 
   group('agent_resource', () {
     test('production version output matches the fake adapter', () async {

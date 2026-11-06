@@ -2,33 +2,59 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_lifecycle_service.dart';
+import 'package:file/file.dart' as fs;
+import 'package:file/local.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
 
 late final String _entrypoint;
 late final String _packageConfig;
 
 typedef _Sandbox = ({
-  Directory root,
-  Directory project,
-  Directory work,
-  Directory home,
+  fs.FileSystem fileSystem,
+  fs.Directory root,
+  fs.Directory project,
+  fs.Directory work,
+  fs.Directory home,
 });
 
-Future<T> _withSandbox<T>(Future<T> Function(_Sandbox) body) async {
-  final created = await Directory.systemTemp.createTemp('agent-resource-list-');
+Future<T> _withMemorySandbox<T>(Future<T> Function(_Sandbox) body) async {
+  final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+  return _withSandbox(fileSystem.directory('/sandbox')..createSync(), body);
+}
+
+// Real links, permissions, handles, and child processes need a host filesystem.
+Future<T> _withLocalSandbox<T>(Future<T> Function(_Sandbox) body) async {
+  const fileSystem = LocalFileSystem();
+  final created = await fileSystem.systemTempDirectory.createTemp(
+    'agent-resource-list-',
+  );
   // macOS may report /var/... while the child process resolves the same path
   // as /private/var/...; canonicalize before passing explicit containment
   // context to the production process.
-  final root = Directory(created.resolveSymbolicLinksSync());
+  final root = fileSystem.directory(created.resolveSymbolicLinksSync());
+  return _withSandbox(root, body);
+}
+
+Future<T> _withSandbox<T>(
+  fs.Directory root,
+  Future<T> Function(_Sandbox) body,
+) async {
+  final fileSystem = root.fileSystem;
   final sandbox = (
+    fileSystem: fileSystem,
     root: root,
-    project: Directory(p.join(root.path, 'project')),
-    work: Directory(p.join(root.path, 'project', 'work')),
-    home: Directory(p.join(root.path, 'home')),
+    project: fileSystem.directory(fileSystem.path.join(root.path, 'project')),
+    work: fileSystem.directory(
+      fileSystem.path.join(root.path, 'project', 'work'),
+    ),
+    home: fileSystem.directory(fileSystem.path.join(root.path, 'home')),
   );
   sandbox.project.createSync();
   sandbox.work.createSync();
@@ -40,8 +66,10 @@ Future<T> _withSandbox<T>(Future<T> Function(_Sandbox) body) async {
   }
 }
 
-File _write(Directory sandbox, String relative, String content) {
-  final file = File(p.join(sandbox.path, relative));
+fs.File _write(fs.Directory sandbox, String relative, String content) {
+  final file = sandbox.fileSystem.file(
+    sandbox.fileSystem.path.join(sandbox.path, relative),
+  );
   file.parent.createSync(recursive: true);
   file.writeAsStringSync(content);
   return file;
@@ -81,13 +109,19 @@ String _pi([String name = 'worker']) =>
 
 List<String> _projectArgs(_Sandbox sandbox) => [
   '--cwd',
-  '${sandbox.work.path}${Platform.pathSeparator}',
+  '${sandbox.work.path}${sandbox.fileSystem.path.separator}',
   '--project-root',
-  '${sandbox.project.path}${Platform.pathSeparator}',
+  '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
 ];
 
-Future<MambaExecutionResult> _execute(List<String> arguments) =>
-    createExecutor().fake().execute(['agent', 'list', ...arguments]);
+Future<MambaExecutionResult> _execute(
+  _Sandbox? sandbox,
+  List<String> arguments,
+) => createExecutor(
+  agentLifecycle: sandbox == null
+      ? null
+      : AgentLifecycleService(fileSystem: sandbox.fileSystem),
+).fake().execute(['agent', 'list', ...arguments]);
 
 MambaSuccessResult _expectSuccess(MambaExecutionResult result) {
   expect(
@@ -151,30 +185,35 @@ Map<String, Object?> _single(Map<String, Object?> report) {
   return occurrences.single;
 }
 
-Map<String, Object?> _snapshot(Directory root) {
+Map<String, Object?> _snapshot(fs.Directory root) {
+  final fileSystem = root.fileSystem;
   final result = <String, Object?>{};
   for (final entity in root.listSync(recursive: true, followLinks: false)) {
-    final relative = p.relative(entity.path, from: root.path);
-    final type = FileSystemEntity.typeSync(entity.path, followLinks: false);
+    final relative = fileSystem.path.relative(entity.path, from: root.path);
+    final type = fileSystem.typeSync(entity.path, followLinks: false);
     result[relative] = switch (type) {
       FileSystemEntityType.file => base64Encode(
-        File(entity.path).readAsBytesSync(),
+        fileSystem.file(entity.path).readAsBytesSync(),
       ),
       FileSystemEntityType.directory => 'directory',
-      FileSystemEntityType.link => 'link:${Link(entity.path).targetSync()}',
+      FileSystemEntityType.link =>
+        'link:${fileSystem.link(entity.path).targetSync()}',
       _ => 'other',
     };
   }
   return result;
 }
 
-void main() {
+Future<void> main() async {
   final projectRoot = _findProjectRoot();
-  _entrypoint = p.join(projectRoot.path, 'bin', 'agent_resource.dart');
   _packageConfig = p.join(
     projectRoot.path,
     '.dart_tool',
     'package_config.json',
+  );
+  _entrypoint = await compileTestCli(
+    script: p.join(projectRoot.path, 'bin', 'agent_resource.dart'),
+    packageConfig: _packageConfig,
   );
 
   group('agent_resource', () {
@@ -189,7 +228,7 @@ void main() {
     group('agent', () {
       group('list', () {
         test('help and parser behavior use the agent group', () async {
-          final help = _expectSuccess(await _execute(['--help'])).output!;
+          final help = _expectSuccess(await _execute(null, ['--help'])).output!;
           for (final token in [
             '--scope',
             '--harness',
@@ -211,7 +250,7 @@ void main() {
             ),
           ]) {
             _expectFailure(
-              await _execute(testCase.arguments),
+              await _execute(null, testCase.arguments),
               exitCode: 1,
               message: contains(testCase.diagnostic),
               phase: MambaExecutionPhase.parse,
@@ -220,17 +259,17 @@ void main() {
         });
 
         test('overlapping read roots are location-deduplicated', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             _write(sandbox.project, '.claude/agents/a.md', _claude('same'));
             final args = [..._projectArgs(sandbox), '--format', 'json'];
-            final original = _single(_report(await _execute(args)));
+            final original = _single(_report(await _execute(sandbox, args)));
             final report = _report(
-              await _execute([
+              await _execute(sandbox, [
                 ...args,
                 '--read-root',
-                '${sandbox.project.path}${Platform.pathSeparator}',
+                '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
                 '--read-root',
-                '${sandbox.project.path}${Platform.pathSeparator}',
+                '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
               ]),
             );
             expect(_single(report), original);
@@ -239,19 +278,19 @@ void main() {
         });
 
         test('filters and scope do not bypass explicit read-root validation', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             for (final scope in ['project', 'user']) {
               _expectFailure(
-                await _execute([
+                await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--harness',
                   'pi',
                   '--scope',
                   scope,
                   '--home',
-                  '${sandbox.home.path}${Platform.pathSeparator}',
+                  '${sandbox.home.path}${sandbox.fileSystem.path.separator}',
                   '--read-root',
-                  '${p.join(sandbox.root.path, 'missing')}${Platform.pathSeparator}',
+                  '${sandbox.fileSystem.path.join(sandbox.root.path, 'missing')}${sandbox.fileSystem.path.separator}',
                 ]),
                 exitCode: 1,
                 message: contains('read root does not exist'),
@@ -263,7 +302,7 @@ void main() {
         test(
           'global Codex agents settings are not role declarations',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(
                 sandbox.project,
                 '.codex/config.toml',
@@ -272,7 +311,7 @@ void main() {
               );
               final occurrence = _single(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--format',
                     'json',
@@ -285,17 +324,19 @@ void main() {
         );
 
         test('automatic boundary search exhaustion is incomplete, not cwd fallback', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             var current = sandbox.project;
             for (var i = 0; i < 64; i++) {
-              current = Directory(p.join(current.path, 'd'));
+              current = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(current.path, 'd'),
+              );
             }
             current.createSync(recursive: true);
             _write(sandbox.project, '.git', 'gitdir: elsewhere');
             _expectFailure(
-              await _execute([
+              await _execute(sandbox, [
                 '--cwd',
-                '${current.path}${Platform.pathSeparator}',
+                '${current.path}${sandbox.fileSystem.path.separator}',
                 '--format',
                 'json',
               ]),
@@ -306,12 +347,12 @@ void main() {
         });
 
         test('coverage records actual ancestry and traversal depth', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             _write(sandbox.project, '.claude/agents/a/b/deep.md', _claude());
             final coverage =
                 _data(
                       _report(
-                        await _execute([
+                        await _execute(sandbox, [
                           ..._projectArgs(sandbox),
                           '--format',
                           'json',
@@ -325,7 +366,7 @@ void main() {
         });
 
         test('text includes every safe occurrence and coverage fact', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             _write(
               sandbox.project,
               '.codex/config.toml',
@@ -338,9 +379,9 @@ void main() {
             );
             final args = _projectArgs(sandbox);
             final report = _report(
-              await _execute([...args, '--format', 'json']),
+              await _execute(sandbox, [...args, '--format', 'json']),
             );
-            final text = _expectSuccess(await _execute(args)).output!;
+            final text = _expectSuccess(await _execute(sandbox, args)).output!;
             // Every map key, scalar and null is represented in plain text.
             void check(Object? value) {
               if (value is Map) {
@@ -363,21 +404,24 @@ void main() {
 
         test('intermediate native root and config links are refused', () async {
           for (final harness in ['claude', 'codex', 'pi']) {
-            await _withSandbox((sandbox) async {
-              final target = Directory(p.join(sandbox.root.path, 'outside'))
-                ..createSync();
+            await _withLocalSandbox((sandbox) async {
+              final target = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(sandbox.root.path, 'outside'),
+              )..createSync();
               _write(
                 target,
                 'agents/secret.${harness == 'codex' ? 'toml' : 'md'}',
                 'PRIVATE',
               );
-              final link = Link(p.join(sandbox.project.path, '.$harness'));
+              final link = sandbox.fileSystem.link(
+                sandbox.fileSystem.path.join(sandbox.project.path, '.$harness'),
+              );
               if (!_tryLink(link, target.path, directory: true)) {
                 markTestSkipped('directory symlink creation is unavailable');
                 return;
               }
               _expectFailure(
-                await _execute([
+                await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--harness',
                   harness,
@@ -395,7 +439,7 @@ void main() {
           test(
             'bound ${intermediate ? 'intermediate' : 'file'} links are unsupported occurrences',
             () async {
-              await _withSandbox((sandbox) async {
+              await _withLocalSandbox((sandbox) async {
                 final target = _write(
                   sandbox.root,
                   'outside/secret.toml',
@@ -406,8 +450,8 @@ void main() {
                   '.codex/config.toml',
                   '[agents.reviewer]\ndescription = "Reviews."\nconfig_file = "roles/reviewer.toml"\n',
                 );
-                final link = Link(
-                  p.join(
+                final link = sandbox.fileSystem.link(
+                  sandbox.fileSystem.path.join(
                     sandbox.project.path,
                     '.codex',
                     'roles',
@@ -424,7 +468,7 @@ void main() {
                   return;
                 }
                 final report = _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--harness',
                     'codex',
@@ -447,9 +491,14 @@ void main() {
         }
 
         test('nested read-root overlap does not repeat traversal or metadata reads', () async {
-          await _withSandbox((sandbox) async {
-            final nested = Directory(
-              p.join(sandbox.project.path, '.claude', 'agents', 'nested'),
+          await _withMemorySandbox((sandbox) async {
+            final nested = sandbox.fileSystem.directory(
+              sandbox.fileSystem.path.join(
+                sandbox.project.path,
+                '.claude',
+                'agents',
+                'nested',
+              ),
             );
             _write(nested, '.claude/agents/a.md', _claude());
             final args = [
@@ -459,12 +508,12 @@ void main() {
               '--format',
               'json',
             ];
-            final original = _report(await _execute(args));
+            final original = _report(await _execute(sandbox, args));
             final repeated = _report(
-              await _execute([
+              await _execute(sandbox, [
                 ...args,
                 '--read-root',
-                '${nested.path}${Platform.pathSeparator}',
+                '${nested.path}${sandbox.fileSystem.path.separator}',
               ]),
             );
             expect(_occurrences(repeated), _occurrences(original));
@@ -479,7 +528,7 @@ void main() {
         test(
           'same content at distinct locations and bound forms remains distinct',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(
                 sandbox.project,
                 '.claude/agents/a.md',
@@ -501,7 +550,11 @@ void main() {
                 '[agents.reviewer]\nconfig_file = "agents/a.toml"\n',
               );
               final report = _report(
-                await _execute([..._projectArgs(sandbox), '--format', 'json']),
+                await _execute(sandbox, [
+                  ..._projectArgs(sandbox),
+                  '--format',
+                  'json',
+                ]),
               );
               final occurrences = _occurrences(report);
               expect(occurrences, hasLength(4));
@@ -515,7 +568,7 @@ void main() {
         );
 
         test('all explicit directory overrides are validated before presentation filtering', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             for (final option in [
               '--home',
               '--claude-config-dir',
@@ -523,12 +576,12 @@ void main() {
               '--pi-agent-dir',
             ]) {
               _expectFailure(
-                await _execute([
+                await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--harness',
                   'pi',
                   option,
-                  '${p.join(sandbox.root.path, 'missing')}${Platform.pathSeparator}',
+                  '${sandbox.fileSystem.path.join(sandbox.root.path, 'missing')}${sandbox.fileSystem.path.separator}',
                 ]),
                 exitCode: 1,
                 message: contains('does not exist'),
@@ -540,21 +593,27 @@ void main() {
         test(
           'explicit linked native context is refused even when filtered out',
           () async {
-            await _withSandbox((sandbox) async {
-              final target = Directory(p.join(sandbox.root.path, 'target'))
-                ..createSync();
-              final linked = Link(p.join(sandbox.root.path, 'linked-config'));
+            await _withLocalSandbox((sandbox) async {
+              final target = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(sandbox.root.path, 'target'),
+              )..createSync();
+              final linked = sandbox.fileSystem.link(
+                sandbox.fileSystem.path.join(
+                  sandbox.root.path,
+                  'linked-config',
+                ),
+              );
               if (!_tryLink(linked, target.path, directory: true)) {
                 markTestSkipped('directory links are unavailable');
                 return;
               }
               _expectFailure(
-                await _execute([
+                await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--harness',
                   'pi',
                   '--codex-home',
-                  '${linked.path}${Platform.pathSeparator}',
+                  '${linked.path}${sandbox.fileSystem.path.separator}',
                 ]),
                 exitCode: 4,
                 message: contains('linked native path'),
@@ -564,9 +623,13 @@ void main() {
         );
 
         test('empty project succeeds without consulting a home', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             final report = _report(
-              await _execute([..._projectArgs(sandbox), '--format', 'json']),
+              await _execute(sandbox, [
+                ..._projectArgs(sandbox),
+                '--format',
+                'json',
+              ]),
             );
             expect(report, {
               'schemaVersion': 1,
@@ -601,7 +664,7 @@ void main() {
         test(
           'Claude and Codex project ancestors retain native identity',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(sandbox.project, '.git/keep', '');
               _write(
                 sandbox.project,
@@ -625,7 +688,7 @@ void main() {
               );
               final occurrences = _occurrences(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--format',
                     'json',
@@ -658,7 +721,7 @@ void main() {
 
         for (final markerType in ['file', 'directory']) {
           test('automatic project boundary uses a git $markerType', () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               if (markerType == 'file') {
                 _write(sandbox.project, '.git', 'gitdir: elsewhere');
               } else {
@@ -676,9 +739,9 @@ void main() {
               );
               final occurrences = _occurrences(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     '--cwd',
-                    '${sandbox.work.path}${Platform.pathSeparator}',
+                    '${sandbox.work.path}${sandbox.fileSystem.path.separator}',
                     '--format',
                     'json',
                   ]),
@@ -693,7 +756,7 @@ void main() {
         test(
           'automatic project boundary falls back to cwd without git',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(
                 sandbox.project,
                 '.claude/agents/outside.md',
@@ -702,9 +765,9 @@ void main() {
               _write(sandbox.work, '.claude/agents/near.md', _claude('near'));
               final occurrences = _occurrences(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     '--cwd',
-                    '${sandbox.work.path}${Platform.pathSeparator}',
+                    '${sandbox.work.path}${sandbox.fileSystem.path.separator}',
                     '--format',
                     'json',
                   ]),
@@ -720,7 +783,7 @@ void main() {
         test(
           'Pi distinguishes native, shared, and deeper provider candidates',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(sandbox.project, '.pi/agents/direct.md', _pi('direct'));
               _write(sandbox.project, '.pi/agents/nested/deep.md', _pi('deep'));
               _write(
@@ -735,7 +798,7 @@ void main() {
               );
               final occurrences = _occurrences(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--format',
                     'json',
@@ -764,7 +827,7 @@ void main() {
         );
 
         test('user and all scopes honor explicit native context overrides', () async {
-          await _withSandbox((sandbox) async {
+          await _withMemorySandbox((sandbox) async {
             _write(
               sandbox.root,
               'claude-config/agents/user.md',
@@ -784,17 +847,17 @@ void main() {
             final args = [
               ..._projectArgs(sandbox),
               '--home',
-              '${sandbox.home.path}${Platform.pathSeparator}',
+              '${sandbox.home.path}${sandbox.fileSystem.path.separator}',
               '--claude-config-dir',
-              '${p.join(sandbox.root.path, 'claude-config')}${Platform.pathSeparator}',
+              '${sandbox.fileSystem.path.join(sandbox.root.path, 'claude-config')}${sandbox.fileSystem.path.separator}',
               '--codex-home',
-              '${p.join(sandbox.root.path, 'codex-home')}${Platform.pathSeparator}',
+              '${sandbox.fileSystem.path.join(sandbox.root.path, 'codex-home')}${sandbox.fileSystem.path.separator}',
               '--pi-agent-dir',
-              '${p.join(sandbox.root.path, 'pi-home')}${Platform.pathSeparator}',
+              '${sandbox.fileSystem.path.join(sandbox.root.path, 'pi-home')}${sandbox.fileSystem.path.separator}',
             ];
             final user = _occurrences(
               _report(
-                await _execute([
+                await _execute(sandbox, [
                   ...args,
                   '--scope',
                   'user',
@@ -807,7 +870,13 @@ void main() {
             expect(user.map((value) => value['scope']).toSet(), {'user'});
             final all = _occurrences(
               _report(
-                await _execute([...args, '--scope', 'all', '--format', 'json']),
+                await _execute(sandbox, [
+                  ...args,
+                  '--scope',
+                  'all',
+                  '--format',
+                  'json',
+                ]),
               ),
             );
             expect(all, hasLength(4));
@@ -817,7 +886,7 @@ void main() {
             });
             final filtered = _occurrences(
               _report(
-                await _execute([
+                await _execute(sandbox, [
                   ...args,
                   '--scope',
                   'all',
@@ -836,14 +905,14 @@ void main() {
         test(
           'missing user native roots are empty rather than errors',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               final report = _report(
-                await _execute([
+                await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--scope',
                   'user',
                   '--home',
-                  '${sandbox.home.path}${Platform.pathSeparator}',
+                  '${sandbox.home.path}${sandbox.fileSystem.path.separator}',
                   '--format',
                   'json',
                 ]),
@@ -856,7 +925,7 @@ void main() {
         test(
           'Codex declarations share one config parse and preserve bindings',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(
                 sandbox.project,
                 '.codex/config.toml',
@@ -872,7 +941,7 @@ void main() {
               );
               final occurrences = _occurrences(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--format',
                     'json',
@@ -904,17 +973,18 @@ void main() {
         );
 
         test('read roots add only Claude project occurrences', () async {
-          await _withSandbox((sandbox) async {
-            final extra = Directory(p.join(sandbox.root.path, 'extra'))
-              ..createSync();
+          await _withMemorySandbox((sandbox) async {
+            final extra = sandbox.fileSystem.directory(
+              sandbox.fileSystem.path.join(sandbox.root.path, 'extra'),
+            )..createSync();
             _write(extra, '.claude/agents/extra.md', _claude('extra'));
             _write(extra, '.codex/agents/ignored.toml', _codex('ignored'));
             final occurrences = _occurrences(
               _report(
-                await _execute([
+                await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--read-root',
-                  '${extra.path}${Platform.pathSeparator}',
+                  '${extra.path}${sandbox.fileSystem.path.separator}',
                   '--format',
                   'json',
                 ]),
@@ -928,7 +998,7 @@ void main() {
         test(
           'collisions are per target and Pi comparison ignores case',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(
                 sandbox.project,
                 '.claude/agents/same.md',
@@ -946,7 +1016,11 @@ void main() {
                 _pi('worker'),
               );
               final report = _report(
-                await _execute([..._projectArgs(sandbox), '--format', 'json']),
+                await _execute(sandbox, [
+                  ..._projectArgs(sandbox),
+                  '--format',
+                  'json',
+                ]),
               );
               expect(_occurrences(report), hasLength(4));
               final collisions = _data(report)['collisions']! as List<Object?>;
@@ -962,7 +1036,7 @@ void main() {
         test(
           'malformed candidates remain visible without filename identity',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(
                 sandbox.project,
                 '.claude/agents/broken.md',
@@ -970,7 +1044,7 @@ void main() {
               );
               final occurrence = _single(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--format',
                     'json',
@@ -993,10 +1067,10 @@ void main() {
         test(
           'verify never fabricates a baseline or unchanged result',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(sandbox.project, '.claude/agents/a.md', _claude());
               final report = _report(
-                await _execute([
+                await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--verify',
                   '--format',
@@ -1013,21 +1087,26 @@ void main() {
         test(
           'invalid project context and repeated adapter isolation are honest',
           () async {
-            await _withSandbox((sandbox) async {
-              final outside = Directory(p.join(sandbox.root.path, 'outside'))
-                ..createSync();
+            await _withMemorySandbox((sandbox) async {
+              final outside = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(sandbox.root.path, 'outside'),
+              )..createSync();
               _expectFailure(
-                await _execute([
+                await _execute(sandbox, [
                   '--cwd',
-                  '${sandbox.work.path}${Platform.pathSeparator}',
+                  '${sandbox.work.path}${sandbox.fileSystem.path.separator}',
                   '--project-root',
-                  '${outside.path}${Platform.pathSeparator}',
+                  '${outside.path}${sandbox.fileSystem.path.separator}',
                 ]),
                 exitCode: 1,
                 message: contains('must contain'),
               );
               _write(sandbox.project, '.claude/agents/a.md', _claude());
-              final adapter = createExecutor().fake();
+              final adapter = createExecutor(
+                agentLifecycle: AgentLifecycleService(
+                  fileSystem: sandbox.fileSystem,
+                ),
+              ).fake();
               final first = _report(
                 await adapter.execute([
                   'agent',
@@ -1058,18 +1137,20 @@ void main() {
           'sixty-four ancestors are accepted and more are incomplete',
           () async {
             Future<void> exercise(int depth, {required int exitCode}) async {
-              await _withSandbox((sandbox) async {
+              await _withMemorySandbox((sandbox) async {
                 var current = sandbox.project;
                 for (var index = 0; index < depth; index++) {
-                  current = Directory(p.join(current.path, 'd'));
+                  current = sandbox.fileSystem.directory(
+                    sandbox.fileSystem.path.join(current.path, 'd'),
+                  );
                 }
                 current.createSync(recursive: true);
                 _write(sandbox.project, '.claude/agents/root.md', _claude());
-                final result = await _execute([
+                final result = await _execute(sandbox, [
                   '--cwd',
-                  '${current.path}${Platform.pathSeparator}',
+                  '${current.path}${sandbox.fileSystem.path.separator}',
                   '--project-root',
-                  '${sandbox.project.path}${Platform.pathSeparator}',
+                  '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
                   '--format',
                   'json',
                 ]);
@@ -1093,22 +1174,36 @@ void main() {
         test(
           'depth sixteen is accepted and deeper traversal is incomplete',
           () async {
-            await _withSandbox((sandbox) async {
-              final root = Directory(
-                p.join(sandbox.project.path, '.claude', 'agents'),
+            await _withMemorySandbox((sandbox) async {
+              final root = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(
+                  sandbox.project.path,
+                  '.claude',
+                  'agents',
+                ),
               );
               root.createSync(recursive: true);
               var current = root;
               for (var depth = 0; depth < 16; depth++) {
-                current = Directory(p.join(current.path, 'd$depth'));
+                current = sandbox.fileSystem.directory(
+                  sandbox.fileSystem.path.join(current.path, 'd$depth'),
+                );
               }
               _write(current, 'deep.md', _claude('deep'));
               _report(
-                await _execute([..._projectArgs(sandbox), '--format', 'json']),
+                await _execute(sandbox, [
+                  ..._projectArgs(sandbox),
+                  '--format',
+                  'json',
+                ]),
               );
-              Directory(p.join(current.path, 'too-deep')).createSync();
+              sandbox.fileSystem
+                  .directory(
+                    sandbox.fileSystem.path.join(current.path, 'too-deep'),
+                  )
+                  .createSync();
               _expectFailure(
-                await _execute(_projectArgs(sandbox)),
+                await _execute(sandbox, _projectArgs(sandbox)),
                 exitCode: 3,
                 message: contains('depth-16 budget'),
               );
@@ -1119,38 +1214,70 @@ void main() {
         test(
           'directory and entry budgets fail without partial output',
           () async {
-            await _withSandbox((sandbox) async {
-              final agents = Directory(
-                p.join(sandbox.project.path, '.claude', 'agents'),
+            await _withMemorySandbox((sandbox) async {
+              final agents = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(
+                  sandbox.project.path,
+                  '.claude',
+                  'agents',
+                ),
               )..createSync(recursive: true);
               for (var index = 0; index < 1999; index++) {
-                Directory(p.join(agents.path, 'd$index')).createSync();
+                sandbox.fileSystem
+                    .directory(
+                      sandbox.fileSystem.path.join(agents.path, 'd$index'),
+                    )
+                    .createSync();
               }
               final report = _report(
-                await _execute([..._projectArgs(sandbox), '--format', 'json']),
+                await _execute(sandbox, [
+                  ..._projectArgs(sandbox),
+                  '--format',
+                  'json',
+                ]),
               );
               expect((_data(report)['coverage']! as Map)['directories'], 2000);
-              Directory(p.join(agents.path, 'overflow')).createSync();
+              sandbox.fileSystem
+                  .directory(
+                    sandbox.fileSystem.path.join(agents.path, 'overflow'),
+                  )
+                  .createSync();
               _expectFailure(
-                await _execute(_projectArgs(sandbox)),
+                await _execute(sandbox, _projectArgs(sandbox)),
                 exitCode: 3,
                 message: contains('2000-directory budget'),
               );
             });
-            await _withSandbox((sandbox) async {
-              final agents = Directory(
-                p.join(sandbox.project.path, '.claude', 'agents'),
+            await _withMemorySandbox((sandbox) async {
+              final agents = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(
+                  sandbox.project.path,
+                  '.claude',
+                  'agents',
+                ),
               )..createSync(recursive: true);
               for (var index = 0; index < 20000; index++) {
-                File(p.join(agents.path, 'f$index.txt')).writeAsStringSync('');
+                sandbox.fileSystem
+                    .file(
+                      sandbox.fileSystem.path.join(agents.path, 'f$index.txt'),
+                    )
+                    .writeAsStringSync('');
               }
               final report = _report(
-                await _execute([..._projectArgs(sandbox), '--format', 'json']),
+                await _execute(sandbox, [
+                  ..._projectArgs(sandbox),
+                  '--format',
+                  'json',
+                ]),
               );
               expect((_data(report)['coverage']! as Map)['entries'], 20000);
-              File(p.join(agents.path, 'overflow.txt')).writeAsStringSync('');
+              sandbox.fileSystem
+                  .file(
+                    sandbox.fileSystem.path.join(agents.path, 'overflow.txt'),
+                  )
+                  .writeAsStringSync('');
               _expectFailure(
-                await _execute(_projectArgs(sandbox)),
+                await _execute(sandbox, _projectArgs(sandbox)),
                 exitCode: 3,
                 message: contains('20000-entry budget'),
               );
@@ -1160,18 +1287,24 @@ void main() {
         );
 
         test('aggregate metadata budget is independently enforced', () async {
-          await _withSandbox((sandbox) async {
-            final agents = Directory(
-              p.join(sandbox.project.path, '.codex', 'agents'),
+          await _withLocalSandbox((sandbox) async {
+            final agents = sandbox.fileSystem.directory(
+              sandbox.fileSystem.path.join(
+                sandbox.project.path,
+                '.codex',
+                'agents',
+              ),
             )..createSync(recursive: true);
             for (var index = 0; index < 64; index++) {
-              final file = File(p.join(agents.path, '$index.toml'));
+              final file = sandbox.fileSystem.file(
+                sandbox.fileSystem.path.join(agents.path, '$index.toml'),
+              );
               final handle = file.openSync(mode: FileMode.write);
               handle.truncateSync(1048576);
               handle.closeSync();
             }
             _report(
-              await _execute([
+              await _execute(sandbox, [
                 ..._projectArgs(sandbox),
                 '--harness',
                 'codex',
@@ -1179,12 +1312,18 @@ void main() {
                 'json',
               ]),
             );
-            final file = File(p.join(agents.path, 'overflow.toml'));
+            final file = sandbox.fileSystem.file(
+              sandbox.fileSystem.path.join(agents.path, 'overflow.toml'),
+            );
             final handle = file.openSync(mode: FileMode.write);
             handle.truncateSync(1048576);
             handle.closeSync();
             _expectFailure(
-              await _execute([..._projectArgs(sandbox), '--harness', 'codex']),
+              await _execute(sandbox, [
+                ..._projectArgs(sandbox),
+                '--harness',
+                'codex',
+              ]),
               exitCode: 3,
               message: contains('64 MiB metadata-read budget'),
             );
@@ -1194,15 +1333,15 @@ void main() {
         test(
           'malformed declaring config and over-cap candidates are incomplete',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(sandbox.project, '.codex/config.toml', '[agents');
               _expectFailure(
-                await _execute(_projectArgs(sandbox)),
+                await _execute(sandbox, _projectArgs(sandbox)),
                 exitCode: 3,
                 message: contains('TOML'),
               );
             });
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               final file = _write(
                 sandbox.project,
                 '.claude/agents/large.md',
@@ -1212,7 +1351,7 @@ void main() {
               handle.truncateSync(1048577);
               handle.closeSync();
               _expectFailure(
-                await _execute(_projectArgs(sandbox)),
+                await _execute(sandbox, _projectArgs(sandbox)),
                 exitCode: 3,
                 message: contains('1048576-byte budget'),
               );
@@ -1224,19 +1363,21 @@ void main() {
         test(
           'Pi-only inventory does not scan a Claude/Codex ancestor chain',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               var current = sandbox.work;
               for (var index = 0; index < 64; index++) {
-                current = Directory(p.join(current.path, 'deeper'));
+                current = sandbox.fileSystem.directory(
+                  sandbox.fileSystem.path.join(current.path, 'deeper'),
+                );
               }
               current.createSync(recursive: true);
               _write(sandbox.project, '.pi/agents/worker.md', _pi());
               final report = _report(
-                await _execute([
+                await _execute(sandbox, [
                   '--cwd',
-                  '${current.path}${Platform.pathSeparator}',
+                  '${current.path}${sandbox.fileSystem.path.separator}',
                   '--project-root',
-                  '${sandbox.project.path}${Platform.pathSeparator}',
+                  '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
                   '--harness',
                   'pi',
                   '--format',
@@ -1259,13 +1400,20 @@ void main() {
         test(
           'deeper linked Pi candidates retain provider-specific form',
           () async {
-            await _withSandbox((sandbox) async {
-              final agents = Directory(
-                p.join(sandbox.project.path, '.pi', 'agents', 'nested'),
+            await _withLocalSandbox((sandbox) async {
+              final agents = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(
+                  sandbox.project.path,
+                  '.pi',
+                  'agents',
+                  'nested',
+                ),
               )..createSync(recursive: true);
               final target = _write(sandbox.root, 'target.md', _pi('target'));
               if (!_tryLink(
-                Link(p.join(agents.path, 'linked.md')),
+                sandbox.fileSystem.link(
+                  sandbox.fileSystem.path.join(agents.path, 'linked.md'),
+                ),
                 target.path,
               )) {
                 markTestSkipped('file symlink creation is unavailable');
@@ -1273,7 +1421,7 @@ void main() {
               }
               final occurrence = _single(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--harness',
                     'pi',
@@ -1295,9 +1443,13 @@ void main() {
         test(
           'linked candidates are visible and linked roots are refused',
           () async {
-            await _withSandbox((sandbox) async {
-              final agents = Directory(
-                p.join(sandbox.project.path, '.claude', 'agents'),
+            await _withLocalSandbox((sandbox) async {
+              final agents = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(
+                  sandbox.project.path,
+                  '.claude',
+                  'agents',
+                ),
               )..createSync(recursive: true);
               final target = _write(
                 sandbox.root,
@@ -1305,14 +1457,18 @@ void main() {
                 _claude('target'),
               );
               try {
-                Link(p.join(agents.path, 'linked.md')).createSync(target.path);
+                sandbox.fileSystem
+                    .link(
+                      sandbox.fileSystem.path.join(agents.path, 'linked.md'),
+                    )
+                    .createSync(target.path);
               } on FileSystemException {
                 markTestSkipped('file symlink creation is unavailable');
                 return;
               }
               final occurrence = _single(
                 _report(
-                  await _execute([
+                  await _execute(sandbox, [
                     ..._projectArgs(sandbox),
                     '--format',
                     'json',
@@ -1327,12 +1483,19 @@ void main() {
               });
               expect(jsonEncode(occurrence), isNot(contains('PRIVATE-BODY')));
             });
-            await _withSandbox((sandbox) async {
-              final actual = Directory(
-                p.join(sandbox.root.path, 'actual-agents'),
+            await _withLocalSandbox((sandbox) async {
+              final actual = sandbox.fileSystem.directory(
+                sandbox.fileSystem.path.join(
+                  sandbox.root.path,
+                  'actual-agents',
+                ),
               )..createSync();
-              final linked = Link(
-                p.join(sandbox.project.path, '.claude', 'agents'),
+              final linked = sandbox.fileSystem.link(
+                sandbox.fileSystem.path.join(
+                  sandbox.project.path,
+                  '.claude',
+                  'agents',
+                ),
               );
               linked.parent.createSync(recursive: true);
               try {
@@ -1342,7 +1505,7 @@ void main() {
                 return;
               }
               _expectFailure(
-                await _execute(_projectArgs(sandbox)),
+                await _execute(sandbox, _projectArgs(sandbox)),
                 exitCode: 4,
                 message: contains('linked native path'),
               );
@@ -1353,7 +1516,7 @@ void main() {
         test(
           'inert hook and MCP declarations do not execute or leak values',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withMemorySandbox((sandbox) async {
               _write(
                 sandbox.project,
                 '.claude/agents/inert.md',
@@ -1365,7 +1528,11 @@ void main() {
                 ),
               );
               final report = _report(
-                await _execute([..._projectArgs(sandbox), '--format', 'json']),
+                await _execute(sandbox, [
+                  ..._projectArgs(sandbox),
+                  '--format',
+                  'json',
+                ]),
               );
               expect(_occurrences(report), hasLength(1));
               expect(
@@ -1377,7 +1544,13 @@ void main() {
                 isNot(contains('touch EXECUTED-MARKER')),
               );
               expect(
-                File(p.join(sandbox.project.path, 'EXECUTED-MARKER'))
+                sandbox.fileSystem
+                    .file(
+                      sandbox.fileSystem.path.join(
+                        sandbox.project.path,
+                        'EXECUTED-MARKER',
+                      ),
+                    )
                     .existsSync(),
                 isFalse,
               );
@@ -1394,7 +1567,7 @@ void main() {
               );
               return;
             }
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               final file = _write(
                 sandbox.project,
                 '.claude/agents/denied.md',
@@ -1407,7 +1580,7 @@ void main() {
               }
               try {
                 _expectFailure(
-                  await _execute(_projectArgs(sandbox)),
+                  await _execute(sandbox, _projectArgs(sandbox)),
                   exitCode: 3,
                   message: contains('definition'),
                 );
@@ -1419,7 +1592,7 @@ void main() {
         );
 
         test('success and failure preserve every sandbox entry and close handles', () async {
-          await _withSandbox((sandbox) async {
+          await _withLocalSandbox((sandbox) async {
             final file = _write(
               sandbox.project,
               '.claude/agents/a.md',
@@ -1428,26 +1601,37 @@ void main() {
             _write(sandbox.root, 'sentinel.txt', 'keep');
             final before = _snapshot(sandbox.root);
             _report(
-              await _execute([..._projectArgs(sandbox), '--format', 'json']),
+              await _execute(sandbox, [
+                ..._projectArgs(sandbox),
+                '--format',
+                'json',
+              ]),
             );
             file.renameSync('${file.path}.renamed');
-            File('${file.path}.renamed').renameSync(file.path);
+            sandbox.fileSystem
+                .file('${file.path}.renamed')
+                .renameSync(file.path);
             file.writeAsStringSync('broken');
             _report(
-              await _execute([..._projectArgs(sandbox), '--format', 'json']),
+              await _execute(sandbox, [
+                ..._projectArgs(sandbox),
+                '--format',
+                'json',
+              ]),
             );
             _expectFailure(
-              await _execute([
+              await _execute(sandbox, [
                 '--scope',
                 'user',
                 ..._projectArgs(sandbox),
                 '--home',
-                '${p.join(sandbox.root.path, 'missing-home')}${Platform.pathSeparator}',
+                '${sandbox.fileSystem.path.join(sandbox.root.path, 'missing-home')}${sandbox.fileSystem.path.separator}',
               ]),
               exitCode: 1,
               message: contains('home directory does not exist'),
             );
-            final help = _expectSuccess(await _execute(['--help'])).output!;
+            final help = _expectSuccess(await _execute(sandbox, ['--help']))
+                .output!;
             expect(
               help,
               allOf(
@@ -1465,7 +1649,7 @@ void main() {
         test(
           'production JSON and text inventory match explicit isolated context',
           () async {
-            await _withSandbox((sandbox) async {
+            await _withLocalSandbox((sandbox) async {
               _write(sandbox.project, '.pi/agents/a.md', _pi('production'));
               final environment = isolatedEnvironment(sandbox.root);
               Future<CliProcessResult> run(List<String> arguments) =>
@@ -1479,7 +1663,7 @@ void main() {
                   );
               final json = await run([
                 '--project-root',
-                '${sandbox.project.path}${Platform.pathSeparator}',
+                '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
                 '--format',
                 'json',
               ]);
@@ -1513,15 +1697,15 @@ void main() {
                 _codex('env-codex'),
               );
               _write(sandbox.root, 'env-pi/agents/env.md', _pi('env-pi'));
-              environment['CLAUDE_CONFIG_DIR'] = p.join(
+              environment['CLAUDE_CONFIG_DIR'] = sandbox.fileSystem.path.join(
                 sandbox.root.path,
                 'env-claude',
               );
-              environment['CODEX_HOME'] = p.join(
+              environment['CODEX_HOME'] = sandbox.fileSystem.path.join(
                 sandbox.root.path,
                 'env-codex',
               );
-              environment['PI_CODING_AGENT_DIR'] = p.join(
+              environment['PI_CODING_AGENT_DIR'] = sandbox.fileSystem.path.join(
                 sandbox.root.path,
                 'env-pi',
               );
@@ -1555,7 +1739,7 @@ void main() {
 
       group('inspect', () {
         test('global Codex agents settings are not selectable roles', () async {
-          await _withSandbox((sandbox) async {
+          await _withLocalSandbox((sandbox) async {
             _write(
               sandbox.project,
               '.codex/config.toml',
@@ -1570,7 +1754,7 @@ void main() {
                 'operation': 'inspect',
                 'source': {
                   'kind': 'codex-role',
-                  'configFile': p.join(
+                  'configFile': sandbox.fileSystem.path.join(
                     sandbox.project.path,
                     '.codex',
                     'config.toml',
@@ -1612,7 +1796,7 @@ void main() {
           test(
             '${intermediate ? 'intermediate' : 'file'} role definition links refuse inspection',
             () async {
-              await _withSandbox((sandbox) async {
+              await _withLocalSandbox((sandbox) async {
                 final target = _write(
                   sandbox.root,
                   'outside/secret.toml',
@@ -1623,8 +1807,8 @@ void main() {
                   '.codex/config.toml',
                   '[agents.reviewer]\ndescription = "Reviews."\nconfig_file = "roles/reviewer.toml"\n',
                 );
-                final link = Link(
-                  p.join(
+                final link = sandbox.fileSystem.link(
+                  sandbox.fileSystem.path.join(
                     sandbox.project.path,
                     '.codex',
                     'roles',
@@ -1648,7 +1832,7 @@ void main() {
                     'operation': 'inspect',
                     'source': {
                       'kind': 'codex-role',
-                      'configFile': p.join(
+                      'configFile': sandbox.fileSystem.path.join(
                         sandbox.project.path,
                         '.codex',
                         'config.toml',
