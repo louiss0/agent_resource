@@ -7,6 +7,24 @@ Agent Resource manages resources consumed by AI coding harnesses while preservin
 **Resource**:
 A skill, prompt, agent definition, MCP server configuration, plugin, or context file that a coding harness can consume.
 
+**Prompt**:
+Reusable instructions intended for explicit user invocation rather than automatic model selection through a harness's normal skill-invocation mechanism. A Prompt's argument and execution semantics depend on its applicable profile.
+
+**Skill-backed prompt**:
+A skill recognized as a Prompt for a selected Harness through that Harness's native controls disabling automatic model invocation, without a separate Agent Resource classification label.
+
+**Global prompt**:
+A harness-neutral, Skill-backed prompt intended for cross-project use and configured for manual-only invocation by the supported consuming harnesses. A harness-specific prompt installed at user scope is not, by scope alone, a Global prompt.
+
+**Global-compatible prompt form**:
+A Prompt representation documented to support shared manual-only use across the supported Harnesses, independently of its installation scope or actual cross-project availability.
+
+**Harness-specific prompt**:
+A Prompt authored for an explicitly selected harness's native conventions and supported fields, independently of whether it is available in one project or across projects.
+
+**Native prompt template**:
+A harness-native instruction template expanded on explicit user invocation, distinct from a Skill-backed prompt and subject to its own substitution semantics.
+
 **Harness**:
 An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used.
 
@@ -54,6 +72,12 @@ A retained prior state of a managed installation that can support verified resto
 
 **Managed replacement**:
 Replacing the owned entry at a recorded installation location while continuing the same managed installation identity.
+
+**Conversion lineage**:
+The recorded relationship between a source resource and its converted successor, preserving their history without treating distinct installation locations or native forms as one managed identity.
+
+**Conversion restore**:
+An explicitly reviewed reversal of a completed conversion using retained source evidence, distinct from recovering an interrupted conversion or automatically adopting an unmanaged resource.
 
 **Mutation plan**:
 A reviewable proposal for changing a resource installation and its management records, based on observations rather than reserved filesystem state or permission to bypass safety checks.
