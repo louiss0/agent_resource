@@ -568,7 +568,8 @@ interface class AgentAuthoringService {
         _referenceDecisionFindings(
           inherited.references,
           candidateInspection.references,
-          request,
+          request.decisions,
+          request.references,
         ),
       );
     }
@@ -906,7 +907,8 @@ Map<String, Object?> _nativeFields(AgentInspectionReport report) =>
 List<Map<String, Object?>> _referenceDecisionFindings(
   List<Map<String, Object?>> source,
   List<Map<String, Object?>> target,
-  AuthoringRequest request,
+  Set<String> decisions,
+  Map<String, String> mappings,
 ) {
   Map<String, int> counts(Iterable<Map<String, Object?>> references) {
     final result = <String, int>{};
@@ -938,7 +940,7 @@ List<Map<String, Object?>> _referenceDecisionFindings(
 
   final findings = <Map<String, Object?>>[];
   void requireDecision(String decision, String impact) {
-    if (!request.decisions.contains(decision)) {
+    if (!decisions.contains(decision)) {
       findings.add(
         _finding(
           'REFERENCE_DECISION_REQUIRED',
@@ -958,7 +960,7 @@ List<Map<String, Object?>> _referenceDecisionFindings(
     }
   }
 
-  for (final mapping in request.references.entries) {
+  for (final mapping in mappings.entries) {
     final separator = mapping.key.indexOf(':');
     if (separator <= 0) continue;
     final kind = mapping.key.substring(0, separator);
@@ -977,7 +979,7 @@ List<Map<String, Object?>> _referenceDecisionFindings(
       if (!targetKey.startsWith('$kind:')) continue;
       final targetName = targetKey.substring(kind.length + 1);
       final decision = 'reference:$sourceKey:$targetName';
-      if (!request.decisions.contains(decision)) continue;
+      if (!decisions.contains(decision)) continue;
       consume(removed, sourceKey);
       consume(added, targetKey);
       break;
@@ -991,6 +993,17 @@ List<Map<String, Object?>> _referenceDecisionFindings(
   }
   return findings;
 }
+
+/// Reference changes that still require a deliberate per-reference choice.
+///
+/// The shared authoring plan and the legacy Agent authoring route share this
+/// accounting so both surfaces agree on what an explicit decision means.
+List<Map<String, Object?>> authoringReferenceDecisionFindings(
+  List<Map<String, Object?>> source,
+  List<Map<String, Object?>> target,
+  Set<String> decisions,
+  Map<String, String> mappings,
+) => _referenceDecisionFindings(source, target, decisions, mappings);
 
 bool _requiresFieldDecision(String code) => const <String>{
   'UNKNOWN_FIELD',

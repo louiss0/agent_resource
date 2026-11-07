@@ -12,6 +12,7 @@ import 'package:yaml/src/parser.dart' as yaml_parser;
 // ignore: implementation_imports
 import 'package:yaml/src/event.dart' as yaml_event;
 
+import '../prompt_resource_path_scanner.dart';
 import '../skill_files.dart';
 
 enum PromptForm { skill, template }
@@ -60,6 +61,45 @@ interface class const PromptInspectionService({
 }) {
   static const _maxFile = 1048576;
   static const _maxYaml = 65536;
+
+  /// The native frontmatter fields accepted for one form and consumer.
+  ///
+  /// The set is the native surface of that form. A field outside it is
+  /// diagnosed instead of being silently carried as portable.
+  static Set<String> allowedFields(PromptForm form, PromptConsumer consumer) {
+    if (form == PromptForm.template) {
+      return const <String>{'description', 'argument-hint'};
+    }
+    if (consumer == PromptConsumer.claude) {
+      return const <String>{
+        'name',
+        'description',
+        'license',
+        'compatibility',
+        'metadata',
+        'allowed-tools',
+        'disallowed-tools',
+        'disable-model-invocation',
+        'user-invocable',
+        'argument-hint',
+        'arguments',
+        'model',
+        'context',
+        'agent',
+        'hooks',
+        'effort',
+      };
+    }
+    return const <String>{
+      'name',
+      'description',
+      'license',
+      'compatibility',
+      'metadata',
+      'allowed-tools',
+      'disable-model-invocation',
+    };
+  }
 
   Future<PromptInspection> inspect(
     String source, {
@@ -515,36 +555,7 @@ interface class const PromptInspectionService({
         add('TEMPLATE_EXTENSION', 'Pi templates must be Markdown files.', path);
       }
       if (front != null) {
-        final allowed = form == PromptForm.template
-            ? const {'description', 'argument-hint'}
-            : profile == PromptConsumer.claude
-            ? const {
-                'name',
-                'description',
-                'license',
-                'compatibility',
-                'metadata',
-                'allowed-tools',
-                'disallowed-tools',
-                'disable-model-invocation',
-                'user-invocable',
-                'argument-hint',
-                'arguments',
-                'model',
-                'context',
-                'agent',
-                'hooks',
-                'effort',
-              }
-            : const {
-                'name',
-                'description',
-                'license',
-                'compatibility',
-                'metadata',
-                'allowed-tools',
-                'disable-model-invocation',
-              };
+        final allowed = allowedFields(form, profile);
         for (final key in fields.keys) {
           if (!allowed.contains(key)) {
             add('UNKNOWN_FIELD', 'Unsupported native field.', marker);
@@ -666,15 +677,11 @@ interface class const PromptInspectionService({
           }
         }
       }
-      final blocker = RegExp(
-        r'(^|(?<=[/\\\s(<\[\x60\x27\x22=:,;]))(references|scripts|assets)[/\\]',
-        multiLine: true,
-      );
       for (final match
           in classification == PromptClassification.prompt
-              ? blocker.allMatches(body)
-              : <RegExpMatch>[]) {
-        final offset = match.start;
+              ? PromptResourcePathScanner.scan(body)
+              : const <BlockedResourcePath>[]) {
+        final offset = match.matchStart;
         final before = body.substring(0, offset);
         final line = bodyLine + '\n'.allMatches(before).length;
         final last = before.lastIndexOf('\n');

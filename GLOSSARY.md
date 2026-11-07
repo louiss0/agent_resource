@@ -25,6 +25,15 @@ A Prompt authored for an explicitly selected harness's native conventions and su
 **Native prompt template**:
 A harness-native instruction template expanded on explicit user invocation, distinct from a Skill-backed prompt and subject to its own substitution semantics.
 
+**Named native field**:
+A documented native field of one resource kind and profile, supplied by name to a shared authoring operation. An unsupported field is refused with the supported names rather than ignored.
+
+**Supported native field matrix**:
+The documented set of named native fields for one resource kind and profile, with their value shapes, requiredness and supported clearing or inheritance. Accepting one field name across profiles does not establish equivalent semantics.
+
+**Authoring plan**:
+A read-only proposal for a native authoring or conversion operation, carrying the proposed native content, the reviewed observations and a stable plan identity. Building one writes nothing.
+
 **Harness**:
 An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used.
 
