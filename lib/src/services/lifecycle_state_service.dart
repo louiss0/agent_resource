@@ -48,7 +48,11 @@ enum ArtifactKind {
   skillCopy('skill-copy'),
   skillLink('skill-link'),
   skillCanonical('skill-canonical'),
-  agentFile('agent-file');
+  agentFile('agent-file'),
+
+  /// A tracked Pi prompt template. It exists only for an approved tracked
+  /// conversion; there is no generic Pi prompt installation.
+  promptTemplate('prompt-template');
 
   const ArtifactKind(this.wireName);
   final String wireName;
@@ -606,6 +610,7 @@ final class BackupRecord {
               ArtifactKind.skillLink => 'artifact-link.json',
               ArtifactKind.agentFile =>
                 'artifact${path.extension(_string(map, 'location'))}',
+              ArtifactKind.promptTemplate => 'artifact.md',
             }) {
       throw const FormatException('Backup artifact path is not manager-owned.');
     }
@@ -4083,6 +4088,7 @@ interface class LifecycleStateService {
       ArtifactKind.skillLink => 'artifact-link.json',
       ArtifactKind.agentFile =>
         'artifact${io.fs.path.extension(record.location)}',
+      ArtifactKind.promptTemplate => 'artifact.md',
     });
     _makePrivate(directory);
     if (record.kind == ArtifactKind.skillLink) {
