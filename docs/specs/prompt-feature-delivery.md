@@ -81,6 +81,20 @@ this planning task closes.
 | 11 | [Integrate strict Skill to Prompt and Prompt to Agent workflows](https://github.com/louiss0/agent_resource/issues/88) | [Integrate guided edit clone and compose authoring workflows](https://github.com/louiss0/agent_resource/issues/86); [Implement reviewed restore of completed native conversions](https://github.com/louiss0/agent_resource/issues/94) |
 | 12 | [Verify and document the complete plain-text Prompt feature set](https://github.com/louiss0/agent_resource/issues/72) | [Migrate Agent conversion to guided native flags and text](https://github.com/louiss0/agent_resource/issues/87); [Integrate strict Skill to Prompt and Prompt to Agent workflows](https://github.com/louiss0/agent_resource/issues/88); [Prepare explicit Codex bound-role text authoring for atomic CLI migration](https://github.com/louiss0/agent_resource/issues/89); [Implement reviewed restore of completed native conversions](https://github.com/louiss0/agent_resource/issues/94); [Integrate supported Prompt pack installation and Skill lifecycle compatibility](https://github.com/louiss0/agent_resource/issues/71) |
 
+## Delivered slices
+
+Two slices of this graph are implemented locally. Both keep their changes
+local until an explicit commit authorization is given, and neither claims
+harness runtime verification.
+
+| Slice | Issue | Local commit | Delivery |
+| --- | --- | --- | --- |
+| Reconcile native Prompt views with the final harness-relative contract | [#82](https://github.com/louiss0/agent_resource/issues/82) | `c98c96a` | `lib/src/services/prompt_inspection_service.dart` with harness-relative views; `docs/specs/native-prompt-inspection.md` |
+| Implement shared native text inputs and read-only authoring plans | [#67](https://github.com/louiss0/agent_resource/issues/67) | `52f7b72` | `lib/src/authoring/`, `lib/src/services/authoring_plan_service.dart`; `docs/specs/shared-native-authoring-inputs.md` |
+
+The remaining rows stay pending an explicit implementation request, one
+bounded delivery ticket at a time.
+
 ### Gates that must not be weakened
 
 1. **Correct views first.** Input, inspection and pack work must not build on the
