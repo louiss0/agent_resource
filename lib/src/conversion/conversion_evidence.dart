@@ -53,6 +53,8 @@ enum ConversionEvidencePhase {
   prepared,
   published,
   committed,
+  reconciled,
+  completed,
   rolledBack,
   recoveryRequired,
 }
@@ -617,9 +619,11 @@ final class ConversionParticipant {
   /// A copy of the participant with the selected observations replaced.
   ConversionParticipant copyWith({
     ConversionParticipantIntent? intent,
-    ConversionIdentity? identity,
+    ConversionOwnership? ownershipBefore,
     ConversionOwnership? ownershipAfter,
+    ConversionMembership? membershipBefore,
     ConversionMembership? membershipAfter,
+    ConversionIdentity? identity,
     ConversionBaseline? baseline,
     ConversionPayloadReference? payload,
     ConversionPublicationEvidence? staging,
@@ -635,9 +639,9 @@ final class ConversionParticipant {
     nativeRoot: nativeRoot,
     scope: scope,
     identity: identity ?? this.identity,
-    ownershipBefore: ownershipBefore,
+    ownershipBefore: ownershipBefore ?? this.ownershipBefore,
     ownershipAfter: ownershipAfter ?? this.ownershipAfter,
-    membershipBefore: membershipBefore,
+    membershipBefore: membershipBefore ?? this.membershipBefore,
     membershipAfter: membershipAfter ?? this.membershipAfter,
     baseline: baseline ?? this.baseline,
     payload: payload ?? this.payload,
@@ -770,6 +774,26 @@ final class ConversionEvidence {
         .convert(utf8.encode(jsonEncode(_canonicalJson(body))))
         .toString();
   }
+
+  /// A copy of the evidence with later transaction observations.
+  ConversionEvidence copyWith({
+    ConversionEvidencePhase? phase,
+    ConversionParticipant? source,
+    ConversionParticipant? target,
+  }) => ConversionEvidence(
+    transactionId: transactionId,
+    operation: operation,
+    phase: phase ?? this.phase,
+    createdScope: createdScope,
+    source: source ?? this.source,
+    target: target ?? this.target,
+    approvals: approvals,
+    observations: observations,
+  );
+
+  /// A copy of the evidence in another phase.
+  ConversionEvidence withPhase(ConversionEvidencePhase phase) =>
+      copyWith(phase: phase);
 
   /// The serialized evidence document.
   Map<String, Object?> toJson() => <String, Object?>{

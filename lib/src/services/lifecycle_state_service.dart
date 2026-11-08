@@ -16,6 +16,12 @@ import 'native_link_service.dart';
 part 'lifecycle_canonical.dart';
 
 const managementSchemaVersion = 1;
+
+/// The private directories a state root may hold beside its ledger.
+const Set<String> _privateStateDirectories = <String>{
+  'coordination',
+  'conversions',
+};
 const maxManagementDocumentBytes = 8 * 1024 * 1024;
 const maxManagementDepth = 32;
 const maxManagementNodes = 100000;
@@ -958,6 +964,133 @@ interface class LifecycleStateService {
   LifecycleStateService({this.io = const LifecycleIO()});
 
   final LifecycleIO io;
+
+  /// A new installation identifier.
+  String newInstallationId() => _newId('ins');
+
+  /// Makes one management directory private.
+  void protectDirectory(String path) => _makePrivate(path);
+
+  /// Writes one protected management document.
+  ///
+  /// The directory is private and the bounded document is flushed by the IO
+  /// seam. Conversion phase changes replace the same document, so this method
+  /// deliberately does not depend on platform-specific rename-overwrite
+  /// behavior.
+  void writeProtectedDocument(String path, List<int> bytes) {
+    if (bytes.length > maxManagementDocumentBytes) {
+      throw MambaException('Management update exceeds 8 MiB.', exitCode: 3);
+    }
+    _chargeManagementBytes(bytes.length, Zone.current);
+    final directory = io.fs.path.dirname(path);
+    io.createDirectory(directory);
+    _makePrivate(directory);
+    io.write(path, bytes);
+  }
+
+  /// Applies one coordinated ownership transition.
+  ///
+  /// The target installation and the retirement of the source installation
+  /// are written in one ledger write per scope, so a partial transition
+  /// cannot be observed inside one scope. The transition is refused when the
+  /// ledger does not match the recorded evidence: an unknown source, a
+  /// source that is not live, a target that already owns another live
+  /// installation and an overlapping live location are all refused.
+  Future<void> applyCoordinatedTransition({
+    required LifecycleContext context,
+    required InstallationRecord? target,
+    required InstallationRecord? retiredSource,
+    LifecycleScope? retiredSourceScope,
+  }) async {
+    final sourceScope = retiredSourceScope;
+    final crossScopeSource =
+        sourceScope != null &&
+        sourceScope != context.scope &&
+        retiredSource != null;
+    _applyTransitionToLedger(
+      context.stateRoot(),
+      target: target,
+      retiredSource: crossScopeSource ? null : retiredSource,
+    );
+    if (crossScopeSource) {
+      _applyTransitionToLedger(
+        context.stateRoot(sourceScope),
+        target: null,
+        retiredSource: retiredSource,
+      );
+    }
+  }
+
+  void _applyTransitionToLedger(
+    String state, {
+    required InstallationRecord? target,
+    required InstallationRecord? retiredSource,
+  }) {
+    final records = _readRecords(state);
+    final updated = <InstallationRecord>[...records];
+    final sameIdentity =
+        target != null &&
+        retiredSource != null &&
+        target.installationId == retiredSource.installationId;
+    if (retiredSource != null && !sameIdentity) {
+      final index = updated.indexWhere(
+        (record) => record.installationId == retiredSource.installationId,
+      );
+      if (index < 0) {
+        throw MambaException(
+          'The source installation is not recorded in the selected scope.',
+          exitCode: 4,
+        );
+      }
+      if (updated[index].lifecycle != 'live') {
+        if (jsonEncode(updated[index].toJson()) ==
+            jsonEncode(retiredSource.toJson())) {
+          // Forward completion may replay after this scope already committed.
+        } else {
+          throw MambaException(
+            'The source installation is not live in the selected scope.',
+            exitCode: 4,
+          );
+        }
+      } else {
+        updated[index] = retiredSource;
+      }
+    }
+    if (target != null) {
+      final existing = updated.indexWhere(
+        (record) => record.installationId == target.installationId,
+      );
+      if (existing >= 0) {
+        updated[existing] = target;
+      } else {
+        updated.add(target);
+      }
+    }
+    final locations = <String>{};
+    for (final record in updated) {
+      if (record.lifecycle != 'live') continue;
+      if (!locations.add(_pathKey(record.location))) {
+        throw MambaException(
+          'The coordinated transition would overlap a live installation.',
+          exitCode: 4,
+        );
+      }
+    }
+    _writeManagementJson(
+      io.fs.path.join(state, 'installations.json'),
+      <String, Object?>{
+        'schemaVersion': managementSchemaVersion,
+        'installations': [for (final record in updated) record.toJson()],
+      },
+    );
+  }
+
+  /// Runs a coordinated operation under the lifecycle lock domain.
+  Future<T> runCoordinated<T>({
+    required LifecycleContext context,
+    required String location,
+    required Future<T> Function() body,
+  }) => _serialized(context, location, body);
 
   /// Stages a proposed native source on the destination volume only after
   /// private preparation has been established. The source is temporary input
@@ -4778,7 +4911,11 @@ interface class LifecycleStateService {
     if (io.type(state, followLinks: false) != FileSystemEntityType.notFound) {
       final unexpected = io
           .list(state)
-          .where((entry) => io.fs.path.basename(entry.path) != 'coordination');
+          .where(
+            (entry) => !_privateStateDirectories.contains(
+              io.fs.path.basename(entry.path),
+            ),
+          );
       if (unexpected.isNotEmpty) {
         throw MambaException(
           'Installation ownership evidence is missing from non-empty state: $path',
@@ -4800,7 +4937,11 @@ interface class LifecycleStateService {
       }
       final unexpected = io
           .list(state)
-          .where((entry) => io.fs.path.basename(entry.path) != 'coordination');
+          .where(
+            (entry) => !_privateStateDirectories.contains(
+              io.fs.path.basename(entry.path),
+            ),
+          );
       if (unexpected.isEmpty) return <InstallationRecord>[];
       throw MambaException(
         'Installation ownership evidence is missing: $path',
