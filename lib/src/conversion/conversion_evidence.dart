@@ -780,6 +780,7 @@ final class ConversionEvidence {
     ConversionEvidencePhase? phase,
     ConversionParticipant? source,
     ConversionParticipant? target,
+    Map<String, Object?>? observations,
   }) => ConversionEvidence(
     transactionId: transactionId,
     operation: operation,
@@ -788,7 +789,7 @@ final class ConversionEvidence {
     source: source ?? this.source,
     target: target ?? this.target,
     approvals: approvals,
-    observations: observations,
+    observations: observations ?? this.observations,
   );
 
   /// A copy of the evidence in another phase.

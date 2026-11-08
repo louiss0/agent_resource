@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:mamba/mamba.dart';
 
 import '../conversion/conversion_evidence.dart';
+import '../skill_files.dart';
 import 'conversion_evidence_service.dart';
 import 'lifecycle_state_service.dart';
 
@@ -103,11 +104,12 @@ interface class ConversionCoordinator {
   /// Runs the coordinated transition.
   Future<ConversionTransitionOutcome> execute(
     ConversionTransitionRequest request,
-  ) {
+  ) async {
     final context = LifecycleContext.resolve(
       request.options,
       fileSystem: _io.fs,
     );
+    _verifyPaths(context, request.source, request.target);
     return state.runCoordinated(
       context: context,
       location: request.target.location,
@@ -124,16 +126,16 @@ interface class ConversionCoordinator {
     required String transactionId,
   }) async {
     final context = LifecycleContext.resolve(options, fileSystem: _io.fs);
-    final initial = await _evidence.readPersisted(
-      context.stateRoot(),
-      transactionId,
-    );
+    _verifyUnlinkedPath(context.stateRoot(LifecycleScope.project));
+    _verifyUnlinkedPath(context.stateRoot(LifecycleScope.user));
+    final initial = await _readEvidence(context.stateRoot(), transactionId);
     if (initial == null) {
       throw MambaException(
         'No conversion evidence exists for $transactionId.',
         exitCode: 4,
       );
     }
+    _verifyPaths(context, initial.source, initial.target);
     return state.runCoordinated(
       context: context,
       location: initial.target.location,
@@ -147,7 +149,7 @@ interface class ConversionCoordinator {
     String transactionId,
   ) async {
     final stateRoot = context.stateRoot();
-    final evidence = await _evidence.readPersisted(stateRoot, transactionId);
+    final evidence = await _readEvidence(stateRoot, transactionId);
     if (evidence == null) {
       throw MambaException(
         'No conversion evidence exists for $transactionId.',
@@ -166,15 +168,39 @@ interface class ConversionCoordinator {
       transactionId,
     );
     final commitPath = _io.fs.path.join(staging, 'commit.json');
-    final committed =
-        _io.type(commitPath, followLinks: false) == FileSystemEntityType.file;
+    final commitType = _io.type(commitPath, followLinks: false);
     try {
+      _verifyPaths(context, evidence.source, evidence.target);
+      _verifyUnlinkedPath(staging);
+      if (jsonEncode(evidence.observations['coordinatorContext']) !=
+          jsonEncode(_contextObservation(context))) {
+        throw MambaException(
+          'The conversion authority context changed.',
+          exitCode: 6,
+        );
+      }
+      _verifyNoOtherOwners(
+        context,
+        evidence.source,
+        evidence.target,
+        allowTarget: true,
+      );
+      if (commitType != FileSystemEntityType.notFound &&
+          commitType != FileSystemEntityType.file) {
+        throw MambaException(
+          'The conversion commit marker is not a file.',
+          exitCode: 6,
+        );
+      }
+      final committed = commitType == FileSystemEntityType.file;
       if (!committed) {
+        _verifyRollbackAuthority(context, evidence);
         _rollbackPersisted(evidence, staging);
         final rolledBack = evidence.withPhase(
           ConversionEvidencePhase.rolledBack,
         );
         _persistEvidence(stateRoot, rolledBack);
+        _removeInitialFallback(staging);
         return _outcome(
           rolledBack,
           succeeded: false,
@@ -184,21 +210,6 @@ interface class ConversionCoordinator {
       }
 
       _verifyCommitDecision(commitPath, evidence);
-      final payload = evidence.source.payload;
-      final publication = evidence.target.publication;
-      if (payload == null || publication == null || !publication.verified) {
-        throw MambaException(
-          'Committed conversion evidence is incomplete.',
-          exitCode: 6,
-        );
-      }
-      if (_manifestDigest(payload.path) != payload.digest ||
-          _manifestDigest(publication.path) != publication.digest) {
-        throw MambaException(
-          'Committed conversion recovery evidence changed.',
-          exitCode: 6,
-        );
-      }
       final request = ConversionTransitionRequest(
         transactionId: transactionId,
         options: options,
@@ -211,9 +222,7 @@ interface class ConversionCoordinator {
       await _reconcile(context, request, evidence);
       var current = evidence.withPhase(ConversionEvidencePhase.reconciled);
       _persistEvidence(stateRoot, current);
-      _cleanup(staging, keepPayload: true);
-      current = current.withPhase(ConversionEvidencePhase.completed);
-      _persistEvidence(stateRoot, current);
+      current = _finishCleanup(stateRoot, staging, current);
       return _outcome(
         current,
         succeeded: true,
@@ -248,6 +257,19 @@ interface class ConversionCoordinator {
     final quarantinePath = _io.fs.path.join(staging, 'quarantine');
     final commitPath = _io.fs.path.join(staging, 'commit.json');
     final diagnostics = <Map<String, Object?>>[];
+    final evidencePath = _evidence.evidencePath(
+      stateRoot,
+      request.transactionId,
+    );
+    if (_io.type(staging, followLinks: false) !=
+            FileSystemEntityType.notFound ||
+        _io.type(evidencePath, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+      throw MambaException(
+        'The conversion transaction ID is already in use.',
+        exitCode: 4,
+      );
+    }
 
     // The review of the proposal happens before any durable effect, so a
     // refusal never leaves a staged artifact behind.
@@ -261,14 +283,49 @@ interface class ConversionCoordinator {
     _verifyOwnership(context, request);
 
     var committed = false;
-    var reconciled = false;
-    var quarantined = false;
-    var published = false;
-    ConversionEvidence? currentEvidence;
+    var commitAttempted = false;
+    // Resolve and persist the initial intent before creating any transaction
+    // staging. A restart can distinguish preparation from publication by the
+    // absence of verified staging evidence.
+    final sourceOwnership = source.ownershipBefore;
+    final sourceSnapshot = sourceOwnership?.managed == true
+        ? state
+              .recordById(
+                sourceOwnership!.scope == context.scope.name
+                    ? context
+                    : LifecycleContext.resolve(
+                        request.options.copyWith(
+                          scope: LifecycleScope.values.byName(
+                            sourceOwnership.scope,
+                          ),
+                        ),
+                        fileSystem: _io.fs,
+                      ),
+                sourceOwnership.installationId!,
+              )
+              .toJson()
+        : null;
+    var currentEvidence = _evidence.prepare(
+      transactionId: request.transactionId,
+      source: source,
+      target: target,
+      allocatedInstallationId: decision.allocatesTargetId
+          ? state.newInstallationId()
+          : null,
+      approvals: request.approvals,
+      observations: <String, Object?>{
+        ...request.observations,
+        'coordinatorSourceRecord': sourceSnapshot,
+        'coordinatorContext': _contextObservation(context),
+        'coordinatorSourceRemoval': false,
+      },
+    );
+    // Apply the same byte, depth and node limits on writes as on recovery.
+    ConversionEvidence.decode(currentEvidence.encode());
+    _persistEvidence(stateRoot, currentEvidence);
 
     try {
-      // Prepare: stage and independently verify both payloads before an intent
-      // document can authorize publication.
+      // Prepare and independently verify both payloads before publication.
       _io.createDirectory(staging);
       state.protectDirectory(staging);
       _copySource(source.location, payloadPath);
@@ -301,30 +358,35 @@ interface class ConversionCoordinator {
           verified: true,
         ),
       );
-      currentEvidence = _evidence.prepare(
-        transactionId: request.transactionId,
-        source: preparedSource,
-        target: preparedTarget,
-        allocatedInstallationId: decision.allocatesTargetId
-            ? state.newInstallationId()
-            : null,
-        approvals: request.approvals,
-        observations: request.observations,
+      // Preserve the initial intent across the in-place evidence upgrade.
+      // The fallback is removed before any live mutation is authorized.
+      state.writeProtectedDocument(
+        _initialFallbackPath(staging),
+        utf8.encode(currentEvidence.encode()),
+      );
+      currentEvidence = currentEvidence.copyWith(
+        source: currentEvidence.source.copyWith(
+          payload: preparedSource.payload,
+        ),
+        target: currentEvidence.target.copyWith(
+          staging: preparedTarget.staging,
+        ),
       );
       _persistEvidence(stateRoot, currentEvidence);
+      _removeInitialFallback(staging);
 
       // Recheck the reviewed observations at the live-mutation boundary.
+      _verifyPaths(context, source, target);
       _verifySourceUnchanged(source);
       _verifyTargetAvailable(source, target);
+      _verifyOwnership(context, request);
 
       // Publish: a same-location replacement quarantines the source instead
       // of deleting it. A moved output keeps the source live.
       if (inPlace) {
         _io.rename(source.location, quarantinePath);
-        quarantined = true;
       }
       _publishTarget(target, request.targetFiles);
-      published = true;
       _verifyPublishedTarget(target, request.targetFiles);
       currentEvidence = currentEvidence.copyWith(
         phase: ConversionEvidencePhase.published,
@@ -340,13 +402,8 @@ interface class ConversionCoordinator {
 
       // Commit: one protected decision binds the reviewed source, independent
       // payload, verified target and resolved participants.
-      _writeCommitDecision(
-        commitPath,
-        request: request,
-        sourceDigest: source.baseline!.digest,
-        targetDigest: targetDigest,
-        payloadDigest: payloadDigest,
-      );
+      commitAttempted = true;
+      _writeCommitDecision(commitPath, currentEvidence);
       committed = true;
       currentEvidence = currentEvidence.withPhase(
         ConversionEvidencePhase.committed,
@@ -355,7 +412,6 @@ interface class ConversionCoordinator {
 
       // Reconcile: materialize the target record and retire the source.
       await _reconcile(context, request, currentEvidence);
-      reconciled = true;
       currentEvidence = currentEvidence.withPhase(
         ConversionEvidencePhase.reconciled,
       );
@@ -363,11 +419,7 @@ interface class ConversionCoordinator {
 
       // Cleanup retains the independent source payload as completed recovery
       // evidence and removes only private staging/quarantine entries.
-      _cleanup(staging, keepPayload: true);
-      currentEvidence = currentEvidence.withPhase(
-        ConversionEvidencePhase.completed,
-      );
-      _persistEvidence(stateRoot, currentEvidence);
+      currentEvidence = _finishCleanup(stateRoot, staging, currentEvidence);
       return ConversionTransitionOutcome(
         transactionId: request.transactionId,
         phase: ConversionEvidencePhase.completed,
@@ -380,32 +432,18 @@ interface class ConversionCoordinator {
         diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
       );
     } on Exception catch (error) {
+      if (!committed && commitAttempted) {
+        _markRecoveryRequired(stateRoot, request.transactionId);
+        throw MambaException(
+          'The commit decision is uncertain and needs recovery: $error',
+          exitCode: 6,
+        );
+      }
       if (committed) {
         try {
-          if (!reconciled) {
-            await _reconcile(context, request, currentEvidence!);
-            reconciled = true;
-          }
-          currentEvidence = currentEvidence!.withPhase(
-            ConversionEvidencePhase.reconciled,
-          );
-          _persistEvidence(stateRoot, currentEvidence);
-          _cleanup(staging, keepPayload: true);
-          currentEvidence = currentEvidence.withPhase(
-            ConversionEvidencePhase.completed,
-          );
-          _persistEvidence(stateRoot, currentEvidence);
-          return ConversionTransitionOutcome(
-            transactionId: request.transactionId,
-            phase: ConversionEvidencePhase.completed,
-            succeeded: true,
-            committed: true,
-            reconciled: true,
-            sourceLocation: source.location,
-            targetLocation: target.location,
-            recoveryPayloadPath: payloadPath,
-            diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
-          );
+          // Read the durable decision and observations even when an IO call
+          // completed its effect before reporting failure.
+          return await _resume(context, request.options, request.transactionId);
         } on Exception catch (forwardError) {
           _markRecoveryRequired(stateRoot, request.transactionId);
           throw MambaException(
@@ -415,19 +453,13 @@ interface class ConversionCoordinator {
         }
       }
       try {
-        if (published && !inPlace) {
-          _removePublishedTarget(target, request.targetFiles);
-        }
-        if (quarantined) {
-          _io.rename(quarantinePath, source.location);
-        }
-        _cleanup(staging, keepPayload: false);
-        if (currentEvidence != null) {
-          currentEvidence = currentEvidence.withPhase(
-            ConversionEvidencePhase.rolledBack,
-          );
-          _persistEvidence(stateRoot, currentEvidence);
-        }
+        _verifyRollbackAuthority(context, currentEvidence);
+        _rollbackPersisted(currentEvidence, staging);
+        currentEvidence = currentEvidence.withPhase(
+          ConversionEvidencePhase.rolledBack,
+        );
+        _persistEvidence(stateRoot, currentEvidence);
+        _removeInitialFallback(staging);
         return ConversionTransitionOutcome(
           transactionId: request.transactionId,
           phase: ConversionEvidencePhase.rolledBack,
@@ -466,17 +498,104 @@ interface class ConversionCoordinator {
     diagnostics: const <Map<String, Object?>>[],
   );
 
+  void _verifyRollbackAuthority(
+    LifecycleContext context,
+    ConversionEvidence evidence,
+  ) {
+    if (evidence.phase == ConversionEvidencePhase.committed ||
+        evidence.phase == ConversionEvidencePhase.reconciled ||
+        evidence.observations['coordinatorSourceRemoval'] == true) {
+      throw MambaException(
+        'The committed conversion decision is missing.',
+        exitCode: 6,
+      );
+    }
+    _verifyNoOtherOwners(context, evidence.source, evidence.target);
+    final prior = _sourceRecord(evidence);
+    for (final scope in [LifecycleScope.project, LifecycleScope.user]) {
+      final scopeContext = LifecycleContext.resolve(
+        context.options.copyWith(scope: scope),
+        fileSystem: _io.fs,
+      );
+      for (final record in state.records(scopeContext)) {
+        if (record.installationId == prior?.installationId) {
+          if (jsonEncode(record.toJson()) != jsonEncode(prior!.toJson())) {
+            throw MambaException(
+              'Source ownership changed; rollback is unsafe.',
+              exitCode: 6,
+            );
+          }
+        } else if (record.installationId ==
+            evidence.target.identity?.installationId) {
+          throw MambaException(
+            'Target ownership exists without its commit decision.',
+            exitCode: 6,
+          );
+        }
+      }
+    }
+    if (prior != null) {
+      final sourceContext = LifecycleContext.resolve(
+        context.options.copyWith(scope: prior.scope),
+        fileSystem: _io.fs,
+      );
+      state.recordById(sourceContext, prior.installationId);
+    }
+  }
+
   void _rollbackPersisted(ConversionEvidence evidence, String staging) {
     final target = evidence.target;
     final publication = target.publication;
-    final inPlace = evidence.source.location == target.location;
+    final inPlace = _io.fs.path.equals(
+      evidence.source.location,
+      target.location,
+    );
+    if (evidence.source.payload == null && target.staging == null) {
+      // No live mutation is authorized by initial intent. Never infer that an
+      // unexpectedly occupied target or quarantine belongs to this process.
+      final quarantine = _io.fs.path.join(staging, 'quarantine');
+      if (publication != null ||
+          _io.type(quarantine, followLinks: false) !=
+              FileSystemEntityType.notFound ||
+          (!inPlace &&
+              _io.type(target.location, followLinks: false) !=
+                  FileSystemEntityType.notFound)) {
+        throw MambaException(
+          'Initial conversion intent has ambiguous live state.',
+          exitCode: 6,
+        );
+      }
+      _verifySourceUnchanged(evidence.source);
+      _cleanup(staging, keepPayload: false);
+      return;
+    }
+    if (evidence.source.payload == null || target.staging == null) {
+      throw MambaException(
+        'Conversion preparation evidence is incomplete.',
+        exitCode: 6,
+      );
+    }
     final quarantine = _io.fs.path.join(staging, 'quarantine');
     final quarantineExists =
         _io.type(quarantine, followLinks: false) !=
         FileSystemEntityType.notFound;
+    // Verify everything we rely on before deleting any transaction-owned
+    // target. An edited quarantine or backup is not permission to restore it.
+    _verifyOriginalAt(
+      evidence.source,
+      inPlace && quarantineExists ? quarantine : evidence.source.location,
+    );
+    final payload = evidence.source.payload!;
+    if (_io.type(payload.path, followLinks: false) !=
+            FileSystemEntityType.notFound &&
+        _manifestDigest(payload.path) != payload.digest) {
+      throw MambaException(
+        'The conversion recovery payload changed.',
+        exitCode: 6,
+      );
+    }
     final targetType = _io.type(target.location, followLinks: false);
     final publicationAttempted =
-        publication != null ||
         (!inPlace && targetType != FileSystemEntityType.notFound) ||
         (inPlace && quarantineExists);
     if (publicationAttempted && targetType != FileSystemEntityType.notFound) {
@@ -489,11 +608,6 @@ interface class ConversionCoordinator {
         );
       }
       _io.delete(target.location);
-    } else if (publicationAttempted && !inPlace) {
-      throw MambaException(
-        'The uncommitted published target is missing.',
-        exitCode: 6,
-      );
     }
     if (inPlace) {
       if (_io.type(quarantine, followLinks: false) !=
@@ -530,21 +644,11 @@ interface class ConversionCoordinator {
     final digest = decoded['digest'];
     final body = Map<String, Object?>.of(decoded)..remove('digest');
     final expected = sha256.convert(utf8.encode(jsonEncode(body))).toString();
-    final source = decoded['source'];
-    final target = decoded['target'];
-    final payload = decoded['payload'];
     if (decoded['schemaVersion'] != 1 ||
         decoded['transactionId'] != evidence.transactionId ||
         decoded['decision'] != 'commit' ||
         digest != expected ||
-        source is! Map<String, Object?> ||
-        target is! Map<String, Object?> ||
-        payload is! Map<String, Object?> ||
-        source['location'] != evidence.source.location ||
-        source['digest'] != evidence.source.baseline?.digest ||
-        target['location'] != evidence.target.location ||
-        target['digest'] != evidence.target.publication?.digest ||
-        payload['digest'] != evidence.source.payload?.digest) {
+        decoded['evidenceDigest'] != _commitEvidenceDigest(evidence)) {
       throw MambaException(
         'The conversion commit decision does not bind the evidence.',
         exitCode: 6,
@@ -560,6 +664,8 @@ interface class ConversionCoordinator {
   ) async {
     final target = evidence.target;
     final source = evidence.source;
+    _verifyCommittedContent(evidence);
+    _verifyNoOtherOwners(context, source, target, allowTarget: true);
     final targetOwnership = target.ownershipAfter;
     final sourceOwnership = source.ownershipBefore;
     if (targetOwnership == null || !targetOwnership.managed) {
@@ -579,6 +685,8 @@ interface class ConversionCoordinator {
         exitCode: 4,
       );
     }
+    final prior = _sourceRecord(evidence);
+    final sameIdentity = prior?.installationId == installationId;
     final record = InstallationRecord(
       installationId: installationId,
       kind: ArtifactKind.values.firstWhere(
@@ -587,7 +695,9 @@ interface class ConversionCoordinator {
       scope: LifecycleScope.values.firstWhere(
         (scope) => scope.name == targetOwnership.scope,
       ),
-      nativeDestination: targetOwnership.nativeForm,
+      nativeDestination: sameIdentity
+          ? prior!.nativeDestination
+          : targetOwnership.nativeProfile ?? targetOwnership.nativeForm,
       nativeForm: targetOwnership.nativeForm,
       location: target.location,
       nativeRoot: targetOwnership.nativeRoot ?? target.location,
@@ -609,7 +719,12 @@ interface class ConversionCoordinator {
       ),
       lifecycle: 'live',
       origin: <String, Object?>{
-        'status': 'unknown',
+        if (sameIdentity)
+          ...prior!.origin
+        else ...{
+          'status': 'unknown',
+          if (prior != null) 'conversionSourceOrigin': prior.origin,
+        },
         'conversionTransactionId': request.transactionId,
         if (target.identity?.convertedFromId != null)
           'convertedFromInstallationId': target.identity!.convertedFromId,
@@ -618,7 +733,7 @@ interface class ConversionCoordinator {
         if (target.membershipAfter != null)
           'conversionMembership': target.membershipAfter!.toJson(),
       },
-      backupIds: const <String>[],
+      backupIds: sameIdentity ? prior!.backupIds : const <String>[],
       transactionId: null,
     );
     InstallationRecord? retired;
@@ -637,15 +752,28 @@ interface class ConversionCoordinator {
         sourceContext,
         sourceOwnership.installationId!,
       );
-      retired = existing.copyWith(
+      retired = prior!.copyWith(
         lifecycle: 'removed',
         origin: <String, Object?>{
-          ...existing.origin,
+          ...prior.origin,
           'conversionTransactionId': request.transactionId,
           if (source.membershipAfter != null)
             'conversionMembership': source.membershipAfter!.toJson(),
         },
       );
+      final actual = jsonEncode(existing.toJson());
+      final alreadyTarget =
+          existing.installationId == record.installationId &&
+          _io.fs.path.equals(source.location, target.location) &&
+          actual == jsonEncode(record.toJson());
+      if (actual != jsonEncode(prior.toJson()) &&
+          actual != jsonEncode(retired.toJson()) &&
+          !alreadyTarget) {
+        throw MambaException(
+          'The source installation changed before reconciliation.',
+          exitCode: 6,
+        );
+      }
       retiredScope = sourceScope;
     }
     await state.applyCoordinatedTransition(
@@ -654,6 +782,34 @@ interface class ConversionCoordinator {
       retiredSource: retired,
       retiredSourceScope: retiredScope,
     );
+  }
+
+  InstallationRecord? _sourceRecord(ConversionEvidence evidence) {
+    final source = evidence.source;
+    final ownership = source.ownershipBefore;
+    if (ownership?.managed != true) return null;
+    try {
+      final record = InstallationRecord.fromJson(
+        evidence.observations['coordinatorSourceRecord'],
+      );
+      if (record.installationId != ownership!.installationId ||
+          record.scope.name != ownership.scope ||
+          record.location != source.location ||
+          record.nativeRoot != ownership.nativeRoot ||
+          record.kind.wireName != source.artifactKind ||
+          record.nativeForm != ownership.nativeForm ||
+          record.lifecycle != 'live') {
+        throw const FormatException(
+          'Source snapshot does not bind the participant.',
+        );
+      }
+      return record;
+    } on Exception {
+      throw MambaException(
+        'The managed source record snapshot is missing or invalid.',
+        exitCode: 6,
+      );
+    }
   }
 
   void _verifyOwnership(
@@ -694,31 +850,116 @@ interface class ConversionCoordinator {
       }
     }
 
+    _verifyNoOtherOwners(context, source, request.target);
+  }
+
+  Map<String, Object?> _contextObservation(LifecycleContext context) => {
+    'scope': context.scope.name,
+    'projectRoot': context.projectRoot,
+    'projectState': context.stateRoot(LifecycleScope.project),
+    'userState': context.stateRoot(LifecycleScope.user),
+    'home': context.requireHome(),
+  };
+
+  void _verifyUnlinkedPath(String path) {
+    final absolute = _io.fs.path.normalize(path);
+    final root = _io.fs.path.rootPrefix(absolute);
+    for (final component in skillPathComponents(
+      absolute,
+      base: root,
+      fs: _io.fs,
+    )) {
+      if (_io.type(component, followLinks: false) ==
+          FileSystemEntityType.link) {
+        throw MambaException(
+          'Linked conversion authority is unsupported: $component',
+          exitCode: 6,
+        );
+      }
+    }
+  }
+
+  void _verifyPaths(
+    LifecycleContext context,
+    ConversionParticipant source,
+    ConversionParticipant target,
+  ) {
+    try {
+      source.validate();
+      target.validate();
+    } on FormatException catch (error) {
+      throw MambaException(
+        'Invalid conversion participant: ${error.message}',
+        exitCode: 4,
+      );
+    }
+    if (source.artifactKind == 'skill-link' ||
+        source.artifactKind == 'skill-canonical') {
+      throw MambaException(
+        'Linked or shared conversion sources are unsupported.',
+        exitCode: 4,
+      );
+    }
+    if (target.ownershipAfter?.scope != context.scope.name) {
+      throw MambaException(
+        'The target scope must match the coordinator scope.',
+        exitCode: 4,
+      );
+    }
+    if (!_io.fs.path.equals(source.location, target.location) &&
+        _pathsOverlap(source.location, target.location)) {
+      throw MambaException(
+        'Conversion paths must not contain one another.',
+        exitCode: 4,
+      );
+    }
+    for (final scope in [LifecycleScope.project, LifecycleScope.user]) {
+      final root = context.stateRoot(scope);
+      _verifyUnlinkedPath(root);
+      if (_pathsOverlap(source.location, root) ||
+          _pathsOverlap(target.location, root)) {
+        throw MambaException(
+          'Conversion paths overlap management storage.',
+          exitCode: 4,
+        );
+      }
+    }
+    _verifyUnlinkedPath(source.location);
+    _verifyUnlinkedPath(target.location);
+  }
+
+  void _verifyNoOtherOwners(
+    LifecycleContext context,
+    ConversionParticipant source,
+    ConversionParticipant target, {
+    bool allowTarget = false,
+  }) {
     for (final scope in const <LifecycleScope>[
       LifecycleScope.project,
       LifecycleScope.user,
     ]) {
-      final LifecycleContext scopeContext;
-      try {
-        scopeContext = scope == context.scope
-            ? context
-            : LifecycleContext.resolve(
-                request.options.copyWith(scope: scope),
-                fileSystem: _io.fs,
-              );
-      } on MambaException {
-        continue;
-      }
+      final scopeContext = scope == context.scope
+          ? context
+          : LifecycleContext.resolve(
+              context.options.copyWith(scope: scope),
+              fileSystem: _io.fs,
+            );
       for (final record in state.records(scopeContext)) {
-        if (record.lifecycle != 'live' ||
-            !_io.fs.path.equals(record.location, request.target.location)) {
-          continue;
+        final isSource =
+            record.installationId == source.ownershipBefore?.installationId;
+        final isTarget =
+            allowTarget &&
+            record.installationId == target.identity?.installationId;
+        if ((isSource && scope.name != source.ownershipBefore?.scope) ||
+            (isTarget && scope.name != target.ownershipAfter?.scope)) {
+          throw MambaException(
+            'Conversion identity exists in another scope.',
+            exitCode: 6,
+          );
         }
-        final sourceId = sourceOwnership?.installationId;
-        final sameInPlaceSource =
-            _io.fs.path.equals(source.location, request.target.location) &&
-            record.installationId == sourceId;
-        if (!sameInPlaceSource) {
+        if (isSource || isTarget || record.lifecycle != 'live') continue;
+        if (_pathsOverlap(record.location, source.location) ||
+            _pathsOverlap(record.location, target.location)) {
           throw MambaException(
             'Another scope already owns the conversion target location.',
             exitCode: 4,
@@ -727,6 +968,11 @@ interface class ConversionCoordinator {
       }
     }
   }
+
+  bool _pathsOverlap(String first, String second) =>
+      _io.fs.path.equals(first, second) ||
+      _io.fs.path.isWithin(first, second) ||
+      _io.fs.path.isWithin(second, first);
 
   void _verifySourceUnchanged(ConversionParticipant source) {
     final baseline = source.baseline;
@@ -805,6 +1051,62 @@ interface class ConversionCoordinator {
       0,
       (total, entry) => total + (entry['length']! as int),
     );
+  }
+
+  String _initialFallbackPath(String staging) =>
+      _io.fs.path.join(staging, 'initial-intent.json');
+
+  void _removeInitialFallback(String staging) {
+    final path = _initialFallbackPath(staging);
+    if (_io.type(path, followLinks: false) != FileSystemEntityType.notFound) {
+      _io.delete(path);
+    }
+  }
+
+  Future<ConversionEvidence?> _readEvidence(String stateRoot, String id) async {
+    // A fallback is only authoritative during preparation. A valid main
+    // document always wins, including after a completed replacement.
+    try {
+      final main = await _evidence.readPersisted(stateRoot, id);
+      if (main != null) return main;
+    } on Exception {
+      // Validate the independent immutable copy below; never treat corruption
+      // as absence or silently manufacture an intent.
+    }
+    final staging = _io.fs.path.join(
+      _evidence.evidenceDirectory(stateRoot),
+      id,
+    );
+    final path = _initialFallbackPath(staging);
+    if (_io.type(path, followLinks: false) != FileSystemEntityType.file) {
+      // Re-read to preserve the original corrupt-document diagnostic.
+      return _evidence.readPersisted(stateRoot, id);
+    }
+    try {
+      final bytes = _io.read(path, maxConversionEvidenceBytes);
+      if (bytes.length > maxConversionEvidenceBytes) {
+        throw const FormatException('Initial intent exceeds its byte limit.');
+      }
+      final initial = ConversionEvidence.decode(utf8.decode(bytes));
+      if (initial.transactionId != id ||
+          initial.phase != ConversionEvidencePhase.prepared ||
+          initial.source.payload != null ||
+          initial.target.staging != null ||
+          initial.target.publication != null ||
+          _io.type(
+                _io.fs.path.join(staging, 'commit.json'),
+                followLinks: false,
+              ) !=
+              FileSystemEntityType.notFound) {
+        throw const FormatException('Invalid initial intent fallback.');
+      }
+      return initial;
+    } on Exception catch (error) {
+      throw MambaException(
+        'The conversion initial intent is corrupt: $error',
+        exitCode: 6,
+      );
+    }
   }
 
   void _persistEvidence(String stateRoot, ConversionEvidence evidence) {
@@ -901,18 +1203,6 @@ interface class ConversionCoordinator {
     copy(source, destination);
   }
 
-  void _removePublishedTarget(
-    ConversionParticipant target,
-    Map<String, List<int>> files,
-  ) {
-    if (_io.type(target.location, followLinks: false) ==
-        FileSystemEntityType.notFound) {
-      return;
-    }
-    _verifyPublishedTarget(target, files);
-    _io.delete(target.location);
-  }
-
   void _cleanup(String staging, {required bool keepPayload}) {
     final payloadRoot = _io.fs.path.join(staging, 'source-payload');
     if (!keepPayload &&
@@ -931,26 +1221,98 @@ interface class ConversionCoordinator {
     }
   }
 
-  void _writeCommitDecision(
-    String path, {
-    required ConversionTransitionRequest request,
-    required String sourceDigest,
-    required String targetDigest,
-    required String payloadDigest,
-  }) {
+  void _verifyOriginalAt(ConversionParticipant source, String path) {
+    final entries = conversionManifestEntries(_io, path);
+    // Quarantining a regular file changes its basename, not its contents.
+    if (_io.type(path, followLinks: false) == FileSystemEntityType.file) {
+      entries.single['path'] = _io.fs.path.basename(source.location);
+    }
+    if (conversionManifestDigest(entries) != source.baseline?.digest) {
+      throw MambaException(
+        'The original conversion source changed.',
+        exitCode: 6,
+      );
+    }
+  }
+
+  void _verifyCommittedContent(ConversionEvidence evidence) {
+    final payload = evidence.source.payload;
+    final publication = evidence.target.publication;
+    if (payload == null ||
+        publication == null ||
+        !publication.verified ||
+        _manifestDigest(payload.path) != payload.digest ||
+        _manifestDigest(evidence.target.location) != publication.digest) {
+      throw MambaException(
+        'Committed conversion content changed.',
+        exitCode: 6,
+      );
+    }
+    if (!_io.fs.path.equals(
+      evidence.source.location,
+      evidence.target.location,
+    )) {
+      if (_io.type(evidence.source.location, followLinks: false) ==
+          FileSystemEntityType.notFound) {
+        if (evidence.observations['coordinatorSourceRemoval'] != true) {
+          throw MambaException(
+            'The conversion source is missing.',
+            exitCode: 6,
+          );
+        }
+      } else {
+        _verifyOriginalAt(evidence.source, evidence.source.location);
+      }
+    }
+  }
+
+  ConversionEvidence _finishCleanup(
+    String stateRoot,
+    String staging,
+    ConversionEvidence evidence,
+  ) {
+    _verifyCommittedContent(evidence);
+    final inPlace = _io.fs.path.equals(
+      evidence.source.location,
+      evidence.target.location,
+    );
+    final original = inPlace
+        ? _io.fs.path.join(staging, 'quarantine')
+        : evidence.source.location;
+    if (_io.type(original, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      _verifyOriginalAt(evidence.source, original);
+    } else if (evidence.observations['coordinatorSourceRemoval'] != true) {
+      throw MambaException(
+        'The original conversion source is missing.',
+        exitCode: 6,
+      );
+    }
+    // Persist removal intent after verification, so restart can distinguish
+    // our completed deletion from a source that disappeared before cleanup.
+    var current = evidence.copyWith(
+      observations: <String, Object?>{
+        ...evidence.observations,
+        'coordinatorSourceRemoval': true,
+      },
+    );
+    _persistEvidence(stateRoot, current);
+    if (_io.type(original, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      _io.delete(original);
+    }
+    _cleanup(staging, keepPayload: true);
+    current = current.withPhase(ConversionEvidencePhase.completed);
+    _persistEvidence(stateRoot, current);
+    return current;
+  }
+
+  void _writeCommitDecision(String path, ConversionEvidence evidence) {
     final body = <String, Object?>{
       'schemaVersion': 1,
-      'transactionId': request.transactionId,
+      'transactionId': evidence.transactionId,
       'decision': 'commit',
-      'source': <String, Object?>{
-        'location': request.source.location,
-        'digest': sourceDigest,
-      },
-      'target': <String, Object?>{
-        'location': request.target.location,
-        'digest': targetDigest,
-      },
-      'payload': <String, Object?>{'digest': payloadDigest},
+      'evidenceDigest': _commitEvidenceDigest(evidence),
     };
     final decision = <String, Object?>{
       ...body,
@@ -959,6 +1321,16 @@ interface class ConversionCoordinator {
     state.writeProtectedDocument(path, utf8.encode(jsonEncode(decision)));
   }
 
+  String _commitEvidenceDigest(ConversionEvidence evidence) => evidence
+      .copyWith(
+        phase: ConversionEvidencePhase.published,
+        observations: {
+          ...evidence.observations,
+          'coordinatorSourceRemoval': false,
+        },
+      )
+      .digest;
+
   void _markRecoveryRequired(String stateRoot, String transactionId) {
     try {
       final path = _evidence.evidencePath(stateRoot, transactionId);
@@ -966,6 +1338,14 @@ interface class ConversionCoordinator {
       if (type != FileSystemEntityType.file) return;
       final bytes = _io.read(path, maxConversionEvidenceBytes);
       final evidence = ConversionEvidence.decode(utf8.decode(bytes));
+      // Never erase an observed commit or reopen a terminal transaction merely
+      // because a later IO acknowledgement or recovery attempt failed.
+      if (evidence.phase == ConversionEvidencePhase.committed ||
+          evidence.phase == ConversionEvidencePhase.reconciled ||
+          evidence.phase == ConversionEvidencePhase.completed ||
+          evidence.phase == ConversionEvidencePhase.rolledBack) {
+        return;
+      }
       _persistEvidence(
         stateRoot,
         evidence.withPhase(ConversionEvidencePhase.recoveryRequired),

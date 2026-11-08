@@ -1061,6 +1061,14 @@ interface class LifecycleStateService {
         (record) => record.installationId == target.installationId,
       );
       if (existing >= 0) {
+        if (!sameIdentity &&
+            jsonEncode(updated[existing].toJson()) !=
+                jsonEncode(target.toJson())) {
+          throw MambaException(
+            'The target installation identifier is already in use.',
+            exitCode: 4,
+          );
+        }
         updated[existing] = target;
       } else {
         updated.add(target);
@@ -1076,13 +1084,16 @@ interface class LifecycleStateService {
         );
       }
     }
-    _writeManagementJson(
-      io.fs.path.join(state, 'installations.json'),
-      <String, Object?>{
-        'schemaVersion': managementSchemaVersion,
-        'installations': [for (final record in updated) record.toJson()],
-      },
-    );
+    final path = io.fs.path.join(state, 'installations.json');
+    final existing =
+        io.type(path, followLinks: false) == FileSystemEntityType.notFound
+        ? const <String, Object?>{}
+        : _object(_readManagementJson(path), 'installation ledger');
+    _writeManagementJson(path, <String, Object?>{
+      ...existing,
+      'schemaVersion': managementSchemaVersion,
+      'installations': [for (final record in updated) record.toJson()],
+    });
   }
 
   /// Runs a coordinated operation under the lifecycle lock domain.

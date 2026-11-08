@@ -35,11 +35,44 @@ class _FaultyIO extends LifecycleIO {
   final MemoryFileSystem memory;
   String? failingOperation;
   String? failingPath;
+  bool interrupt = false;
+  bool interruptEvidenceUpgrade = false;
+  int evidenceWrites = 0;
+  void Function(String operation, String path)? after;
+
+  @override
+  void write(String path, List<int> bytes) {
+    if (interruptEvidenceUpgrade &&
+        path.endsWith('.json') &&
+        path.contains('conversions/cvx_') &&
+        !path.endsWith('initial-intent.json')) {
+      evidenceWrites++;
+      if (evidenceWrites == 2) {
+        memory.file(path).writeAsStringSync('{partial');
+        throw StateError('Interrupted evidence replacement');
+      }
+    }
+    super.write(path, bytes);
+    after?.call('write', path);
+  }
+
+  @override
+  void delete(String path) {
+    super.delete(path);
+    after?.call('delete', path);
+  }
+
+  @override
+  void rename(String source, String destination) {
+    super.rename(source, destination);
+    after?.call('rename', source);
+  }
 
   @override
   void before(String operation, String path) {
     if (failingOperation != operation) return;
     if (failingPath != null && !path.contains(failingPath!)) return;
+    if (interrupt) throw StateError('Simulated process interruption');
     throw FileSystemException('Injected failure', path);
   }
 }
@@ -148,6 +181,7 @@ void main() {
     required String artifactKind,
     required String nativeForm,
     String installationId = sourceInstallationId,
+    String scope = 'project',
   }) => ConversionParticipant(
     role: ConversionParticipantRole.target,
     intent: ConversionParticipantIntent.created,
@@ -156,7 +190,7 @@ void main() {
     nativeProfile: 'claude',
     location: location,
     nativeRoot: nativeRoot,
-    scope: 'project',
+    scope: scope,
     ownershipAfter: ConversionOwnership(
       managed: true,
       installationId: installationId,
@@ -164,11 +198,711 @@ void main() {
       nativeProfile: 'claude',
       location: location,
       nativeRoot: nativeRoot,
-      scope: 'project',
+      scope: scope,
     ),
   );
 
+  ConversionTransitionRequest seedRequest({
+    bool inPlace = false,
+    bool userTarget = false,
+  }) {
+    const source = '/work/project/.claude/agents/reviewer.md';
+    fs.file(source)
+      ..createSync(recursive: true)
+      ..writeAsStringSync('original');
+    seedLedger(location: source, nativeRoot: '/work/project/.claude/agents');
+    final targetRoot = userTarget
+        ? '/home/user/.pi/prompts'
+        : '/work/project/.pi/prompts';
+    return ConversionTransitionRequest(
+      transactionId: 'cvx_0123456789abcdef0123456789abcdef',
+      options: userTarget
+          ? options.copyWith(scope: LifecycleScope.user)
+          : options,
+      source: sourceParticipant(
+        location: source,
+        nativeRoot: '/work/project/.claude/agents',
+        artifactKind: 'agent-file',
+        nativeForm: 'claude-agent-file',
+      ),
+      target: targetParticipant(
+        location: inPlace ? source : '$targetRoot/reviewer.md',
+        nativeRoot: inPlace ? '/work/project/.claude/agents' : targetRoot,
+        artifactKind: inPlace ? 'agent-file' : 'prompt-template',
+        nativeForm: inPlace ? 'claude-agent-file' : 'pi-prompt-template',
+        scope: userTarget ? 'user' : 'project',
+      ),
+      targetFiles: {'reviewer.md': utf8.encode('converted')},
+    );
+  }
+
   group('ConversionCoordinator', () {
+    test('missing committed decision stays blocked on repeated recovery', () async {
+      final request = seedRequest();
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('${request.transactionId}.json') &&
+            (jsonDecode(fs.file(path).readAsStringSync()) as Map)['phase'] ==
+                'committed') {
+          throw StateError('Interrupted before reconciliation');
+        }
+      };
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<StateError>()),
+      );
+      io.after = null;
+      fs
+          .file(
+            '/work/project/.agent-resource/conversions/${request.transactionId}/commit.json',
+          )
+          .deleteSync();
+      for (var attempt = 0; attempt < 2; attempt++) {
+        await expectLater(
+          coordinator.resume(
+            options: options,
+            transactionId: request.transactionId,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
+        );
+      }
+      expect(fs.file(request.target.location).readAsStringSync(), 'converted');
+      expect(fs.file(request.source.location).readAsStringSync(), 'original');
+    });
+
+    for (final boundary in [
+      ('write', '/home/user/.pi/prompts/reviewer.md', false),
+      ('write', 'commit.json', true),
+      ('rename', '/work/state/installations.json', true),
+      ('rename', '/work/project/.agent-resource/installations.json', true),
+      ('delete', '/work/project/.claude/agents/reviewer.md', true),
+      ('delete', '/target', true),
+    ]) {
+      test('cross-scope restart after ${boundary.$1} ${boundary.$2}', () async {
+        final request = seedRequest(userTarget: true);
+        io.after = (operation, path) {
+          if (operation == boundary.$1 && path.contains(boundary.$2)) {
+            throw StateError('Interrupted after durable effect');
+          }
+        };
+        await expectLater(
+          coordinator.execute(request),
+          throwsA(isA<StateError>()),
+        );
+        io.after = null;
+        final outcome =
+            await ConversionCoordinator(
+              io: io,
+              state: LifecycleStateService(io: io),
+            ).resume(
+              options: request.options,
+              transactionId: request.transactionId,
+            );
+        expect(
+          outcome.phase,
+          boundary.$3
+              ? ConversionEvidencePhase.completed
+              : ConversionEvidencePhase.rolledBack,
+        );
+        expect(fs.file(request.source.location).existsSync(), !boundary.$3);
+        expect(fs.file(request.target.location).existsSync(), boundary.$3);
+        final sourceRecords = state.records(
+          LifecycleContext.resolve(options, fileSystem: fs),
+        );
+        final targetRecords = state.records(
+          LifecycleContext.resolve(request.options, fileSystem: fs),
+        );
+        expect(
+          sourceRecords.single.lifecycle,
+          boundary.$3 ? 'removed' : 'live',
+        );
+        expect(targetRecords.length, boundary.$3 ? 1 : 0);
+        if (boundary.$3) {
+          expect(
+            fs.file(request.target.location).readAsStringSync(),
+            'converted',
+          );
+          expect(
+            fs.file(outcome.recoveryPayloadPath!).readAsStringSync(),
+            'original',
+          );
+        }
+        await expectLater(
+          coordinator.resume(
+            options: request.options,
+            transactionId: request.transactionId,
+          ),
+          throwsA(isA<MambaException>()),
+        );
+      });
+    }
+
+    test('missing commit decision cannot roll back materialized ownership', () async {
+      final request = seedRequest();
+      io.after = (operation, path) {
+        if (operation == 'rename' && path.contains('installations.json')) {
+          throw StateError('Interrupted after ledger publication');
+        }
+      };
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<StateError>()),
+      );
+      io.after = null;
+      final ledger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final before = ledger.readAsStringSync();
+      fs
+          .file(
+            '/work/project/.agent-resource/conversions/${request.transactionId}/commit.json',
+          )
+          .deleteSync();
+      await expectLater(
+        coordinator.resume(
+          options: options,
+          transactionId: request.transactionId,
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(ledger.readAsStringSync(), before);
+      expect(fs.file(request.target.location).readAsStringSync(), 'converted');
+      expect(fs.file(request.source.location).readAsStringSync(), 'original');
+      expect(
+        fs
+            .file(
+              '/work/project/.agent-resource/conversions/${request.transactionId}/source-payload/reviewer.md',
+            )
+            .readAsStringSync(),
+        'original',
+      );
+    });
+
+    test(
+      'conversion preserves ledger groups and same-identity history',
+      () async {
+        final request = seedRequest(inPlace: true);
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final document =
+            jsonDecode(ledger.readAsStringSync()) as Map<String, dynamic>;
+        final groups = {
+          'packs': [
+            {'key': 'unrelated/pack'},
+          ],
+          'snapshots': [
+            {
+              'ref': '20261108T120000Z-abcdef',
+              'installationId': sourceInstallationId,
+              'installedAt': '2026-11-08T12:00:00Z',
+              'activations': ['2026-11-08T12:00:00Z'],
+              'contentDigest': 'a' * 64,
+              'baseline': <Object?>[],
+              'sourceEvidence': <String, Object?>{},
+              'contentAvailable': true,
+            },
+          ],
+          'approvals': [
+            {'folder': 'extras'},
+          ],
+          'selections': [
+            {'name': 'unrelated'},
+          ],
+          'operations': [
+            {'status': 'completed'},
+          ],
+        };
+        document.addAll(groups);
+        final record = (document['installations'] as List).single as Map;
+        record['origin'] = {'status': 'known', 'source': 'reviewed-origin'};
+        record['backupIds'] = ['bak_0123456789abcdef0123456789abcdef'];
+        ledger.writeAsStringSync(jsonEncode(document));
+        expect((await coordinator.execute(request)).succeeded, isTrue);
+        final after = jsonDecode(ledger.readAsStringSync()) as Map;
+        for (final group in groups.entries) {
+          expect(after[group.key], group.value, reason: group.key);
+        }
+        final installed = (after['installations'] as List).single as Map;
+        expect(installed['backupIds'], [
+          'bak_0123456789abcdef0123456789abcdef',
+        ]);
+        expect((installed['origin'] as Map)['source'], 'reviewed-origin');
+      },
+    );
+
+    test('a linked target ancestor cannot redirect publication', () async {
+      final request = seedRequest();
+      fs.directory('/outside/prompts').createSync(recursive: true);
+      fs.link('/work/project/.pi').createSync('/outside');
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<MambaException>()),
+      );
+      expect(fs.file('/outside/prompts/reviewer.md').existsSync(), isFalse);
+      expect(fs.file(request.source.location).readAsStringSync(), 'original');
+      expect(
+        fs.directory('/work/project/.agent-resource/conversions').existsSync(),
+        isFalse,
+      );
+    });
+
+    test('commit binds participant membership, not only file bytes', () async {
+      final request = seedRequest();
+      io.after = (operation, path) {
+        if (operation == 'write' && path.endsWith('commit.json')) {
+          throw StateError('Interrupted after commit');
+        }
+      };
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<StateError>()),
+      );
+      io.after = null;
+      final service = ConversionEvidenceService(fileSystem: fs);
+      const root = '/work/project/.agent-resource';
+      final evidence = (await service.readPersisted(
+        root,
+        request.transactionId,
+      ))!;
+      final changed = evidence.copyWith(
+        target: evidence.target.copyWith(
+          membershipAfter: const ConversionMembership(
+            kind: 'pack',
+            state: 'active',
+            source: 'unreviewed',
+          ),
+        ),
+      );
+      fs
+          .file(service.evidencePath(root, request.transactionId))
+          .writeAsStringSync(changed.encode());
+      await expectLater(
+        coordinator.resume(
+          options: options,
+          transactionId: request.transactionId,
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(fs.file(request.source.location).readAsStringSync(), 'original');
+      expect(
+        state.records(LifecycleContext.resolve(options, fileSystem: fs)),
+        hasLength(1),
+      );
+    });
+
+    for (final conflict in ['context', 'other-scope-owner', 'target-record']) {
+      test('restart refuses changed authority: $conflict', () async {
+        final request = seedRequest();
+        io.after = (operation, path) {
+          if (operation == 'write' && path.endsWith('commit.json')) {
+            throw StateError('Interrupted after commit');
+          }
+        };
+        await expectLater(
+          coordinator.execute(request),
+          throwsA(isA<StateError>()),
+        );
+        io.after = null;
+        final evidence = (await ConversionEvidenceService(fileSystem: fs)
+            .readPersisted(
+              '/work/project/.agent-resource',
+              request.transactionId,
+            ))!;
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final document =
+            jsonDecode(ledger.readAsStringSync()) as Map<String, dynamic>;
+        final record = Map<String, dynamic>.from(
+          (document['installations'] as List).single as Map,
+        );
+        if (conflict != 'context') {
+          record['installationId'] = conflict == 'target-record'
+              ? evidence.target.identity!.installationId
+              : 'ins_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+          record['location'] = request.target.location;
+          record['nativeRoot'] = request.target.nativeRoot;
+          if (conflict == 'other-scope-owner') {
+            record['scope'] = 'user';
+            fs.file('/work/state/installations.json')
+              ..createSync(recursive: true)
+              ..writeAsStringSync(
+                jsonEncode({
+                  'schemaVersion': 1,
+                  'installations': [record],
+                }),
+              );
+          } else {
+            (document['installations'] as List).add(record);
+            ledger.writeAsStringSync(jsonEncode(document));
+          }
+        }
+        final before = ledger.readAsStringSync();
+        await expectLater(
+          ConversionCoordinator(
+            io: io,
+            state: LifecycleStateService(io: io),
+          ).resume(
+            options: conflict == 'context'
+                ? LifecycleOptions(
+                    processWorkingDirectory: '/work/project',
+                    environment: const {},
+                    scope: LifecycleScope.project,
+                    projectRoot: '/work/project',
+                    home: '/home/user',
+                    stateDir: '/work/other-state',
+                  )
+                : options,
+            transactionId: request.transactionId,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
+        );
+        expect(ledger.readAsStringSync(), before);
+        expect(fs.file(request.source.location).readAsStringSync(), 'original');
+        expect(
+          fs.file(request.target.location).readAsStringSync(),
+          'converted',
+        );
+      });
+    }
+
+    for (final inPlace in [false, true]) {
+      test('restart completes source removal (in-place: $inPlace)', () async {
+        final request = seedRequest(inPlace: inPlace);
+        io.after = (operation, path) {
+          if (operation == 'delete' &&
+              path ==
+                  (inPlace
+                      ? '/work/project/.agent-resource/conversions/${request.transactionId}/quarantine'
+                      : request.source.location)) {
+            throw StateError('Interrupted after source removal');
+          }
+        };
+        await expectLater(
+          coordinator.execute(request),
+          throwsA(isA<StateError>()),
+        );
+        io.after = null;
+        final outcome = await ConversionCoordinator(
+          io: io,
+          state: LifecycleStateService(io: io),
+        ).resume(options: options, transactionId: request.transactionId);
+        expect(outcome.phase, ConversionEvidencePhase.completed);
+        expect(
+          fs.file(request.target.location).readAsStringSync(),
+          'converted',
+        );
+        expect(
+          fs.file(outcome.recoveryPayloadPath!).readAsStringSync(),
+          'original',
+        );
+        if (!inPlace) {
+          expect(fs.file(request.source.location).existsSync(), isFalse);
+        }
+      });
+
+      test(
+        'rollback refuses changed original before deleting target (in-place: $inPlace)',
+        () async {
+          final request = seedRequest(inPlace: inPlace);
+          io.failingOperation = 'write';
+          io.failingPath = 'commit.json';
+          io.interrupt = true;
+          await expectLater(
+            coordinator.execute(request),
+            throwsA(isA<StateError>()),
+          );
+          io.failingOperation = null;
+          final original = inPlace
+              ? '/work/project/.agent-resource/conversions/${request.transactionId}/quarantine'
+              : request.source.location;
+          fs.file(original).writeAsStringSync('later user edits');
+          await expectLater(
+            ConversionCoordinator(
+              io: io,
+              state: LifecycleStateService(io: io),
+            ).resume(options: options, transactionId: request.transactionId),
+            throwsA(
+              isA<MambaException>().having(
+                (error) => error.exitCode,
+                'status',
+                6,
+              ),
+            ),
+          );
+          expect(fs.file(original).readAsStringSync(), 'later user edits');
+          expect(
+            fs.file(request.target.location).readAsStringSync(),
+            'converted',
+          );
+        },
+      );
+    }
+
+    test(
+      'existing pre-intent staging is preserved and ID reuse refused',
+      () async {
+        const id = 'cvx_0123456789abcdef0123456789abcdef';
+        const sourcePath = '/work/project/.claude/agents/reviewer.md';
+        const staging = '/work/project/.agent-resource/conversions/$id';
+        fs.file(sourcePath)
+          ..createSync(recursive: true)
+          ..writeAsStringSync('original');
+        seedLedger(
+          location: sourcePath,
+          nativeRoot: '/work/project/.claude/agents',
+        );
+        fs.file('$staging/evidence')
+          ..createSync(recursive: true)
+          ..writeAsStringSync('preserve');
+        final request = ConversionTransitionRequest(
+          transactionId: id,
+          options: options,
+          source: sourceParticipant(
+            location: sourcePath,
+            nativeRoot: '/work/project/.claude/agents',
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+          ),
+          target: targetParticipant(
+            location: '/work/project/.pi/prompts/reviewer.md',
+            nativeRoot: '/work/project/.pi/prompts',
+            artifactKind: 'prompt-template',
+            nativeForm: 'pi-prompt-template',
+          ),
+          targetFiles: {'reviewer.md': utf8.encode('Review.')},
+        );
+        await expectLater(
+          coordinator.execute(request),
+          throwsA(isA<MambaException>()),
+        );
+        expect(fs.file('$staging/evidence').readAsStringSync(), 'preserve');
+        expect(fs.file(sourcePath).readAsStringSync(), 'original');
+      },
+    );
+
+    test('restart rolls back interruptions throughout preparation', () async {
+      const id = 'cvx_0123456789abcdef0123456789abcdef';
+      const source = '/work/project/.claude/agents/reviewer.md';
+      const target = '/work/project/.pi/prompts/reviewer.md';
+      for (final boundary in <(String, String)>[
+        ('createDirectory', 'conversions/$id'),
+        ('createDirectory', 'source-payload'),
+        ('copy', source),
+        ('write', '/target/'),
+      ]) {
+        fs = MemoryFileSystem();
+        fs.directory('/work/project').createSync(recursive: true);
+        fs.directory('/home/user').createSync(recursive: true);
+        io = _FaultyIO(fs);
+        state = LifecycleStateService(io: io);
+        coordinator = ConversionCoordinator(
+          io: io,
+          state: state,
+          evidence: ConversionEvidenceService(fileSystem: fs),
+        );
+        fs.file(source)
+          ..createSync(recursive: true)
+          ..writeAsStringSync('original');
+        seedLedger(
+          location: source,
+          nativeRoot: '/work/project/.claude/agents',
+        );
+        final ledger = fs
+            .file('/work/project/.agent-resource/installations.json')
+            .readAsStringSync();
+        io.failingOperation = boundary.$1;
+        io.failingPath = boundary.$2;
+        io.interrupt = true;
+        await expectLater(
+          coordinator.execute(
+            ConversionTransitionRequest(
+              transactionId: id,
+              options: options,
+              source: sourceParticipant(
+                location: source,
+                nativeRoot: '/work/project/.claude/agents',
+                artifactKind: 'agent-file',
+                nativeForm: 'claude-agent-file',
+              ),
+              target: targetParticipant(
+                location: target,
+                nativeRoot: '/work/project/.pi/prompts',
+                artifactKind: 'prompt-template',
+                nativeForm: 'pi-prompt-template',
+                installationId: 'ins_fedcba9876543210fedcba9876543210',
+              ),
+              targetFiles: {'reviewer.md': utf8.encode('Review.')},
+            ),
+          ),
+          throwsA(isA<StateError>()),
+        );
+        io.failingOperation = null;
+        final resumed = await ConversionCoordinator(
+          io: io,
+          state: LifecycleStateService(io: io),
+          evidence: ConversionEvidenceService(fileSystem: fs),
+        ).resume(options: options, transactionId: id);
+        expect(
+          resumed.phase,
+          ConversionEvidencePhase.rolledBack,
+          reason: '$boundary',
+        );
+        expect(fs.file(source).readAsStringSync(), 'original');
+        expect(fs.file(target).existsSync(), isFalse);
+        expect(
+          fs
+              .file('/work/project/.agent-resource/installations.json')
+              .readAsStringSync(),
+          ledger,
+        );
+      }
+    });
+
+    test('interrupted evidence upgrade uses immutable intent; corrupt fallback fails closed', () async {
+      const id = 'cvx_0123456789abcdef0123456789abcdef';
+      const source = '/work/project/.claude/agents/reviewer.md';
+      const target = '/work/project/.pi/prompts/reviewer.md';
+      const stage = '/work/project/.agent-resource/conversions/$id';
+      for (final corruptFallback in [false, true]) {
+        fs = MemoryFileSystem();
+        fs.directory('/work/project').createSync(recursive: true);
+        fs.directory('/home/user').createSync(recursive: true);
+        io = _FaultyIO(fs)..interruptEvidenceUpgrade = true;
+        state = LifecycleStateService(io: io);
+        coordinator = ConversionCoordinator(
+          io: io,
+          state: state,
+          evidence: ConversionEvidenceService(fileSystem: fs),
+        );
+        fs.file(source)
+          ..createSync(recursive: true)
+          ..writeAsStringSync('original');
+        seedLedger(
+          location: source,
+          nativeRoot: '/work/project/.claude/agents',
+        );
+        await expectLater(
+          coordinator.execute(
+            ConversionTransitionRequest(
+              transactionId: id,
+              options: options,
+              source: sourceParticipant(
+                location: source,
+                nativeRoot: '/work/project/.claude/agents',
+                artifactKind: 'agent-file',
+                nativeForm: 'claude-agent-file',
+              ),
+              target: targetParticipant(
+                location: target,
+                nativeRoot: '/work/project/.pi/prompts',
+                artifactKind: 'prompt-template',
+                nativeForm: 'pi-prompt-template',
+                installationId: 'ins_fedcba9876543210fedcba9876543210',
+              ),
+              targetFiles: {'reviewer.md': utf8.encode('Review.')},
+            ),
+          ),
+          throwsA(isA<StateError>()),
+        );
+        expect(
+          fs
+              .file('/work/project/.agent-resource/conversions/$id.json')
+              .readAsStringSync(),
+          '{partial',
+        );
+        expect(fs.file('$stage/initial-intent.json').existsSync(), isTrue);
+        io.interruptEvidenceUpgrade = false;
+        if (corruptFallback) {
+          fs.file('$stage/initial-intent.json').writeAsStringSync('{bad');
+        }
+        final resumed = ConversionCoordinator(
+          io: io,
+          state: LifecycleStateService(io: io),
+          evidence: ConversionEvidenceService(fileSystem: fs),
+        ).resume(options: options, transactionId: id);
+        if (corruptFallback) {
+          await expectLater(resumed, throwsA(isA<MambaException>()));
+          expect(fs.file('$stage/target/reviewer.md').existsSync(), isTrue);
+        } else {
+          expect((await resumed).phase, ConversionEvidencePhase.rolledBack);
+          expect(fs.file('$stage/initial-intent.json').existsSync(), isFalse);
+          expect(fs.file('$stage/target/reviewer.md').existsSync(), isFalse);
+        }
+        expect(fs.file(source).readAsStringSync(), 'original');
+        expect(fs.file(target).existsSync(), isFalse);
+      }
+    });
+
+    test('non-file commit marker blocks rollback', () async {
+      const id = 'cvx_0123456789abcdef0123456789abcdef';
+      const sourcePath = '/work/project/.claude/agents/reviewer.md';
+      fs.file(sourcePath)
+        ..createSync(recursive: true)
+        ..writeAsStringSync('original');
+      seedLedger(
+        location: sourcePath,
+        nativeRoot: '/work/project/.claude/agents',
+      );
+      io.failingOperation = 'write';
+      io.failingPath = 'commit.json';
+      await expectLater(
+        coordinator.execute(
+          ConversionTransitionRequest(
+            transactionId: id,
+            options: options,
+            source: sourceParticipant(
+              location: sourcePath,
+              nativeRoot: '/work/project/.claude/agents',
+              artifactKind: 'agent-file',
+              nativeForm: 'claude-agent-file',
+            ),
+            target: targetParticipant(
+              location: '/work/project/.pi/prompts/reviewer.md',
+              nativeRoot: '/work/project/.pi/prompts',
+              artifactKind: 'prompt-template',
+              nativeForm: 'pi-prompt-template',
+              installationId: 'ins_fedcba9876543210fedcba9876543210',
+            ),
+            targetFiles: {'reviewer.md': utf8.encode('Review.')},
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      io.failingOperation = null;
+      fs
+          .directory(
+            '/work/project/.agent-resource/conversions/$id/commit.json',
+          )
+          .createSync(recursive: true);
+      await expectLater(
+        coordinator.resume(options: options, transactionId: id),
+        throwsA(isA<MambaException>()),
+      );
+      expect(
+        fs.file('/work/project/.pi/prompts/reviewer.md').readAsStringSync(),
+        'Review.',
+      );
+      expect(fs.file(sourcePath).readAsStringSync(), 'original');
+    });
+
     test('every durable boundary is exercised', () async {
       const boundaries = <_Boundary>[
         _Boundary(
@@ -183,7 +917,7 @@ void main() {
           'conversions/cvx_0123456789abcdef0123456789abcdef.json',
           true,
         ),
-        _Boundary('write', 'commit.json', false),
+        _Boundary('write', 'commit.json', true, afterCommit: true),
         _Boundary('write', 'installations.json', true, afterCommit: true),
         _Boundary('delete', '/target', true, afterCommit: true),
       ];
@@ -235,13 +969,7 @@ void main() {
         if (boundary.expectRecovery) {
           await expectLater(
             coordinator.execute(request),
-            throwsA(
-              isA<MambaException>().having(
-                (error) => error.message,
-                'message',
-                contains('needs recovery'),
-              ),
-            ),
+            throwsA(isA<MambaException>()),
           );
           expect(
             fs.file('/work/project/.pi/prompts/reviewer.md').existsSync(),
@@ -428,7 +1156,7 @@ void main() {
         );
         expect(
           fs.file('/work/project/.claude/agents/reviewer.md').existsSync(),
-          isTrue,
+          isFalse,
         );
         final ledger = jsonDecode(
           fs
@@ -506,7 +1234,7 @@ void main() {
       expect(fs.file('/work/project/.pi/prompts/demo.md').existsSync(), isTrue);
       expect(
         fs.directory('/work/project/.claude/skills/demo').existsSync(),
-        isTrue,
+        isFalse,
       );
     });
 
@@ -714,6 +1442,109 @@ void main() {
         expect(outcome.succeeded, isTrue);
         expect(outcome.committed, isTrue);
         expect(outcome.phase, ConversionEvidencePhase.completed);
+      },
+    );
+
+    test('recovery refuses a changed source ledger record', () async {
+      const id = 'cvx_0123456789abcdef0123456789abcdef';
+      const source = '/work/project/.claude/agents/reviewer.md';
+      const root = '/work/project/.claude/agents';
+      fs.file(source)
+        ..createSync(recursive: true)
+        ..writeAsStringSync('original');
+      seedLedger(location: source, nativeRoot: root);
+      io.failingOperation = 'write';
+      io.failingPath = 'installations.json';
+      await expectLater(
+        coordinator.execute(
+          ConversionTransitionRequest(
+            transactionId: id,
+            options: options,
+            source: sourceParticipant(
+              location: source,
+              nativeRoot: root,
+              artifactKind: 'agent-file',
+              nativeForm: 'claude-agent-file',
+            ),
+            target: targetParticipant(
+              location: '/work/project/.pi/prompts/reviewer.md',
+              nativeRoot: '/work/project/.pi/prompts',
+              artifactKind: 'prompt-template',
+              nativeForm: 'pi-prompt-template',
+              installationId: 'ins_fedcba9876543210fedcba9876543210',
+            ),
+            targetFiles: {'reviewer.md': utf8.encode('Review.')},
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      io.failingOperation = null;
+      final ledger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final document =
+          jsonDecode(ledger.readAsStringSync()) as Map<String, dynamic>;
+      (document['installations'] as List<dynamic>).single['location'] =
+          '/work/project/elsewhere.md';
+      final changed = jsonEncode(document);
+      ledger.writeAsStringSync(changed);
+      await expectLater(
+        coordinator.resume(options: options, transactionId: id),
+        throwsA(isA<MambaException>()),
+      );
+      expect(ledger.readAsStringSync(), changed);
+    });
+
+    test(
+      'recovery refuses changed source metadata without overwriting it',
+      () async {
+        const id = 'cvx_0123456789abcdef0123456789abcdef';
+        const source = '/work/project/.claude/agents/reviewer.md';
+        const root = '/work/project/.claude/agents';
+        fs.file(source)
+          ..createSync(recursive: true)
+          ..writeAsStringSync('original');
+        seedLedger(location: source, nativeRoot: root);
+        io.failingOperation = 'write';
+        io.failingPath = 'installations.json';
+        await expectLater(
+          coordinator.execute(
+            ConversionTransitionRequest(
+              transactionId: id,
+              options: options,
+              source: sourceParticipant(
+                location: source,
+                nativeRoot: root,
+                artifactKind: 'agent-file',
+                nativeForm: 'claude-agent-file',
+              ),
+              target: targetParticipant(
+                location: '/work/project/.pi/prompts/reviewer.md',
+                nativeRoot: '/work/project/.pi/prompts',
+                artifactKind: 'prompt-template',
+                nativeForm: 'pi-prompt-template',
+                installationId: 'ins_fedcba9876543210fedcba9876543210',
+              ),
+              targetFiles: {'reviewer.md': utf8.encode('Review.')},
+            ),
+          ),
+          throwsA(isA<MambaException>()),
+        );
+        io.failingOperation = null;
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final document =
+            jsonDecode(ledger.readAsStringSync()) as Map<String, dynamic>;
+        (document['installations'] as List<dynamic>).single['origin'] =
+            <String, Object?>{'status': 'changed after commit'};
+        final changed = jsonEncode(document);
+        ledger.writeAsStringSync(changed);
+        await expectLater(
+          coordinator.resume(options: options, transactionId: id),
+          throwsA(isA<MambaException>()),
+        );
+        expect(ledger.readAsStringSync(), changed);
       },
     );
 
