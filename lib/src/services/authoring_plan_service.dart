@@ -8,6 +8,8 @@ import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
 import '../authoring/authoring_inputs.dart';
+import '../authoring/authoring_profiles.dart';
+import '../authoring/package_manifest.dart';
 import '../native_references.dart';
 import '../prompt_resource_path_scanner.dart';
 import '../skill_files.dart';
@@ -52,6 +54,7 @@ final class AuthoringPlan {
     required this.identity,
     this.candidate,
     this.sidecar,
+    this.conversion,
   });
 
   final String planId;
@@ -67,6 +70,9 @@ final class AuthoringPlan {
 
   /// The proposed native sidecar content, when the form has one.
   final String? sidecar;
+
+  /// The reviewed conversion of the plan, when the operation converts.
+  final ConversionDirection? conversion;
 
   final List<Map<String, Object?>> diagnostics;
   final Map<String, Object?> data;
@@ -137,13 +143,14 @@ interface class AuthoringPlanService {
     final intents = _fieldIntents(inputs);
     final composed = _composeBody(inputs, source, body);
     var placement = _resolvePlacement(inputs, context, fields, source);
+    final effectiveConversion = _effectiveConversion(inputs, source, error);
     final conversion = _analyzeConversion(
       inputs,
       context,
       source,
       fields,
       error,
-      _effectiveConversion(inputs, source, error),
+      effectiveConversion,
     );
     final adjusted = conversion.placement;
     if (adjusted != null) placement = adjusted;
@@ -153,6 +160,7 @@ interface class AuthoringPlanService {
       placement,
       source,
       error,
+      effectiveConversion,
     );
     final rendered = _render(
       inputs,
@@ -184,7 +192,7 @@ interface class AuthoringPlanService {
       'kind': inputs.kind.name,
       'profile': inputs.profile.name,
       'scope': context.scope.name,
-      'conversion': inputs.conversion?.name,
+      'conversion': effectiveConversion?.name,
       'source': source == null
           ? null
           : <String, Object?>{
@@ -198,12 +206,15 @@ interface class AuthoringPlanService {
                   : _sourceProfile(inputs).name,
               'fields': canonicalJsonForHash(source.fields),
               'bodySha256': _digest(source.body),
+              'markerSha256': source.markerSha256,
+              'membersDigest': source.members?.digest,
             },
       'target': <String, Object?>{
         'output': placement.output,
         'root': placement.root,
         'form': placement.form,
         'sidecar': placement.sidecar,
+        'directory': placement.directory,
       },
       'ownership': ownership.name,
       'fields': canonicalJsonForHash(fields),
@@ -233,11 +244,13 @@ interface class AuthoringPlanService {
       'profile': inputs.profile.name,
       'scope': context.scope.name,
       'ownership': ownership.name,
+      'conversion': effectiveConversion?.name,
       'target': <String, Object?>{
         'output': placement.output,
         'root': placement.root,
         'form': placement.form,
         'sidecar': placement.sidecar,
+        'directory': placement.directory,
         'observation': targetObservation,
       },
       'source': source == null
@@ -251,6 +264,9 @@ interface class AuthoringPlanService {
                   ? null
                   : _sourceProfile(inputs).name,
               'bodySha256': _digest(source.body),
+              'markerSha256': source.markerSha256,
+              'membersDigest': source.members?.digest,
+              'memberCount': source.members?.entries.length,
             },
       'fields': canonicalJsonForHash(fields),
       'fieldIntents': canonicalJsonForHash(intents),
@@ -280,6 +296,7 @@ interface class AuthoringPlanService {
       output: placement.output,
       candidate: rendered.content,
       sidecar: rendered.sidecar,
+      conversion: effectiveConversion,
       diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
       data: Map<String, Object?>.unmodifiable(data),
       identity: Map<String, Object?>.unmodifiable(identity),
@@ -346,7 +363,7 @@ interface class AuthoringPlanService {
       final content = _readMarker(path);
       final report = inspectNativeAgentContent(
         content: content,
-        harness: _harness(_sourceProfile(inputs)),
+        harness: agentHarnessForProfile(_sourceProfile(inputs)),
         definitionFile: path,
       );
       return _Source(
@@ -357,6 +374,8 @@ interface class AuthoringPlanService {
         installationId: installationId,
         scope: scope,
         artifactKind: artifactKind,
+        marker: path,
+        markerSha256: _digest(content),
       );
     }
     final type = skillEntityType(path, followLinks: false, fs: _fileSystem);
@@ -397,7 +416,8 @@ interface class AuthoringPlanService {
     final marker = form == PromptForm.skill
         ? _fileSystem.path.join(path, 'SKILL.md')
         : path;
-    final body = _splitBody(_readMarker(marker));
+    final markerContent = _readMarker(marker);
+    final body = _splitBody(markerContent);
     return _Source(
       path: path,
       form: form,
@@ -408,6 +428,11 @@ interface class AuthoringPlanService {
       installationId: installationId,
       scope: scope,
       artifactKind: artifactKind,
+      marker: marker,
+      markerSha256: _digest(markerContent),
+      members: form == PromptForm.skill
+          ? readPackageManifest(_fileSystem, path)
+          : PackageManifest.empty,
     );
   }
 
@@ -660,12 +685,20 @@ interface class AuthoringPlanService {
     }
     final override = inputs.output;
     if (override != null) {
-      return _placementFor(
-        inputs,
-        context.resolvePath(override),
-        null,
-        nameText,
-      );
+      final resolved = context.resolvePath(override);
+      if (_isPackageForm(inputs)) {
+        final shape = _packageOverride(resolved);
+        return _placementFor(
+          inputs,
+          shape.output,
+          null,
+          nameText,
+          directory: shape.directory,
+          sidecar: _sidecarFor(inputs, shape.directory),
+          override: true,
+        );
+      }
+      return _placementFor(inputs, resolved, null, nameText);
     }
     if (nameText.isEmpty) {
       // The missing name is reported as a required field. The plan stays
@@ -725,6 +758,7 @@ interface class AuthoringPlanService {
     String name, {
     String? directory,
     String? sidecar,
+    bool override = false,
   }) => _Placement(
     output: output,
     root: root,
@@ -732,6 +766,7 @@ interface class AuthoringPlanService {
     name: name,
     directory: directory,
     sidecar: sidecar,
+    override: override,
   );
 
   String _formFor(AuthoringInputs inputs) => switch (inputs.kind) {
@@ -751,6 +786,23 @@ interface class AuthoringPlanService {
       return null;
     }
     return _fileSystem.path.join(directory, 'agents', 'openai.yaml');
+  }
+
+  /// Whether the selected profile publishes a native package.
+  bool _isPackageForm(AuthoringInputs inputs) =>
+      inputs.kind == AuthoringKind.skill ||
+      (inputs.kind == AuthoringKind.prompt &&
+          inputs.profile != AuthoringProfile.pi);
+
+  /// The package shape of an explicit output override.
+  ///
+  /// A package override names the package directory, unless it names the
+  /// marker of the package itself.
+  ({String output, String directory}) _packageOverride(String path) {
+    if (_fileSystem.path.basename(path) == 'SKILL.md') {
+      return (output: path, directory: _fileSystem.path.dirname(path));
+    }
+    return (output: _fileSystem.path.join(path, 'SKILL.md'), directory: path);
   }
 
   _ConversionAnalysis _analyzeConversion(
@@ -792,7 +844,16 @@ interface class AuthoringPlanService {
         final name = fields['name'];
         final nameText = name is String ? name.trim() : '';
         if (inputs.profile == AuthoringProfile.pi) {
+          // The Pi conversion replaces the Skill with a standalone native
+          // template instead of keeping a second active resource.
+          final nativeRoot = _nativeRoot(inputs, context);
           return _ConversionAnalysis(
+            placement: _Placement(
+              output: _fileSystem.path.join(nativeRoot!, '$nameText.md'),
+              root: nativeRoot,
+              form: 'prompt-template',
+              name: nameText,
+            ),
             roleDelegation: const <String, Object?>{
               'manualInvocationBecomesTemplate': true,
             },
@@ -919,8 +980,14 @@ interface class AuthoringPlanService {
     _Placement placement,
     _Source? source,
     void Function(String code, String field, String message) error,
+    ConversionDirection? conversion,
   ) {
     final installationId = source?.installationId;
+    if (installationId != null && conversion != null) {
+      // A tracked source keeps its management through a conversion: the
+      // target inherits the managed ownership and the source is retired.
+      return AuthoringOwnership.managedReplacement;
+    }
     if (installationId != null && _sameTarget(placement, source)) {
       final installation = _state.recordById(context, installationId);
       if (_state.verify(installation) != ModificationStatus.unchanged) {
@@ -1042,7 +1109,7 @@ interface class AuthoringPlanService {
     for (final message in applyNativeReferenceMappings(
       rendered,
       inputs.references,
-      _harness(inputs.profile),
+      agentHarnessForProfile(inputs.profile),
     )) {
       error('REFERENCE_MAPPING', 'references', message);
     }
@@ -1057,7 +1124,7 @@ interface class AuthoringPlanService {
     );
     final report = inspectNativeAgentContent(
       content: content,
-      harness: _harness(inputs.profile),
+      harness: agentHarnessForProfile(inputs.profile),
       definitionFile: placement.output,
     );
     for (final diagnostic in report.diagnostics) {
@@ -1111,7 +1178,11 @@ interface class AuthoringPlanService {
     final name = fields['name'];
     if (name is String && name.isNotEmpty) {
       final directory = placement.directory;
+      // The native name must match the directory name of a native placement
+      // and of an in-place edit. An explicit output override keeps the name
+      // of the proposal: the operator selected the folder.
       if (directory != null &&
+          !placement.override &&
           !_fileSystem.path.equals(
             _fileSystem.path.basename(directory),
             name,
@@ -1438,16 +1509,6 @@ PromptConsumer _consumer(AuthoringProfile profile) => switch (profile) {
   AuthoringProfile.global => PromptConsumer.claude,
 };
 
-AgentHarness _harness(AuthoringProfile profile) => switch (profile) {
-  AuthoringProfile.claude => AgentHarness.claude,
-  AuthoringProfile.codex => AgentHarness.codex,
-  AuthoringProfile.pi => AgentHarness.pi,
-  AuthoringProfile.global => throw MambaException(
-    'A global profile does not target an Agent definition.',
-    exitCode: 4,
-  ),
-};
-
 /// The native profile of the selected source.
 ///
 /// The source profile is explicit when it is supplied. It otherwise follows
@@ -1482,6 +1543,9 @@ final class _Source {
     this.installationId,
     this.scope,
     this.artifactKind,
+    this.marker,
+    this.markerSha256,
+    this.members,
   });
 
   final String? path;
@@ -1494,6 +1558,18 @@ final class _Source {
   final String? installationId;
   final LifecycleScope? scope;
   final ArtifactKind? artifactKind;
+
+  /// The reviewed marker file of the source.
+  ///
+  /// A package source is reviewed through its marker, a regular file through
+  /// itself.
+  final String? marker;
+
+  /// The content digest of the reviewed marker.
+  final String? markerSha256;
+
+  /// The reviewed manifest of the owned package members.
+  final PackageManifest? members;
 }
 
 final class _Placement {
@@ -1504,6 +1580,7 @@ final class _Placement {
     required this.name,
     this.directory,
     this.sidecar,
+    this.override = false,
   });
 
   /// The proposed target, or null while a required field is missing.
@@ -1513,6 +1590,9 @@ final class _Placement {
   final String name;
   final String? directory;
   final String? sidecar;
+
+  /// Whether the placement is an explicit output override.
+  final bool override;
 }
 
 final class _ConversionAnalysis {

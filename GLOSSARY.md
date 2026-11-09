@@ -34,6 +34,18 @@ The documented set of named native fields for one resource kind and profile, wit
 **Authoring plan**:
 A read-only proposal for a native authoring or conversion operation, carrying the proposed native content, the reviewed observations and a stable plan identity. Building one writes nothing.
 
+**Authoring publication**:
+The reviewed publication of one authoring plan into its native location. It never rebuilds the proposal: a changed plan, a changed source, an occupied target or an unverified authority refuses the publication.
+
+**Author-only output**:
+A published native output without an ongoing installation record. It is untracked, not inert: a harness may still discover a file placed in one of its native roots.
+
+**Authoring receipt**:
+The evidence of one authoring act for an unmanaged output. A receipt is not an installation record, it does not bind an update source and it never adopts a source or an output.
+
+**Authoring recovery copy**:
+The protected copy of the previous bytes of an edited, replaced or retired source. It is evidence of the earlier content, not an installation record, and it does not restore ownership of the source.
+
 **Harness**:
 An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used.
 

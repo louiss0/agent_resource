@@ -1445,7 +1445,9 @@ interface class ConversionCoordinator {
       ),
       nativeDestination: sameIdentity
           ? prior!.nativeDestination
-          : targetOwnership.nativeProfile ?? targetOwnership.nativeForm,
+          : targetOwnership.nativeDestination ??
+                targetOwnership.nativeProfile ??
+                targetOwnership.nativeForm,
       nativeForm: targetOwnership.nativeForm,
       location: target.location,
       nativeRoot: targetOwnership.nativeRoot ?? target.location,

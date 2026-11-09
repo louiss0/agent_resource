@@ -93,6 +93,7 @@ harness runtime verification.
 | Implement shared native text inputs and read-only authoring plans | [#67](https://github.com/louiss0/agent_resource/issues/67) | `52f7b72` | `lib/src/authoring/`, `lib/src/services/authoring_plan_service.dart`; `docs/specs/shared-native-authoring-inputs.md` |
 | Implement versioned conversion evidence identity and ownership compatibility | [#92](https://github.com/louiss0/agent_resource/issues/92) | local commit | `lib/src/conversion/`, `lib/src/services/conversion_evidence_service.dart`; `docs/specs/conversion-evidence-identity.md` |
 | Implement coordinated authoring conversion evidence and recovery state | [#68](https://github.com/louiss0/agent_resource/issues/68) | local commit | `lib/src/services/conversion_coordinator_service.dart`; coordinated ledger support in `lifecycle_state_service.dart`; `docs/specs/coordinated-conversion-state.md` |
+| Implement safe author-only and managed native publication | [#69](https://github.com/louiss0/agent_resource/issues/69) | local commit | `lib/src/services/authoring_publication_service.dart`; `lib/src/authoring/package_manifest.dart`; `docs/specs/safe-native-publication.md` |
 
 The remaining rows stay pending an explicit implementation request, one
 bounded delivery ticket at a time.

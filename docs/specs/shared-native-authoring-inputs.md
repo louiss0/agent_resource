@@ -124,8 +124,9 @@ Prompts declare `policy.allow_implicit_invocation: false` in
   falling back to author-only output.
 - **Placement**: the default target is the native root of the selected kind,
   profile and scope. An explicit output override places the output in a pack
-  or source folder. A placement does not prove native discovery or
-  activation.
+  or source folder; a package override names the package directory, unless it
+  names the marker of the package itself. A placement does not prove native
+  discovery or activation.
 - **Occupancy**: an occupied target is refused. A new output never takes over
   an existing entry, not even one with identical bytes. Only an edit and a
   strict conversion may place their target on the source: a clone and a
@@ -157,8 +158,15 @@ Prompts declare `policy.allow_implicit_invocation: false` in
   operation, kind, profile, scope, conversion, source observation, target
   placement, ownership, merged fields, field intents, body digest, decisions,
   reference mappings, role and delegation observations, reference choices and
-  cross-scope observations. Equal proposals produce the same identity; a
-  changed proposal produces a different one.
+  cross-scope observations. The source observation binds the marker digest
+  and the reviewed package member manifest of the source, and the target
+  placement binds the package directory of the placement. Equal proposals
+  produce the same identity; a changed proposal produces a different one.
+- **Package members**: the reviewed manifest of a package source binds every
+  owned member by relative path, type, length and content digest. The
+  manifest is bounded: a link, an unsupported entry, an exhausted entry,
+  depth or size budget refuses the review instead of publishing an
+  unreviewed package.
 - **Scope**: the resolved lifecycle scope is authoritative. A selected scope
   that disagrees with it is refused, and the reported scope is the resolved
   one.

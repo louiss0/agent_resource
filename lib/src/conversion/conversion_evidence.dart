@@ -123,6 +123,7 @@ final class ConversionOwnership {
     this.installationId,
     this.receiptId,
     this.nativeProfile,
+    this.nativeDestination,
     this.nativeRoot,
     this.baselineDigest,
     this.provenance = const <String, Object?>{},
@@ -136,6 +137,7 @@ final class ConversionOwnership {
       'receiptId',
       'nativeForm',
       'nativeProfile',
+      'nativeDestination',
       'location',
       'nativeRoot',
       'scope',
@@ -151,6 +153,7 @@ final class ConversionOwnership {
       receiptId: receiptId,
       nativeForm: _string(map, 'nativeForm'),
       nativeProfile: _nullableString(map, 'nativeProfile'),
+      nativeDestination: _nullableString(map, 'nativeDestination'),
       location: _absolutePath(_string(map, 'location')),
       nativeRoot: map['nativeRoot'] == null
           ? null
@@ -169,6 +172,15 @@ final class ConversionOwnership {
   final String? receiptId;
   final String nativeForm;
   final String? nativeProfile;
+
+  /// The native destination of the owned artifact.
+  ///
+  /// The destination is a native concept of the artifact kind: an Agent owns
+  /// `native` or `shared`, a Skill owns `claude`, `codex` or `shared`. It is
+  /// recorded explicitly so a reconciled record binds the destination of the
+  /// target instead of guessing it from another dimension.
+  final String? nativeDestination;
+
   final String location;
   final String? nativeRoot;
   final String scope;
@@ -202,6 +214,7 @@ final class ConversionOwnership {
     'receiptId': receiptId,
     'nativeForm': nativeForm,
     'nativeProfile': nativeProfile,
+    if (nativeDestination != null) 'nativeDestination': nativeDestination,
     'location': location,
     'nativeRoot': nativeRoot,
     'scope': scope,
