@@ -9,6 +9,7 @@ import 'package:mamba/mamba.dart';
 import '../agent_inspection.dart';
 import '../agent_inventory.dart';
 import '../skill_files.dart';
+import 'conversion_coordinator_service.dart';
 import 'lifecycle_state_service.dart';
 
 enum AgentDestination { native, shared }
@@ -363,12 +364,24 @@ interface class AgentLifecycleService {
     LifecycleOptions options, {
     String? transactionId,
     String? action,
-  }) => state.recover(
-    resource: _AgentResource(AgentHarness.claude, this, true),
-    context: LifecycleContext.resolve(options, fileSystem: _fileSystem),
-    transactionId: transactionId,
-    action: action,
-  );
+    String? planId,
+  }) {
+    if (transactionId?.startsWith('cvx_') == true) {
+      return ConversionCoordinator(io: state.io, state: state).recoverReviewed(
+        options.copyWith(dryRun: options.dryRun || action == null),
+        transactionId!,
+        planId: planId,
+        action: action,
+        editKinds: const {ArtifactKind.agentFile},
+      );
+    }
+    return state.recover(
+      resource: _AgentResource(AgentHarness.claude, this, true),
+      context: LifecycleContext.resolve(options, fileSystem: _fileSystem),
+      transactionId: transactionId,
+      action: action,
+    );
+  }
 
   Future<LifecycleResult> backupList(LifecycleOptions options) =>
       state.backupList(
@@ -483,13 +496,11 @@ interface class AgentLifecycleService {
     });
   }
 
-  String _eligibleAuthority(
+  List<String> _authorityRoots(
     LifecycleContext context,
-    String location,
     AgentHarness harness,
     AgentDestination destination,
   ) {
-    _requireExtension(location, harness);
     final candidates = <String>[];
     if (destination == AgentDestination.shared) {
       candidates.add(_defaultRoot(context, harness, destination));
@@ -524,6 +535,17 @@ interface class AgentLifecycleService {
         current = parent;
       }
     }
+    return candidates;
+  }
+
+  String _eligibleAuthority(
+    LifecycleContext context,
+    String location,
+    AgentHarness harness,
+    AgentDestination destination,
+  ) {
+    _requireExtension(location, harness);
+    final candidates = _authorityRoots(context, harness, destination);
     final containing =
         candidates
             .where((root) => _fileSystem.path.isWithin(root, location))
@@ -737,6 +759,31 @@ final class _AgentResource implements LifecycleResource {
     String? excludePath,
     Set<String> allowedPaths = const <String>{},
   }) async {
+    final service = owner!;
+    service.state.checkPendingConversions(
+      context,
+      uniqueness: (
+        kind: kind,
+        name: name,
+        nativeProfile: harness.name,
+        roots: [
+          for (final scope in [LifecycleScope.project, LifecycleScope.user])
+            ...service._authorityRoots(
+              LifecycleContext.resolve(
+                context.options.copyWith(scope: scope),
+                fileSystem: _fs,
+              ),
+              harness,
+              AgentDestination.native,
+            ),
+          if (harness == AgentHarness.pi)
+            _fs.path.join(context.projectRoot, '.agents', 'agents'),
+          if (harness == AgentHarness.claude)
+            for (final root in context.options.readRoots)
+              _fs.path.join(context.resolvePath(root), '.claude', 'agents'),
+        ],
+      ),
+    );
     final report = await listNativeAgents(
       AgentInventoryInput(
         processWorkingDirectory: context.options.processWorkingDirectory,

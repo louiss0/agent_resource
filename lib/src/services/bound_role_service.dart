@@ -250,200 +250,222 @@ final class BoundRoleService {
     }
     final binding = _binding(request, options);
     final installationId = request.installationId;
-    String? definitionId;
-    String? definitionBackupId;
-    ParentResult? registration;
-    agent.state.ensureLedger(
-      LifecycleContext.resolve(options, fileSystem: _fileSystem),
-    );
-    Future<void> publishDefinition() async {
-      if (request.ownership == BoundOwnership.registration) return;
-      if (request.operation == BoundOperation.create) {
-        final source = request.source;
-        if (source == null) {
-          throw MambaException(
-            'Bound-role create requires a definition source.',
-          );
-        }
-        final installed = await agent.install(
-          AgentInstallInput(
-            options: options.copyWith(approved: true),
-            source: source,
-            harness: AgentHarness.codex,
-            output: request.output,
+    return agent.state.runMutation(
+      context: LifecycleContext.resolve(options, fileSystem: _fileSystem),
+      installationIds: {?installationId},
+      locations: [
+        if (request.ownership != BoundOwnership.definition) binding.configFile,
+        if (request.operation != BoundOperation.create)
+          if (_definitionFile(binding, request) case final String definition)
+            definition,
+        if (request.operation == BoundOperation.create &&
+            request.ownership != BoundOwnership.registration)
+          LifecycleContext.resolve(
+            options,
+            fileSystem: _fileSystem,
+          ).resolvePath(
+            request.output ?? _defaultDefinitionLocation(request, options),
           ),
+      ],
+      body: () async {
+        String? definitionId;
+        String? definitionBackupId;
+        ParentResult? registration;
+        agent.state.ensureLedger(
+          LifecycleContext.resolve(options, fileSystem: _fileSystem),
         );
-        definitionId = installed.data['installationId']! as String;
-        return;
-      }
-      if (request.operation == BoundOperation.adopt) {
-        final definition = _definitionFile(binding, request);
-        if (definition == null) {
-          throw MambaException(
-            'The bound role has no definition file to adopt.',
-          );
-        }
-        final adopted = await agent.adoptBoundDefinition(
-          AgentInstallInput(
-            options: options,
-            source: definition,
-            harness: AgentHarness.codex,
-          ),
-        );
-        definitionId = adopted.data['installationId']! as String;
-        return;
-      }
-      if (installationId == null) {
-        throw MambaException(
-          'Bound-role ${request.operation.name} requires a definition installationId.',
-        );
-      }
-      if (request.operation == BoundOperation.replace) {
-        final source = request.source;
-        if (source == null) {
-          throw MambaException('Bound-role replace requires a source file.');
-        }
-        final replaced = await agent.replace(
-          LifecycleReplaceInput(
-            options: options.copyWith(approved: true),
-            installationId: installationId,
-            source: source,
-          ),
-        );
-        definitionId = replaced.data['installationId']! as String;
-        definitionBackupId = replaced.data['backupId']! as String;
-      } else {
-        final removed = await agent.remove(
-          LifecycleIdInput(
-            options: options.copyWith(approved: true),
-            id: installationId,
-          ),
-        );
-        definitionId = removed.data['installationId']! as String;
-      }
-    }
-
-    Future<void> publishRegistration() async {
-      if (request.ownership == BoundOwnership.definition) return;
-      final parentRequest = _registrationRequest(request, options, binding);
-      final parentPlan = await parent.plan(
-        request: parentRequest,
-        options: options,
-      );
-      registration = await parent.apply(
-        request: ParentRequest(
-          operation: ParentOperation.apply,
-          harness: parentRequest.harness,
-          scope: parentRequest.scope,
-          layer: parentRequest.layer,
-          file: parentRequest.file,
-          changes: parentRequest.changes,
-          adopt: parentRequest.adopt,
-          affected: parentRequest.affected,
-          planId: parentPlan.data['planId']! as String,
-          clientsStopped: true,
-        ),
-        options: options.copyWith(approved: true),
-      );
-    }
-
-    try {
-      if (request.operation == BoundOperation.create ||
-          request.operation == BoundOperation.replace) {
-        await publishDefinition();
-        await publishRegistration();
-      } else {
-        await publishRegistration();
-        await publishDefinition();
-      }
-      return LifecycleResult(
-        command: 'agent ${request.operation.name}',
-        outcome: switch (request.operation) {
-          BoundOperation.create => 'created',
-          BoundOperation.adopt => 'adopted',
-          BoundOperation.replace => 'replaced',
-          BoundOperation.remove => 'removed',
-        },
-        data: <String, Object?>{
-          'planId': request.planId,
-          'ownership': request.ownership.name,
-          'roleKey': request.roleKey,
-          'configFile': binding.configFile,
-          'installationId': definitionId ?? installationId,
-          'parentId': registration?.data['parentId'],
-          'backupId': registration?.data['backupId'],
-          'definitionCommitted': definitionId != null,
-          'registrationCommitted': registration != null,
-        },
-      );
-    } catch (error) {
-      if ((request.operation == BoundOperation.create ||
-              request.operation == BoundOperation.replace) &&
-          definitionId != null &&
-          registration == null) {
-        try {
+        Future<void> publishDefinition() async {
+          if (request.ownership == BoundOwnership.registration) return;
           if (request.operation == BoundOperation.create) {
-            await agent.remove(
-              LifecycleIdInput(
+            final source = request.source;
+            if (source == null) {
+              throw MambaException(
+                'Bound-role create requires a definition source.',
+              );
+            }
+            final installed = await agent.install(
+              AgentInstallInput(
                 options: options.copyWith(approved: true),
-                id: definitionId!,
+                source: source,
+                harness: AgentHarness.codex,
+                output: request.output,
               ),
             );
-          } else {
-            final backup = definitionBackupId;
-            if (backup == null) {
+            definitionId = installed.data['installationId']! as String;
+            return;
+          }
+          if (request.operation == BoundOperation.adopt) {
+            final definition = _definitionFile(binding, request);
+            if (definition == null) {
               throw MambaException(
-                'The definition replacement has no retained backup for recovery.',
+                'The bound role has no definition file to adopt.',
+              );
+            }
+            final adopted = await agent.adoptBoundDefinition(
+              AgentInstallInput(
+                options: options,
+                source: definition,
+                harness: AgentHarness.codex,
+              ),
+            );
+            definitionId = adopted.data['installationId']! as String;
+            return;
+          }
+          if (installationId == null) {
+            throw MambaException(
+              'Bound-role ${request.operation.name} requires a definition installationId.',
+            );
+          }
+          if (request.operation == BoundOperation.replace) {
+            final source = request.source;
+            if (source == null) {
+              throw MambaException(
+                'Bound-role replace requires a source file.',
+              );
+            }
+            final replaced = await agent.replace(
+              LifecycleReplaceInput(
+                options: options.copyWith(approved: true),
+                installationId: installationId,
+                source: source,
+              ),
+            );
+            definitionId = replaced.data['installationId']! as String;
+            definitionBackupId = replaced.data['backupId']! as String;
+          } else {
+            final removed = await agent.remove(
+              LifecycleIdInput(
+                options: options.copyWith(approved: true),
+                id: installationId,
+              ),
+            );
+            definitionId = removed.data['installationId']! as String;
+          }
+        }
+
+        Future<void> publishRegistration() async {
+          if (request.ownership == BoundOwnership.definition) return;
+          final parentRequest = _registrationRequest(request, options, binding);
+          final parentPlan = await parent.plan(
+            request: parentRequest,
+            options: options,
+          );
+          registration = await parent.apply(
+            request: ParentRequest(
+              operation: ParentOperation.apply,
+              harness: parentRequest.harness,
+              scope: parentRequest.scope,
+              layer: parentRequest.layer,
+              file: parentRequest.file,
+              changes: parentRequest.changes,
+              adopt: parentRequest.adopt,
+              affected: parentRequest.affected,
+              planId: parentPlan.data['planId']! as String,
+              clientsStopped: true,
+            ),
+            options: options.copyWith(approved: true),
+          );
+        }
+
+        try {
+          if (request.operation == BoundOperation.create ||
+              request.operation == BoundOperation.replace) {
+            await publishDefinition();
+            await publishRegistration();
+          } else {
+            await publishRegistration();
+            await publishDefinition();
+          }
+          return LifecycleResult(
+            command: 'agent ${request.operation.name}',
+            outcome: switch (request.operation) {
+              BoundOperation.create => 'created',
+              BoundOperation.adopt => 'adopted',
+              BoundOperation.replace => 'replaced',
+              BoundOperation.remove => 'removed',
+            },
+            data: <String, Object?>{
+              'planId': request.planId,
+              'ownership': request.ownership.name,
+              'roleKey': request.roleKey,
+              'configFile': binding.configFile,
+              'installationId': definitionId ?? installationId,
+              'parentId': registration?.data['parentId'],
+              'backupId': registration?.data['backupId'],
+              'definitionCommitted': definitionId != null,
+              'registrationCommitted': registration != null,
+            },
+          );
+        } catch (error) {
+          if ((request.operation == BoundOperation.create ||
+                  request.operation == BoundOperation.replace) &&
+              definitionId != null &&
+              registration == null) {
+            try {
+              if (request.operation == BoundOperation.create) {
+                await agent.remove(
+                  LifecycleIdInput(
+                    options: options.copyWith(approved: true),
+                    id: definitionId!,
+                  ),
+                );
+              } else {
+                final backup = definitionBackupId;
+                if (backup == null) {
+                  throw MambaException(
+                    'The definition replacement has no retained backup for recovery.',
+                    exitCode: 6,
+                  );
+                }
+                await agent.restore(
+                  LifecycleIdInput(
+                    options: options.copyWith(approved: true),
+                    id: backup,
+                  ),
+                );
+              }
+            } on MambaException catch (recoveryError) {
+              throw MambaException(
+                'The bound-role mutation requires recovery; definition rollback could not be proven. $recoveryError',
                 exitCode: 6,
               );
             }
-            await agent.restore(
-              LifecycleIdInput(
-                options: options.copyWith(approved: true),
-                id: backup,
-              ),
+            throw MambaException(
+              'Registration failed and the definition was restored to its prior state. $error',
+              exitCode: 5,
             );
           }
-        } on MambaException catch (recoveryError) {
-          throw MambaException(
-            'The bound-role mutation requires recovery; definition rollback could not be proven. $recoveryError',
-            exitCode: 6,
-          );
+          if (registration != null) {
+            final backupId = registration!.data['backupId'];
+            if (backupId is! String) {
+              throw MambaException(
+                'The combined bound-role operation failed after registration, and no registration backup is available for recovery. $error',
+                exitCode: 6,
+              );
+            }
+            try {
+              final restorePlan = parent.restorePlanId(options, backupId);
+              await parent.restore(
+                options: options.copyWith(approved: true),
+                backupId: backupId,
+                planId: restorePlan,
+                clientsStopped: true,
+              );
+            } on MambaException catch (recoveryError) {
+              throw MambaException(
+                'The combined bound-role operation requires recovery; registration rollback could not be proven. $recoveryError',
+                exitCode: 6,
+              );
+            }
+            throw MambaException(
+              'The definition step failed and registration was restored; no combined bound-role change was committed. $error',
+              exitCode: 5,
+            );
+          }
+          rethrow;
         }
-        throw MambaException(
-          'Registration failed and the definition was restored to its prior state. $error',
-          exitCode: 5,
-        );
-      }
-      if (registration != null) {
-        final backupId = registration!.data['backupId'];
-        if (backupId is! String) {
-          throw MambaException(
-            'The combined bound-role operation failed after registration, and no registration backup is available for recovery. $error',
-            exitCode: 6,
-          );
-        }
-        try {
-          final restorePlan = parent.restorePlanId(options, backupId);
-          await parent.restore(
-            options: options.copyWith(approved: true),
-            backupId: backupId,
-            planId: restorePlan,
-            clientsStopped: true,
-          );
-        } on MambaException catch (recoveryError) {
-          throw MambaException(
-            'The combined bound-role operation requires recovery; registration rollback could not be proven. $recoveryError',
-            exitCode: 6,
-          );
-        }
-        throw MambaException(
-          'The definition step failed and registration was restored; no combined bound-role change was committed. $error',
-          exitCode: 5,
-        );
-      }
-      rethrow;
-    }
+      },
+    );
   }
 
   Future<Map<String, Object?>> _plan(

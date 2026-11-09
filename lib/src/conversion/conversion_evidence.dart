@@ -796,6 +796,21 @@ final class ConversionEvidence {
   ConversionEvidence withPhase(ConversionEvidencePhase phase) =>
       copyWith(phase: phase);
 
+  /// The immutable participant intent before staging or native publication.
+  ConversionEvidence get initialIntent => copyWith(
+    phase: ConversionEvidencePhase.prepared,
+    source: ConversionParticipant.fromJson({
+      ...source.toJson(),
+      'payload': null,
+    }),
+    target: ConversionParticipant.fromJson({
+      ...target.toJson(),
+      'staging': null,
+      'publication': null,
+    }),
+    observations: {...observations, 'coordinatorSourceRemoval': false},
+  );
+
   /// The serialized evidence document.
   Map<String, Object?> toJson() => <String, Object?>{
     'schemaVersion': conversionEvidenceSchemaVersion,

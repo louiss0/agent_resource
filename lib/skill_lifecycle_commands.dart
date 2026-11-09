@@ -528,6 +528,10 @@ final class SkillRecoverCommand extends Command {
 
   static final _id = NormalPositional.optional('transaction-id');
   static final _action = ChoiceOption('action', choices: RecoveryAction.values);
+  static final _plan = StringOption(
+    'plan-id',
+    description: 'Fresh reviewed plan ID for coordinated authoring receipts.',
+  );
   static final _scope = ChoiceOption.withDefault(
     'scope',
     choices: LifecycleScope.values,
@@ -553,6 +557,7 @@ final class SkillRecoverCommand extends Command {
         discretionaryPositionals: [_id],
         options: [
           _action,
+          _plan,
           _scope,
           _format,
           _cwd,
@@ -601,6 +606,7 @@ final class SkillRecoverCommand extends Command {
               options(true, false),
               transactionId: valueOf(_id),
               action: action,
+              planId: valueOf(_plan),
             ),
             _confirmation,
           );
@@ -608,6 +614,7 @@ final class SkillRecoverCommand extends Command {
       options(dryRun, approved),
       transactionId: valueOf(_id),
       action: action,
+      planId: valueOf(_plan),
     );
     return _render(result, format);
   }

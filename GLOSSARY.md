@@ -88,6 +88,12 @@ The recorded relationship between a source resource and its converted successor,
 **Conversion restore**:
 An explicitly reviewed reversal of a completed conversion using retained source evidence, distinct from recovering an interrupted conversion or automatically adopting an unmanaged resource.
 
+**Coordinated transaction reservation**:
+The persisted claim of one pending coordinated conversion over its source and target participants, their installation identities, and their native names. The reservation is held by the recorded evidence rather than by the current occupant of a path, so a changed or missing occupant neither releases it nor proves the path free.
+
+**Participant reference**:
+The immutable intent of one coordinated conversion published in the scope that does not coordinate it, so that the reservation is visible to a mutation that cannot reach the coordinating scope. A participant reference is a discovery hint, never permission to act in another scope.
+
 **Mutation plan**:
 A reviewable proposal for changing a resource installation and its management records, based on observations rather than reserved filesystem state or permission to bypass safety checks.
 

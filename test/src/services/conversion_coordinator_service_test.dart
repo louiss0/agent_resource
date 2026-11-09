@@ -1,12 +1,19 @@
 import 'dart:convert';
 import 'dart:io' show FileSystemException;
 
+import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/agent_inspection.dart';
 import 'package:agent_resource/src/conversion/conversion_evidence.dart';
+import 'package:agent_resource/src/services/agent_lifecycle_service.dart';
 import 'package:agent_resource/src/services/conversion_coordinator_service.dart';
 import 'package:agent_resource/src/services/conversion_evidence_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:agent_resource/src/services/pack_lifecycle_service.dart';
+import 'package:agent_resource/src/services/parent_config_service.dart';
+import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
 import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
+import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
 
 /// One durable boundary of the coordinated transition.
@@ -236,7 +243,731 @@ void main() {
     );
   }
 
+  group('agent_resource', () {
+    group('agent', () {
+      for (final action in ['remove', 'replace']) {
+        group(action, () {
+          test('refuses a pending participant after occupant changes and reconstruction', () async {
+            final request = seedRequest();
+            fs
+                .file(request.source.location)
+                .writeAsStringSync(
+                  '---\nname: reviewer\ndescription: Review.\n---\nOriginal.\n',
+                );
+            final ledger = fs.file(
+              '/work/project/.agent-resource/installations.json',
+            );
+            final document = jsonDecode(ledger.readAsStringSync()) as Map;
+            final record = (document['installations'] as List).single as Map;
+            record['nativeDestination'] = 'native';
+            record['name'] = 'reviewer';
+            record['baseline'] = state
+                .baselineFor(request.source.location, ArtifactKind.agentFile)
+                .toJson();
+            ledger.writeAsStringSync(jsonEncode(document));
+            final updated = ConversionTransitionRequest(
+              transactionId: request.transactionId,
+              options: options,
+              source: sourceParticipant(
+                location: request.source.location,
+                nativeRoot: request.source.nativeRoot!,
+                artifactKind: 'agent-file',
+                nativeForm: 'claude-agent-file',
+              ),
+              target: request.target,
+              targetFiles: request.targetFiles,
+            );
+            io.after = (operation, path) {
+              if (operation == 'write' &&
+                  path.endsWith('/conversions/${request.transactionId}.json')) {
+                throw StateError('Interrupted after intent');
+              }
+            };
+            await expectLater(coordinator.execute(updated), throwsStateError);
+            io.after = null;
+            // Even rebaselining the current occupant externally cannot release
+            // the persisted participant's path or installation identity.
+            fs
+                .file(request.source.location)
+                .writeAsStringSync(
+                  '---\nname: reviewer\ndescription: Review.\n---\nChanged occupant.\n',
+                );
+            record['baseline'] = state
+                .baselineFor(request.source.location, ArtifactKind.agentFile)
+                .toJson();
+            ledger.writeAsStringSync(jsonEncode(document));
+            fs
+                .file('/replacement.md')
+                .writeAsStringSync(
+                  '---\nname: reviewer\ndescription: Review.\n---\nReplacement.\n',
+                );
+            final before = ledger.readAsStringSync();
+            final result = await createExecutor(fileSystem: fs).fake().execute([
+              'agent',
+              action,
+              sourceInstallationId,
+              if (action == 'replace') '/replacement.md',
+              '--scope',
+              'project',
+              '--cwd',
+              '/work/project/',
+              '--project-root',
+              '/work/project/',
+              '--home',
+              '/home/user/',
+              '--state-dir',
+              '/work/state/',
+              '--yes',
+              '--format',
+              'json',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'status', 6)
+                  .having(
+                    (value) => value.message,
+                    'diagnostic',
+                    contains('Pending coordinated transaction'),
+                  )
+                  .having((value) => value.output, 'output', isNull)
+                  .having(
+                    (value) => value.error.phase,
+                    'phase',
+                    MambaExecutionPhase.run,
+                  )
+                  .having((value) => value.error.commandPath, 'command', [
+                    'agent_resource',
+                    'agent',
+                    action,
+                  ]),
+            );
+            expect(ledger.readAsStringSync(), before);
+            expect(
+              fs.file(request.source.location).readAsStringSync(),
+              contains('Changed occupant.'),
+            );
+          });
+        });
+      }
+    });
+  });
+
   group('ConversionCoordinator', () {
+    for (final fault in [
+      'missing coordinator',
+      'corrupt participant',
+      'unknown schema',
+    ]) {
+      test('legacy origin update preserves state with $fault', () async {
+        final request = seedRequest();
+        io.after = (operation, path) {
+          if (operation == 'write' &&
+              path.endsWith('/conversions/${request.transactionId}.json')) {
+            throw StateError('Interrupted after intent');
+          }
+        };
+        await expectLater(coordinator.execute(request), throwsStateError);
+        io.after = null;
+        final authority = fs.file(
+          '/work/project/.agent-resource/conversions/${request.transactionId}.json',
+        );
+        if (fault == 'missing coordinator') {
+          authority.deleteSync();
+        } else if (fault == 'corrupt participant') {
+          fs
+              .file(
+                '/work/state/conversion-participants/${request.transactionId}.json',
+              )
+              .writeAsStringSync('{broken');
+        } else {
+          final document = jsonDecode(authority.readAsStringSync()) as Map;
+          document['schemaVersion'] = 999;
+          authority.writeAsStringSync(jsonEncode(document));
+        }
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final before = ledger.readAsStringSync();
+        final restarted = LifecycleStateService(io: LifecycleIO(fs: fs));
+        for (var attempt = 0; attempt < 2; attempt++) {
+          await expectLater(
+            restarted.updateOrigin(
+              context: LifecycleContext.resolve(
+                options.copyWith(approved: true),
+                fileSystem: fs,
+              ),
+              installationId: sourceInstallationId,
+              expectedOrigin: const {'status': 'unknown'},
+              origin: const {'status': 'known'},
+            ),
+            throwsA(
+              isA<MambaException>().having(
+                (error) => error.exitCode,
+                'status',
+                6,
+              ),
+            ),
+          );
+        }
+        expect(ledger.readAsStringSync(), before);
+        expect(fs.file(request.source.location).readAsStringSync(), 'original');
+        expect(fs.file(request.target.location).existsSync(), isFalse);
+      });
+    }
+
+    test('a substituted terminal coordinator cannot release a pending participant', () async {
+      final request = seedRequest();
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('/conversions/${request.transactionId}.json')) {
+          throw StateError('Interrupted after intent');
+        }
+      };
+      await expectLater(coordinator.execute(request), throwsStateError);
+      io.after = null;
+      final authority = fs.file(
+        '/work/project/.agent-resource/conversions/${request.transactionId}.json',
+      );
+      final pending = ConversionEvidence.decode(authority.readAsStringSync());
+      authority.writeAsStringSync(
+        pending
+            .copyWith(
+              phase: ConversionEvidencePhase.rolledBack,
+              observations: {...pending.observations, 'substituted': true},
+            )
+            .encode(),
+      );
+      final ledger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final before = ledger.readAsStringSync();
+      await expectLater(
+        LifecycleStateService(io: LifecycleIO(fs: fs)).updateOrigin(
+          context: LifecycleContext.resolve(
+            options.copyWith(approved: true),
+            fileSystem: fs,
+          ),
+          installationId: sourceInstallationId,
+          expectedOrigin: const {'status': 'unknown'},
+          origin: const {'status': 'known'},
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(ledger.readAsStringSync(), before);
+    });
+
+    test(
+      'Agent install reserves unpublished native names, not unrelated names',
+      () async {
+        final original = seedRequest();
+        fs
+            .file(original.source.location)
+            .writeAsStringSync(
+              '---\nname: reviewer\ndescription: Review.\n---\nOriginal.\n',
+            );
+        final request = ConversionTransitionRequest(
+          transactionId: original.transactionId,
+          options: options,
+          source: sourceParticipant(
+            location: original.source.location,
+            nativeRoot: original.source.nativeRoot!,
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+          ),
+          target: targetParticipant(
+            location: '/work/project/.claude/agents/team/different-filename.md',
+            nativeRoot: '/work/project/.claude/agents',
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+          ),
+          targetFiles: {
+            'different-filename.md': utf8.encode(
+              '---\nname: reserved\ndescription: Reserved.\n---\nWork.\n',
+            ),
+          },
+        );
+        io.after = (operation, path) {
+          if (operation == 'write' &&
+              path.endsWith('/conversions/${request.transactionId}.json')) {
+            throw StateError('Interrupted before publication');
+          }
+        };
+        await expectLater(coordinator.execute(request), throwsStateError);
+        io.after = null;
+        Future<LifecycleResult> install(String name) {
+          fs.file('/incoming/$name.md')
+            ..createSync(recursive: true)
+            ..writeAsStringSync(
+              '---\nname: $name\ndescription: Work.\n---\nWork.\n',
+            );
+          return AgentLifecycleService(fileSystem: fs).install(
+            AgentInstallInput(
+              options: options,
+              source: '/incoming/$name.md',
+              harness: AgentHarness.claude,
+            ),
+          );
+        }
+
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final before = ledger.readAsStringSync();
+        await expectLater(
+          install('reserved'),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'status', 6)
+                .having(
+                  (error) => error.message,
+                  'diagnostic',
+                  contains('Pending coordinated transaction'),
+                ),
+          ),
+        );
+        expect(
+          fs.file('/work/project/.claude/agents/reserved.md').existsSync(),
+          isFalse,
+        );
+        expect(ledger.readAsStringSync(), before);
+        expect((await install('writer')).outcome, 'installed');
+        final freshCoordinator = ConversionCoordinator(
+          io: LifecycleIO(fs: fs),
+          state: LifecycleStateService(io: LifecycleIO(fs: fs)),
+        );
+        final review = await freshCoordinator.recoverReviewed(
+          options.copyWith(dryRun: true),
+          request.transactionId,
+        );
+        await freshCoordinator.recoverReviewed(
+          options.copyWith(approved: true),
+          request.transactionId,
+          planId: review.data['planId'] as String,
+        );
+        expect((await install('reserved')).outcome, 'installed');
+      },
+    );
+
+    test('Skill install reserves pending names across visible roots, not unrelated names', () async {
+      final original = seedRequest();
+      final request = ConversionTransitionRequest(
+        transactionId: original.transactionId,
+        options: options,
+        source: original.source,
+        target: targetParticipant(
+          location: '/work/project/.agents/skills/reviewer',
+          nativeRoot: '/work/project/.agents/skills',
+          artifactKind: 'skill-copy',
+          nativeForm: 'skill-directory',
+        ),
+        targetFiles: {
+          'SKILL.md': utf8.encode(
+            '---\nname: reviewer\ndescription: Review.\n---\nReview.\n',
+          ),
+        },
+      );
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('${request.transactionId}.json')) {
+          throw StateError('Interrupted before publication');
+        }
+      };
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<StateError>()),
+      );
+      io.after = null;
+      Future<LifecycleResult> install(String name) {
+        fs.file('/incoming/$name/SKILL.md')
+          ..createSync(recursive: true)
+          ..writeAsStringSync(
+            '---\nname: $name\ndescription: Work.\n---\nWork.\n',
+          );
+        return SkillLifecycleService(fileSystem: fs).install(
+          SkillInstallInput(
+            options: options,
+            source: '/incoming/$name',
+            destination: SkillDestination.claude,
+          ),
+        );
+      }
+
+      await expectLater(
+        install('reviewer'),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(
+        fs.directory('/work/project/.claude/skills/reviewer').existsSync(),
+        isFalse,
+      );
+      expect((await install('writer')).outcome, 'installed');
+    });
+
+    test('parent apply cannot change inheritance of a pending Agent', () async {
+      final request = seedRequest();
+      final settings = fs.file('/work/project/.claude/settings.json')
+        ..writeAsStringSync('{"model":"sonnet"}');
+      final parent = ParentConfigService(fileSystem: fs);
+      ParentRequest parentRequest(
+        ParentOperation operation, {
+        String? planId,
+      }) => ParentRequest(
+        operation: operation,
+        harness: ParentHarness.claude,
+        scope: LifecycleScope.project,
+        layer: ParentLayer.project,
+        file: settings.path,
+        adopt: true,
+        clientsStopped: true,
+        changes: const [
+          ParentChange(unit: 'model', action: ParentAction.set, value: 'opus'),
+        ],
+        planId: planId,
+      );
+      final plan = await parent.plan(
+        request: parentRequest(ParentOperation.plan),
+        options: options,
+      );
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('${request.transactionId}.json')) {
+          throw StateError('Interrupted after intent');
+        }
+      };
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<StateError>()),
+      );
+      io.after = null;
+      await expectLater(
+        parent.apply(
+          request: parentRequest(
+            ParentOperation.apply,
+            planId: plan.data['planId'] as String,
+          ),
+          options: options.copyWith(approved: true),
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(settings.readAsStringSync(), '{"model":"sonnet"}');
+      expect(
+        fs
+            .directory('/work/project/.agent-resource/parent-backups')
+            .existsSync(),
+        isFalse,
+      );
+    });
+
+    test('pack cleanup cannot publish metadata for a pending member', () async {
+      final request = seedRequest();
+      final ledger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final document = jsonDecode(ledger.readAsStringSync()) as Map;
+      (document['installations'] as List).single['origin'] = {
+        'status': 'known',
+        'packKey': 'local/demo',
+        'resourceType': 'agent',
+      };
+      ledger.writeAsStringSync(jsonEncode(document));
+      fs.file('/work/project/agent-resources.toml').writeAsStringSync('''
+schema_version = 1
+[packs."local/demo".source]
+kind = "local"
+path = "."
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('${request.transactionId}.json')) {
+          throw StateError('Interrupted after intent');
+        }
+      };
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<StateError>()),
+      );
+      io.after = null;
+      final before = ledger.readAsStringSync();
+      await expectLater(
+        PackLifecycleService(fileSystem: fs).execute(
+          PackLifecycleRequest(
+            operation: PackOperation.cleanup,
+            resourceType: PackResourceType.agent,
+            pack: 'local/demo',
+            processWorkingDirectory: '/work/project',
+            environment: const {'APPDATA': '/home/user/appdata'},
+            scope: LifecycleScope.project,
+            cwd: '/work/project',
+            projectRoot: '/work/project',
+            home: '/home/user',
+            stateDir: '/work/state',
+            yes: true,
+          ),
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(ledger.readAsStringSync(), before);
+    });
+
+    test(
+      'pending conversion blocks legacy origin updates after restart',
+      () async {
+        final request = seedRequest();
+        io.after = (operation, path) {
+          if (operation == 'write' &&
+              path.endsWith('${request.transactionId}.json')) {
+            throw StateError('Interrupted after intent');
+          }
+        };
+        await expectLater(
+          coordinator.execute(request),
+          throwsA(isA<StateError>()),
+        );
+        io.after = null;
+        final restarted = LifecycleStateService(io: LifecycleIO(fs: fs));
+        final context = LifecycleContext.resolve(
+          options.copyWith(approved: true),
+          fileSystem: fs,
+        );
+        final before = fs
+            .file('/work/project/.agent-resource/installations.json')
+            .readAsStringSync();
+        await expectLater(
+          restarted.updateOrigin(
+            context: context,
+            installationId: sourceInstallationId,
+            expectedOrigin: const {'status': 'unknown'},
+            origin: const {'status': 'known', 'packKey': 'new-source'},
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
+        );
+        expect(
+          fs
+              .file('/work/project/.agent-resource/installations.json')
+              .readAsStringSync(),
+          before,
+        );
+        expect(fs.file(request.source.location).readAsStringSync(), 'original');
+      },
+    );
+
+    test(
+      'pending participant identity survives changed ledger location',
+      () async {
+        final request = seedRequest();
+        io.after = (operation, path) {
+          if (operation == 'write' &&
+              path.endsWith('${request.transactionId}.json')) {
+            throw StateError('Interrupted after intent');
+          }
+        };
+        await expectLater(
+          coordinator.execute(request),
+          throwsA(isA<StateError>()),
+        );
+        io.after = null;
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final document = jsonDecode(ledger.readAsStringSync()) as Map;
+        (document['installations'] as List).single['location'] =
+            '/work/project/.claude/agents/renamed.md';
+        ledger.writeAsStringSync(jsonEncode(document));
+        final before = ledger.readAsStringSync();
+        await expectLater(
+          LifecycleStateService(io: LifecycleIO(fs: fs)).updateOrigin(
+            context: LifecycleContext.resolve(
+              options.copyWith(approved: true),
+              fileSystem: fs,
+            ),
+            installationId: sourceInstallationId,
+            expectedOrigin: const {'status': 'unknown'},
+            origin: const {'status': 'known'},
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
+        );
+        expect(ledger.readAsStringSync(), before);
+      },
+    );
+
+    test('user participant stays guarded from another project during partial publication', () async {
+      final original = seedRequest();
+      final userSource = '/home/user/.claude/agents/reviewer.md';
+      fs.file(userSource)
+        ..createSync(recursive: true)
+        ..writeAsStringSync('original');
+      final projectLedger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final document = jsonDecode(projectLedger.readAsStringSync()) as Map;
+      final record = (document['installations'] as List).single as Map;
+      record['scope'] = 'user';
+      record['location'] = userSource;
+      record['nativeRoot'] = '/home/user/.claude/agents';
+      fs.file('/work/state/installations.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(jsonEncode(document));
+      projectLedger.deleteSync();
+      final request = ConversionTransitionRequest(
+        transactionId: original.transactionId,
+        options: options,
+        source: ConversionParticipant(
+          role: ConversionParticipantRole.source,
+          intent: ConversionParticipantIntent.retired,
+          artifactKind: 'agent-file',
+          nativeForm: 'claude-agent-file',
+          nativeProfile: 'claude',
+          location: userSource,
+          nativeRoot: '/home/user/.claude/agents',
+          scope: 'user',
+          ownershipBefore: ConversionOwnership(
+            managed: true,
+            installationId: sourceInstallationId,
+            nativeForm: 'claude-agent-file',
+            nativeProfile: 'claude',
+            location: userSource,
+            nativeRoot: '/home/user/.claude/agents',
+            scope: 'user',
+          ),
+          baseline: ConversionBaseline(
+            entries: conversionManifestEntries(io, userSource),
+          ),
+        ),
+        target: original.target,
+        targetFiles: original.targetFiles,
+      );
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('${request.transactionId}.json')) {
+          throw StateError('Interrupted at first participant publication');
+        }
+      };
+      await expectLater(
+        coordinator.execute(request),
+        throwsA(isA<StateError>()),
+      );
+      io.after = null;
+      fs.directory('/work/other').createSync();
+      final otherOptions = LifecycleOptions(
+        processWorkingDirectory: '/work/other',
+        environment: const {},
+        scope: LifecycleScope.user,
+        projectRoot: '/work/other',
+        cwd: '/work/other',
+        home: '/home/user',
+        stateDir: '/work/state',
+        approved: true,
+      );
+      await expectLater(
+        LifecycleStateService(io: LifecycleIO(fs: fs)).updateOrigin(
+          context: LifecycleContext.resolve(otherOptions, fileSystem: fs),
+          installationId: sourceInstallationId,
+          expectedOrigin: const {'status': 'unknown'},
+          origin: const {'status': 'known'},
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
+        ),
+      );
+      expect(
+        fs.file('/work/state/installations.json').readAsStringSync(),
+        jsonEncode(document),
+      );
+    });
+
+    test('user coordinator reserves its target from other projects at the first intent write', () async {
+      final original = seedRequest();
+      final request = ConversionTransitionRequest(
+        transactionId: original.transactionId,
+        options: options.copyWith(scope: LifecycleScope.user),
+        source: original.source,
+        target: targetParticipant(
+          location: '/home/user/.claude/skills/reserved',
+          nativeRoot: '/home/user/.claude/skills',
+          artifactKind: 'skill-copy',
+          nativeForm: 'skill-directory',
+          scope: 'user',
+        ),
+        targetFiles: {
+          'SKILL.md': utf8.encode(
+            '---\nname: reserved\ndescription: Work.\n---\nWork.\n',
+          ),
+        },
+      );
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('${request.transactionId}.json')) {
+          throw StateError('Interrupted at first intent publication');
+        }
+      };
+      await expectLater(coordinator.execute(request), throwsStateError);
+      io.after = null;
+      fs.directory('/work/other').createSync();
+      fs.file('/incoming/reserved/SKILL.md')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          '---\nname: reserved\ndescription: Work.\n---\nWork.\n',
+        );
+      final sourceLedger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final before = sourceLedger.readAsStringSync();
+      await expectLater(
+        SkillLifecycleService(fileSystem: fs).install(
+          SkillInstallInput(
+            options: LifecycleOptions(
+              processWorkingDirectory: '/work/other',
+              environment: const {},
+              scope: LifecycleScope.user,
+              cwd: '/work/other',
+              projectRoot: '/work/other',
+              home: '/home/user',
+              stateDir: '/work/state',
+              approved: true,
+            ),
+            source: '/incoming/reserved',
+            destination: SkillDestination.claude,
+          ),
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having((error) => error.exitCode, 'status', 6)
+              .having(
+                (error) => error.message,
+                'diagnostic',
+                contains('Pending coordinated transaction'),
+              ),
+        ),
+      );
+      expect(fs.directory(request.target.location).existsSync(), isFalse);
+      expect(fs.file('/work/state/installations.json').existsSync(), isFalse);
+      expect(sourceLedger.readAsStringSync(), before);
+      expect(fs.file(request.source.location).readAsStringSync(), 'original');
+    });
+
     test('missing committed decision stays blocked on repeated recovery', () async {
       final request = seedRequest();
       io.after = (operation, path) {
@@ -1854,6 +2585,274 @@ void main() {
             contains('not supported'),
           ),
         ),
+      );
+    });
+  });
+
+  group('pending transaction guards', () {
+    test(
+      'a pending conflict is reported as a conflict, not as missing authority',
+      () async {
+        final request = seedRequest();
+        io.after = (operation, path) {
+          if (operation == 'write' &&
+              path.endsWith('/conversions/${request.transactionId}.json')) {
+            throw StateError('Interrupted after intent');
+          }
+        };
+        await expectLater(coordinator.execute(request), throwsStateError);
+        io.after = null;
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final before = ledger.readAsStringSync();
+        await expectLater(
+          LifecycleStateService(io: LifecycleIO(fs: fs)).updateOrigin(
+            context: LifecycleContext.resolve(
+              options.copyWith(approved: true),
+              fileSystem: fs,
+            ),
+            installationId: sourceInstallationId,
+            expectedOrigin: const {'status': 'unknown'},
+            origin: const {'status': 'known'},
+          ),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'status', 6)
+                .having(
+                  (error) => error.message,
+                  'diagnostic',
+                  allOf(
+                    contains('Pending coordinated transaction'),
+                    isNot(contains('authority is unavailable')),
+                  ),
+                ),
+          ),
+        );
+        expect(ledger.readAsStringSync(), before);
+      },
+    );
+
+    test('an unreadable coordinator is reported as unavailable authority', () async {
+      final request = seedRequest();
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('/conversions/${request.transactionId}.json')) {
+          throw StateError('Interrupted after intent');
+        }
+      };
+      await expectLater(coordinator.execute(request), throwsStateError);
+      io.after = null;
+      final authority = fs.file(
+        '/work/project/.agent-resource/conversions/${request.transactionId}.json',
+      );
+      final document = jsonDecode(authority.readAsStringSync()) as Map;
+      document['schemaVersion'] = 999;
+      authority.writeAsStringSync(jsonEncode(document));
+      final ledger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final before = ledger.readAsStringSync();
+      await expectLater(
+        LifecycleStateService(io: LifecycleIO(fs: fs)).updateOrigin(
+          context: LifecycleContext.resolve(
+            options.copyWith(approved: true),
+            fileSystem: fs,
+          ),
+          installationId: sourceInstallationId,
+          expectedOrigin: const {'status': 'unknown'},
+          origin: const {'status': 'known'},
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having((error) => error.exitCode, 'status', 6)
+              .having(
+                (error) => error.message,
+                'diagnostic',
+                contains('Coordinated mutation authority is unavailable'),
+              ),
+        ),
+      );
+      expect(ledger.readAsStringSync(), before);
+    });
+
+    test(
+      'the registered skill remove command refuses a pending participant',
+      () async {
+        const skillPath = '/work/project/.claude/skills/reserved';
+        fs.file('$skillPath/SKILL.md')
+          ..createSync(recursive: true)
+          ..writeAsStringSync(
+            '---\nname: reserved\ndescription: Work.\n---\nWork.\n',
+          );
+        seedLedger(
+          location: skillPath,
+          nativeRoot: '/work/project/.claude/skills',
+          kind: ArtifactKind.skillCopy,
+          nativeForm: 'skill-copy',
+        );
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final document = jsonDecode(ledger.readAsStringSync()) as Map;
+        final record = (document['installations'] as List).single as Map;
+        record['baseline'] = state
+            .baselineFor(skillPath, ArtifactKind.skillCopy)
+            .toJson();
+        ledger.writeAsStringSync(jsonEncode(document));
+        final request = ConversionTransitionRequest(
+          transactionId: 'cvx_0123456789abcdef0123456789abcdef',
+          options: options,
+          source: sourceParticipant(
+            location: skillPath,
+            nativeRoot: '/work/project/.claude/skills',
+            artifactKind: 'skill-copy',
+            nativeForm: 'skill-copy',
+          ),
+          target: targetParticipant(
+            location: '/work/project/.pi/prompts/reserved.md',
+            nativeRoot: '/work/project/.pi/prompts',
+            artifactKind: 'prompt-template',
+            nativeForm: 'pi-prompt-template',
+            installationId: 'ins_fedcba9876543210fedcba9876543210',
+          ),
+          targetFiles: <String, List<int>>{
+            'reserved.md': utf8.encode('---\ndescription: Work\n---\nWork.'),
+          },
+        );
+        io.after = (operation, path) {
+          if (operation == 'write' &&
+              path.endsWith('/conversions/${request.transactionId}.json')) {
+            throw StateError('Interrupted after intent');
+          }
+        };
+        await expectLater(coordinator.execute(request), throwsStateError);
+        io.after = null;
+        final result = await createExecutor(fileSystem: fs).fake().execute([
+          'skill',
+          'remove',
+          sourceInstallationId,
+          '--scope',
+          'project',
+          '--cwd',
+          '/work/project/',
+          '--project-root',
+          '/work/project/',
+          '--home',
+          '/home/user/',
+          '--state-dir',
+          '/work/state/',
+          '--yes',
+          '--format',
+          'json',
+        ]);
+        expect(
+          result,
+          isA<MambaFailureResult>()
+              .having((value) => value.exitCode, 'status', 6)
+              .having(
+                (value) => value.message,
+                'diagnostic',
+                contains('Pending coordinated transaction'),
+              )
+              .having((value) => value.output, 'output', isNull),
+        );
+        expect(fs.directory(skillPath).existsSync(), isTrue);
+        expect(
+          fs.file('/work/project/.pi/prompts/reserved.md').existsSync(),
+          isFalse,
+        );
+      },
+    );
+    test('a participant reference in another project names the blocking transaction', () async {
+      final original = seedRequest();
+      final userSource = '/home/user/.claude/agents/reviewer.md';
+      fs.file(userSource)
+        ..createSync(recursive: true)
+        ..writeAsStringSync('original');
+      final projectLedger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final document = jsonDecode(projectLedger.readAsStringSync()) as Map;
+      final record = (document['installations'] as List).single as Map;
+      record['scope'] = 'user';
+      record['location'] = userSource;
+      record['nativeRoot'] = '/home/user/.claude/agents';
+      fs.file('/work/state/installations.json')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(jsonEncode(document));
+      projectLedger.deleteSync();
+      final request = ConversionTransitionRequest(
+        transactionId: original.transactionId,
+        options: options,
+        source: ConversionParticipant(
+          role: ConversionParticipantRole.source,
+          intent: ConversionParticipantIntent.retired,
+          artifactKind: 'agent-file',
+          nativeForm: 'claude-agent-file',
+          nativeProfile: 'claude',
+          location: userSource,
+          nativeRoot: '/home/user/.claude/agents',
+          scope: 'user',
+          ownershipBefore: ConversionOwnership(
+            managed: true,
+            installationId: sourceInstallationId,
+            nativeForm: 'claude-agent-file',
+            nativeProfile: 'claude',
+            location: userSource,
+            nativeRoot: '/home/user/.claude/agents',
+            scope: 'user',
+          ),
+          baseline: ConversionBaseline(
+            entries: conversionManifestEntries(io, userSource),
+          ),
+        ),
+        target: original.target,
+        targetFiles: original.targetFiles,
+      );
+      io.after = (operation, path) {
+        if (operation == 'write' &&
+            path.endsWith('/conversions/${request.transactionId}.json')) {
+          throw StateError('Interrupted after the coordinator intent');
+        }
+      };
+      await expectLater(coordinator.execute(request), throwsStateError);
+      io.after = null;
+      fs.directory('/work/other').createSync();
+      await expectLater(
+        LifecycleStateService(io: LifecycleIO(fs: fs)).updateOrigin(
+          context: LifecycleContext.resolve(
+            LifecycleOptions(
+              processWorkingDirectory: '/work/other',
+              environment: const <String, String>{},
+              scope: LifecycleScope.user,
+              projectRoot: '/work/other',
+              cwd: '/work/other',
+              home: '/home/user',
+              stateDir: '/work/state',
+              approved: true,
+            ),
+            fileSystem: fs,
+          ),
+          installationId: sourceInstallationId,
+          expectedOrigin: const {'status': 'unknown'},
+          origin: const {'status': 'known'},
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having((error) => error.exitCode, 'status', 6)
+              .having(
+                (error) => error.message,
+                'diagnostic',
+                contains(
+                  'Pending coordinated transaction ${request.transactionId}',
+                ),
+              ),
+        ),
+      );
+      expect(
+        fs.file('/work/state/installations.json').readAsStringSync(),
+        jsonEncode(document),
       );
     });
   });

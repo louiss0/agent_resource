@@ -241,6 +241,51 @@ Future<void> main() async {
     );
 
     test(
+      'production prompt conversion list is registered and read-only',
+      () async {
+        await _withSandbox((sandbox) async {
+          final separator = Platform.pathSeparator;
+          final state = Directory(p.join(sandbox.temp.path, 'state'))
+            ..createSync(recursive: true);
+          final before = sandbox.snapshot();
+
+          final result = await _runCli(sandbox, [
+            'prompt',
+            'conversion',
+            'list',
+            '--scope',
+            'project',
+            '--cwd',
+            '${sandbox.work.path}$separator',
+            '--project-root',
+            '${sandbox.work.path}$separator',
+            '--home',
+            '${sandbox.home.path}$separator',
+            '--state-dir',
+            '${state.path}$separator',
+            '--format',
+            'json',
+          ]);
+
+          expect(
+            result.exitCode,
+            0,
+            reason: 'stdout=${result.stdout} stderr=${result.stderr}',
+          );
+          expect(result.stderr, isEmpty);
+          final envelope = jsonDecode(result.stdout) as Map<String, Object?>;
+          expect(envelope['command'], 'prompt conversion list');
+          expect(envelope['outcome'], 'listed');
+          expect(
+            (envelope['data']! as Map<String, Object?>)['transactions'],
+            isEmpty,
+          );
+          expect(sandbox.snapshot(), equals(before));
+        });
+      },
+    );
+
+    test(
       'production lifecycle smoke preserves streams, bytes, and approval gates',
       () async {
         await _withSandbox((sandbox) async {

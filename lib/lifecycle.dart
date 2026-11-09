@@ -226,6 +226,7 @@ final class LifecycleActionCommand extends Command {
            if (_resource == _Resource.skill && _operation == _Operation.adopt)
              _skillHarnesses,
            if (_operation == _Operation.recover) _recoveryAction,
+           if (_operation == _Operation.recover) _recoveryPlan,
            if (_resource == _Resource.agent &&
                (_operation == _Operation.adopt ||
                    _operation == _Operation.replace ||
@@ -359,6 +360,10 @@ final class LifecycleActionCommand extends Command {
     choices: RecoveryAction.values,
     description:
         'Persisted recovery transition; requires transaction ID and approval.',
+  );
+  static final _recoveryPlan = StringOption(
+    'plan-id',
+    description: 'Fresh reviewed plan ID for coordinated authoring receipts.',
   );
   static final _parentPlan = StringOption(
     'plan',
@@ -558,6 +563,7 @@ final class LifecycleActionCommand extends Command {
             options,
             transactionId: valueOf(_transactionId),
             action: valueOf(_recoveryAction)?.name,
+            planId: valueOf(_recoveryPlan),
           );
       }
     }
@@ -673,6 +679,7 @@ final class LifecycleActionCommand extends Command {
           options,
           transactionId: valueOf(_transactionId),
           action: valueOf(_recoveryAction)?.name,
+          planId: valueOf(_recoveryPlan),
         );
     }
   }

@@ -363,6 +363,64 @@ symlink and actionable privilege diagnostics; junctions, unknown reparse
 forms, and copy fallback are refused. Runtime resource execution and live
 harness/account probes remain outside the application contract.
 
+### Inspect and recover coordinated native transactions
+
+```text
+agent_resource prompt conversion list [--scope project|user|all]
+agent_resource prompt conversion inspect <transaction-id> --scope project
+agent_resource prompt conversion recover <transaction-id> --scope project
+agent_resource prompt conversion recover <transaction-id> --scope project --apply --yes --plan-id <reviewed-plan-id>
+agent_resource prompt conversion cleanup <transaction-id> --scope project
+agent_resource prompt conversion cleanup <transaction-id> --scope project --apply --yes --plan-id <cleanup-plan-id>
+```
+
+These commands use retained coordinator evidence, not editor drafts or ordinary
+managed-only backups. Supply the original `--project-root`, `--home`, and
+`--state-dir` when recovering an operation created with explicit context paths.
+Inspection and default recover/cleanup invocations are read-only. Apply requires
+a current plan ID and explicit approval; changing evidence, participants, native
+contents or ledger observations invalidates that review. The protected commit
+decision fixes the recovery direction: rollback before commit, completion after
+commit. No caller-selected override, force, rebaseline, or completed-conversion
+inverse restore is provided. New public authoring/conversion apply paths remain
+gated separately.
+
+Same-location, same-native-form Agent and copied Skill edits can also be reviewed
+through `agent recover <cvx-id>` or `skill recover <cvx-id>`. Apply adds the
+reviewed `--action rollback|complete --yes --plan-id <reviewed-plan-id>`; the
+action must agree with the coordinator decision. Receipt-only edits do not adopt
+the original or create an installation record. Existing ordinary `trx_` recovery
+continues to use its existing contract.
+
+Cleanup accepts only intact terminal evidence, refuses pending conflicts, and
+deletes only verified private recovery payloads. It retains the coordinator
+receipt, decision and participant references for audit and replay refusal. The
+review explicitly discloses loss of payload-based restore; user instruction
+files and editor drafts are never cleanup candidates. Interrupted cleanup is
+reported as pending until another fresh review concludes it. Missing, corrupt
+or context-mismatched authority remains unresolved, never implicitly abandoned
+or expired. This is local filesystem recovery, not native harness verification
+or a guarantee of power-loss durability or secure erasure.
+
+### Mutating while a coordinated transaction is pending
+
+A pending conversion reserves its participants. The reservation is persisted
+evidence, not the file that currently occupies a path: replacing, deleting, or
+recreating that file does not release it, and an empty path does not prove it
+is free.
+
+While such a transaction is pending, the ordinary Skill, Agent, pack, and
+parent-unit mutations refuse the paths, identities, names, and pack membership
+that the transaction reserved, in both the project and the user scope. The
+refusal names the blocking transaction and exits with status 6. Unknown,
+corrupt, or unavailable conversion authority is refused as unavailable
+authority rather than treated as an unmanaged or free path; the same holds for
+a reservation whose coordinator evidence is missing.
+
+An unrelated name, an unrelated root, and an unrelated project are not
+blocked. A transaction that reached a terminal phase releases its reservation
+through the reviewed recovery interface.
+
 ### Inspect one skill directory
 
 ```text

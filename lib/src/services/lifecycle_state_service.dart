@@ -9,6 +9,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
+import '../conversion/conversion_evidence.dart';
 import '../installation/installation_plan.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
@@ -21,6 +22,7 @@ const managementSchemaVersion = 1;
 const Set<String> _privateStateDirectories = <String>{
   'coordination',
   'conversions',
+  'conversion-participants',
 };
 const maxManagementDocumentBytes = 8 * 1024 * 1024;
 const maxManagementDepth = 32;
@@ -31,6 +33,7 @@ const maxSkillFileBytes = 64 * 1024 * 1024;
 const maxSkillAggregateBytes = 256 * 1024 * 1024;
 const maxManagementAggregateBytes = 64 * 1024 * 1024;
 final _metadataBudgetZone = Object();
+final _coordinationZone = Object();
 
 final class _MetadataBudget {
   var bytes = 0;
@@ -1101,7 +1104,25 @@ interface class LifecycleStateService {
     required LifecycleContext context,
     required String location,
     required Future<T> Function() body,
-  }) => _serialized(context, location, body);
+  }) => _serialized(context, location, body, coordinated: true);
+
+  /// Keeps a composite legacy mutation and its metadata writes in the same
+  /// coordination domain as its nested installation mutations.
+  Future<T> runMutation<T>({
+    required LifecycleContext context,
+    Iterable<String> locations = const [],
+    Set<String> installationIds = const {},
+    Set<String> packKeys = const {},
+    required Future<T> Function() body,
+  }) => _serialized(context, context.stateRoot(), () {
+    checkPendingConversions(
+      context,
+      locations: locations,
+      installationIds: installationIds,
+      packKeys: packKeys,
+    );
+    return body();
+  }, coordinated: true);
 
   /// Stages a proposed native source on the destination volume only after
   /// private preparation has been established. The source is temporary input
@@ -1374,6 +1395,12 @@ interface class LifecycleStateService {
         '$transactionId.json',
       );
       _blockPendingAcrossScopes(context, primary);
+      // One unit publishes several native paths. A pending transaction reserves
+      // every one of them, not only the primary entry.
+      checkPendingConversions(
+        context,
+        locations: [for (final entry in unit.entries) entry.path],
+      );
       final candidate = await resource.inspect(unit.sourcePath, context);
       if (candidate.name != unit.nativeName ||
           _manifest(unit.sourcePath, _contentKind(resource.kind)).digest !=
@@ -4525,6 +4552,238 @@ interface class LifecycleStateService {
     }
   }
 
+  /// Checks persisted participants, not the current occupant. Call while
+  /// holding lifecycle coordination whenever the check protects a write.
+  void checkPendingConversions(
+    LifecycleContext context, {
+    Iterable<String> locations = const [],
+    Set<String> installationIds = const {},
+    Set<String> packKeys = const {},
+    Set<String> validatedRecoveryPaths = const {},
+    ({
+      ArtifactKind kind,
+      String name,
+      List<String> roots,
+      String? nativeProfile,
+    })?
+    uniqueness,
+  }) {
+    try {
+      final touchedIds = <String>{...installationIds};
+      bool overlaps(String path) =>
+          locations.any((location) => _pathsOverlap(location, path));
+      // Resolve IDs only when evidence exists. Parent-only state need not have
+      // an installation ledger; direct paths still reserve those participants.
+      for (final state in _coordinationStates(context)) {
+        if (io.type(
+              io.fs.path.join(state, 'installations.json'),
+              followLinks: false,
+            ) ==
+            FileSystemEntityType.notFound) {
+          continue;
+        }
+        for (final record in _readRecords(state)) {
+          if (overlaps(record.location) ||
+              record.exposures.any((e) => overlaps(e.path))) {
+            touchedIds.add(record.installationId);
+          }
+        }
+      }
+      bool conflicts(ConversionEvidence evidence) {
+        final snapshot = evidence.observations['coordinatorSourceRecord'];
+        if (snapshot is Map) {
+          final origin = snapshot['origin'];
+          if (origin is Map && packKeys.contains(origin['packKey'])) {
+            return true;
+          }
+        }
+        for (final participant in [evidence.source, evidence.target]) {
+          if (overlaps(participant.location) ||
+              touchedIds.contains(participant.identity?.installationId) ||
+              touchedIds.contains(
+                participant.ownershipBefore?.installationId,
+              ) ||
+              touchedIds.contains(participant.ownershipAfter?.installationId) ||
+              packKeys.contains(participant.membershipBefore?.source) ||
+              packKeys.contains(participant.membershipAfter?.source)) {
+            return true;
+          }
+          final unique = uniqueness;
+          if (unique == null) continue;
+          if (unique.nativeProfile != null &&
+              participant.nativeProfile != null &&
+              participant.nativeProfile != unique.nativeProfile) {
+            continue;
+          }
+          final skill = participant.artifactKind.startsWith('skill-');
+          if (skill != unique.kind.wireName.startsWith('skill-') ||
+              (!skill && participant.artifactKind != unique.kind.wireName)) {
+            continue;
+          }
+          if (!unique.roots.any(
+            (root) => _pathsOverlap(root, participant.location),
+          )) {
+            continue;
+          }
+          final reservedName =
+              evidence.observations[participant.role ==
+                      ConversionParticipantRole.source
+                  ? 'coordinatorSourceName'
+                  : 'coordinatorTargetName'];
+          if (!skill && reservedName is! String) {
+            // Legacy or incomplete intent cannot prove a visible name free.
+            // Resolve its coordinator first: terminal intent can be released,
+            // but a nonterminal transaction still reserves this native root.
+            return true;
+          }
+          final names = {
+            if (reservedName is String) reservedName,
+            if (skill) io.fs.path.basename(participant.location),
+            if (participant.role == ConversionParticipantRole.source &&
+                snapshot is Map &&
+                snapshot['name'] is String)
+              snapshot['name'] as String,
+          };
+          if (names.any(
+            (name) => participant.nativeProfile == 'pi'
+                ? name.toLowerCase() == unique.name.toLowerCase()
+                : name == unique.name,
+          )) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      var entries = 0;
+      for (final state in _coordinationStates(context)) {
+        for (final directory in const [
+          'conversions',
+          'conversion-participants',
+        ]) {
+          final root = io.fs.path.join(state, directory);
+          _requireUnlinkedCoordinationPath(root);
+          final type = io.type(root, followLinks: false);
+          if (type == FileSystemEntityType.notFound) continue;
+          if (type != FileSystemEntityType.directory) {
+            throw const FormatException(
+              'Conversion authority is not a directory.',
+            );
+          }
+          final visited = <String>{};
+          for (final entry in io.list(root)) {
+            if (++entries > maxManagementNodes) {
+              throw const FormatException('Too many conversion participants.');
+            }
+            final path =
+                io.type(entry.path, followLinks: false) ==
+                    FileSystemEntityType.directory
+                ? '${entry.path}.json'
+                : entry.path;
+            if (!visited.add(path)) continue;
+            // The recovery coordinator has already validated its own authority,
+            // including a permitted torn-preparation fallback. All other
+            // transactions still have to prove they do not conflict.
+            if (validatedRecoveryPaths.any(
+              (validated) => io.fs.path.equals(path, validated),
+            )) {
+              continue;
+            }
+            var evidence = _readConversionParticipant(path);
+            if (directory == 'conversion-participants') {
+              // Unrelated projects need not be available to mutate an independent
+              // resource. The immutable intent is enough to decide relevance.
+              if (!conflicts(evidence)) continue;
+              final authority = _object(
+                evidence.observations['coordinatorContext'],
+                'coordinator context',
+              );
+              // The participant reference is written into the scope that does
+              // not coordinate the transaction. The coordinator's own scope is
+              // the recorded target scope, and the coordinator's state root is
+              // the absolute path of that scope in the coordinator's context.
+              final coordinatorState = _absolutePath(
+                _string(
+                  authority,
+                  evidence.createdScope == 'project'
+                      ? 'projectState'
+                      : 'userState',
+                ),
+              );
+              final marker = evidence;
+              evidence = _readConversionParticipant(
+                io.fs.path.join(
+                  coordinatorState,
+                  'conversions',
+                  '${evidence.transactionId}.json',
+                ),
+              );
+              if (marker.digest != evidence.initialIntent.digest) {
+                throw const FormatException(
+                  'The participant does not bind its coordinator intent.',
+                );
+              }
+            }
+            if (evidence.phase == ConversionEvidencePhase.completed ||
+                evidence.phase == ConversionEvidencePhase.rolledBack) {
+              continue;
+            }
+            if (conflicts(evidence)) {
+              throw MambaException(
+                'Pending coordinated transaction ${evidence.transactionId} blocks this mutation.',
+                exitCode: 6,
+              );
+            }
+          }
+        }
+      }
+    } on MambaException {
+      // A pending conflict, a linked coordination path and an unreadable
+      // authority are three different refusals. Re-wrapping a precise refusal
+      // would report a resolved conflict as missing authority.
+      rethrow;
+    } on Exception catch (error) {
+      throw MambaException(
+        'Coordinated mutation authority is unavailable: $error',
+        exitCode: 6,
+      );
+    }
+  }
+
+  ConversionEvidence _readConversionParticipant(String path) {
+    _requireUnlinkedCoordinationPath(path);
+    if (io.type(path, followLinks: false) != FileSystemEntityType.file) {
+      throw const FormatException('Missing conversion participant evidence.');
+    }
+    final bytes = io.read(path, maxConversionEvidenceBytes);
+    _chargeManagementBytes(bytes.length, Zone.current);
+    final evidence = ConversionEvidence.decode(utf8.decode(bytes));
+    if (io.fs.path.basename(path) != '${evidence.transactionId}.json') {
+      throw const FormatException('Conversion evidence identity mismatch.');
+    }
+    return evidence;
+  }
+
+  void _requireUnlinkedCoordinationPath(String path) {
+    for (final component in skillPathComponents(
+      path,
+      base: io.fs.path.rootPrefix(path),
+      fs: io.fs,
+    )) {
+      if (io.type(component, followLinks: false) == FileSystemEntityType.link) {
+        throw MambaException(
+          'Linked coordination authority: $component',
+          exitCode: 6,
+        );
+      }
+    }
+  }
+
+  bool _pathsOverlap(String first, String second) =>
+      io.fs.path.equals(first, second) ||
+      io.fs.path.isWithin(first, second) ||
+      io.fs.path.isWithin(second, first);
+
   List<String> _coordinationStates(LifecycleContext context) {
     final states = <String>{};
     for (final scope in const [LifecycleScope.project, LifecycleScope.user]) {
@@ -4533,7 +4792,10 @@ interface class LifecycleStateService {
       } on MambaException {
         if (scope == context.scope) rethrow;
         // An unrelated scope with no resolvable state context must not block
-        // an independent operation. When configured, it shares both locks.
+        // an independent operation. When configured, it shares both locks. A
+        // coordinated transaction stays visible through the scope that holds
+        // its evidence or its participant reference, so an unresolved scope
+        // cannot hide a reservation.
       }
     }
     return states.toList();
@@ -5153,21 +5415,43 @@ interface class LifecycleStateService {
   Future<T> _serialized<T>(
     LifecycleContext context,
     String location,
-    Future<T> Function() body,
-  ) async {
+    Future<T> Function() body, {
+    bool coordinated = false,
+  }) async {
     // Uniqueness spans project and user scopes. All cooperating mutations
     // acquire the same stable pair in lexical order; removal/recovery uses
     // this domain as well so aliases cannot bypass a pending operation.
     final states = _coordinationStates(context)..sort();
-    final key = states.map(_pathKey).join('\n');
-    final previous = _inProcessLocks[key] ?? Future<void>.value();
-    final completion = Completer<void>.sync();
-    _inProcessLocks[key] = completion.future;
-    await previous;
+    final keys = states.map(_pathKey).toSet();
+    final held = Zone.current[_coordinationZone] as Set<String>?;
+    Future<T> guarded() async {
+      if (!coordinated) {
+        checkPendingConversions(context, locations: [location]);
+      }
+      return body();
+    }
+
+    if (held != null && held.isNotEmpty) {
+      if (!held.containsAll(keys)) {
+        throw MambaException(
+          'A nested mutation changed its coordination scope.',
+          exitCode: 6,
+        );
+      }
+      return guarded();
+    }
+    final completions = <String, Completer<void>>{};
     final locks = <fslib.RandomAccessFile>[];
     try {
       for (final state in states) {
+        final key = _pathKey(state);
+        final previous = _inProcessLocks[key] ?? Future<void>.value();
+        final completion = Completer<void>.sync();
+        _inProcessLocks[key] = completion.future;
+        await previous;
+        completions[key] = completion;
         final coordination = io.fs.path.join(state, 'coordination');
+        _requireUnlinkedCoordinationPath(coordination);
         io.createDirectory(coordination);
         _makePrivate(coordination);
         if (io.fs is local.LocalFileSystem) {
@@ -5175,12 +5459,15 @@ interface class LifecycleStateService {
               .file(io.fs.path.join(coordination, 'lifecycle.lock'))
               .openSync(mode: FileMode.write);
           locks.add(lock);
-          lock.lockSync(FileLock.exclusive);
+          await lock.lock(FileLock.exclusive);
         }
       }
       return await runZoned(
-        body,
-        zoneValues: <Object, Object?>{_metadataBudgetZone: _MetadataBudget()},
+        guarded,
+        zoneValues: <Object, Object?>{
+          _metadataBudgetZone: _MetadataBudget(),
+          _coordinationZone: keys,
+        },
       );
     } on FileSystemException catch (error) {
       throw MambaException(
@@ -5189,6 +5476,7 @@ interface class LifecycleStateService {
         exitCode: 4,
       );
     } finally {
+      keys.clear();
       for (final lock in locks.reversed) {
         try {
           lock.unlockSync();
@@ -5197,9 +5485,11 @@ interface class LifecycleStateService {
         }
         lock.closeSync();
       }
-      completion.complete();
-      if (identical(_inProcessLocks[key], completion.future)) {
-        _inProcessLocks.remove(key);
+      for (final entry in completions.entries.toList().reversed) {
+        entry.value.complete();
+        if (identical(_inProcessLocks[entry.key], entry.value.future)) {
+          _inProcessLocks.remove(entry.key);
+        }
       }
     }
   }

@@ -245,6 +245,15 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         _requireCanonicalAbsent(current);
       }
       _blockPendingAcrossScopes(context, current.location);
+      // A canonical transition publishes its content and its exposure links.
+      // A pending transaction reserves every published path.
+      checkPendingConversions(
+        context,
+        locations: [
+          current.location,
+          for (final exposure in current.exposures) exposure.path,
+        ],
+      );
       final transactionId = LifecycleStateService._newId('trx');
       final transactionPath = p.join(
         state,

@@ -8,6 +8,9 @@ import 'config.dart';
 import 'skill.dart';
 import 'pack.dart';
 import 'skills.dart';
+import 'prompt.dart';
+import 'src/services/conversion_coordinator_service.dart';
+import 'src/services/lifecycle_state_service.dart';
 import 'src/services/agent_authoring_service.dart';
 import 'src/services/agent_conversion_service.dart';
 import 'src/services/agent_graph_service.dart';
@@ -37,6 +40,7 @@ Executor createExecutor({
   ParentConfigService? parentConfig,
   AgentAuthoringService? agentAuthoring,
   AgentConversionService? agentConversion,
+  ConversionCoordinator? conversionRecovery,
   PackLifecycleService? packLifecycle,
   void Function(String)? deprecationWarning,
 }) => Executor(
@@ -44,6 +48,13 @@ Executor createExecutor({
   'Manage resources consumed by AI coding harnesses.',
   applicationVersion,
   [
+    PromptCommand(
+      conversionRecovery ??
+          ConversionCoordinator(
+            io: LifecycleIO(fs: fileSystem),
+            state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
+          ),
+    ),
     SkillCommand(
       installation: skillInstallation,
       lifecycle: skillLifecycle,

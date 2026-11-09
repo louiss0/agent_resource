@@ -10,6 +10,7 @@ import 'package:yaml/yaml.dart';
 
 import '../skill_files.dart';
 import '../skill_validation.dart';
+import 'conversion_coordinator_service.dart';
 import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
 
@@ -673,7 +674,17 @@ interface class SkillLifecycleService implements LifecycleResource {
     LifecycleOptions options, {
     String? transactionId,
     String? action,
+    String? planId,
   }) {
+    if (transactionId?.startsWith('cvx_') == true) {
+      return ConversionCoordinator(io: state.io, state: state).recoverReviewed(
+        options.copyWith(dryRun: options.dryRun || action == null),
+        transactionId!,
+        planId: planId,
+        action: action,
+        editKinds: const {ArtifactKind.skillCopy},
+      );
+    }
     final context = LifecycleContext.resolve(options, fileSystem: state.io.fs);
     final resource = transactionId == null
         ? this
@@ -958,6 +969,18 @@ interface class SkillLifecycleService implements LifecycleResource {
       ],
       _ => throw MambaException('Unsupported Skill destination.', exitCode: 4),
     };
+    state.checkPendingConversions(
+      context,
+      uniqueness: (
+        kind: kind,
+        name: name,
+        nativeProfile: null,
+        roots: [
+          for (final destination in destinations)
+            ..._visibleRoots(context, destination),
+        ],
+      ),
+    );
     var entries = 0;
     final seen = <String>{};
     for (final destination in destinations) {

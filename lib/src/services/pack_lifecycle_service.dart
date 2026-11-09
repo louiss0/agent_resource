@@ -172,6 +172,13 @@ interface class PackLifecycleService {
 
     _validateModeConflicts(request, pack);
     try {
+      // The reviewed plan of a pack operation is refused while a coordinated
+      // transaction reserves the pack or one of its members. The applied
+      // mutation repeats the check inside the lifecycle coordination domain.
+      _lifecycleState.checkPendingConversions(
+        context,
+        packKeys: {pack.key, ?request.to},
+      );
       return await switch (request.operation) {
         PackOperation.install || PackOperation.update => _installOrUpdate(
           request,
@@ -296,7 +303,9 @@ interface class PackLifecycleService {
         request.operation == PackOperation.update &&
         request.savePolicy &&
         !request.noSave) {
-      _savePolicy(configuration, pack, request);
+      await _publishPackMutation(request, context, pack, () async {
+        _savePolicy(configuration, pack, request);
+      });
     }
 
     final resources = [
@@ -1083,176 +1092,178 @@ interface class PackLifecycleService {
         policy: _policyChange(request, pack),
       );
       await _confirmPlan(request, plan);
-      var recoveryRequired = false;
-      for (final candidate in selected) {
-        if (recoveryRequired) {
-          results.add(_result(request, candidate.name, 'notAttempted'));
-          continue;
-        }
-        final action = actions[candidate.name];
-        final records = existing
-            .where((record) => record.name == candidate.name)
-            .toList();
-        try {
-          if (action == null || action == 'skipped') continue;
-          final record = records.isEmpty ? null : records.single;
-          final changedPaths = record == null
-              ? PackChangeSet.between(null, _candidateBaseline(candidate))
-              : record.kind == ArtifactKind.skillLink
-              ? const <PackChangedPath>[]
-              : PackChangeSet.between(
-                  record.baseline,
-                  _candidateBaseline(candidate),
+      return await _publishPackMutation(request, context, pack, () async {
+        var recoveryRequired = false;
+        for (final candidate in selected) {
+          if (recoveryRequired) {
+            results.add(_result(request, candidate.name, 'notAttempted'));
+            continue;
+          }
+          final action = actions[candidate.name];
+          final records = existing
+              .where((record) => record.name == candidate.name)
+              .toList();
+          try {
+            if (action == null || action == 'skipped') continue;
+            final record = records.isEmpty ? null : records.single;
+            final changedPaths = record == null
+                ? PackChangeSet.between(null, _candidateBaseline(candidate))
+                : record.kind == ArtifactKind.skillLink
+                ? const <PackChangedPath>[]
+                : PackChangeSet.between(
+                    record.baseline,
+                    _candidateBaseline(candidate),
+                  );
+            if (record == null) {
+              if (action == 'observed') {
+                results.add(
+                  _result(
+                    request,
+                    candidate.name,
+                    'observed',
+                    changedPaths: changedPaths,
+                  ),
                 );
-          if (record == null) {
-            if (action == 'observed') {
+                continue;
+              }
+              final outcome = await _installCandidate(
+                request,
+                context,
+                pack,
+                candidate,
+                configuration,
+                targets: installTargets[candidate.name]!,
+                method: installMethods[candidate.name],
+              );
+              final snapshot = request.dryRun
+                  ? null
+                  : _recordSnapshots(context, pack.key, candidate);
               results.add(
                 _result(
                   request,
                   candidate.name,
-                  'observed',
+                  outcome,
+                  snapshot: snapshot,
+                  linkOnly: _isSourceLink(context, pack.key, candidate),
                   changedPaths: changedPaths,
                 ),
               );
-              continue;
+            } else {
+              final previousSnapshot = _currentSnapshotRef(context, record);
+              final outcome = await _updateCandidate(
+                request,
+                context,
+                pack,
+                candidate,
+                record,
+              );
+              final snapshot = request.dryRun || outcome == 'keptLocal'
+                  ? previousSnapshot
+                  : _recordSnapshots(context, pack.key, candidate);
+              results.add(
+                _result(
+                  request,
+                  candidate.name,
+                  outcome,
+                  previousSnapshot: previousSnapshot,
+                  snapshot: snapshot,
+                  linkOnly: record.kind == ArtifactKind.skillLink,
+                  changedPaths: changedPaths,
+                ),
+              );
             }
-            final outcome = await _installCandidate(
-              request,
-              context,
-              pack,
-              candidate,
-              configuration,
-              targets: installTargets[candidate.name]!,
-              method: installMethods[candidate.name],
-            );
-            final snapshot = request.dryRun
-                ? null
-                : _recordSnapshots(context, pack.key, candidate);
-            results.add(
-              _result(
-                request,
-                candidate.name,
-                outcome,
-                snapshot: snapshot,
-                linkOnly: _isSourceLink(context, pack.key, candidate),
-                changedPaths: changedPaths,
-              ),
-            );
-          } else {
-            final previousSnapshot = _currentSnapshotRef(context, record);
-            final outcome = await _updateCandidate(
-              request,
-              context,
-              pack,
-              candidate,
-              record,
-            );
-            final snapshot = request.dryRun || outcome == 'keptLocal'
-                ? previousSnapshot
-                : _recordSnapshots(context, pack.key, candidate);
-            results.add(
-              _result(
-                request,
-                candidate.name,
-                outcome,
-                previousSnapshot: previousSnapshot,
-                snapshot: snapshot,
-                linkOnly: record.kind == ArtifactKind.skillLink,
-                changedPaths: changedPaths,
-              ),
-            );
-          }
-        } on MambaException catch (error) {
-          failures.add('${candidate.name}: ${error.message}');
-          results.add(_result(request, candidate.name, 'failed'));
-          if (error.exitCode == _legacyRecoveryExitCode ||
-              error.exitCode == PackProcessStatus.recoveryRequired.code) {
-            recoveryRequired = true;
+          } on MambaException catch (error) {
+            failures.add('${candidate.name}: ${error.message}');
+            results.add(_result(request, candidate.name, 'failed'));
+            if (error.exitCode == _legacyRecoveryExitCode ||
+                error.exitCode == PackProcessStatus.recoveryRequired.code) {
+              recoveryRequired = true;
+            }
           }
         }
-      }
 
-      for (final record in absent) {
-        if (recoveryRequired) {
-          results.add(_result(request, record.name, 'notAttempted'));
-          continue;
-        }
-        if (!request.dryRun) {
-          await _removeRecord(request, context, record);
-          PackState(
-            fileSystem: _fileSystem,
-            stateDirectory: context.stateRoot(),
-          ).markInstallationNoncurrent(record.installationId);
-        }
-        results.add(
-          _result(
-            request,
-            record.name,
-            'removed',
-            changedPaths: PackChangeSet.between(record.baseline, null),
-          ),
-        );
-      }
-
-      if (!request.dryRun) {
-        _persistPackOperation(
-          context: context,
-          plan: plan,
-          results: results,
-          outcome: failures.isEmpty ? 'completed' : 'failed',
-          packKey: pack.key,
-          type: request.resourceType,
-          provenance: workspace.provenance,
-          candidates: candidates,
-          noSave: request.noSave,
-        );
-      }
-      if (failures.isNotEmpty) {
-        throw MambaException(
-          'Pack operation completed with resource failures: ${failures.join(' | ')}',
-          exitCode: recoveryRequired
-              ? PackProcessStatus.recoveryRequired.code
-              : PackProcessStatus.failure.code,
-        );
-      }
-      if (!request.dryRun && !request.noSave) {
-        for (final candidate in declinedCandidates) {
-          _recordSelectionChoice(
-            context,
-            pack.key,
-            request.resourceType,
-            candidate.name,
-            selected: false,
-            reason: 'declined',
+        for (final record in absent) {
+          if (recoveryRequired) {
+            results.add(_result(request, record.name, 'notAttempted'));
+            continue;
+          }
+          if (!request.dryRun) {
+            await _removeRecord(request, context, record);
+            PackState(
+              fileSystem: _fileSystem,
+              stateDirectory: context.stateRoot(),
+            ).markInstallationNoncurrent(record.installationId);
+          }
+          results.add(
+            _result(
+              request,
+              record.name,
+              'removed',
+              changedPaths: PackChangeSet.between(record.baseline, null),
+            ),
           );
         }
-        for (final candidate in declinedGroupCandidates) {
-          _recordGroupDecline(context, pack.key, candidate);
+
+        if (!request.dryRun) {
+          _persistPackOperation(
+            context: context,
+            plan: plan,
+            results: results,
+            outcome: failures.isEmpty ? 'completed' : 'failed',
+            packKey: pack.key,
+            type: request.resourceType,
+            provenance: workspace.provenance,
+            candidates: candidates,
+            noSave: request.noSave,
+          );
         }
-      }
-      if (!request.dryRun &&
-          request.operation == PackOperation.update &&
-          request.savePolicy &&
-          request.persistPolicy &&
-          !request.noSave) {
-        _savePolicy(configuration, pack, request);
-      }
-      return PackOperationResult(
-        operation: '${request.resourceType.name}s.${request.operation.name}',
-        outcome: request.dryRun
-            ? 'preview'
-            : results.every(
-                (result) => result.disposition == PackDisposition.unchanged,
-              )
-            ? 'no-op'
-            : 'completed',
-        context: _contextJson(request, context, configuration),
-        source: _sourceJson(pack, workspace.provenance),
-        resources: results,
-        warnings: warnings,
-        dryRun: request.dryRun,
-        plan: plan,
-      );
+        if (failures.isNotEmpty) {
+          throw MambaException(
+            'Pack operation completed with resource failures: ${failures.join(' | ')}',
+            exitCode: recoveryRequired
+                ? PackProcessStatus.recoveryRequired.code
+                : PackProcessStatus.failure.code,
+          );
+        }
+        if (!request.dryRun && !request.noSave) {
+          for (final candidate in declinedCandidates) {
+            _recordSelectionChoice(
+              context,
+              pack.key,
+              request.resourceType,
+              candidate.name,
+              selected: false,
+              reason: 'declined',
+            );
+          }
+          for (final candidate in declinedGroupCandidates) {
+            _recordGroupDecline(context, pack.key, candidate);
+          }
+        }
+        if (!request.dryRun &&
+            request.operation == PackOperation.update &&
+            request.savePolicy &&
+            request.persistPolicy &&
+            !request.noSave) {
+          _savePolicy(configuration, pack, request);
+        }
+        return PackOperationResult(
+          operation: '${request.resourceType.name}s.${request.operation.name}',
+          outcome: request.dryRun
+              ? 'preview'
+              : results.every(
+                  (result) => result.disposition == PackDisposition.unchanged,
+                )
+              ? 'no-op'
+              : 'completed',
+          context: _contextJson(request, context, configuration),
+          source: _sourceJson(pack, workspace.provenance),
+          resources: results,
+          warnings: warnings,
+          dryRun: request.dryRun,
+          plan: plan,
+        );
+      });
     } finally {
       for (final staged in stagedSkills) {
         await staged.close();
@@ -1607,40 +1618,42 @@ interface class PackLifecycleService {
         ],
       );
       await _confirmPlan(request, plan);
-      final results = <PackResourceResult>[];
-      for (final record in records) {
-        final candidate = byName[record.name]!;
-        await _lifecycleState.updateOrigin(
-          context: context,
-          installationId: record.installationId,
-          expectedOrigin: record.origin,
-          origin: candidate.origin,
-        );
-        results.add(_result(request, record.name, 'updated'));
-      }
-      if (!request.dryRun) {
-        _persistPackOperation(
-          context: context,
+      return await _publishPackMutation(request, context, pack, () async {
+        final results = <PackResourceResult>[];
+        for (final record in records) {
+          final candidate = byName[record.name]!;
+          await _lifecycleState.updateOrigin(
+            context: context,
+            installationId: record.installationId,
+            expectedOrigin: record.origin,
+            origin: candidate.origin,
+          );
+          results.add(_result(request, record.name, 'updated'));
+        }
+        if (!request.dryRun) {
+          _persistPackOperation(
+            context: context,
+            plan: plan,
+            results: results,
+            outcome: 'completed',
+            packKey: destination.key,
+            type: request.resourceType,
+            provenance: workspace.provenance,
+            candidates: candidates,
+            noSave: request.noSave,
+          );
+        }
+        return PackOperationResult(
+          operation:
+              '${request.resourceType.name}s.source.${changing ? 'change' : 'associate'}',
+          outcome: request.dryRun ? 'preview' : 'completed',
+          context: _contextJson(request, context, configuration),
+          source: _sourceJson(destination, workspace.provenance),
+          resources: results,
+          dryRun: request.dryRun,
           plan: plan,
-          results: results,
-          outcome: 'completed',
-          packKey: destination.key,
-          type: request.resourceType,
-          provenance: workspace.provenance,
-          candidates: candidates,
-          noSave: request.noSave,
         );
-      }
-      return PackOperationResult(
-        operation:
-            '${request.resourceType.name}s.source.${changing ? 'change' : 'associate'}',
-        outcome: request.dryRun ? 'preview' : 'completed',
-        context: _contextJson(request, context, configuration),
-        source: _sourceJson(destination, workspace.provenance),
-        resources: results,
-        dryRun: request.dryRun,
-        plan: plan,
-      );
+      });
     } finally {
       await workspace.close();
     }
@@ -1864,55 +1877,57 @@ interface class PackLifecycleService {
       historicalInstallation: historicalRecord,
     );
     await _confirmPlan(request, plan);
-    if (!request.dryRun) {
-      if (modification != ModificationStatus.unchanged) {
-        _recordEditedSnapshot(context, record);
+    return _publishPackMutation(request, context, pack, () async {
+      if (!request.dryRun) {
+        if (modification != ModificationStatus.unchanged) {
+          _recordEditedSnapshot(context, record);
+        }
+        await _replaceRecord(
+          request,
+          context,
+          _resourceForRecord(candidate, record),
+          record,
+          candidate,
+        );
       }
-      await _replaceRecord(
-        request,
-        context,
-        _resourceForRecord(candidate, record),
-        record,
-        candidate,
-      );
-    }
-    final resultingRef = request.dryRun
-        ? snapshot.ref
-        : _recordSnapshot(
-            context,
-            _lifecycleState.recordById(context, record.installationId),
-          ).ref;
-    final results = [
-      _result(
-        request,
-        name,
-        'rolledBack',
-        previousSnapshot: previousRef,
-        snapshot: resultingRef,
-        linkOnly: record.kind == ArtifactKind.skillLink,
-        changedPaths: rollbackChanges,
-      ),
-    ];
-    if (!request.dryRun) {
-      _persistPackOperation(
-        context: context,
+      final resultingRef = request.dryRun
+          ? snapshot.ref
+          : _recordSnapshot(
+              context,
+              _lifecycleState.recordById(context, record.installationId),
+            ).ref;
+      final results = [
+        _result(
+          request,
+          name,
+          'rolledBack',
+          previousSnapshot: previousRef,
+          snapshot: resultingRef,
+          linkOnly: record.kind == ArtifactKind.skillLink,
+          changedPaths: rollbackChanges,
+        ),
+      ];
+      if (!request.dryRun) {
+        _persistPackOperation(
+          context: context,
+          plan: plan,
+          results: results,
+          outcome: 'completed',
+          packKey: pack.key,
+          type: request.resourceType,
+          noSave: request.noSave,
+        );
+      }
+      return PackOperationResult(
+        operation: '${request.resourceType.name}s.rollback',
+        outcome: request.dryRun ? 'preview' : 'completed',
+        context: _contextJson(request, context, configuration),
+        source: {'pack': pack.key, 'snapshot': snapshot.ref},
+        resources: results,
+        dryRun: request.dryRun,
         plan: plan,
-        results: results,
-        outcome: 'completed',
-        packKey: pack.key,
-        type: request.resourceType,
-        noSave: request.noSave,
       );
-    }
-    return PackOperationResult(
-      operation: '${request.resourceType.name}s.rollback',
-      outcome: request.dryRun ? 'preview' : 'completed',
-      context: _contextJson(request, context, configuration),
-      source: {'pack': pack.key, 'snapshot': snapshot.ref},
-      resources: results,
-      dryRun: request.dryRun,
-      plan: plan,
-    );
+    });
   }
 
   Future<PackOperationResult> _cleanup(
@@ -1976,53 +1991,55 @@ interface class PackLifecycleService {
       cleanupRefs: eligible,
     );
     if (!request.dryRun) await _confirmPlan(request, plan);
-    final pruned = request.dryRun
-        ? eligible
-        : state.cleanup(
-            retentionDays: configuration.cli.retention.snapshotDays,
-            localEdits: request.localEdits,
-            installationIds: installationIds,
+    return _publishPackMutation(request, context, pack, () async {
+      final pruned = request.dryRun
+          ? eligible
+          : state.cleanup(
+              retentionDays: configuration.cli.retention.snapshotDays,
+              localEdits: request.localEdits,
+              installationIds: installationIds,
+            );
+      final results = <PackResourceResult>[];
+      for (final record in records) {
+        final refs = pruned.where((ref) {
+          return snapshots.any(
+            (snapshot) =>
+                snapshot.ref == ref &&
+                snapshot.installationId == record.installationId,
           );
-    final results = <PackResourceResult>[];
-    for (final record in records) {
-      final refs = pruned.where((ref) {
-        return snapshots.any(
-          (snapshot) =>
-              snapshot.ref == ref &&
-              snapshot.installationId == record.installationId,
-        );
-      }).toList();
-      if (refs.isNotEmpty) {
-        results.add(
-          _result(request, record.name, 'removed', snapshot: refs.join(',')),
+        }).toList();
+        if (refs.isNotEmpty) {
+          results.add(
+            _result(request, record.name, 'removed', snapshot: refs.join(',')),
+          );
+        }
+      }
+      if (!request.dryRun) {
+        _persistPackOperation(
+          context: context,
+          plan: plan,
+          results: results,
+          outcome: pruned.isEmpty ? 'no-op' : 'completed',
+          packKey: pack.key,
+          type: request.resourceType,
+          noSave: request.noSave,
         );
       }
-    }
-    if (!request.dryRun) {
-      _persistPackOperation(
-        context: context,
+      return PackOperationResult(
+        operation: '${request.resourceType.name}s.cleanup',
+        outcome: request.dryRun
+            ? 'preview'
+            : pruned.isEmpty
+            ? 'no-op'
+            : 'completed',
+        context: _contextJson(request, context, configuration),
+        source: {'pack': pack.key, 'prunedSnapshotRefs': pruned},
+        resources: results,
+        warnings: warnings,
+        dryRun: request.dryRun,
         plan: plan,
-        results: results,
-        outcome: pruned.isEmpty ? 'no-op' : 'completed',
-        packKey: pack.key,
-        type: request.resourceType,
-        noSave: request.noSave,
       );
-    }
-    return PackOperationResult(
-      operation: '${request.resourceType.name}s.cleanup',
-      outcome: request.dryRun
-          ? 'preview'
-          : pruned.isEmpty
-          ? 'no-op'
-          : 'completed',
-      context: _contextJson(request, context, configuration),
-      source: {'pack': pack.key, 'prunedSnapshotRefs': pruned},
-      resources: results,
-      warnings: warnings,
-      dryRun: request.dryRun,
-      plan: plan,
-    );
+    });
   }
 
   Future<PackOperationResult> _remove(
@@ -2065,44 +2082,46 @@ interface class PackLifecycleService {
       ],
     );
     await _confirmPlan(request, plan);
-    final results = <PackResourceResult>[];
-    for (final record in records) {
-      if (!request.dryRun) {
-        await _removeRecord(request, context, record);
-        PackState(
-          fileSystem: _fileSystem,
-          stateDirectory: context.stateRoot(),
-        ).markInstallationNoncurrent(record.installationId);
+    return _publishPackMutation(request, context, pack, () async {
+      final results = <PackResourceResult>[];
+      for (final record in records) {
+        if (!request.dryRun) {
+          await _removeRecord(request, context, record);
+          PackState(
+            fileSystem: _fileSystem,
+            stateDirectory: context.stateRoot(),
+          ).markInstallationNoncurrent(record.installationId);
+        }
+        results.add(
+          _result(
+            request,
+            record.name,
+            'removed',
+            changedPaths: PackChangeSet.between(record.baseline, null),
+          ),
+        );
       }
-      results.add(
-        _result(
-          request,
-          record.name,
-          'removed',
-          changedPaths: PackChangeSet.between(record.baseline, null),
-        ),
-      );
-    }
-    if (!request.dryRun) {
-      _persistPackOperation(
-        context: context,
+      if (!request.dryRun) {
+        _persistPackOperation(
+          context: context,
+          plan: plan,
+          results: results,
+          outcome: 'completed',
+          packKey: pack.key,
+          type: request.resourceType,
+          noSave: request.noSave,
+        );
+      }
+      return PackOperationResult(
+        operation: '${request.resourceType.name}s.remove',
+        outcome: request.dryRun ? 'preview' : 'completed',
+        context: _contextJson(request, context, configuration),
+        source: {'pack': pack.key},
+        resources: results,
+        dryRun: request.dryRun,
         plan: plan,
-        results: results,
-        outcome: 'completed',
-        packKey: pack.key,
-        type: request.resourceType,
-        noSave: request.noSave,
       );
-    }
-    return PackOperationResult(
-      operation: '${request.resourceType.name}s.remove',
-      outcome: request.dryRun ? 'preview' : 'completed',
-      context: _contextJson(request, context, configuration),
-      source: {'pack': pack.key},
-      resources: results,
-      dryRun: request.dryRun,
-      plan: plan,
-    );
+    });
   }
 
   Future<void> _removeRecord(
@@ -3495,6 +3514,20 @@ interface class PackLifecycleService {
         ),
         fileSystem: _fileSystem,
       );
+
+  Future<T> _publishPackMutation<T>(
+    PackLifecycleRequest request,
+    LifecycleContext context,
+    PackDefinition pack,
+    Future<T> Function() body,
+  ) {
+    if (request.dryRun) return body();
+    return _lifecycleState.runMutation(
+      context: context,
+      packKeys: {pack.key, ?request.to},
+      body: body,
+    );
+  }
 
   Future<void> _confirmPlan(PackLifecycleRequest request, PackPlan plan) async {
     if (!request.interactive || request.yes || request.dryRun) return;

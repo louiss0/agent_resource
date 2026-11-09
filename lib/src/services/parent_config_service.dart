@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -124,7 +123,6 @@ interface class ParentConfigService {
 
   final fslib.FileSystem fs;
   final LifecycleIO io;
-  static final _inProcess = <String, Future<void>>{};
 
   Future<ParentResult> inspect({
     required ParentRequest request,
@@ -314,151 +312,159 @@ interface class ParentConfigService {
           ),
       },
     );
-    return _serialized(context.stateRoot, () async {
-      final source = _readSource(context);
-      if (source?.digest != current?.digest) {
-        throw MambaException(
-          'The parent document changed after planning; no automatic rebase exists.',
-          exitCode: 4,
-        );
-      }
-      final backup = source == null
-          ? null
-          : _createBackup(
-              context,
-              source,
-              request,
-              currentUnits: _unitEvidence(
+    return _serialized(
+      options,
+      _mutationPaths(context, request.changes, current?.bytes, candidate),
+      () async {
+        final source = _readSource(context);
+        if (source?.digest != current?.digest) {
+          throw MambaException(
+            'The parent document changed after planning; no automatic rebase exists.',
+            exitCode: 4,
+          );
+        }
+        final backup = source == null
+            ? null
+            : _createBackup(
                 context,
                 source,
-                request.changes.map((change) => change.unit).toSet(),
-              ),
-            );
-      final parentId = _matchingParentId(context);
-      final transactionId = _newId('ptr');
-      final transaction = fs.path.join(
-        context.stateRoot,
-        'parent-transactions',
-        '$transactionId.json',
-      );
-      final staged = _stagingPath(context, transactionId);
-      var liveChanged = false;
-      try {
-        _privateDirectory(context.stateRoot);
-        _privateDirectory(fs.path.dirname(transaction));
-        _privateDirectory(fs.path.dirname(staged));
-        io.write(staged, candidate);
-        _validateCandidate(
-          context,
-          io.read(staged, parentDocumentLimit),
-          <String, Object?>{
-            for (final change in request.changes)
-              change.unit: _unitValueFromText(context, candidate, change.unit),
-          },
+                request,
+                currentUnits: _unitEvidence(
+                  context,
+                  source,
+                  request.changes.map((change) => change.unit).toSet(),
+                ),
+              );
+        final parentId = _matchingParentId(context);
+        final transactionId = _newId('ptr');
+        final transaction = fs.path.join(
+          context.stateRoot,
+          'parent-transactions',
+          '$transactionId.json',
         );
-        _writeJson(transaction, <String, Object?>{
-          'schemaVersion': 1,
-          'transactionId': transactionId,
-          'parentId': parentId,
-          'operation': 'config-apply',
-          'file': context.file,
-          'scope': context.scope.name,
-          'backupId': backup?.backupId,
-          'sourceFingerprint': source?.digest,
-          'candidateFingerprint': sha256.convert(candidate).toString(),
-          'phase': 'prepared',
-        });
-        if (io.type(context.file, followLinks: false) !=
-            FileSystemEntityType.notFound) {
-          final quarantine = _quarantinePath(context, transactionId);
-          _privateDirectory(fs.path.dirname(quarantine));
-          io.rename(context.file, quarantine);
-          liveChanged = true;
-        }
-        io.createDirectory(fs.path.dirname(context.file));
-        io.rename(staged, context.file);
-        _advance(transaction, 'published');
-        final published = io.read(context.file, parentDocumentLimit);
-        if (sha256.convert(published).toString() !=
-            sha256.convert(candidate).toString()) {
-          throw MambaException('Published parent bytes did not verify.');
-        }
-        final now = _readSource(context)!;
-        final evidence = _unitEvidence(
-          context,
-          now,
-          request.changes.map((change) => change.unit).toSet(),
-        );
-        final record = <String, Object?>{
-          'schemaVersion': 1,
-          'parentId': parentId,
-          'harness': context.harness.name,
-          'scope': context.scope.name,
-          'layer': context.layer.name,
-          'profile': context.profile,
-          'file': context.file,
-          'fingerprint': now.digest,
-          'units': evidence,
-          'backupIds': [if (backup != null) backup.backupId],
-          'lifecycle': 'live',
-        };
-        _upsertRecord(context.stateRoot, record);
-        _advance(transaction, 'committedCleanupPending');
-        final quarantine = _quarantinePath(context, transactionId);
-        if (io.type(quarantine, followLinks: false) !=
-            FileSystemEntityType.notFound) {
-          io.delete(quarantine);
-        }
-        _advance(transaction, 'committed');
-        return ParentResult(
-          command: 'agent config apply',
-          outcome: 'applied',
-          data: <String, Object?>{
-            'planId': request.planId,
-            'parentId': parentId,
-            'transactionId': transactionId,
-            'backupId': backup?.backupId,
-            'file': context.file,
-            'sourceFingerprint': now.digest,
-            'clientsStopped': true,
-            'runtime': 'notVerified',
-            'backupRetained': backup != null,
-          },
-        );
-      } catch (error) {
-        final quarantine = _quarantinePath(context, transactionId);
-        if (!liveChanged) {
-          if (error is MambaException) rethrow;
-          throw MambaException(
-            'Parent apply failed before live changes; evidence $transaction. $error',
-          );
-        }
+        final staged = _stagingPath(context, transactionId);
+        var liveChanged = false;
         try {
+          _privateDirectory(context.stateRoot);
+          _privateDirectory(fs.path.dirname(transaction));
+          _privateDirectory(fs.path.dirname(staged));
+          io.write(staged, candidate);
+          _validateCandidate(
+            context,
+            io.read(staged, parentDocumentLimit),
+            <String, Object?>{
+              for (final change in request.changes)
+                change.unit: _unitValueFromText(
+                  context,
+                  candidate,
+                  change.unit,
+                ),
+            },
+          );
+          _writeJson(transaction, <String, Object?>{
+            'schemaVersion': 1,
+            'transactionId': transactionId,
+            'parentId': parentId,
+            'operation': 'config-apply',
+            'file': context.file,
+            'scope': context.scope.name,
+            'backupId': backup?.backupId,
+            'sourceFingerprint': source?.digest,
+            'candidateFingerprint': sha256.convert(candidate).toString(),
+            'phase': 'prepared',
+          });
           if (io.type(context.file, followLinks: false) !=
               FileSystemEntityType.notFound) {
-            final failed = '$quarantine.failed-new';
-            io.rename(context.file, failed);
+            final quarantine = _quarantinePath(context, transactionId);
+            _privateDirectory(fs.path.dirname(quarantine));
+            io.rename(context.file, quarantine);
+            liveChanged = true;
           }
+          io.createDirectory(fs.path.dirname(context.file));
+          io.rename(staged, context.file);
+          _advance(transaction, 'published');
+          final published = io.read(context.file, parentDocumentLimit);
+          if (sha256.convert(published).toString() !=
+              sha256.convert(candidate).toString()) {
+            throw MambaException('Published parent bytes did not verify.');
+          }
+          final now = _readSource(context)!;
+          final evidence = _unitEvidence(
+            context,
+            now,
+            request.changes.map((change) => change.unit).toSet(),
+          );
+          final record = <String, Object?>{
+            'schemaVersion': 1,
+            'parentId': parentId,
+            'harness': context.harness.name,
+            'scope': context.scope.name,
+            'layer': context.layer.name,
+            'profile': context.profile,
+            'file': context.file,
+            'fingerprint': now.digest,
+            'units': evidence,
+            'backupIds': [if (backup != null) backup.backupId],
+            'lifecycle': 'live',
+          };
+          _upsertRecord(context.stateRoot, record);
+          _advance(transaction, 'committedCleanupPending');
+          final quarantine = _quarantinePath(context, transactionId);
           if (io.type(quarantine, followLinks: false) !=
               FileSystemEntityType.notFound) {
-            io.rename(quarantine, context.file);
+            io.delete(quarantine);
           }
-          _advance(transaction, 'failedRestored');
-          throw MambaException(
-            'Parent apply failed and the prior document was restored: $error',
-            exitCode: 5,
+          _advance(transaction, 'committed');
+          return ParentResult(
+            command: 'agent config apply',
+            outcome: 'applied',
+            data: <String, Object?>{
+              'planId': request.planId,
+              'parentId': parentId,
+              'transactionId': transactionId,
+              'backupId': backup?.backupId,
+              'file': context.file,
+              'sourceFingerprint': now.digest,
+              'clientsStopped': true,
+              'runtime': 'notVerified',
+              'backupRetained': backup != null,
+            },
           );
-        } on MambaException {
-          rethrow;
-        } on Object {
-          _advance(transaction, 'recoveryRequired');
-          throw MambaException(
-            'Parent apply requires recovery; evidence $transaction. $error',
-            exitCode: 6,
-          );
+        } catch (error) {
+          final quarantine = _quarantinePath(context, transactionId);
+          if (!liveChanged) {
+            if (error is MambaException) rethrow;
+            throw MambaException(
+              'Parent apply failed before live changes; evidence $transaction. $error',
+            );
+          }
+          try {
+            if (io.type(context.file, followLinks: false) !=
+                FileSystemEntityType.notFound) {
+              final failed = '$quarantine.failed-new';
+              io.rename(context.file, failed);
+            }
+            if (io.type(quarantine, followLinks: false) !=
+                FileSystemEntityType.notFound) {
+              io.rename(quarantine, context.file);
+            }
+            _advance(transaction, 'failedRestored');
+            throw MambaException(
+              'Parent apply failed and the prior document was restored: $error',
+              exitCode: 5,
+            );
+          } on MambaException {
+            rethrow;
+          } on Object {
+            _advance(transaction, 'recoveryRequired');
+            throw MambaException(
+              'Parent apply requires recovery; evidence $transaction. $error',
+              exitCode: 6,
+            );
+          }
         }
-      }
-    });
+      },
+    );
   }
 
   List<Map<String, Object?>> records(LifecycleOptions options) =>
@@ -631,79 +637,83 @@ interface class ParentConfigService {
         exitCode: 4,
       );
     }
-    return _serialized(context.stateRoot, () async {
-      if (_readPath(file)?.digest != currentSource.digest) {
-        throw MambaException(
-          'The parent document changed before restore.',
-          exitCode: 4,
-        );
-      }
-      final outgoing = _createBackup(
-        resolved,
-        currentSource,
-        contextRequest,
-        currentUnits: _unitEvidence(
+    return _serialized(
+      options,
+      _mutationPaths(resolved, changes, currentSource.bytes, candidate),
+      () async {
+        if (_readPath(file)?.digest != currentSource.digest) {
+          throw MambaException(
+            'The parent document changed before restore.',
+            exitCode: 4,
+          );
+        }
+        final outgoing = _createBackup(
           resolved,
           currentSource,
-          changes.map((change) => change.unit).toSet(),
-        ),
-      );
-      final transactionId = _newId('ptr');
-      final staged = _stagingPath(resolved, transactionId);
-      final transaction = fs.path.join(
-        context.stateRoot,
-        'parent-transactions',
-        '$transactionId.json',
-      );
-      _privateDirectory(fs.path.dirname(staged));
-      _privateDirectory(fs.path.dirname(transaction));
-      io.write(staged, candidate);
-      _writeJson(transaction, <String, Object?>{
-        'schemaVersion': 1,
-        'transactionId': transactionId,
-        'operation': 'config-restore',
-        'file': file,
-        'backupId': backupId,
-        'sourceFingerprint': currentSource.digest,
-        'phase': 'prepared',
-      });
-      final quarantine = _quarantinePath(resolved, transactionId);
-      _privateDirectory(fs.path.dirname(quarantine));
-      io.rename(file, quarantine);
-      io.createDirectory(fs.path.dirname(file));
-      io.rename(staged, file);
-      _advance(transaction, 'published');
-      final now = _readPath(file)!;
-      final record = _recordForBackup(context.stateRoot, backupId);
-      record['fingerprint'] = now.digest;
-      record['units'] = _unitEvidence(
-        resolved,
-        now,
-        changes.map((change) => change.unit).toSet(),
-      );
-      record['backupIds'] = <String>{
-        ...(record['backupIds']! as List<Object?>).cast<String>(),
-        outgoing.backupId,
-      }.toList();
-      _upsertRecord(context.stateRoot, record);
-      _advance(transaction, 'committedCleanupPending');
-      if (io.type(quarantine, followLinks: false) !=
-          FileSystemEntityType.notFound) {
-        io.delete(quarantine);
-      }
-      _advance(transaction, 'committed');
-      return ParentResult(
-        command: 'agent backup restore',
-        outcome: 'restored',
-        data: <String, Object?>{
-          'backupId': backupId,
-          'outgoingBackupId': outgoing.backupId,
-          'parentId': record['parentId'],
+          contextRequest,
+          currentUnits: _unitEvidence(
+            resolved,
+            currentSource,
+            changes.map((change) => change.unit).toSet(),
+          ),
+        );
+        final transactionId = _newId('ptr');
+        final staged = _stagingPath(resolved, transactionId);
+        final transaction = fs.path.join(
+          context.stateRoot,
+          'parent-transactions',
+          '$transactionId.json',
+        );
+        _privateDirectory(fs.path.dirname(staged));
+        _privateDirectory(fs.path.dirname(transaction));
+        io.write(staged, candidate);
+        _writeJson(transaction, <String, Object?>{
+          'schemaVersion': 1,
+          'transactionId': transactionId,
+          'operation': 'config-restore',
           'file': file,
-          'clientsStopped': true,
-        },
-      );
-    });
+          'backupId': backupId,
+          'sourceFingerprint': currentSource.digest,
+          'phase': 'prepared',
+        });
+        final quarantine = _quarantinePath(resolved, transactionId);
+        _privateDirectory(fs.path.dirname(quarantine));
+        io.rename(file, quarantine);
+        io.createDirectory(fs.path.dirname(file));
+        io.rename(staged, file);
+        _advance(transaction, 'published');
+        final now = _readPath(file)!;
+        final record = _recordForBackup(context.stateRoot, backupId);
+        record['fingerprint'] = now.digest;
+        record['units'] = _unitEvidence(
+          resolved,
+          now,
+          changes.map((change) => change.unit).toSet(),
+        );
+        record['backupIds'] = <String>{
+          ...(record['backupIds']! as List<Object?>).cast<String>(),
+          outgoing.backupId,
+        }.toList();
+        _upsertRecord(context.stateRoot, record);
+        _advance(transaction, 'committedCleanupPending');
+        if (io.type(quarantine, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+          io.delete(quarantine);
+        }
+        _advance(transaction, 'committed');
+        return ParentResult(
+          command: 'agent backup restore',
+          outcome: 'restored',
+          data: <String, Object?>{
+            'backupId': backupId,
+            'outgoingBackupId': outgoing.backupId,
+            'parentId': record['parentId'],
+            'file': file,
+            'clientsStopped': true,
+          },
+        );
+      },
+    );
   }
 
   Future<ParentResult> cleanup({
@@ -738,41 +748,45 @@ interface class ParentConfigService {
     if (_backupIntegrity(backup) != 'unchanged') {
       throw MambaException('The parent backup record changed.', exitCode: 4);
     }
-    return _serialized(context.stateRoot, () async {
-      final current = _backupRecord(context.stateRoot, backupId);
-      if (current['retention'] != 'retained' ||
-          _backupIntegrity(current) != 'unchanged') {
-        throw MambaException(
-          'The parent backup changed before cleanup.',
-          exitCode: 4,
+    return _serialized(
+      options,
+      [backup['file']! as String, fs.path.dirname(backup['file']! as String)],
+      () async {
+        final current = _backupRecord(context.stateRoot, backupId);
+        if (current['retention'] != 'retained' ||
+            _backupIntegrity(current) != 'unchanged') {
+          throw MambaException(
+            'The parent backup changed before cleanup.',
+            exitCode: 4,
+          );
+        }
+        current['retention'] = 'cleaned';
+        _writeJson(
+          fs.path.join(
+            context.stateRoot,
+            'parent-backups',
+            backupId,
+            'backup.json',
+          ),
+          current,
         );
-      }
-      current['retention'] = 'cleaned';
-      _writeJson(
-        fs.path.join(
-          context.stateRoot,
-          'parent-backups',
-          backupId,
-          'backup.json',
-        ),
-        current,
-      );
-      final record = _recordForBackup(context.stateRoot, backupId);
-      record['backupIds'] = (record['backupIds']! as List<Object?>)
-          .cast<String>()
-          .where((id) => id != backupId)
-          .toList();
-      _upsertRecord(context.stateRoot, record);
-      return ParentResult(
-        command: 'agent backup cleanup',
-        outcome: 'cleaned',
-        data: <String, Object?>{
-          'backupId': backupId,
-          'retention': 'cleaned',
-          'secureErasure': false,
-        },
-      );
-    });
+        final record = _recordForBackup(context.stateRoot, backupId);
+        record['backupIds'] = (record['backupIds']! as List<Object?>)
+            .cast<String>()
+            .where((id) => id != backupId)
+            .toList();
+        _upsertRecord(context.stateRoot, record);
+        return ParentResult(
+          command: 'agent backup cleanup',
+          outcome: 'cleaned',
+          data: <String, Object?>{
+            'backupId': backupId,
+            'retention': 'cleaned',
+            'secureErasure': false,
+          },
+        );
+      },
+    );
   }
 
   // --- Reading, planning, patching ---------------------------------------
@@ -1747,42 +1761,47 @@ interface class ParentConfigService {
     }
   }
 
-  Future<T> _serialized<T>(String state, Future<T> Function() body) async {
-    final key = fs.path.normalize(state);
-    final previous = _inProcess[key] ?? Future<void>.value();
-    final done = Completer<void>.sync();
-    _inProcess[key] = done.future;
-    await previous;
-    fslib.RandomAccessFile? lock;
-    try {
-      _privateDirectory(fs.path.join(state, 'coordination'));
-      if (fs is local.LocalFileSystem) {
-        lock = fs
-            .file(fs.path.join(state, 'coordination', 'parent.lock'))
-            .openSync(mode: FileMode.write);
-        lock.lockSync(FileLock.exclusive);
+  Future<T> _serialized<T>(
+    LifecycleOptions options,
+    Iterable<String> paths,
+    Future<T> Function() body,
+  ) => LifecycleStateService(io: io).runMutation(
+    context: LifecycleContext.resolve(options, fileSystem: fs),
+    locations: paths,
+    body: body,
+  );
+
+  Set<String> _mutationPaths(
+    _ParentContext context,
+    List<ParentChange> changes,
+    List<int>? before,
+    List<int> after,
+  ) {
+    final paths = <String>{context.file};
+    for (final change in changes) {
+      if (!change.unit.startsWith('agents.') ||
+          change.unit.split('.').length < 3) {
+        // Parent defaults affect every definition inheriting from this layer.
+        paths.add(fs.path.dirname(context.file));
+        continue;
       }
-      return await body();
-    } catch (error) {
-      if (error is FileSystemException) {
-        throw MambaException(
-          'Could not coordinate parent configuration: ${error.message}',
-          exitCode: 4,
+      final role = change.unit.split('.').take(2).join('.');
+      for (final bytes in [?before, after]) {
+        final reference = _unitValueFromText(
+          context,
+          bytes,
+          '$role.config_file',
         );
-      }
-      rethrow;
-    } finally {
-      if (lock != null) {
-        try {
-          lock.unlockSync();
-        } on FileSystemException {
-          // Closing releases the lock.
+        if (reference is String) {
+          paths.add(
+            fs.path.normalize(
+              fs.path.join(fs.path.dirname(context.file), reference),
+            ),
+          );
         }
-        lock.closeSync();
       }
-      done.complete();
-      if (identical(_inProcess[key], done.future)) _inProcess.remove(key);
     }
+    return paths;
   }
 
   void _writeJson(String path, Object? value) {
