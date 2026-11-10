@@ -46,6 +46,12 @@ The evidence of one authoring act for an unmanaged output. A receipt is not an i
 **Authoring recovery copy**:
 The protected copy of the previous bytes of an edited, replaced or retired source. It is evidence of the earlier content, not an installation record, and it does not restore ownership of the source.
 
+**Authoring transaction**:
+The versioned evidence of one ordinary authoring publication. It binds the reviewed plan, the published target, the reviewed source and the phase of the publication, and it is the authority of an interrupted publication. It is not an installation record.
+
+**Recovery review identity**:
+The digest of the current observations of one transaction and of the recovery it permits. It is the approval of one reviewed recovery or cleanup, and it is invalidated by any change of the observed state.
+
 **Harness**:
 An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used.
 

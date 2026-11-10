@@ -9,11 +9,14 @@ import 'package:mamba/mamba.dart';
 import '../agent_inspection.dart';
 import '../authoring/authoring_inputs.dart';
 import '../authoring/authoring_profiles.dart';
+import '../authoring/authoring_receipt.dart';
+import '../authoring/authoring_transaction.dart';
 import '../authoring/package_manifest.dart';
 import '../conversion/conversion_evidence.dart';
 import '../skill_files.dart';
 import 'agent_lifecycle_service.dart';
 import 'authoring_plan_service.dart';
+import 'authoring_recovery_service.dart';
 import 'conversion_coordinator_service.dart';
 import 'conversion_evidence_service.dart';
 import 'lifecycle_state_service.dart';
@@ -123,6 +126,7 @@ interface class AuthoringPublicationService {
     AgentLifecycleService? agents,
     SkillLifecycleService? skills,
     ConversionCoordinator? coordinator,
+    AuthoringRecoveryService? recovery,
   }) {
     final io = LifecycleIO(fs: fileSystem);
     final resolved = state ?? LifecycleStateService(io: io);
@@ -132,6 +136,8 @@ interface class AuthoringPublicationService {
       agents ?? AgentLifecycleService(state: resolved, fileSystem: fileSystem),
       skills ?? SkillLifecycleService(state: resolved, fileSystem: fileSystem),
       coordinator ?? ConversionCoordinator(io: io, state: resolved),
+      recovery ??
+          AuthoringRecoveryService(fileSystem: fileSystem, state: resolved),
     );
   }
 
@@ -141,12 +147,14 @@ interface class AuthoringPublicationService {
     this._agents,
     this._skills,
     this._coordinator,
+    this._recovery,
   );
   final fslib.FileSystem _fileSystem;
   final LifecycleStateService _state;
   final AgentLifecycleService _agents;
   final SkillLifecycleService _skills;
   final ConversionCoordinator _coordinator;
+  final AuthoringRecoveryService _recovery;
   final ConversionEvidenceService _evidence = ConversionEvidenceService();
 
   LifecycleIO get _io => _state.io;
@@ -229,6 +237,7 @@ interface class AuthoringPublicationService {
     _Source? source,
   ) async {
     final candidate = _candidateOf(plan);
+    final transaction = _prepareTransaction(context, plan, target, source);
     final created = <String>[];
     try {
       if (target.directory != null) {
@@ -259,7 +268,15 @@ interface class AuthoringPublicationService {
       _removeCreated(created);
       rethrow;
     }
-    final receipt = _receipt(context, plan, target, source);
+    _markPublished(context, transaction);
+    final receipt = _commitTransaction(
+      context,
+      plan,
+      target,
+      source,
+      transaction,
+    );
+    _completeTransaction(context, transaction);
     return AuthoringPublicationOutcome(
       planId: plan.planId,
       operation: plan.operation.name,
@@ -393,6 +410,13 @@ interface class AuthoringPublicationService {
   ) async {
     final candidate = _candidateOf(plan);
     final recovery = _retainRecovery(context, plan, source);
+    final transaction = _prepareTransaction(
+      context,
+      plan,
+      target,
+      source,
+      recoveryPath: recovery,
+    );
     final staged = _stageBytes(context, plan, candidate);
     try {
       _verifyStaged(staged, candidate);
@@ -412,7 +436,15 @@ interface class AuthoringPublicationService {
     } finally {
       _removeIfPresent(staged);
     }
-    final receipt = _receipt(context, plan, target, source);
+    _markPublished(context, transaction);
+    final receipt = _commitTransaction(
+      context,
+      plan,
+      target,
+      source,
+      transaction,
+    );
+    _completeTransaction(context, transaction);
     return AuthoringPublicationOutcome(
       planId: plan.planId,
       operation: plan.operation.name,
@@ -672,6 +704,13 @@ interface class AuthoringPublicationService {
       excludePath: source.path,
     );
     final recovery = _retainRecovery(context, plan, source);
+    final transaction = _prepareTransaction(
+      context,
+      plan,
+      target,
+      source,
+      recoveryPath: recovery,
+    );
     final staged = _stageBytes(context, plan, candidate);
     try {
       _verifyStaged(staged, candidate);
@@ -696,8 +735,16 @@ interface class AuthoringPublicationService {
         rethrow;
       }
       _verifyPublishedTarget(target, files);
+      _markPublished(context, transaction);
       final retired = _retireSource(source, target);
-      final receipt = _receipt(context, plan, target, source);
+      final receipt = _commitTransaction(
+        context,
+        plan,
+        target,
+        source,
+        transaction,
+      );
+      _completeTransaction(context, transaction);
       return AuthoringPublicationOutcome(
         planId: plan.planId,
         operation: plan.operation.name,
@@ -1329,44 +1376,102 @@ interface class AuthoringPublicationService {
   /// location and the honest provenance of the output. It is not an
   /// installation record: it never adopts a source and it never binds an
   /// update source.
-  String _receipt(
+  /// Records the prepared transaction of one ordinary publication.
+  ///
+  /// The transaction is the authority of an interrupted publication. It is
+  /// written before the live change, so a publication that stops between the
+  /// preparation and the commit stays reviewable and recoverable.
+  AuthoringTransaction _prepareTransaction(
+    LifecycleContext context,
+    AuthoringPlan plan,
+    _Target target,
+    _Source? source, {
+    String? recoveryPath,
+  }) {
+    final transaction = AuthoringTransaction(
+      transactionId: _recovery.newTransactionId(),
+      planId: plan.planId,
+      operation: plan.operation.name,
+      kind: plan.kind.name,
+      profile: plan.profile.name,
+      ownership: PublicationOwnership.authorOnly.name,
+      phase: AuthoringTransactionPhase.prepared,
+      target: target.artifactLocation,
+      source: source?.path,
+      sourceSha256: source?.markerSha256,
+      recoveryPath: recoveryPath,
+      receiptId: authoringReceiptId(plan.planId, target.output),
+      candidateSha256: _digestBytes(_candidateOf(plan)),
+      observations: <String, Object?>{
+        if (recoveryPath != null)
+          'payloadMembers': <String>[
+            for (final entry in _io.list(recoveryPath))
+              _fileSystem.path.basename(entry.path),
+          ],
+      },
+    );
+    _recovery.persist(context.stateRoot(), transaction);
+    return transaction;
+  }
+
+  /// Records the published phase of one ordinary publication.
+  void _markPublished(
+    LifecycleContext context,
+    AuthoringTransaction transaction,
+  ) {
+    _recovery.persist(
+      context.stateRoot(),
+      transaction.copyWith(phase: AuthoringTransactionPhase.published),
+    );
+  }
+
+  /// Writes the authoring receipt and records the committed phase.
+  ///
+  /// The receipt is the commit point of an ordinary publication: it is the
+  /// evidence of the authoring act. The transaction is committed with it.
+  String _commitTransaction(
     LifecycleContext context,
     AuthoringPlan plan,
     _Target target,
     _Source? source,
+    AuthoringTransaction transaction,
   ) {
-    final digest = sha256
-        .convert(utf8.encode('${plan.planId}|${target.output}'))
-        .toString();
-    final receiptId = 'rcp_${digest.substring(0, 32)}';
-    final path = _fileSystem.path.join(
-      context.stateRoot(),
-      'authoring-receipts',
-      '$receiptId.json',
+    final receiptId = authoringReceiptId(plan.planId, target.output);
+    writeAuthoringReceipt(
+      state: _state,
+      stateRoot: context.stateRoot(),
+      document: authoringReceiptDocument(
+        receiptId: receiptId,
+        planId: plan.planId,
+        operation: plan.operation.name,
+        kind: plan.kind.name,
+        profile: plan.profile.name,
+        target: target.output,
+        root: target.root,
+        form: target.form,
+        derivedFrom: source?.path,
+        sourceInstallationId: source?.installationId,
+      ),
     );
-    _state.writeProtectedDocument(
-      path,
-      utf8.encode(
-        jsonEncode(<String, Object?>{
-          'schemaVersion': 1,
-          'receiptId': receiptId,
-          'planId': plan.planId,
-          'operation': plan.operation.name,
-          'kind': plan.kind.name,
-          'profile': plan.profile.name,
-          'ownership': PublicationOwnership.authorOnly.name,
-          'target': target.output,
-          'root': target.root,
-          'form': target.form,
-          'derivedFrom': source?.path,
-          'sourceInstallationId': source?.installationId,
-          'inheritedTracking': false,
-          'packMembership': null,
-          'originStatus': 'unknown',
-        }),
+    _recovery.persist(
+      context.stateRoot(),
+      transaction.copyWith(
+        phase: AuthoringTransactionPhase.committed,
+        receiptId: receiptId,
       ),
     );
     return receiptId;
+  }
+
+  /// Records the completed phase of one ordinary publication.
+  void _completeTransaction(
+    LifecycleContext context,
+    AuthoringTransaction transaction,
+  ) {
+    _recovery.persist(
+      context.stateRoot(),
+      transaction.copyWith(phase: AuthoringTransactionPhase.completed),
+    );
   }
 
   /// A new coordinated transaction identifier.

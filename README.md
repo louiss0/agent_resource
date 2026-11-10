@@ -392,6 +392,30 @@ action must agree with the coordinator decision. Receipt-only edits do not adopt
 the original or create an installation record. Existing ordinary `trx_` recovery
 continues to use its existing contract.
 
+### Inspect and recover ordinary authoring publications
+
+```text
+agent_resource authoring list [--scope project|user|all]
+agent_resource authoring inspect <transaction-id> --scope project
+agent_resource authoring recover <transaction-id> --scope project
+agent_resource authoring recover <transaction-id> --scope project --apply --yes --plan-id <reviewed-plan-id>
+agent_resource authoring cleanup <transaction-id> --scope project
+agent_resource authoring cleanup <transaction-id> --scope project --apply --yes --plan-id <cleanup-plan-id>
+```
+
+These commands use the retained authoring transaction of an ordinary, unmanaged
+publication. The transaction binds the reviewed plan, the published target, the
+reviewed source and the retained recovery payload. Inspection and the default
+recover/cleanup invocations are read-only; apply requires the current review
+identity and explicit approval. A publication before its commit may be rolled
+back, which removes the published target and restores the reviewed source from
+the retained payload; a committed publication may only be completed. Cleanup
+deletes only the verified terminal private payload, keeps the evidence document
+as the audit record, and forfeits the payload based restore. An unfinished
+transaction is never cleaned up, and no recovery path deletes an editing draft
+or a user input file. The public authoring create, edit and conversion routes
+remain gated separately.
+
 Cleanup accepts only intact terminal evidence, refuses pending conflicts, and
 deletes only verified private recovery payloads. It retains the coordinator
 receipt, decision and participant references for audit and replay refusal. The
