@@ -17,6 +17,7 @@ import '../installation/skill_root_markdown_migration.dart';
 import '../pack/github_release_resolver.dart';
 import '../pack/pack_change_set.dart';
 import '../pack/pack_configuration.dart';
+import '../pack/pack_discovery.dart';
 import '../pack/pack_models.dart';
 import '../pack/pack_state.dart';
 import '../pack/release_policy.dart' as release_policy;
@@ -27,6 +28,7 @@ import '../validation/validation_diagnostics.dart';
 import 'acquisition_service.dart';
 import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
+import 'pack_discovery_service.dart';
 import 'pack_prompt_service.dart';
 import 'skill_lifecycle_service.dart';
 
@@ -101,6 +103,60 @@ final class const PackLifecycleRequest({
   final Future<bool> Function(PackPlan plan)? planReview,
 });
 
+/// The read-only discovery request of one configured pack.
+///
+/// The discovery reports the candidates of a pack source and their
+/// per-consumer Prompt views. It never writes management state, never
+/// enrolls a membership and never advances an inventory.
+final class PackDiscoveryRequest {
+  const PackDiscoveryRequest({
+    required this.pack,
+    this.types = const <PackResourceType>[],
+    this.target,
+    this.processWorkingDirectory = '.',
+    this.environment = const <String, String>{},
+    this.scope,
+    this.cwd,
+    this.projectRoot,
+    this.home,
+    this.stateDir,
+    this.configPath,
+  });
+
+  /// The configured pack key.
+  final String pack;
+
+  /// The selected resource kinds. An empty selection reports every kind.
+  final List<PackResourceType> types;
+
+  /// The optional consuming harness of the discovery.
+  final String? target;
+
+  /// The working directory of the process.
+  final String processWorkingDirectory;
+
+  /// The environment of the process.
+  final Map<String, String> environment;
+
+  /// The configuration scope of the discovery.
+  final LifecycleScope? scope;
+
+  /// The explicit working directory.
+  final String? cwd;
+
+  /// The explicit project root.
+  final String? projectRoot;
+
+  /// The explicit home directory.
+  final String? home;
+
+  /// The explicit state directory.
+  final String? stateDir;
+
+  /// The explicit configuration path.
+  final String? configPath;
+}
+
 interface class PackLifecycleService {
   PackLifecycleService({
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
@@ -144,6 +200,10 @@ interface class PackLifecycleService {
   );
   late final PackPromptService _promptService = PackPromptService(
     fileSystem: _fileSystem,
+  );
+  late final PackDiscoveryService _discovery = PackDiscoveryService(
+    fileSystem: _fileSystem,
+    prompts: _promptService,
   );
   AcquisitionService get _acquirer =>
       _acquisition ?? AcquisitionService(fileSystem: _fileSystem);
@@ -646,6 +706,17 @@ interface class PackLifecycleService {
       );
       try {
         for (final type in types) {
+          if (type == PackResourceType.prompt) {
+            for (final candidate in await _discovery.scopeCandidates(
+              acquired.workspace,
+              pack,
+              _readSourceCatalog(acquired.workspace),
+            )) {
+              if (!candidate.promptCandidate) continue;
+              match(type, candidate.name);
+            }
+            continue;
+          }
           for (final candidate in await _validationCandidates(
             acquired.workspace,
             pack,
@@ -748,8 +819,17 @@ interface class PackLifecycleService {
     final acquired = await _acquire(pack, configuration, request: request);
     final workspace = acquired.workspace;
     try {
+      final types = _requestResourceTypes(request);
+      final scope = types.contains(PackResourceType.prompt)
+          ? await _discovery.scopeCandidates(
+              workspace,
+              pack,
+              _readSourceCatalog(workspace),
+            )
+          : const <PackScopeCandidate>[];
       final inspected = <_InspectedPackResource>[];
-      for (final type in _requestResourceTypes(request)) {
+      for (final type in types) {
+        if (type == PackResourceType.prompt) continue;
         for (final candidate in await _validationCandidates(
           workspace,
           pack,
@@ -758,6 +838,22 @@ interface class PackLifecycleService {
           inspected.add(_inspectPackResource(candidate, pack));
         }
       }
+      for (final candidate in scope) {
+        if (!candidate.promptCandidate) continue;
+        inspected.add(
+          _InspectedPackResource(
+            candidate: _PackValidationCandidate(
+              type: PackResourceType.prompt,
+              relativePath: candidate.id,
+              path: candidate.path,
+              profile: null,
+            ),
+            name: candidate.name,
+            failures: const <String>[],
+            warnings: const <String>[],
+          ),
+        );
+      }
       inspected.sort(_compareInspectedResources);
       _requireUniqueValidationNames(inspected, pack);
       final selected = _selectValidatedResources(request, pack, inspected);
@@ -765,13 +861,18 @@ interface class PackLifecycleService {
         for (final resource in selected)
           ...resource.failures.map((failure) => '${resource.label}: $failure'),
       ];
-      if (_requestResourceTypes(request).contains(PackResourceType.prompt)) {
+      final selectedPrompts = selected
+          .where(
+            (resource) => resource.candidate.type == PackResourceType.prompt,
+          )
+          .toList();
+      if (selectedPrompts.isNotEmpty) {
         failures.addAll(
-          await _promptValidationFailures(
+          await _promptScopeFailures(
             request,
             pack,
             configuration,
-            selected,
+            selectedPrompts,
           ),
         );
       }
@@ -810,6 +911,53 @@ interface class PackLifecycleService {
     }
   }
 
+  /// The Prompt failures of the selected scope candidates.
+  ///
+  /// The validation inspects the reviewed source and its staged output: the
+  /// pack admission and the root Markdown migration cannot disguise an
+  /// invalid Prompt.
+  Future<List<String>> _promptScopeFailures(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    PackConfiguration configuration,
+    List<_InspectedPackResource> scope,
+  ) async {
+    late final List<String> targets;
+    try {
+      targets = _validationTargets(request, pack, configuration);
+    } on MambaException catch (error) {
+      return <String>[error.message];
+    }
+    final failures = <String>[];
+    for (final resource in scope) {
+      final staged = await SkillRootMarkdownMigration(fileSystem: _fileSystem)
+          .stage(
+            resource.candidate.path,
+            directoryName: _fileSystem.path.basename(resource.candidate.path),
+          );
+      late final PackPromptCandidate view;
+      try {
+        view = await _promptService.inspect(
+          resource.candidate.path,
+          staged.path,
+          name: resource.name ?? resource.candidate.relativePath,
+          consumer: PackPromptService.consumerOf(request.target),
+        );
+      } finally {
+        await staged.close();
+      }
+      try {
+        _promptService.requireSupportedSelection(
+          selected: <PackPromptCandidate>[view],
+          targets: targets,
+        );
+      } on MambaException catch (error) {
+        failures.add('${resource.label}: ${error.message}');
+      }
+    }
+    return failures;
+  }
+
   Future<PackOperationResult> _validateConfiguration(
     PackLifecycleRequest request,
     PackConfiguration configuration,
@@ -844,6 +992,151 @@ interface class PackLifecycleService {
       resources: const [],
       dryRun: true,
     );
+  }
+
+  /// Discovers the candidates of a pack source without changing any state.
+  ///
+  /// The discovery is a bounded read-only view. It reports every source once
+  /// with its per-consumer Prompt views, and it never writes management
+  /// state, enrolls a membership or advances an inventory.
+  Future<PackDiscoveryReport> discover(PackDiscoveryRequest request) async {
+    final target = request.target;
+    if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
+      throw MambaException(
+        'Unsupported discovery target: $target. The supported targets are '
+        'claude, codex, and pi.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final context = _resolveContext(
+      processWorkingDirectory: request.processWorkingDirectory,
+      environment: request.environment,
+      scope: request.scope,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      stateDir: request.stateDir,
+    );
+    final configuration = _loadPackConfiguration(
+      context: context,
+      environment: request.environment,
+      configPath: request.configPath,
+      scope: request.scope,
+    );
+    final pack = configuration.findPack(request.pack);
+    if (pack == null) {
+      throw MambaException(
+        'No configured pack matches ${request.pack} in '
+        '${configuration.configPath}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final lifecycleRequest = PackLifecycleRequest(
+      operation: PackOperation.install,
+      resourceType: PackResourceType.skill,
+      pack: request.pack,
+      processWorkingDirectory: request.processWorkingDirectory,
+      environment: request.environment,
+      scope: request.scope,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      stateDir: request.stateDir,
+      configPath: request.configPath,
+      dryRun: true,
+      yes: true,
+    );
+    final acquired = await _acquire(
+      pack,
+      configuration,
+      request: lifecycleRequest,
+    );
+    final workspace = acquired.workspace;
+    try {
+      final catalog = _readSourceCatalog(workspace);
+      final scope = await _discovery.scopeCandidates(
+        workspace,
+        pack,
+        catalog,
+        target: request.target,
+      );
+      final agents = await _validationCandidates(
+        workspace,
+        pack,
+        PackResourceType.agent,
+      );
+      final discovered = [
+        for (final candidate in agents)
+          PackDiscoveryCandidate(
+            id: candidate.relativePath,
+            path: candidate.path,
+            kind: PackDiscoveryKind.agent,
+            form: PackDiscoveryForm.agentFile,
+            profile: candidate.profile?.wireName,
+          ),
+        ...await _discovery.candidates(
+          workspace,
+          pack,
+          catalog,
+          target: request.target,
+          scope: scope,
+        ),
+      ]..sort(_compareDiscoveryCandidates);
+      return PackDiscoveryReport(
+        pack: pack.key,
+        source: _sourceJson(pack, workspace.provenance),
+        candidates: [
+          for (final candidate in discovered)
+            if (_discoveryIncludes(request, candidate)) candidate,
+        ],
+        types: _discoveryTypes(request),
+      );
+    } finally {
+      await workspace.close();
+    }
+  }
+
+  /// The deterministic order of the discovered candidates.
+  int _compareDiscoveryCandidates(
+    PackDiscoveryCandidate left,
+    PackDiscoveryCandidate right,
+  ) {
+    final comparison = left.kind.index.compareTo(right.kind.index);
+    if (comparison != 0) return comparison;
+    return left.id.compareTo(right.id);
+  }
+
+  /// Whether the selected kinds include one discovered candidate.
+  bool _discoveryIncludes(
+    PackDiscoveryRequest request,
+    PackDiscoveryCandidate candidate,
+  ) {
+    if (request.types.isEmpty) return true;
+    if (request.types.contains(PackResourceType.agent) &&
+        candidate.kind == PackDiscoveryKind.agent) {
+      return true;
+    }
+    if (request.types.contains(PackResourceType.prompt) &&
+        candidate.promptCandidate) {
+      return true;
+    }
+    if (request.types.contains(PackResourceType.skill) &&
+        candidate.kind == PackDiscoveryKind.skill) {
+      return true;
+    }
+    return false;
+  }
+
+  /// The selected kinds of one discovery.
+  List<String> _discoveryTypes(PackDiscoveryRequest request) {
+    final types = request.types.isEmpty
+        ? const <PackResourceType>[
+            PackResourceType.skill,
+            PackResourceType.agent,
+            PackResourceType.prompt,
+          ]
+        : request.types;
+    return [for (final type in types) type.name];
   }
 
   Future<PackOperationResult> _installOrUpdate(
@@ -2506,6 +2799,7 @@ interface class PackLifecycleService {
         subject: 'Pack',
         budgetExitCode: PackProcessStatus.invalidInput.code,
         linkExitCode: PackProcessStatus.invalidInput.code,
+        fileSystem: _fileSystem,
       );
       return [
         for (final offering in offerings)
@@ -2787,7 +3081,22 @@ interface class PackLifecycleService {
     final discovered = catalog == null
         ? await _validationCandidates(workspace, pack, request.resourceType)
         : const <_PackValidationCandidate>[];
-    final paths = catalog != null
+    final paths = request.promptSelection
+        ? [
+            for (final candidate in await _discovery.scopeCandidates(
+              workspace,
+              pack,
+              catalog,
+            ))
+              if (candidate.promptCandidate)
+                (
+                  candidate.id,
+                  null,
+                  candidate.discoveryRoot,
+                  candidate.discoveryGroup,
+                ),
+          ]
+        : catalog != null
         ? request.resourceType == PackResourceType.skill
               ? catalog.skills
                     .map(
@@ -2831,27 +3140,39 @@ interface class PackLifecycleService {
       var candidatePath = path;
       StagedSkill? staged;
       if (request.resourceType == PackResourceType.skill) {
-        if (stagedSkills != null) {
-          staged = await SkillRootMarkdownMigration(fileSystem: _fileSystem)
-              .stage(
-                path,
-                // The staged output keeps the name of the reviewed source, so
-                // its Prompt view agrees with the view of the source.
-                directoryName: _fileSystem.path.basename(path),
-              );
-          stagedSkills.add(staged);
-          candidatePath = staged.path;
-        }
-        name = readDeclaredSkillName(candidatePath, fs: _fileSystem);
-        extraFolders = {...?folderApprovals[name], ...?reusableFolders[name]};
-        extraFolders = await _promptExtraFolders(
-          request,
-          candidatePath,
-          name,
-          extraFolders,
-          requestedFolders: requestedFolders[name] ?? const <String>{},
+        final entityType = skillEntityType(
+          path,
+          followLinks: false,
+          fs: _fileSystem,
         );
-        _admission.inspect(candidatePath, approvedExtraFolders: extraFolders);
+        if (entityType == FileSystemEntityType.file) {
+          // A standalone template is never installable. The Prompt gates
+          // refuse the whole selection before any installation effect, so the
+          // candidate only carries the identity of the refused source.
+          name = _fileSystem.path.basenameWithoutExtension(path);
+        } else {
+          if (stagedSkills != null) {
+            staged = await SkillRootMarkdownMigration(fileSystem: _fileSystem)
+                .stage(
+                  path,
+                  // The staged output keeps the name of the reviewed source,
+                  // so its Prompt view agrees with the view of the source.
+                  directoryName: _fileSystem.path.basename(path),
+                );
+            stagedSkills.add(staged);
+            candidatePath = staged.path;
+          }
+          name = readDeclaredSkillName(candidatePath, fs: _fileSystem);
+          extraFolders = {...?folderApprovals[name], ...?reusableFolders[name]};
+          extraFolders = await _promptExtraFolders(
+            request,
+            candidatePath,
+            name,
+            extraFolders,
+            requestedFolders: requestedFolders[name] ?? const <String>{},
+          );
+          _admission.inspect(candidatePath, approvedExtraFolders: extraFolders);
+        }
         if (staged != null && staged.movedMarkdown.isNotEmpty) {
           warnings?.add(
             PackWarning(
@@ -3242,59 +3563,6 @@ interface class PackLifecycleService {
     }
   }
 
-  /// Reports the Prompt failures of a validated selection.  ///
-  /// The validation of the prompt kind applies the Prompt gates of the
-  /// selected sources: every selected resource must be a valid Prompt for
-  /// every requested target. The failures are reported as validation
-  /// failures, and no managed state is changed.
-  Future<List<String>> _promptValidationFailures(
-    PackLifecycleRequest request,
-    PackDefinition pack,
-    PackConfiguration configuration,
-    List<_InspectedPackResource> selected,
-  ) async {
-    final candidates = selected
-        .where((resource) => _isSkillFamily(resource.candidate.type))
-        .toList();
-    if (candidates.isEmpty) return const <String>[];
-    late final List<String> targets;
-    try {
-      targets = _validationTargets(request, pack, configuration);
-    } on MambaException catch (error) {
-      return <String>[error.message];
-    }
-    final failures = <String>[];
-    for (final resource in candidates) {
-      // The validation inspects the reviewed source and its staged output:
-      // the pack admission and the root Markdown migration cannot disguise an
-      // invalid Prompt.
-      final staged = await SkillRootMarkdownMigration(fileSystem: _fileSystem)
-          .stage(
-            resource.candidate.path,
-            directoryName: _fileSystem.path.basename(resource.candidate.path),
-          );
-      late final PackPromptCandidate view;
-      try {
-        view = await _promptService.inspect(
-          resource.candidate.path,
-          staged.path,
-          name: resource.name ?? resource.candidate.relativePath,
-        );
-      } finally {
-        await staged.close();
-      }
-      try {
-        _promptService.requireSupportedSelection(
-          selected: <PackPromptCandidate>[view],
-          targets: targets,
-        );
-      } on MambaException catch (error) {
-        failures.add('${resource.label}: ${error.message}');
-      }
-    }
-    return failures;
-  }
-
   /// The requested installation targets of a request.
   ///
   /// The request target wins over the pack targets, and the pack targets win
@@ -3644,11 +3912,11 @@ interface class PackLifecycleService {
       return PackConfiguration.parse(
         utf8.decode(bytes, allowMalformed: false),
         configPath: path,
-        catalogType: switch (type) {
-          PackResourceType.skill ||
-          PackResourceType.prompt => CatalogResourceType.skill,
-          PackResourceType.agent => CatalogResourceType.agent,
-          null => null,
+        catalogScope: switch (type) {
+          PackResourceType.skill => PackCatalogSection.skills,
+          PackResourceType.prompt => PackCatalogSection.prompts,
+          PackResourceType.agent => PackCatalogSection.agents,
+          null => PackCatalogSection.all,
         },
       ).catalog;
     } on PackConfigurationException catch (error) {
@@ -3706,17 +3974,30 @@ interface class PackLifecycleService {
   PackConfiguration _loadConfiguration(
     PackLifecycleRequest request,
     LifecycleContext context,
-  ) {
-    final scope = request.scope ?? LifecycleScope.project;
+  ) => _loadPackConfiguration(
+    context: context,
+    environment: request.environment,
+    configPath: request.configPath,
+    scope: request.scope,
+  );
+
+  /// The configuration of one pack scope.
+  PackConfiguration _loadPackConfiguration({
+    required LifecycleContext context,
+    required Map<String, String> environment,
+    required String? configPath,
+    required LifecycleScope? scope,
+  }) {
+    final resolved = scope ?? LifecycleScope.project;
     try {
       return PackConfiguration.load(
-        scope: scope == LifecycleScope.project
+        scope: resolved == LifecycleScope.project
             ? PackConfigurationScope.project
             : PackConfigurationScope.user,
         projectRoot: context.projectRoot,
-        explicitPath: request.configPath,
+        explicitPath: configPath,
         workingDirectory: context.cwd,
-        environment: request.environment,
+        environment: environment,
         fileSystem: _fileSystem,
       );
     } on PackConfigurationException catch (error) {
@@ -3727,21 +4008,43 @@ interface class PackLifecycleService {
     }
   }
 
-  LifecycleContext _context(PackLifecycleRequest request) =>
-      LifecycleContext.resolve(
-        LifecycleOptions(
-          processWorkingDirectory: request.processWorkingDirectory,
-          environment: request.environment,
-          scope: request.scope ?? LifecycleScope.project,
-          cwd: request.cwd,
-          projectRoot: request.projectRoot,
-          home: request.home,
-          stateDir: request.stateDir,
-          dryRun: request.dryRun,
-          approved: request.yes || request.interactive,
-        ),
-        fileSystem: _fileSystem,
-      );
+  LifecycleContext _context(PackLifecycleRequest request) => _resolveContext(
+    processWorkingDirectory: request.processWorkingDirectory,
+    environment: request.environment,
+    scope: request.scope,
+    cwd: request.cwd,
+    projectRoot: request.projectRoot,
+    home: request.home,
+    stateDir: request.stateDir,
+    dryRun: request.dryRun,
+    approved: request.yes || request.interactive,
+  );
+
+  /// The lifecycle context of one pack scope.
+  LifecycleContext _resolveContext({
+    required String processWorkingDirectory,
+    required Map<String, String> environment,
+    LifecycleScope? scope,
+    String? cwd,
+    String? projectRoot,
+    String? home,
+    String? stateDir,
+    bool dryRun = false,
+    bool approved = false,
+  }) => LifecycleContext.resolve(
+    LifecycleOptions(
+      processWorkingDirectory: processWorkingDirectory,
+      environment: environment,
+      scope: scope ?? LifecycleScope.project,
+      cwd: cwd,
+      projectRoot: projectRoot,
+      home: home,
+      stateDir: stateDir,
+      dryRun: dryRun,
+      approved: approved,
+    ),
+    fileSystem: _fileSystem,
+  );
 
   Future<T> _publishPackMutation<T>(
     PackLifecycleRequest request,

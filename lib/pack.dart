@@ -29,6 +29,7 @@ final class PackCommand extends GroupCommand {
           canonical: true,
           fileSystem: fileSystem,
         ),
+        PackDiscoverCommand(service, fileSystem: fileSystem),
       ]);
 
   @override

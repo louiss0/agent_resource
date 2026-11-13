@@ -6,11 +6,16 @@ import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 import 'package:zema/zema.dart';
 
-import '../installation/resource_catalog.dart'
-    show CatalogResourceType, NativeAgentProfile;
+import '../installation/resource_catalog.dart' show NativeAgentProfile;
 import '../validation/validation_diagnostics.dart';
 
 export '../installation/resource_catalog.dart' show NativeAgentProfile;
+
+/// The native profiles of a declared Prompt source.
+///
+/// A standalone template needs its profile: without one the candidate stays
+/// unclassified instead of assuming Pi.
+const List<String> packPromptProfiles = <String>['claude', 'codex', 'pi'];
 
 const packConfigurationFileName = 'agent-resources.toml';
 
@@ -231,20 +236,44 @@ final class AgentCatalogEntry {
   final NativeAgentProfile profile;
 }
 
+/// The declared Prompt source of a pack.
+///
+/// A declared Prompt is either a skill-backed Prompt package or a standalone
+/// native template. A standalone template needs its native profile: without
+/// one the candidate stays unclassified instead of assuming Pi.
+final class PromptCatalogEntry {
+  const PromptCatalogEntry({required this.path, this.profile});
+
+  final String path;
+
+  /// The declared native profile of a standalone template.
+  final String? profile;
+}
+
+/// The catalog sections one pack operation reads.
+///
+/// The prompt section also exposes the declared Skill entries: a declared
+/// Skill with native manual-only controls is a per-harness Prompt view of that
+/// source.
+enum PackCatalogSection { skills, agents, prompts, all }
+
 final class SourceCatalog {
   const SourceCatalog({
     required this.skills,
     required this.agents,
+    required this.prompts,
     this.declared = false,
   });
 
   static const empty = SourceCatalog(
     skills: <SkillCatalogEntry>[],
     agents: <AgentCatalogEntry>[],
+    prompts: <PromptCatalogEntry>[],
   );
 
   final List<SkillCatalogEntry> skills;
   final List<AgentCatalogEntry> agents;
+  final List<PromptCatalogEntry> prompts;
   final bool declared;
 }
 
@@ -262,14 +291,14 @@ final class PackConfiguration {
     String source, {
     String configPath = packConfigurationFileName,
     PackConfigurationScope scope = PackConfigurationScope.project,
-    CatalogResourceType? catalogType,
+    PackCatalogSection? catalogScope,
   }) {
     return _parse(
       source,
       configPath: configPath,
       scope: scope,
       inheritedPreferences: CliPreferences.defaults,
-      catalogType: catalogType,
+      catalogScope: catalogScope,
     );
   }
 
@@ -429,7 +458,7 @@ final class PackConfiguration {
     required String configPath,
     required PackConfigurationScope scope,
     required CliPreferences inheritedPreferences,
-    CatalogResourceType? catalogType,
+    PackCatalogSection? catalogScope,
     p.Context? pathContext,
   }) {
     pathContext ??= p.Context();
@@ -460,8 +489,8 @@ final class PackConfiguration {
       ], configPath: configPath);
     }
     final parser = _Parser(configPath, inheritedPreferences, pathContext)
-      ..issues.addAll(_shapeIssues(document, catalogType: catalogType));
-    return parser.parse(document, scope, catalogType: catalogType);
+      ..issues.addAll(_shapeIssues(document, catalogScope: catalogScope));
+    return parser.parse(document, scope, catalogScope: catalogScope);
   }
 
   static String _readConfig(FileSystem fileSystem, String path) {
@@ -576,6 +605,15 @@ final _catalogSchema = z.object({
       )
       .min(1)
       .optional(),
+  'prompts': z
+      .array(
+        z.object({
+          'path': z.string(),
+          'profile': z.string().oneOf(packPromptProfiles).optional(),
+        }).makeStrict(),
+      )
+      .min(1)
+      .optional(),
 }).makeStrict();
 final _packConfigurationSchema = z.object({
   'schema_version': z.literal(1),
@@ -598,7 +636,7 @@ final _packConfigurationSchema = z.object({
 /// paths so diagnostics stay aggregated and actionable.
 List<PackConfigurationIssue> _shapeIssues(
   Object? document, {
-  CatalogResourceType? catalogType,
+  PackCatalogSection? catalogScope,
 }) {
   if (document is! Map<String, dynamic>) {
     return const [
@@ -637,10 +675,13 @@ List<PackConfigurationIssue> _shapeIssues(
   }
 
   findNulls(document, const []);
-  bool excluded(String path) => switch (catalogType) {
-    CatalogResourceType.skill => path.startsWith('catalog.agents'),
-    CatalogResourceType.agent => path.startsWith('catalog.skills'),
-    null => false,
+  bool excluded(String path) => switch (catalogScope) {
+    PackCatalogSection.skills =>
+      path.startsWith('catalog.agents') || path.startsWith('catalog.prompts'),
+    PackCatalogSection.agents =>
+      path.startsWith('catalog.skills') || path.startsWith('catalog.prompts'),
+    PackCatalogSection.prompts => path.startsWith('catalog.agents'),
+    PackCatalogSection.all || null => false,
   };
   final retained = issues.where((issue) => !excluded(issue.keyPath)).toList();
   final result = _packConfigurationSchema.safeParse(document);
@@ -720,7 +761,7 @@ final class _Parser {
   PackConfiguration parse(
     Map<String, dynamic> document,
     PackConfigurationScope scope, {
-    CatalogResourceType? catalogType,
+    PackCatalogSection? catalogScope,
   }) {
     final root = _map(document, 'configuration');
     if (root == null) _throw();
@@ -740,7 +781,7 @@ final class _Parser {
     final catalog = _parseCatalog(
       root['catalog'],
       root.containsKey('catalog'),
-      catalogType: catalogType,
+      catalogScope: catalogScope,
     );
     if (issues.isNotEmpty) _throw();
     return PackConfiguration._(
@@ -1140,7 +1181,11 @@ final class _Parser {
     if (value == null) return PackDiscovery.defaults;
     final discovery = _map(value, path);
     if (discovery == null) return PackDiscovery.defaults;
-    _unknown(discovery, path, const {'skills_directory', 'agents_directory'});
+    _unknown(discovery, path, const {
+      'skills_directory',
+      'agents_directory',
+      'prompts_directory',
+    });
     return PackDiscovery(
       skillsDirectory: discovery.containsKey('skills_directory')
           ? _safeRelativeString(
@@ -1158,6 +1203,14 @@ final class _Parser {
                 ) ??
                 'agents'
           : 'agents',
+      promptsDirectory: discovery.containsKey('prompts_directory')
+          ? _safeRelativeString(
+                  discovery['prompts_directory'],
+                  '$path.prompts_directory',
+                  allowRoot: true,
+                ) ??
+                'prompts'
+          : 'prompts',
     );
   }
 
@@ -1288,20 +1341,46 @@ final class _Parser {
   SourceCatalog _parseCatalog(
     Object? value,
     bool present, {
-    CatalogResourceType? catalogType,
+    PackCatalogSection? catalogScope,
   }) {
     if (!present) return SourceCatalog.empty;
     final catalog = _map(value, 'catalog');
     if (catalog == null) return SourceCatalog.empty;
-    _unknown(catalog, 'catalog', const {'skills', 'agents'});
+    _unknown(catalog, 'catalog', const {'skills', 'agents', 'prompts'});
+    final skills = catalogScope == PackCatalogSection.agents
+        ? const <SkillCatalogEntry>[]
+        : List<SkillCatalogEntry>.unmodifiable(
+            _parseSkillCatalog(catalog['skills']),
+          );
+    final agents =
+        catalogScope == PackCatalogSection.skills ||
+            catalogScope == PackCatalogSection.prompts
+        ? const <AgentCatalogEntry>[]
+        : List<AgentCatalogEntry>.unmodifiable(
+            _parseAgentCatalog(catalog['agents']),
+          );
+    final prompts =
+        catalogScope == PackCatalogSection.agents ||
+            catalogScope == PackCatalogSection.skills
+        ? const <PromptCatalogEntry>[]
+        : List<PromptCatalogEntry>.unmodifiable(
+            _parsePromptCatalog(catalog['prompts']),
+          );
+    final declaredPaths = <String>{
+      for (final entry in skills) entry.path,
+      for (final entry in prompts) entry.path,
+    };
+    if (declaredPaths.length != skills.length + prompts.length) {
+      _error(
+        'catalog',
+        'declares the same source path as a Skill and as a Prompt',
+      );
+    }
     return SourceCatalog(
       declared: true,
-      skills: catalogType == CatalogResourceType.agent
-          ? const []
-          : List.unmodifiable(_parseSkillCatalog(catalog['skills'])),
-      agents: catalogType == CatalogResourceType.skill
-          ? const []
-          : List.unmodifiable(_parseAgentCatalog(catalog['agents'])),
+      skills: skills,
+      agents: agents,
+      prompts: prompts,
     );
   }
 
@@ -1328,6 +1407,40 @@ final class _Parser {
         _error('$path.path', 'duplicates a Skill catalog path');
       }
       result.add(SkillCatalogEntry(entryPath));
+    }
+    return result;
+  }
+
+  List<PromptCatalogEntry> _parsePromptCatalog(Object? value) {
+    if (value == null) return [];
+    if (value is! List) {
+      _error('catalog.prompts', 'must be an array of entry tables');
+      return [];
+    }
+    final result = <PromptCatalogEntry>[];
+    final paths = <String>{};
+    for (var index = 0; index < value.length; index++) {
+      final path = 'catalog.prompts[$index]';
+      final entry = _map(value[index], path);
+      if (entry == null) continue;
+      _unknown(entry, path, const {'path', 'profile'});
+      final entryPath = _safeRelativeString(
+        entry['path'],
+        '$path.path',
+        allowRoot: true,
+      );
+      if (entryPath == null) continue;
+      if (!paths.add(entryPath)) {
+        _error('$path.path', 'duplicates a Prompt catalog path');
+      }
+      final profile = entry.containsKey('profile')
+          ? _string(entry['profile'], '$path.profile', required: true)
+          : null;
+      if (profile != null && !packPromptProfiles.contains(profile)) {
+        _error('$path.profile', 'must be exactly claude, codex, or pi');
+        continue;
+      }
+      result.add(PromptCatalogEntry(path: entryPath, profile: profile));
     }
     return result;
   }
@@ -1592,10 +1705,14 @@ final class PackDiscovery {
   const PackDiscovery({
     this.skillsDirectory = 'skills',
     this.agentsDirectory = 'agents',
+    this.promptsDirectory = 'prompts',
   });
 
   static const defaults = PackDiscovery();
 
   final String skillsDirectory;
   final String agentsDirectory;
+
+  /// The root of the standalone and skill-backed Prompt sources.
+  final String promptsDirectory;
 }

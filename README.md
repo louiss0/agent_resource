@@ -263,6 +263,7 @@ SemVer bump policies; ordinary install never advances an existing exact lock.
 ```text
 agent_resource config validate [--resolve]
 agent_resource pack validate <pack> [--type skill|agent|prompt] [--only <name> ...]
+agent_resource pack discover <pack> [--type skill|agent|prompt] [--target claude|codex|pi]
 agent_resource pack install <pack> [--type skill|agent|prompt] [--only <name> ...]
 agent_resource pack update <pack> [--type skill|agent] [--only <name> ...]
 agent_resource pack remove <pack> --only <name> [--only <name> ...]
@@ -286,6 +287,12 @@ selectors of the installed resource. Every selected resource must be a valid
 Prompt for every requested target; a mixed selection, a Pi target or a
 standalone template refuses the whole selection before any installation
 effect. The other pack operations keep the Skill and Agent selectors.
+
+`pack discover` reports the candidates of a configured pack and their
+per-consumer Prompt views. It is a read-only view: it writes no management
+state, enrolls no membership and advances no inventory. A declared catalog is
+authoritative, and the discovery of the `skills`, `agents` and `prompts` roots
+is bounded to the direct entries plus one group level.
 
 Mutations require an interactive review or explicit unattended context:
 `--scope project|user`, all required choices, and `--yes`. `--dry-run` performs

@@ -36,6 +36,24 @@ List<Command> packLifecycleCommands(
     ),
 ];
 
+/// The options that every pack command shares.
+final class _PackContextOptions {
+  static final pack = NormalPositional(
+    'pack',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+    description: 'Configured pack key, such as owner/repository.',
+  );
+  static final scope = ChoiceOption(
+    'scope',
+    choices: const [LifecycleScope.project, LifecycleScope.user],
+  );
+  static final cwd = FolderPathOption('cwd');
+  static final projectRoot = FolderPathOption('project-root');
+  static final home = FolderPathOption('home');
+  static final state = FolderPathOption('state-dir');
+  static final config = FilePathOption('config');
+}
+
 final class PackActionCommand extends Command {
   PackActionCommand(
     this._resourceType,
@@ -47,14 +65,14 @@ final class PackActionCommand extends Command {
   }) : _canonical = canonical,
        _warning = warning ?? stderr.writeln,
        super(
-         mandatoryPositionals: [_pack],
+         mandatoryPositionals: [_PackContextOptions.pack],
          options: [
-           _scope,
-           _cwd,
-           _projectRoot,
-           _home,
-           _state,
-           _config,
+           _PackContextOptions.scope,
+           _PackContextOptions.cwd,
+           _PackContextOptions.projectRoot,
+           _PackContextOptions.home,
+           _PackContextOptions.state,
+           _PackContextOptions.config,
            if (_operation != PackOperation.validate) _target,
            switch (_operation) {
              PackOperation.rollback => _rollbackOnly,
@@ -105,21 +123,6 @@ final class PackActionCommand extends Command {
   final PackResourceType _resourceType;
   final PackOperation _operation;
   final PackLifecycleService _service;
-
-  static final _pack = NormalPositional(
-    'pack',
-    regex: RegExp(r'^\s*\S[\s\S]*$'),
-    description: 'Configured pack key, such as owner/repository.',
-  );
-  static final _scope = ChoiceOption(
-    'scope',
-    choices: const [LifecycleScope.project, LifecycleScope.user],
-  );
-  static final _cwd = FolderPathOption('cwd');
-  static final _projectRoot = FolderPathOption('project-root');
-  static final _home = FolderPathOption('home');
-  static final _state = FolderPathOption('state-dir');
-  static final _config = FilePathOption('config');
   static final _target = StringOption('target');
   static final _only = RepeatableStringOption(
     'only',
@@ -245,15 +248,15 @@ final class PackActionCommand extends Command {
             ? (valueOf(_type) ?? packDefaultResourceTypes)
             : [_resourceType],
         includeNew: mutating && valueOf(_includeNew),
-        pack: valueOf(_pack),
+        pack: valueOf(_PackContextOptions.pack),
         processWorkingDirectory: _fileSystem.currentDirectory.path,
         environment: Map<String, String>.unmodifiable(Platform.environment),
-        scope: valueOf(_scope),
-        cwd: valueOf(_cwd),
-        projectRoot: valueOf(_projectRoot),
-        home: valueOf(_home),
-        stateDir: valueOf(_state),
-        configPath: valueOf(_config),
+        scope: valueOf(_PackContextOptions.scope),
+        cwd: valueOf(_PackContextOptions.cwd),
+        projectRoot: valueOf(_PackContextOptions.projectRoot),
+        home: valueOf(_PackContextOptions.home),
+        stateDir: valueOf(_PackContextOptions.state),
+        configPath: valueOf(_PackContextOptions.config),
         target: mutating ? valueOf(_target) : null,
         only: only,
         method: mutating ? valueOf(_method)?.wireName : null,
@@ -291,6 +294,83 @@ final class PackActionCommand extends Command {
     return switch (format) {
       LifecycleOutputFormat.json => jsonEncode(result.envelope()),
       LifecycleOutputFormat.text => result.renderText(),
+    };
+  }
+}
+
+/// Reports the discovered candidates of a configured pack.
+///
+/// The discovery is a bounded read-only view: it never writes a management
+/// state, never enrolls a membership and never advances an inventory.
+final class PackDiscoverCommand extends Command {
+  PackDiscoverCommand(
+    this._service, {
+    this._fileSystem = const local.LocalFileSystem(),
+  }) : super(
+         mandatoryPositionals: [_PackContextOptions.pack],
+         options: [
+           _PackContextOptions.scope,
+           _PackContextOptions.cwd,
+           _PackContextOptions.projectRoot,
+           _PackContextOptions.home,
+           _PackContextOptions.state,
+           _PackContextOptions.config,
+           _target,
+           _type,
+           _format,
+         ],
+       );
+
+  final fslib.FileSystem _fileSystem;
+  final PackLifecycleService _service;
+  static final _target = StringOption(
+    'target',
+    description:
+        'The consuming harness of the discovery. A standalone template needs '
+        'an explicit target or a declared native profile.',
+  );
+  static final _type = RepeatableChoiceOption(
+    'type',
+    PackResourceType.values,
+    unique: true,
+    description:
+        'Select resource kinds; defaults to skill, agent and prompt. The '
+        'prompt kind reports the sources that are a Prompt in a consumer view.',
+  );
+  static final _format = ChoiceOption.withDefault(
+    'format',
+    choices: LifecycleOutputFormat.values,
+    defaultValue: LifecycleOutputFormat.text,
+  );
+
+  @override
+  String get name => 'discover';
+
+  @override
+  String get shortDescription =>
+      'Report the discovered candidates of a configured pack.';
+
+  @override
+  Future<String> run(ValueOf valueOf, List<String> args) async {
+    final format = valueOf(_format);
+    final report = await _service.discover(
+      PackDiscoveryRequest(
+        pack: valueOf(_PackContextOptions.pack),
+        types: valueOf(_type) ?? const <PackResourceType>[],
+        target: valueOf(_target),
+        processWorkingDirectory: _fileSystem.currentDirectory.path,
+        environment: Map<String, String>.unmodifiable(Platform.environment),
+        scope: valueOf(_PackContextOptions.scope),
+        cwd: valueOf(_PackContextOptions.cwd),
+        projectRoot: valueOf(_PackContextOptions.projectRoot),
+        home: valueOf(_PackContextOptions.home),
+        stateDir: valueOf(_PackContextOptions.state),
+        configPath: valueOf(_PackContextOptions.config),
+      ),
+    );
+    return switch (format) {
+      LifecycleOutputFormat.json => jsonEncode(report.toJson()),
+      LifecycleOutputFormat.text => report.renderText(),
     };
   }
 }

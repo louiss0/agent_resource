@@ -96,6 +96,7 @@ harness runtime verification.
 | Implement safe author-only and managed native publication | [#69](https://github.com/louiss0/agent_resource/issues/69) | local commit | `lib/src/services/authoring_publication_service.dart`; `lib/src/authoring/package_manifest.dart`; `docs/specs/safe-native-publication.md` |
 | Expose interruption recovery inspection and guarded evidence cleanup | [#70](https://github.com/louiss0/agent_resource/issues/70) | local commit | `lib/src/services/authoring_recovery_service.dart`; `lib/src/authoring/authoring_transaction.dart`; `lib/authoring.dart`; `docs/specs/authoring-recovery.md` |
 | Integrate supported Prompt pack installation and Skill lifecycle compatibility | [#71](https://github.com/louiss0/agent_resource/issues/71) | local commit | `lib/src/services/pack_prompt_service.dart`; the prompt kind of the pack lifecycle; `docs/specs/prompt-pack-installation.md` |
+| Implement harness-relative pack discovery and validation | [#90](https://github.com/louiss0/agent_resource/issues/90) | local commit | `lib/src/pack/pack_discovery.dart`; `lib/src/services/pack_discovery_service.dart`; `lib/src/installation/prompt_source_discovery.dart`; the prompt scope of `lib/src/services/pack_lifecycle_service.dart`; the `catalog.prompts` and `prompts_directory` sections of `lib/src/pack/pack_configuration.dart`; the `pack discover` command; `docs/specs/prompt-pack-discovery.md` |
 
 The remaining rows stay pending an explicit implementation request, one
 bounded delivery ticket at a time.

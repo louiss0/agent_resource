@@ -58,6 +58,9 @@ The installation of valid, supported skill-backed Prompts through the existing n
 **Prompt selection**:
 The explicit selection of the Prompt resources of a pack for one or more requested targets. Every selected resource must be a valid Prompt in the view of every requested target, and the selection is refused as a whole when one resource does not qualify.
 
+**Prompt scope**:
+The declared and discovered Prompt sources of a pack. It holds the declared Skill entries, the declared Prompt entries and the Prompt discovery root. A declared catalog is authoritative, and the same source path declared twice is a conflicting declaration. The Prompt selection of a pack holds the sources of the scope that are a Prompt in a consumer view.
+
 **Harness**:
 An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used.
 

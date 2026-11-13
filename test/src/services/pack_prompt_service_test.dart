@@ -279,27 +279,52 @@ track = { kind = "local" }
       },
     );
 
-    test('refuses a mixed selection before any installation effect', () async {
-      final service = PackLifecycleService.withDependencies(fileSystem: fs);
+    test(
+      'the Prompt selection installs the Prompt candidates of the scope',
+      () async {
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
 
-      await expectLater(
-        service.execute(
+        final result = await service.execute(
           request(
             PackOperation.install,
             resourceTypes: const <PackResourceType>[PackResourceType.prompt],
           ),
-        ),
-        throwsA(
-          isA<MambaException>().having(
-            (error) => error.exitCode,
-            'status',
-            PackProcessStatus.invalidInput.code,
+        );
+
+        // The ordinary Skill of the scope is not a Prompt candidate: the
+        // prompt kind isolates its own selection.
+        expect(result.outcome, 'completed');
+        expect(result.resources, hasLength(1));
+        expect(result.resources.single.name, 'prompt');
+        expect(ledger(), hasLength(1));
+      },
+    );
+
+    test(
+      'refuses an explicitly selected resource that is not a Prompt',
+      () async {
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+        await expectLater(
+          service.execute(
+            request(
+              PackOperation.install,
+              resourceTypes: const <PackResourceType>[PackResourceType.prompt],
+              only: const <String>['plain'],
+            ),
           ),
-        ),
-      );
-      expect(ledger(), isEmpty);
-      expect(installedFiles(), isEmpty);
-    });
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'diagnostic',
+              contains('Unknown native name'),
+            ),
+          ),
+        );
+        expect(ledger(), isEmpty);
+        expect(installedFiles(), isEmpty);
+      },
+    );
 
     test(
       'refuses a mixed kind selection before any installation effect',
@@ -664,7 +689,7 @@ track = { kind = "local" }
     );
 
     test(
-      'a mixed Prompt selection installs no resource of the selection',
+      'refuses a selection that names a resource that is not a Prompt',
       () async {
         // A second prompt candidate that is not a Prompt.
         final other = fs.directory(fs.path.join(source.path, 'skills', 'other'))
@@ -788,6 +813,88 @@ Updated content.
           contains('Updated content.'),
         );
         expect(ledger(), hasLength(1));
+      },
+    );
+
+    test('installs a skill-backed Prompt of the Prompt scope', () async {
+      // Without a declared catalog the discovery roots are scanned.
+      fs.file(fs.path.join(source.path, 'agent-resources.toml')).deleteSync();
+      // The Prompt sources of the pack live in their own discovery root.
+      final prompts = fs.directory(
+        fs.path.join(source.path, 'prompts', 'assistant'),
+      )..createSync(recursive: true);
+      fs.file(fs.path.join(prompts.path, 'SKILL.md')).writeAsStringSync('''
+---
+name: assistant
+description: A manual-only prompt.
+disable-model-invocation: true
+---
+# Assistant
+''');
+      final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+      final result = await service.execute(
+        request(
+          PackOperation.install,
+          resourceTypes: const <PackResourceType>[PackResourceType.prompt],
+          only: const <String>['assistant'],
+        ),
+      );
+
+      expect(result.outcome, 'completed');
+      expect(
+        installedFiles(),
+        contains(
+          fs.path.join(
+            project.path,
+            '.claude',
+            'skills',
+            'assistant',
+            'SKILL.md',
+          ),
+        ),
+      );
+    });
+
+    test(
+      'refuses a Prompt selection that contains a standalone template',
+      () async {
+        fs.file(fs.path.join(source.path, 'agent-resources.toml')).deleteSync();
+        final templates = fs.directory(fs.path.join(source.path, 'prompts'))
+          ..createSync(recursive: true);
+        fs.file(fs.path.join(templates.path, 'assistant.md')).writeAsStringSync(
+          '''---
+description: A Pi template.
+---
+Assist the user.
+''',
+        );
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+        await expectLater(
+          service.execute(
+            request(
+              PackOperation.install,
+              resourceTypes: const <PackResourceType>[PackResourceType.prompt],
+              only: const <String>['assistant'],
+            ),
+          ),
+          throwsA(
+            isA<MambaException>()
+                .having(
+                  (error) => error.exitCode,
+                  'status',
+                  PackProcessStatus.invalidInput.code,
+                )
+                .having(
+                  (error) => error.message,
+                  'diagnostic',
+                  contains('standalone template'),
+                ),
+          ),
+        );
+        expect(ledger(), isEmpty);
+        expect(installedFiles(), isEmpty);
       },
     );
   });

@@ -4,6 +4,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../pack/pack_configuration.dart' show packPromptProfiles;
 import '../pack/pack_models.dart';
 import '../services/prompt_inspection_service.dart';
 import '../skill_files.dart';
@@ -18,6 +19,7 @@ final class PackPromptView {
     required this.path,
     required this.views,
     required this.isTemplate,
+    required this.globalCompatibility,
   });
 
   /// The reviewed path.
@@ -28,6 +30,12 @@ final class PackPromptView {
 
   /// Whether the path is a standalone native template.
   final bool isTemplate;
+
+  /// The global compatibility of the native form.
+  ///
+  /// The global form and the placement are independent: a globally compatible
+  /// source is not an installed occurrence.
+  final PromptCompatibility globalCompatibility;
 
   /// The classification of the path in one consumer view.
   PromptClassification? classificationOf(PromptConsumer consumer) =>
@@ -74,6 +82,15 @@ final class PackPromptCandidate {
 
   /// Whether the candidate is a Prompt for any consumer.
   bool get isPromptAnywhere => PromptConsumer.values.any(source.isPrompt);
+
+  /// Whether the candidate belongs to the Prompt selection.
+  ///
+  /// A source is a Prompt candidate when a consumer view classifies it as a
+  /// Prompt, or when the evidence is insufficient to classify it. An
+  /// ordinary Skill view is not a Prompt candidate.
+  bool get promptCandidate => source.views.values.any(
+    (view) => view.classification != PromptClassification.nonPrompt,
+  );
 }
 
 /// Inspects and admits the Prompt candidates of a pack.
@@ -99,22 +116,24 @@ interface class PackPromptService {
   ///
   /// A package is inspected in its skill form and a standalone file in its
   /// template form. The form follows the entity: it is never inferred from
-  /// the file extension.
+  /// the file extension. The consumer is the caller's context: without one a
+  /// standalone template stays unclassified instead of assuming Pi.
   Future<PackPromptView> inspectView(
     String path, {
-    bool template = false,
+    PromptConsumer? consumer,
   }) async {
     final type = skillEntityType(path, followLinks: false, fs: _fileSystem);
-    final standalone = template || type == FileSystemEntityType.file;
+    final standalone = type == FileSystemEntityType.file;
     final inspection = await _prompts.inspect(
       path,
       form: standalone ? PromptForm.template : PromptForm.skill,
-      consumer: standalone ? PromptConsumer.pi : null,
+      consumer: consumer,
     );
     return PackPromptView(
       path: path,
       views: inspection.views,
       isTemplate: standalone,
+      globalCompatibility: inspection.globalCompatibility,
     );
   }
 
@@ -127,9 +146,10 @@ interface class PackPromptService {
     String originalPath,
     String stagedPath, {
     required String name,
+    PromptConsumer? consumer,
   }) async {
-    final source = await inspectView(originalPath);
-    final staged = await inspectView(stagedPath);
+    final source = await inspectView(originalPath, consumer: consumer);
+    final staged = await inspectView(stagedPath, consumer: consumer);
     return PackPromptCandidate(
       name: name,
       source: source,
@@ -291,6 +311,21 @@ interface class PackPromptService {
         ),
       },
   ];
+
+  /// The Prompt consumer of a native profile or a discovery target.
+  ///
+  /// The native profile names and the consumer names are the same. An
+  /// unsupported name has no consumer: the caller context stays unknown
+  /// instead of assuming one.
+  static PromptConsumer? consumerOf(String? value) {
+    if (value == null || !packPromptProfiles.contains(value)) return null;
+    return switch (value) {
+      'claude' => PromptConsumer.claude,
+      'codex' => PromptConsumer.codex,
+      'pi' => PromptConsumer.pi,
+      _ => null,
+    };
+  }
 
   /// The blocking diagnostics of one view.
   String _diagnostics(List<PromptDiagnostic> diagnostics) =>

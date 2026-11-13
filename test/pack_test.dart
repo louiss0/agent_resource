@@ -199,6 +199,46 @@ void main() {
           },
         );
       });
+      group('discover', () {
+        test('reports the discovered candidates without effects', () async {
+          final service = RecordingPackService();
+          final result = await createExecutor(packLifecycle: service)
+              .fake()
+              .execute([
+                'pack',
+                'discover',
+                'owner/repo',
+                '--type',
+                'prompt',
+                '--target',
+                'pi',
+              ]);
+          expect(result, isA<MambaSuccessResult>());
+          expect(service.requests, isEmpty);
+          expect(service.discoveries.single.pack, 'owner/repo');
+          expect(service.discoveries.single.types, [PackResourceType.prompt]);
+          expect(service.discoveries.single.target, 'pi');
+        });
+        test('reports the JSON envelope of the discovery', () async {
+          final service = RecordingPackService();
+          final result = await createExecutor(packLifecycle: service)
+              .fake()
+              .execute(['pack', 'discover', 'owner/repo', '--format', 'json']);
+          final output = (result as MambaSuccessResult).output;
+          final document = jsonDecode(output!) as Map;
+          expect(document['operation'], 'pack.discover');
+          expect(document['outcome'], 'discovered');
+          expect(document['candidates'], isEmpty);
+        });
+        test('rejects an invalid type before effects', () async {
+          final service = RecordingPackService();
+          final result = await createExecutor(packLifecycle: service)
+              .fake()
+              .execute(['pack', 'discover', 'owner/repo', '--type', 'other']);
+          expect(result, isA<MambaFailureResult>());
+          expect(service.discoveries, isEmpty);
+        });
+      });
       group('source', () {
         for (final operation in ['associate', 'change']) {
           group(operation, () {

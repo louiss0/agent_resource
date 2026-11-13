@@ -38,6 +38,9 @@ discovered Skill packages.
 - The prompt kind reuses the native Skill pipeline. The candidates are the
   declared or discovered skill packages of the pack; the catalog stays
   authoritative and no undeclared path is scanned.
+- The prompt kind isolates its own selection: the sources of the Prompt scope
+  that are a Prompt in a consumer view. An ordinary Skill of the scope is not
+  a Prompt candidate and it is not part of the selection.
 - Every selected resource must be a valid, supported Prompt for every
   explicitly requested target. The whole selection is refused before any
   installation effect: no resource is skipped, no kind is substituted, no
@@ -99,6 +102,7 @@ discovered Skill packages.
 | The prompt kind is combined with another resource kind | 2 |
 | The prompt kind is used with an operation other than install or validate | 2 |
 | The prompt kind is used without an explicit target | 2 |
+| An explicitly selected name is not a Prompt candidate | 2 |
 | An ordinary Skill selection would install an invalid Prompt | 2 |
 | A pending coordinated transaction reserves the pack | 6 |
 
@@ -108,14 +112,14 @@ the ledger and the pack membership are unchanged.
 ## Evidence and limits
 
 The focused suite covers the installation of a supported skill-backed Prompt
-through the native Skill installation, the refusal of a mixed selection, the
-refusal of a mixed kind selection, the refusal of a Pi target, the refusal of
-an invalid Prompt without an ordinary Skill fallback, the refusal of a
-migrated root file, the untyped defaults, the refusal of a non-install
-operation, the read-only dry run, the Prompt validation, the unchanged source
-and lock document on refusal, the atomic selection, the ordinary Skill
-selector, the update and removal compatibility, the pending transaction guard
-and the absence of an extra membership.
+through the native Skill installation, the refusal of a mixed kind selection,
+the refusal of a Pi target, the refusal of an invalid Prompt without an
+ordinary Skill fallback, the refusal of a migrated root file, the untyped
+defaults, the refusal of a non-install operation, the read-only dry run, the
+Prompt validation, the unchanged source and lock document on refusal, the
+atomic selection, the ordinary Skill selector, the update and removal
+compatibility, the pending transaction guard and the absence of an extra
+membership.
 
 The complete Dart suite passes locally on Windows with 950 passing and four
 platform-skipped tests. `dart analyze` reports no findings.

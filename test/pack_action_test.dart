@@ -1,4 +1,5 @@
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/pack/pack_discovery.dart';
 import 'package:agent_resource/src/pack/pack_models.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/pack_lifecycle_service.dart';
@@ -7,12 +8,24 @@ import 'package:test/test.dart';
 
 final class RecordingPackService implements PackLifecycleService {
   final requests = <PackLifecycleRequest>[];
+  final discoveries = <PackDiscoveryRequest>[];
 
   @override
   PackPrompts get prompts => const PackPrompts();
 
   @override
   String? get operatingSystem => null;
+
+  @override
+  Future<PackDiscoveryReport> discover(PackDiscoveryRequest request) async {
+    discoveries.add(request);
+    return const PackDiscoveryReport(
+      pack: 'owner/repository',
+      source: {'pack': 'owner/repository'},
+      candidates: [],
+      types: ['skill', 'agent', 'prompt'],
+    );
+  }
 
   @override
   Future<PackOperationResult> execute(PackLifecycleRequest request) async {
