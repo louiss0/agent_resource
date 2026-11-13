@@ -58,11 +58,20 @@ final class SkillRootMarkdownMigration {
     '.tiff',
   };
 
-  Future<StagedSkill> stage(String sourcePath) async {
+  /// Stages a disposable copy of a Skill source.
+  ///
+  /// The staged copy keeps the name of the source directory when the caller
+  /// asks for it, so the staged output stays faithful to the reviewed
+  /// source: the native name rules of the source and of the staged output
+  /// agree.
+  Future<StagedSkill> stage(String sourcePath, {String? directoryName}) async {
     final temporaryRoot = await fileSystem.systemTempDirectory.createTemp(
       'agent-resource-skill-root-files-',
     );
-    final stagedPath = fileSystem.path.join(temporaryRoot.path, 'skill');
+    final stagedPath = fileSystem.path.join(
+      temporaryRoot.path,
+      directoryName ?? 'skill',
+    );
     try {
       final entries = <int>[0];
       _copyTree(sourcePath, stagedPath, 0, entries);

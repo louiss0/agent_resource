@@ -177,6 +177,28 @@ void main() {
           expect(service.requests, isEmpty);
         });
       });
+      group('install', () {
+        test(
+          'routes the prompt kind of an explicit Prompt selection',
+          () async {
+            final service = RecordingPackService();
+            await createExecutor(packLifecycle: service).fake().execute([
+              'pack',
+              'install',
+              'owner/repo',
+              '--type',
+              'prompt',
+              '--only',
+              'reviewer',
+              '--yes',
+            ]);
+            expect(service.requests.single.resourceTypes, [
+              PackResourceType.prompt,
+            ]);
+            expect(service.requests.single.only, ['reviewer']);
+          },
+        );
+      });
       group('source', () {
         for (final operation in ['associate', 'change']) {
           group(operation, () {

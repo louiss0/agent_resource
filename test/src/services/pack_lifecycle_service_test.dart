@@ -241,7 +241,7 @@ track = { kind = "local" }
         request(
           PackOperation.install,
           PackResourceType.skill,
-          resourceTypes: PackResourceType.values,
+          resourceTypes: packDefaultResourceTypes,
           yes: false,
           interactive: true,
         ),
@@ -285,7 +285,7 @@ track = { kind = "local" }
           request(
             PackOperation.install,
             PackResourceType.skill,
-            resourceTypes: PackResourceType.values,
+            resourceTypes: packDefaultResourceTypes,
             yes: false,
             interactive: true,
           ),
@@ -328,7 +328,7 @@ track = { kind = "local" }
           request(
             PackOperation.install,
             PackResourceType.skill,
-            resourceTypes: PackResourceType.values,
+            resourceTypes: packDefaultResourceTypes,
             yes: false,
             interactive: true,
           ),
@@ -1037,7 +1037,7 @@ extra_folders = ["rules"]
         request(
           PackOperation.install,
           PackResourceType.skill,
-          resourceTypes: PackResourceType.values,
+          resourceTypes: packDefaultResourceTypes,
         ),
       );
       final other = fs.directory(fs.path.join(sandbox.path, 'other'))
@@ -1069,7 +1069,7 @@ track = { kind = "local" }
         request(
           PackOperation.sourceChange,
           PackResourceType.skill,
-          resourceTypes: PackResourceType.values,
+          resourceTypes: packDefaultResourceTypes,
           to: 'local/other',
           skipNew: true,
         ),

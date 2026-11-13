@@ -52,6 +52,12 @@ The versioned evidence of one ordinary authoring publication. It binds the revie
 **Recovery review identity**:
 The digest of the current observations of one transaction and of the recovery it permits. It is the approval of one reviewed recovery or cleanup, and it is invalidated by any change of the observed state.
 
+**Prompt pack installation**:
+The installation of valid, supported skill-backed Prompts through the existing native Skill installation and its safety machinery. It keeps the Skill ownership record of the installed resource and it never adopts a standalone template or a Pi target.
+
+**Prompt selection**:
+The explicit selection of the Prompt resources of a pack for one or more requested targets. Every selected resource must be a valid Prompt in the view of every requested target, and the selection is refused as a whole when one resource does not qualify.
+
 **Harness**:
 An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used.
 

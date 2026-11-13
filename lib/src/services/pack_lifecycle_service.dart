@@ -27,11 +27,21 @@ import '../validation/validation_diagnostics.dart';
 import 'acquisition_service.dart';
 import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
+import 'pack_prompt_service.dart';
 import 'skill_lifecycle_service.dart';
 
 const _legacyRecoveryExitCode = 6;
 
-enum PackResourceType { skill, agent }
+enum PackResourceType { skill, agent, prompt }
+
+/// The resource types an untyped pack operation selects.
+///
+/// An untyped installation retains the Skill and Agent native form defaults.
+/// It never opts into the Prompt selection.
+const List<PackResourceType> packDefaultResourceTypes = <PackResourceType>[
+  PackResourceType.skill,
+  PackResourceType.agent,
+];
 
 enum PackOperation {
   install,
@@ -56,6 +66,7 @@ final class const PackLifecycleRequest({
   required final PackOperation operation,
   required final PackResourceType resourceType,
   final List<PackResourceType> resourceTypes = const <PackResourceType>[],
+  final bool promptSelection = false,
   final bool includeNew = false,
   required final String processWorkingDirectory,
   final Map<String, String> environment = const <String, String>{},
@@ -129,6 +140,9 @@ interface class PackLifecycleService {
   );
   late final AgentLifecycleService _agents = AgentLifecycleService(
     state: _lifecycleState,
+    fileSystem: _fileSystem,
+  );
+  late final PackPromptService _promptService = PackPromptService(
     fileSystem: _fileSystem,
   );
   AcquisitionService get _acquirer =>
@@ -232,6 +246,15 @@ interface class PackLifecycleService {
     PackLifecycleRequest request,
   ) async {
     final types = _requestResourceTypes(request);
+    if (types.contains(PackResourceType.prompt) && types.length > 1) {
+      // The Prompt selection and the ordinary Skill selection disagree about
+      // the same resources. The mixed selection is refused as a whole.
+      throw MambaException(
+        'The prompt type cannot be combined with another resource type; the '
+        'selection is refused before any installation effect.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
     final namesByType = await _routeNamesByType(request, types);
     final completed = <({PackResourceType type, PackOperationResult result})>[];
     final failures = <({PackResourceType type, MambaException error})>[];
@@ -245,6 +268,29 @@ interface class PackLifecycleService {
       final only = request.only.isEmpty
           ? request.only
           : routedNames ?? request.only;
+      if (type == PackResourceType.prompt) {
+        if (request.operation != PackOperation.install) {
+          throw MambaException(
+            'The prompt type applies to pack install and pack validate only; '
+            'an installed skill-backed Prompt keeps the existing Skill '
+            'lifecycle selectors.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        // A supported skill-backed Prompt is published through the native
+        // Skill installation. The Prompt selection is validated before the
+        // installation, so the whole selection is atomic.
+        typedRequests.add((
+          type: type,
+          request: _requestForType(
+            request,
+            PackResourceType.skill,
+            only: only,
+            promptSelection: true,
+          ),
+        ));
+        continue;
+      }
       typedRequests.add((
         type: type,
         request: _requestForType(request, type, only: only),
@@ -563,7 +609,7 @@ interface class PackLifecycleService {
     }
 
     for (final type in types) {
-      final expectedKinds = type == PackResourceType.skill
+      final expectedKinds = _isSkillFamily(type)
           ? const {
               ArtifactKind.skillCopy,
               ArtifactKind.skillLink,
@@ -653,10 +699,12 @@ interface class PackLifecycleService {
     PackLifecycleRequest request,
     PackResourceType type, {
     required List<String> only,
+    bool promptSelection = false,
     Future<bool> Function(PackPlan plan)? planReview,
   }) => PackLifecycleRequest(
     operation: request.operation,
     resourceType: type,
+    promptSelection: promptSelection,
     includeNew: request.includeNew,
     processWorkingDirectory: request.processWorkingDirectory,
     environment: request.environment,
@@ -717,6 +765,16 @@ interface class PackLifecycleService {
         for (final resource in selected)
           ...resource.failures.map((failure) => '${resource.label}: $failure'),
       ];
+      if (_requestResourceTypes(request).contains(PackResourceType.prompt)) {
+        failures.addAll(
+          await _promptValidationFailures(
+            request,
+            pack,
+            configuration,
+            selected,
+          ),
+        );
+      }
       if (failures.isNotEmpty) {
         throw MambaException(
           'Pack validation failed for ${pack.key}; no managed state was changed.\n'
@@ -879,6 +937,7 @@ interface class PackLifecycleService {
           );
         }
       }
+      await _requirePromptViews(request, selected, pack, configuration);
       _preflightRecords(request, selected, existing);
       final results = <PackResourceResult>[];
       final failures = <String>[];
@@ -2406,7 +2465,7 @@ interface class PackLifecycleService {
         ? null
         : _readSourceCatalog(workspace, type: type);
     final paths = switch (type) {
-      PackResourceType.skill => [
+      PackResourceType.skill || PackResourceType.prompt => [
         for (final entry in catalog?.skills ?? const <SkillCatalogEntry>[])
           (entry.path, null),
       ],
@@ -2426,7 +2485,7 @@ interface class PackLifecycleService {
           ),
       ];
     }
-    final relativeRoot = type == PackResourceType.skill
+    final relativeRoot = _isSkillFamily(type)
         ? pack.discovery.skillsDirectory
         : pack.discovery.agentsDirectory;
     final root = _validationSourcePath(workspace, relativeRoot);
@@ -2439,7 +2498,7 @@ interface class PackLifecycleService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
-    if (type == PackResourceType.skill) {
+    if (_isSkillFamily(type)) {
       final offerings = await discoverSkillSource(
         root: root,
         relativeRoot: relativeRoot,
@@ -2561,7 +2620,7 @@ interface class PackLifecycleService {
     final failures = <String>[];
     final warnings = <String>[];
     try {
-      if (candidate.type == PackResourceType.skill) {
+      if (_isSkillFamily(candidate.type)) {
         name = readDeclaredSkillName(candidate.path, fs: _fileSystem);
         final approvedExtraFolders = pack.resources.skills.overrides
             .where((override) => override.name == name)
@@ -2616,7 +2675,7 @@ interface class PackLifecycleService {
       }
     } on MambaException catch (error) {
       failures.add(
-        candidate.type == PackResourceType.skill
+        _isSkillFamily(candidate.type)
             ? 'SKILL_SOURCE_REJECTED (source): the Skill root, marker, name, '
                   'or tree was not admitted (status ${error.exitCode})'
             : 'NATIVE_INSPECTION_INCOMPLETE: validation could not complete '
@@ -2707,7 +2766,7 @@ interface class PackLifecycleService {
     return resources.where((resource) {
       final name = resource.name;
       if (name == null) return true;
-      final rules = resource.candidate.type == PackResourceType.skill
+      final rules = _isSkillFamily(resource.candidate.type)
           ? pack.resources.skills
           : pack.resources.agents;
       return !rules.exclusions.contains(name);
@@ -2774,7 +2833,12 @@ interface class PackLifecycleService {
       if (request.resourceType == PackResourceType.skill) {
         if (stagedSkills != null) {
           staged = await SkillRootMarkdownMigration(fileSystem: _fileSystem)
-              .stage(path);
+              .stage(
+                path,
+                // The staged output keeps the name of the reviewed source, so
+                // its Prompt view agrees with the view of the source.
+                directoryName: _fileSystem.path.basename(path),
+              );
           stagedSkills.add(staged);
           candidatePath = staged.path;
         }
@@ -3115,9 +3179,172 @@ interface class PackLifecycleService {
       .where(
         (record) =>
             record.origin['packKey'] == packKey &&
-            record.origin['resourceType'] == type.name,
+            record.origin['resourceType'] == _recordTypeOf(type).name,
       )
       .toList();
+
+  /// Applies the Prompt gates of the selected candidates.
+  ///
+  /// A supported skill-backed Prompt is published through the native Skill
+  /// installation. The Prompt selection is validated as a whole before any
+  /// installation effect, and the original source and the staged output are
+  /// both inspected, so the pack admission and migration cannot disguise an
+  /// invalid Prompt.
+  Future<void> _requirePromptViews(
+    PackLifecycleRequest request,
+    List<_PackCandidate> selected,
+    PackDefinition pack,
+    PackConfiguration configuration,
+  ) async {
+    if (selected.isEmpty) return;
+    final skillCandidates = selected
+        .where((candidate) => _isSkillFamily(candidate.type))
+        .toList();
+    if (skillCandidates.isEmpty) return;
+    // The targets are resolved without an interactive choice: the selection
+    // is checked before the installation asks for a target.
+    final requestedTargets = _requestedTargets(request, pack, configuration);
+    if (request.promptSelection && requestedTargets.isEmpty) {
+      throw MambaException(
+        'The prompt selection requires an explicit claude or codex '
+        '--target/configuration choice; the selection is refused before any '
+        'installation effect.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    // Without a configured target the interactive installation asks for one
+    // later. The Prompt gates are checked for every supported harness.
+    final targets = requestedTargets.isEmpty
+        ? const <String>['claude', 'codex']
+        : requestedTargets;
+    final views = <PackPromptCandidate>[];
+    for (final candidate in skillCandidates) {
+      views.add(
+        await _promptService.inspect(
+          candidate.originalPath ?? candidate.path,
+          candidate.path,
+          name: candidate.name,
+        ),
+      );
+    }
+    if (request.promptSelection) {
+      _promptService.requireSupportedSelection(
+        selected: views,
+        targets: targets,
+      );
+      return;
+    }
+    for (final view in views) {
+      _promptService.requireNoInvalidPromptFallback(
+        candidate: view,
+        targets: targets,
+      );
+    }
+  }
+
+  /// Reports the Prompt failures of a validated selection.  ///
+  /// The validation of the prompt kind applies the Prompt gates of the
+  /// selected sources: every selected resource must be a valid Prompt for
+  /// every requested target. The failures are reported as validation
+  /// failures, and no managed state is changed.
+  Future<List<String>> _promptValidationFailures(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    PackConfiguration configuration,
+    List<_InspectedPackResource> selected,
+  ) async {
+    final candidates = selected
+        .where((resource) => _isSkillFamily(resource.candidate.type))
+        .toList();
+    if (candidates.isEmpty) return const <String>[];
+    late final List<String> targets;
+    try {
+      targets = _validationTargets(request, pack, configuration);
+    } on MambaException catch (error) {
+      return <String>[error.message];
+    }
+    final failures = <String>[];
+    for (final resource in candidates) {
+      // The validation inspects the reviewed source and its staged output:
+      // the pack admission and the root Markdown migration cannot disguise an
+      // invalid Prompt.
+      final staged = await SkillRootMarkdownMigration(fileSystem: _fileSystem)
+          .stage(
+            resource.candidate.path,
+            directoryName: _fileSystem.path.basename(resource.candidate.path),
+          );
+      late final PackPromptCandidate view;
+      try {
+        view = await _promptService.inspect(
+          resource.candidate.path,
+          staged.path,
+          name: resource.name ?? resource.candidate.relativePath,
+        );
+      } finally {
+        await staged.close();
+      }
+      try {
+        _promptService.requireSupportedSelection(
+          selected: <PackPromptCandidate>[view],
+          targets: targets,
+        );
+      } on MambaException catch (error) {
+        failures.add('${resource.label}: ${error.message}');
+      }
+    }
+    return failures;
+  }
+
+  /// The requested installation targets of a request.
+  ///
+  /// The request target wins over the pack targets, and the pack targets win
+  /// over the configured targets. The resolution never asks: an interactive
+  /// installation asks for its target later.
+  List<String> _requestedTargets(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    PackConfiguration configuration,
+  ) {
+    final targets = request.target != null
+        ? <String>[request.target!]
+        : pack.install.targets.isNotEmpty
+        ? pack.install.targets
+        : configuration.cli.install.targets;
+    return List<String>.unmodifiable(targets.toSet());
+  }
+
+  /// The installation targets of a validation request.
+  ///
+  /// The validation never installs and never prompts: the targets come from
+  /// the request, the pack or the configuration.
+  List<String> _validationTargets(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    PackConfiguration configuration,
+  ) {
+    final targets = _requestedTargets(request, pack, configuration);
+    if (targets.isEmpty ||
+        targets.any(
+          (target) => !const {'claude', 'codex', 'shared'}.contains(target),
+        )) {
+      throw MambaException(
+        'Skill installation requires an explicit claude or codex --target/configuration choice.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    return targets;
+  }
+
+  /// The record type that owns the resources of one pack type.
+  ///
+  /// A supported skill-backed Prompt is published through the native Skill
+  /// installation, so it keeps the Skill ownership record.
+  PackResourceType _recordTypeOf(PackResourceType type) =>
+      type == PackResourceType.prompt ? PackResourceType.skill : type;
+
+  /// Whether the type is published through the native Skill pipeline.
+  bool _isSkillFamily(PackResourceType type) =>
+      type == PackResourceType.skill || type == PackResourceType.prompt;
 
   Future<_AcquiredSource> _acquire(
     PackDefinition pack,
@@ -3418,7 +3645,8 @@ interface class PackLifecycleService {
         utf8.decode(bytes, allowMalformed: false),
         configPath: path,
         catalogType: switch (type) {
-          PackResourceType.skill => CatalogResourceType.skill,
+          PackResourceType.skill ||
+          PackResourceType.prompt => CatalogResourceType.skill,
           PackResourceType.agent => CatalogResourceType.agent,
           null => null,
         },

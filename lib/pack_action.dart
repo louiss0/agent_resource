@@ -140,7 +140,10 @@ final class PackActionCommand extends Command {
     'type',
     PackResourceType.values,
     unique: true,
-    description: 'Select resource kinds; defaults to skill and agent.',
+    description:
+        'Select resource kinds; defaults to skill and agent. The prompt '
+        'kind installs valid skill-backed Prompts through the native Skill '
+        'installation.',
   );
   static final _method = ChoiceOption(
     'method',
@@ -239,7 +242,7 @@ final class PackActionCommand extends Command {
         operation: _operation,
         resourceType: _resourceType,
         resourceTypes: _canonical
-            ? (valueOf(_type) ?? PackResourceType.values)
+            ? (valueOf(_type) ?? packDefaultResourceTypes)
             : [_resourceType],
         includeNew: mutating && valueOf(_includeNew),
         pack: valueOf(_pack),

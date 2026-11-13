@@ -95,6 +95,7 @@ harness runtime verification.
 | Implement coordinated authoring conversion evidence and recovery state | [#68](https://github.com/louiss0/agent_resource/issues/68) | local commit | `lib/src/services/conversion_coordinator_service.dart`; coordinated ledger support in `lifecycle_state_service.dart`; `docs/specs/coordinated-conversion-state.md` |
 | Implement safe author-only and managed native publication | [#69](https://github.com/louiss0/agent_resource/issues/69) | local commit | `lib/src/services/authoring_publication_service.dart`; `lib/src/authoring/package_manifest.dart`; `docs/specs/safe-native-publication.md` |
 | Expose interruption recovery inspection and guarded evidence cleanup | [#70](https://github.com/louiss0/agent_resource/issues/70) | local commit | `lib/src/services/authoring_recovery_service.dart`; `lib/src/authoring/authoring_transaction.dart`; `lib/authoring.dart`; `docs/specs/authoring-recovery.md` |
+| Integrate supported Prompt pack installation and Skill lifecycle compatibility | [#71](https://github.com/louiss0/agent_resource/issues/71) | local commit | `lib/src/services/pack_prompt_service.dart`; the prompt kind of the pack lifecycle; `docs/specs/prompt-pack-installation.md` |
 
 The remaining rows stay pending an explicit implementation request, one
 bounded delivery ticket at a time.
