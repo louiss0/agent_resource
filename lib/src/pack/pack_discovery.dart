@@ -1,3 +1,4 @@
+import '../prompt/prompt_native_view.dart';
 import '../services/pack_prompt_service.dart';
 import '../services/prompt_inspection_service.dart';
 
@@ -68,56 +69,6 @@ final class PackScopeCandidate {
   bool get promptCandidate => view.promptCandidate;
 }
 
-/// The Prompt view of one discovered candidate in one consumer.
-///
-/// The view is per consumer: a source that is a Prompt for Claude can be an
-/// ordinary Skill for Codex. The view never carries a universal
-/// classification.
-final class PackDiscoveryView {
-  const PackDiscoveryView({
-    required this.consumer,
-    required this.classification,
-    required this.valid,
-    required this.installationSupported,
-    required this.diagnostics,
-  });
-
-  /// The consuming harness of the view.
-  final PromptConsumer consumer;
-
-  /// The classification of the source in the consumer view.
-  final PromptClassification classification;
-
-  /// Whether the source is a valid resource in the consumer view.
-  final bool valid;
-
-  /// Whether the native installation supports this Prompt view.
-  ///
-  /// Recognition and installation support are separate: a Pi skill-backed
-  /// Prompt is recognized and validated, and it is not installable.
-  final bool installationSupported;
-
-  /// The blocking diagnostics of the view.
-  final List<PromptDiagnostic> diagnostics;
-
-  Map<String, Object?> toJson() => <String, Object?>{
-    'consumer': consumer.name,
-    'classification': classification.name,
-    'valid': valid,
-    'installationSupported': installationSupported,
-    'diagnostics': [
-      for (final diagnostic in diagnostics)
-        <String, Object?>{
-          'code': diagnostic.code,
-          'message': diagnostic.message,
-          'path': diagnostic.path,
-          if (diagnostic.line != null) 'line': diagnostic.line,
-          if (diagnostic.column != null) 'column': diagnostic.column,
-        },
-    ],
-  };
-}
-
 /// One discovered candidate of a pack source.
 ///
 /// The candidate reports the native form of the source, its declared profile
@@ -130,7 +81,7 @@ final class PackDiscoveryCandidate {
     required this.kind,
     required this.form,
     this.profile,
-    this.views = const <PackDiscoveryView>[],
+    this.views = const <PromptNativeView>[],
     this.globalCompatibility,
     this.placement = PromptPlacement.uninstalled,
     this.diagnostics = const <PromptDiagnostic>[],
@@ -152,7 +103,7 @@ final class PackDiscoveryCandidate {
   final String? profile;
 
   /// The per-consumer Prompt views of the candidate.
-  final List<PackDiscoveryView> views;
+  final List<PromptNativeView> views;
 
   /// The global compatibility of the native form.
   ///
@@ -238,7 +189,7 @@ final class PackDiscoveryCandidate {
     return lines.join('\n');
   }
 
-  static String _classification(PackDiscoveryView view) {
+  static String _classification(PromptNativeView view) {
     final name = view.classification.name;
     return view.valid ? '$name(valid)' : '$name(invalid)';
   }

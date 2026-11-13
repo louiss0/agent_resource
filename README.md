@@ -262,6 +262,9 @@ SemVer bump policies; ordinary install never advances an existing exact lock.
 
 ```text
 agent_resource config validate [--resolve]
+agent_resource prompt inspect --path <path> [--target claude|codex|pi]
+agent_resource prompt validate --path <path> [--target claude|codex|pi]
+agent_resource prompt list [--scope project|user|all] [--target claude|codex|pi]
 agent_resource pack validate <pack> [--type skill|agent|prompt] [--only <name> ...]
 agent_resource pack discover <pack> [--type skill|agent|prompt] [--target claude|codex|pi]
 agent_resource pack install <pack> [--type skill|agent|prompt] [--only <name> ...]
@@ -293,6 +296,15 @@ per-consumer Prompt views. It is a read-only view: it writes no management
 state, enrolls no membership and advances no inventory. A declared catalog is
 authoritative, and the discovery of the `skills`, `agents` and `prompts` roots
 is bounded to the direct entries plus one group level.
+
+`prompt inspect`, `prompt validate` and `prompt list` are the public read-only
+Prompt paths. They report the harness-relative views of an explicit native
+source or of the native Prompt surfaces: a manual-only Skill is a Prompt for
+one consumer and an ordinary Skill for another one. With `--target` the report
+states the kind and the validity of that consumer; without it the report shows
+the differing views and never one universal classification. The paths never
+disclose an instruction body, never write a management artifact and never
+install a resource.
 
 Mutations require an interactive review or explicit unattended context:
 `--scope project|user`, all required choices, and `--yes`. `--dry-run` performs
@@ -460,98 +472,42 @@ An unrelated name, an unrelated root, and an unrelated project are not
 blocked. A transaction that reached a terminal phase releases its reservation
 through the reviewed recovery interface.
 
-### Inspect one skill directory
+### Inspect and validate one Skill directory
 
 ```text
-dart run bin/agent_resource.dart skill inspect --skill <directory>
+dart run bin/agent_resource.dart skill inspect --skill <directory> [--target claude|codex|pi]
+dart run bin/agent_resource.dart skill inspect --skill <directory> --content
+dart run bin/agent_resource.dart skill validate --skill <directory> [--target claude|codex|pi]
 ```
 
-`skill inspect` requires the explicit named `--skill` directory selection. Relative
-paths are resolved against the current working directory and returned as
-normalized absolute lexical paths; a selected directory link is allowed without
-canonicalizing its returned path. The command checks only the immediate exact
-`SKILL.md` entry. An absent marker, directory, or link reports
-`"hasSkillFile": false` and `"content": null`; a regular file reports
-`"hasSkillFile": true` and its exact decoded text, including line endings,
-trailing whitespace, and empty content.
+Skill inspection is **body-free by default**. It reports the native form,
+global compatibility, unknown placement, and the separate consuming-Harness
+views. A selected target narrows the reported views. Without a target there is
+no universal classification or validity: the same source can be a Claude
+Prompt and an ordinary Codex Skill.
 
-Successful output is exactly one JSON object with these fields:
+Skill validation applies the native view's validity rules. Prompt-only
+resource-free/path restrictions do not invalidate an ordinary Skill view for
+another Harness. Unknown or invalid selected views fail with status 2;
+without a target, all reported views must pass. Completed native reports are
+JSON, on stdout for success or stderr for invalid validation. Operational
+inspection failures stop before returning partial JSON. No body, management
+record, adoption, or activation claim is included.
 
-```json
-{"path":"/absolute/selected/directory","hasSkillFile":true,"content":"..."}
-```
+**Compatibility change:** scripts that previously consumed `skill inspect`'s
+`content` field must now pass `--content`. This explicitly selects the legacy
+immediate-marker contract, not native validation. It cannot be combined with
+`--target`. Relative paths are normalized absolute lexical paths; legacy
+content inspection may use a selected directory link, but never reads a linked
+`SKILL.md`. Missing/nonregular markers return `hasSkillFile: false` and
+`content: null`; regular markers return exact strict-UTF-8 text, including line
+endings and whitespace, up to 1,048,576 bytes. The body-free native path refuses
+linked source ancestors rather than inspecting their targets.
 
-Marker reads are strict UTF-8 (with the standard leading UTF-8 BOM behavior)
-and are limited to 1,048,576 bytes; a file requiring more bytes is rejected.
-The implementation reads at most one byte beyond that limit to detect an
-oversized marker. Failures are reported on stderr with a nonzero status and do
-not produce partial JSON on stdout.
-
-Inspection is read-only and non-recursive. It does not follow a linked
-`SKILL.md`, read nested markers, parse frontmatter, validate skill content,
-infer destination or installation scope, record management ownership, or claim
-compatibility with any consuming harness.
-
-### Validate one skill directory
-
-```text
-dart run bin/agent_resource.dart skill validate --skill <directory>
-```
-
-`skill validate` requires the explicit named `--skill` directory. It applies the
-named bounded product profile `agentskills-core-ascii-v1` against the pinned
-Agent Skills baseline at commit
-`69ef37e9424c0a7ea9dd2293b559e43ec8176379`. A selected skill directory may be
-a directory link, but its immediate `SKILL.md` marker must be a regular,
-non-link file; linked markers are a product restriction. The command is
-read-only: it does not execute scripts, inspect
-or follow references, make network requests, fetch dependencies, or mutate the
-skill directory. It makes no claim of full Agent Skills compliance, runtime
-safety, harness acceptance, or filesystem sandboxing.
-
-The profile uses literal `name`/directory-basename matching and counts their
-Unicode scalar values. It requires the required metadata fields and their
-bounds: `name` is a non-empty string of 1–64 characters with the required
-lowercase/hyphen shape and matching basename; `description` is a non-empty
-string of 1–1024 characters; `compatibility`, when present, is a string of
-1–500 characters; `license` and `allowed-tools`, when present, are strings;
-and `metadata`, when present, is a map with string keys and string values. The
-profile's bounded-ASCII name restriction is product policy, not a claim that
-the upstream specification universally rejects non-ASCII names. Unknown
-frontmatter fields are advisory diagnostics, not an automatic invalidation;
-`metadata` is the documented extension map.
-
-Input is strict UTF-8, with standard leading-BOM behavior, and is capped at
-1 MiB (1,048,576 bytes). The YAML frontmatter is capped at 64 KiB (65,536
-bytes) and must use exact standalone delimiter lines (`---` at the beginning
-and closing the frontmatter); LF and CRLF line endings are accepted. The
-remaining content is Markdown. No additional body, script, reference, or
-asset compliance is inferred from this check.
-
-A completed validation returns exactly one JSON report with these top-level keys:
-
-```json
-{
-  "path": "/absolute/selected/directory",
-  "profile": "agentskills-core-ascii-v1",
-  "baseline": "69ef37e9424c0a7ea9dd2293b559e43ec8176379",
-  "valid": true,
-  "diagnostics": []
-}
-```
-
-`path` is the normalized absolute lexical selected directory. `diagnostics` is
-an array. Each diagnostic has exactly `code`, `category`, `severity`, `field`,
-and `message`; `category` is `specification`, `product`, or `advisory`,
-`severity` is `error` or `warning`, and `field` is either the affected field
-name or `null`. `valid` is true exactly when there are no error diagnostics;
-advisory warnings alone remain valid. Valid reports are written to stdout with
-status 0. An invalid report is still the same JSON shape, but is written to
-stderr by a status-2 failure. Malformed UTF-8 is a product diagnostic in that
-invalid report and therefore also uses status 2, not operational status 1.
-Filesystem/I/O and other operational command errors are plain human-readable
-stderr failures with status 1, rather than fabricated reports. Report JSON is raw and directly parseable on either stream; normal human
-output and Mamba stderr may be colored.
+The bounded core Skill validation profile remains available to the library and
+existing installation machinery; it is not the new per-Harness CLI report.
+See [the inspection surface specification](docs/specs/prompt-inspection-surface.md)
+for scope, failure, Pi recognition, and verification limits.
 
 ### Discover native Agent occurrences
 

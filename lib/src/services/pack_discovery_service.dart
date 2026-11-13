@@ -8,6 +8,7 @@ import '../installation/prompt_source_discovery.dart';
 import '../installation/skill_source_discovery.dart';
 import '../pack/pack_configuration.dart';
 import '../pack/pack_discovery.dart';
+import '../prompt/prompt_native_view.dart';
 import '../services/acquisition_service.dart';
 import '../services/pack_prompt_service.dart';
 import '../services/prompt_inspection_service.dart';
@@ -174,18 +175,20 @@ interface class PackDiscoveryService {
           profile: candidate.profile,
           views: [
             for (final consumer in PromptConsumer.values)
-              PackDiscoveryView(
+              PromptNativeView(
                 consumer: consumer,
                 classification:
                     views[consumer]?.classification ??
                     PromptClassification.unclassified,
                 valid: views[consumer]?.valid ?? false,
                 installationSupported:
+                    views[consumer] != null &&
                     candidate.form == PackDiscoveryForm.skill &&
-                    consumer != PromptConsumer.pi &&
-                    views[consumer]?.classification ==
-                        PromptClassification.prompt &&
-                    (views[consumer]?.valid ?? false),
+                    PromptNativeView.supportsInstallation(
+                      views[consumer]!,
+                      PromptForm.skill,
+                      consumer,
+                    ),
                 diagnostics:
                     views[consumer]?.diagnostics ?? const <PromptDiagnostic>[],
               ),

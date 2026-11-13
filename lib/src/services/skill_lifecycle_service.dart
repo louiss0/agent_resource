@@ -13,6 +13,7 @@ import '../skill_validation.dart';
 import 'conversion_coordinator_service.dart';
 import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
+import 'prompt_read_service.dart';
 
 enum SkillHarness { claude, codex }
 
@@ -42,9 +43,16 @@ interface class SkillLifecycleService implements LifecycleResource {
   SkillLifecycleService({
     LifecycleStateService? state,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : state = state ?? LifecycleStateService(io: LifecycleIO(fs: fileSystem));
+  }) : state = state ?? LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
+       _prompts = PromptReadService(
+         fileSystem: state?.io.fs ?? fileSystem,
+         state: state,
+       );
 
   final LifecycleStateService state;
+
+  /// Shares the body-free native inspector; operational read failures abort.
+  final PromptReadService _prompts;
 
   static const skillKinds = <ArtifactKind>{
     ArtifactKind.skillCopy,
@@ -181,6 +189,11 @@ interface class SkillLifecycleService implements LifecycleResource {
                   : record == null
                   ? 'unmanaged'
                   : 'managed',
+              ...await _promptObservation(
+                path,
+                canRead: link == null && candidate.hasSkillFile,
+                unavailable: link != null ? 'linkNotRead' : 'markerAbsent',
+              ),
               'modification': !verify
                   ? 'notVerified'
                   : record == null
@@ -224,6 +237,8 @@ interface class SkillLifecycleService implements LifecycleResource {
           'installationScope': scope.name,
           'hasSkillFile': false,
           'eligibility': 'tracked-missing',
+          'promptViews': const <Object?>[],
+          'promptInspection': 'sourceUnavailable',
           'installationId': record.installationId,
           if (record.kind == ArtifactKind.skillCanonical) ...{
             'artifactKind': record.kind.wireName,
@@ -270,6 +285,8 @@ interface class SkillLifecycleService implements LifecycleResource {
           'installationScope': scope.name,
           'hasSkillFile': false,
           'eligibility': 'management-document',
+          'promptViews': const <Object?>[],
+          'promptInspection': 'notResource',
           'installationId': null,
           'management': 'ownershipUnverified',
           'modification': 'unableToVerify',
@@ -303,6 +320,25 @@ interface class SkillLifecycleService implements LifecycleResource {
         },
       },
     );
+  }
+
+  Future<Map<String, Object?>> _promptObservation(
+    String path, {
+    required bool canRead,
+    required String unavailable,
+  }) async {
+    if (!canRead) {
+      return {
+        'promptViews': const <Object?>[],
+        'promptInspection': unavailable,
+      };
+    }
+    final native = await _prompts.inspect(path);
+    return {
+      'promptViews': [for (final view in native.views.values) view.toJson()],
+      'promptInspection': 'inspected',
+      'globalCompatibility': native.globalCompatibility.name,
+    };
   }
 
   List<_SkillCandidate> _inventoryCandidates(
@@ -345,6 +381,7 @@ interface class SkillLifecycleService implements LifecycleResource {
             skillEntityType(
               state.io.fs.path.join(path, 'SKILL.md'),
               followLinks: false,
+              fs: state.io.fs,
             ) ==
             FileSystemEntityType.file;
         if (depth == 0 || hasMarker) {

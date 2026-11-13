@@ -12,47 +12,11 @@ import 'package:yaml/src/parser.dart' as yaml_parser;
 // ignore: implementation_imports
 import 'package:yaml/src/event.dart' as yaml_event;
 
+export '../prompt/prompt_contracts.dart';
+
+import '../prompt/prompt_contracts.dart';
 import '../prompt_resource_path_scanner.dart';
 import '../skill_files.dart';
-
-enum PromptForm { skill, template }
-
-enum PromptClassification { prompt, nonPrompt, unclassified, malformed }
-
-enum PromptConsumer { claude, codex, pi }
-
-/// Caller-supplied placement evidence, not a claim of discovery or activation.
-enum PromptPlacement { project, user, uninstalled, unknown }
-
-enum PromptCompatibility { compatible, incompatible, unknown }
-
-typedef PromptDiagnostic = ({
-  String code,
-  String message,
-  String path,
-  int? line,
-  int? column,
-});
-typedef PromptView = ({
-  PromptConsumer consumer,
-  PromptClassification classification,
-  bool valid,
-  List<String> argumentExpressions,
-  bool dynamicShell,
-  bool argumentsAppended,
-  List<PromptDiagnostic> diagnostics,
-});
-typedef PromptInspection = ({
-  String path,
-  PromptForm form,
-  PromptConsumer? selectedConsumer,
-  PromptView? selectedView,
-  Map<PromptConsumer, PromptView> views,
-  PromptCompatibility globalCompatibility,
-  PromptPlacement placement,
-  Map<String, Object?> fields,
-  Map<String, Object?> sidecarFields,
-});
 
 /// Inspects explicitly selected native files only. No harness or template is run.
 /// Form and optional consumer are caller context, not inferred from placement.

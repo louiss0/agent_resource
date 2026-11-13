@@ -61,8 +61,17 @@ The explicit selection of the Prompt resources of a pack for one or more request
 **Prompt scope**:
 The declared and discovered Prompt sources of a pack. It holds the declared Skill entries, the declared Prompt entries and the Prompt discovery root. A declared catalog is authoritative, and the same source path declared twice is a conflicting declaration. The Prompt selection of a pack holds the sources of the scope that are a Prompt in a consumer view.
 
+**Native Prompt view**:
+The classification, the validity, the installation support and the diagnostics of one native source in one consuming harness. A source can be a Prompt for Claude and an ordinary Skill for Codex, and the view never states one universal classification.
+
+**Native placement**:
+The observed location context of a resource: project, user, uninstalled source, or unknown. Compatibility of a native form does not establish its placement, availability, or activation.
+
+**Ownership-unverified observation**:
+A discovered resource whose management authority could not be verified. Unverified ownership establishes neither a managed installation nor an unmanaged resource.
+
 **Harness**:
-An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used.
+An AI coding environment whose supported resources, native formats, and installation conventions determine how a resource can be used. A consuming harness is the harness whose native rules govern a particular resource view.
 
 **Harness profile**:
 An explicit compatibility target describing the resource conventions Agent Resource follows for a harness, with an identified documentation baseline.

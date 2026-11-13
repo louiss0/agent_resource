@@ -51,6 +51,7 @@ Future<MambaExecutionResult> _execute(
 }) => (executor ?? createExecutor(fileSystem: _fs)).fake().execute([
   'skill',
   'inspect',
+  '--content',
   ...arguments,
 ]);
 
@@ -426,6 +427,7 @@ Future<void> main() async {
             final result = await _runProduction(root, [
               'skill',
               'inspect',
+              '--content',
               '--skill',
               root.path,
             ]);
@@ -445,6 +447,7 @@ Future<void> main() async {
             final result = await _runProduction(root, [
               'skill',
               'inspect',
+              '--content',
               '--skill',
               missing,
             ]);
@@ -751,6 +754,7 @@ Future<void> main() async {
                 await adapter.execute([
                   'skill',
                   'inspect',
+                  '--content',
                   '--skill',
                   firstDirectory.path,
                 ]),
@@ -761,6 +765,7 @@ Future<void> main() async {
                 await adapter.execute([
                   'skill',
                   'inspect',
+                  '--content',
                   '--skill',
                   secondDirectory.path,
                 ]),
@@ -779,7 +784,13 @@ Future<void> main() async {
               final adapter = createExecutor(fileSystem: _fs).fake();
               final missing = p.join(root.path, 'missing');
               _expectFailure(
-                await adapter.execute(['skill', 'inspect', '--skill', missing]),
+                await adapter.execute([
+                  'skill',
+                  'inspect',
+                  '--content',
+                  '--skill',
+                  missing,
+                ]),
                 phase: MambaExecutionPhase.run,
                 diagnostic: contains('missing'),
               );
@@ -788,6 +799,7 @@ Future<void> main() async {
                   await adapter.execute([
                     'skill',
                     'inspect',
+                    '--content',
                     '--skill',
                     root.path,
                   ]),
@@ -813,6 +825,7 @@ Future<void> main() async {
                   await adapter.execute([
                     'skill',
                     'inspect',
+                    '--content',
                     '--skill',
                     first.path,
                   ]),
@@ -823,6 +836,7 @@ Future<void> main() async {
                   await adapter.execute([
                     'skill',
                     'inspect',
+                    '--content',
                     '--skill',
                     second.path,
                   ]),

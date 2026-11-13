@@ -183,11 +183,13 @@ Iterable<String> skillPathComponents(
 
 /// The fail-closed observation contract of [skillEntityType], with streaming
 /// parent checks that retain no directory entries. These checks establish
-/// absence only; they do not enumerate native inventory candidates.
+/// absence only; they do not enumerate native inventory candidates. Callers
+/// can charge each confirmation entry against their bounded read budget.
 Future<FileSystemEntityType> skillEntityTypeAsync(
   String path, {
   required bool followLinks,
   fslib.FileSystem fs = const local.LocalFileSystem(),
+  void Function()? chargeEntry,
 }) async {
   final normalized = _absoluteNormalized(path, fs);
   final observed = _rawEntityType(normalized, followLinks: followLinks, fs: fs);
@@ -210,6 +212,7 @@ Future<FileSystemEntityType> skillEntityTypeAsync(
       return FileSystemEntityType.notFound;
     }
     await for (final entry in fs.directory(parent).list(followLinks: false)) {
+      chargeEntry?.call();
       if (!_samePath(entry.path, path, fs)) continue;
       final type = _rawEntityType(path, followLinks: follow, fs: fs);
       if (type == FileSystemEntityType.notFound) {

@@ -117,6 +117,82 @@ void main() {
         );
 
         test(
+          'the inventory reports the harness-relative Prompt views',
+          () async {
+            final sandbox = (fs.directory('/sandbox')..createSync());
+            try {
+              final project = fs.directory(
+                fs.path.join(sandbox.path, 'project'),
+              )..createSync();
+              final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+                ..createSync();
+              final manual = fs.directory(
+                fs.path.join(project.path, '.claude/skills/manual'),
+              )..createSync(recursive: true);
+              fs.file(fs.path.join(manual.path, 'SKILL.md')).writeAsStringSync(
+                '''---
+name: manual
+description: A manual-only prompt.
+disable-model-invocation: true
+---
+# Manual
+''',
+              );
+              final plain = fs.directory(
+                fs.path.join(project.path, '.claude/skills/plain'),
+              )..createSync(recursive: true);
+              fs.file(fs.path.join(plain.path, 'SKILL.md')).writeAsStringSync(
+                '''---
+name: plain
+description: An ordinary skill.
+---
+# Plain
+''',
+              );
+              final separator = fs.path.separator;
+              final report = _successReport(
+                await _list([
+                  '--scope',
+                  'project',
+                  '--cwd',
+                  '${project.path}$separator',
+                  '--project-root',
+                  '${project.path}$separator',
+                  '--home',
+                  '${home.path}$separator',
+                  '--format',
+                  'json',
+                ], fs),
+              );
+              final occurrences = _occurrences(report);
+              final manualViews = {
+                for (final view
+                    in occurrences.firstWhere(
+                          (occurrence) =>
+                              occurrence['path']!.toString().endsWith('manual'),
+                        )['promptViews']!
+                        as List)
+                  (view! as Map)['consumer']!: (view as Map)['classification'],
+              };
+              expect(manualViews['claude'], 'prompt');
+              expect(manualViews['codex'], 'nonPrompt');
+              final plainViews = {
+                for (final view
+                    in occurrences.firstWhere(
+                          (occurrence) =>
+                              occurrence['path']!.toString().endsWith('plain'),
+                        )['promptViews']!
+                        as List)
+                  (view! as Map)['consumer']!: (view as Map)['classification'],
+              };
+              expect(plainViews['claude'], 'nonPrompt');
+            } finally {
+              await sandbox.delete(recursive: true);
+            }
+          },
+        );
+
+        test(
           'managed verification distinguishes unchanged and changed',
           () async {
             final sandbox = (fs.directory('/sandbox')..createSync());

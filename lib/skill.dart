@@ -6,7 +6,8 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'src/skill_files.dart';
-import 'src/skill_validation.dart';
+import 'src/services/prompt_read_service.dart';
+import 'src/services/prompt_inspection_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
@@ -14,21 +15,20 @@ import 'lifecycle.dart';
 import 'skill_lifecycle_commands.dart';
 
 typedef InspectOperation = String Function(String skill);
-typedef ValidateOperation = ValidationReport Function(String skill);
 
 /// The `skill` command group and its discovery, inspection, and validation
 /// children.
 final class SkillCommand extends GroupCommand {
   SkillCommand({
     InspectOperation? inspect,
-    ValidateOperation? validate,
+    PromptReadService? read,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     SkillLifecycleService? lifecycle,
     SkillInstallationService? installation,
   }) : super(
          _children(
            inspect ?? ((skill) => inspectSkill(skill, fs: fileSystem)),
-           validate ?? ((skill) => validateSkill(skill, fs: fileSystem)),
+           read,
            lifecycle,
            installation,
            fileSystem,
@@ -37,16 +37,17 @@ final class SkillCommand extends GroupCommand {
 
   static List<Command> _children(
     InspectOperation inspect,
-    ValidateOperation validate,
+    PromptReadService? read,
     SkillLifecycleService? lifecycle,
     SkillInstallationService? installation,
     fslib.FileSystem fileSystem,
   ) {
     final service = lifecycle ?? SkillLifecycleService(fileSystem: fileSystem);
+    final reader = read ?? PromptReadService(fileSystem: fileSystem);
     return [
       SkillListCommand(service),
-      InspectCommand(inspect),
-      ValidateCommand(validate),
+      InspectCommand(inspect, read: reader, fileSystem: fileSystem),
+      ValidateCommand(read: reader, fileSystem: fileSystem),
       SkillInstallCommand(
         installation ??
             SkillInstallationService(
@@ -152,35 +153,62 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
 
 const _maxSkillFileBytes = 1048576;
 
-final class InspectCommand(final InspectOperation _inspect) extends Command {
-  this
-    : super(
-        options: [_inspectSkill],
-        longDescription:
-            'Reads only the immediate SKILL.md entry as strict UTF-8. '
-            'Regular files are returned verbatim up to 1,048,576 bytes; '
-            'larger files fail. Linked markers, nested markers, and other '
-            'entries are not read. This is read-only inspection, not '
-            'validation, frontmatter parsing, ownership, scope, or harness '
-            'compatibility checking.',
-      );
+final class InspectCommand extends Command {
+  InspectCommand(
+    this._inspect, {
+    PromptReadService? read,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : _read = read ?? PromptReadService(fileSystem: fileSystem),
+       _fileSystem = fileSystem,
+       super(
+         options: [_inspectSkill, _target],
+         flags: [_content],
+         longDescription:
+             'Inspect SKILL.md native views without instruction content by default. '
+             '--content returns the verbatim marker (up to 1,048,576 bytes); '
+             'it is not validation and cannot be combined with --target.',
+       );
 
+  final InspectOperation _inspect;
+  final PromptReadService _read;
+  final fslib.FileSystem _fileSystem;
   static final _inspectSkill = StringOption.required(
     'skill',
     regex: RegExp(r'^\s*\S[\s\S]*$'),
     description: 'Skill directory to inspect.',
   );
+  static final _target = ChoiceOption('target', choices: PromptConsumer.values);
+  static const _content = BooleanFlag('content');
 
   @override
   String get name => 'inspect';
-
   @override
   String get shortDescription => 'Inspect one explicit skill directory.';
-
   @override
-  String run(ValueOf valueOf, List<String> args) {
+  Future<String> run(ValueOf valueOf, List<String> args) async {
     final skill = valueOf(_inspectSkill);
-    return _inspect(skill);
+    if (valueOf(_content)) {
+      if (valueOf(_target) != null) {
+        throw MambaException(
+          '--content cannot be combined with --target.',
+          exitCode: 2,
+        );
+      }
+      return _inspect(skill);
+    }
+    _requireInspectDirectory(
+      _fileSystem.path.normalize(_fileSystem.directory(skill).absolute.path),
+      _fileSystem,
+    );
+    final views = await _read.inspect(skill, consumer: valueOf(_target));
+    final target = valueOf(_target);
+    final report = views.toJson();
+    if (target != null) {
+      report['views'] = [
+        if (views.views[target] != null) views.views[target]!.toJson(),
+      ];
+    }
+    return jsonEncode(report);
   }
 }
 
@@ -237,47 +265,60 @@ void _requireInspectDirectory(String skillPath, fslib.FileSystem fs) {
   throw MambaException('Skill path is not a directory: $skillPath');
 }
 
-final class ValidateCommand(final ValidateOperation _validate) extends Command {
-  this
-    : super(
-        options: [_validateSkill],
-        longDescription:
-            'Validate one explicit skill directory against the pinned '
-            'agentskills-core-strict-ascii-v1 profile. Reads only immediate SKILL.md '
-            'as strict UTF-8, up to 1,048,576 bytes with at most 65,536 '
-            'frontmatter bytes. Linked markers are rejected. The ASCII-only '
-            'name rule and rejection of unknown fields are product policy, not '
-            'universal specification rules. Passing this profile is '
-            'not universal compliance, security, or harness compatibility. '
-            'The report is JSON. A valid '
-            'report is written to stdout with status 0; an invalid report is '
-            'written as JSON to stderr with status 2. Filesystem and other '
-            'operational failures are human-readable status-1 errors. '
-            'Validation is read-only: it does not execute scripts, follow '
-            'references or network links, fetch dependencies, or mutate the '
-            'skill directory.',
-      );
-
+final class ValidateCommand extends Command {
+  ValidateCommand({
+    PromptReadService? read,
+    fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  }) : _read = read ?? PromptReadService(fileSystem: fileSystem),
+       _fileSystem = fileSystem,
+       super(
+         options: [_validateSkill, _target],
+         longDescription:
+             'Validate SKILL.md per native consumer using native Skill or Prompt rules. '
+             'Without --target each view is reported separately. '
+             'Invalid or unclassified views fail with status 2.',
+       );
+  final PromptReadService _read;
+  final fslib.FileSystem _fileSystem;
   static final _validateSkill = StringOption.required(
     'skill',
     regex: RegExp(r'^\s*\S[\s\S]*$'),
     description: 'Skill directory to validate.',
   );
-
+  static final _target = ChoiceOption('target', choices: PromptConsumer.values);
   @override
   String get name => 'validate';
-
   @override
   String get shortDescription => 'Validate one skill directory.';
-
   @override
-  String run(ValueOf valueOf, List<String> args) {
+  Future<String> run(ValueOf valueOf, List<String> args) async {
     final skill = valueOf(_validateSkill);
-    final report = _validate(skill);
-    final output = jsonEncode(report.toJson());
-    if (!report.valid) {
-      throw MambaException(output, exitCode: 2);
+    _requireInspectDirectory(
+      _fileSystem.path.normalize(_fileSystem.directory(skill).absolute.path),
+      _fileSystem,
+    );
+    final views = await _read.inspect(skill, consumer: valueOf(_target));
+    final rendered = <Map<String, Object?>>[];
+    final target = valueOf(_target);
+    final selected = views.views.values.where(
+      (view) => target == null || view.consumer == target,
+    );
+    var failed = selected.isEmpty;
+    for (final view in selected) {
+      final item = view.toJson();
+      switch (view.classification) {
+        case PromptClassification.nonPrompt:
+        case PromptClassification.prompt:
+          if (!view.valid) failed = true;
+        case PromptClassification.malformed:
+        case PromptClassification.unclassified:
+          item['valid'] = false;
+          failed = true;
+      }
+      rendered.add(item);
     }
+    final output = jsonEncode({...views.toJson(), 'views': rendered});
+    if (failed) throw MambaException(output, exitCode: 2);
     return output;
   }
 }
