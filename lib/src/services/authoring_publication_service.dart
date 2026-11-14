@@ -229,7 +229,25 @@ interface class AuthoringPublicationService {
   /// The output is untracked: no installation record, no baseline and no
   /// adoption. The native placement still refuses an occupied target and an
   /// occupied native name.
+  ///
+  /// The publication runs under the coordination lock of the scope and it
+  /// refuses a location that a pending authoring transaction reserves: a
+  /// second publication never replaces pending evidence.
   Future<AuthoringPublicationOutcome> _publishAuthorOnlyOutput(
+    AuthoringPublicationRequest request,
+    LifecycleContext context,
+    AuthoringPlan plan,
+    _Target target,
+    _Source? source,
+  ) => _publishGuarded(
+    context,
+    <String>[target.artifactLocation, if (source != null) source.path],
+    () =>
+        _publishAuthorOnlyOutputLocked(request, context, plan, target, source),
+  );
+
+  /// Publishes the native content of an unmanaged output under the lock.
+  Future<AuthoringPublicationOutcome> _publishAuthorOnlyOutputLocked(
     AuthoringPublicationRequest request,
     LifecycleContext context,
     AuthoringPlan plan,
@@ -237,7 +255,7 @@ interface class AuthoringPublicationService {
     _Source? source,
   ) async {
     final candidate = _candidateOf(plan);
-    final transaction = _prepareTransaction(context, plan, target, source);
+    var transaction = _prepareTransaction(context, plan, target, source);
     final created = <String>[];
     try {
       if (target.directory != null) {
@@ -268,7 +286,7 @@ interface class AuthoringPublicationService {
       _removeCreated(created);
       rethrow;
     }
-    _markPublished(context, transaction);
+    transaction = _markPublished(context, transaction, target);
     final receipt = _commitTransaction(
       context,
       plan,
@@ -401,7 +419,22 @@ interface class AuthoringPublicationService {
   /// changes, and the previous bytes are retained as a recovery copy. The
   /// source stays unmanaged: no installation record is created and nothing
   /// is adopted.
+  ///
+  /// The publication runs under the coordination lock of the scope and it
+  /// refuses a location that a pending authoring transaction reserves.
   Future<AuthoringPublicationOutcome> _publishUnmanagedEdit(
+    AuthoringPublicationRequest request,
+    LifecycleContext context,
+    AuthoringPlan plan,
+    _Source source,
+    _Target target,
+  ) => _publishGuarded(context, <String>[
+    target.artifactLocation,
+    source.path,
+  ], () => _publishUnmanagedEditLocked(request, context, plan, source, target));
+
+  /// Replaces an ordinary source with the reviewed content under the lock.
+  Future<AuthoringPublicationOutcome> _publishUnmanagedEditLocked(
     AuthoringPublicationRequest request,
     LifecycleContext context,
     AuthoringPlan plan,
@@ -410,7 +443,7 @@ interface class AuthoringPublicationService {
   ) async {
     final candidate = _candidateOf(plan);
     final recovery = _retainRecovery(context, plan, source);
-    final transaction = _prepareTransaction(
+    var transaction = _prepareTransaction(
       context,
       plan,
       target,
@@ -434,9 +467,9 @@ interface class AuthoringPublicationService {
       }
       _verifyPublishedMarker(target, candidate);
     } finally {
-      _removeIfPresent(staged);
+      _removeStagedCandidate(context, staged);
     }
-    _markPublished(context, transaction);
+    transaction = _markPublished(context, transaction, target);
     final receipt = _commitTransaction(
       context,
       plan,
@@ -687,7 +720,31 @@ interface class AuthoringPublicationService {
   }
 
   /// Publishes a conversion of an ordinary source.
+  ///
+  /// The publication runs under the coordination lock of the scope and it
+  /// refuses a location that a pending authoring transaction reserves.
   Future<AuthoringPublicationOutcome> _publishUntrackedConversion(
+    AuthoringPublicationRequest request,
+    LifecycleContext context,
+    AuthoringPlan plan,
+    _Source source,
+    _Target target,
+    ConversionDirection direction,
+  ) => _publishGuarded(
+    context,
+    <String>[target.artifactLocation, source.path],
+    () => _publishUntrackedConversionLocked(
+      request,
+      context,
+      plan,
+      source,
+      target,
+      direction,
+    ),
+  );
+
+  /// Publishes a conversion of an ordinary source under the lock.
+  Future<AuthoringPublicationOutcome> _publishUntrackedConversionLocked(
     AuthoringPublicationRequest request,
     LifecycleContext context,
     AuthoringPlan plan,
@@ -704,7 +761,7 @@ interface class AuthoringPublicationService {
       excludePath: source.path,
     );
     final recovery = _retainRecovery(context, plan, source);
-    final transaction = _prepareTransaction(
+    var transaction = _prepareTransaction(
       context,
       plan,
       target,
@@ -735,7 +792,7 @@ interface class AuthoringPublicationService {
         rethrow;
       }
       _verifyPublishedTarget(target, files);
-      _markPublished(context, transaction);
+      transaction = _markPublished(context, transaction, target);
       final retired = _retireSource(source, target);
       final receipt = _commitTransaction(
         context,
@@ -771,9 +828,34 @@ interface class AuthoringPublicationService {
         },
       );
     } finally {
-      _removeIfPresent(staged);
+      _removeStagedCandidate(context, staged);
     }
   }
+
+  /// Runs one ordinary publication under the coordination lock of its scope.
+  ///
+  /// The lock and the pending guard protect the live change: a location that
+  /// a pending authoring transaction reserves is never published over.
+  Future<AuthoringPublicationOutcome> _publishGuarded(
+    LifecycleContext context,
+    List<String> locations,
+    Future<AuthoringPublicationOutcome> Function() body,
+  ) => _state.runMutation(
+    context: context,
+    locations: locations,
+    body: () async {
+      try {
+        return await body();
+      } on FileSystemException catch (error) {
+        // A durable failure of the publication is reported as an operational
+        // failure of the publication, not as a coordination failure.
+        throw MambaException(
+          'The authoring publication failed: ${error.message}',
+          exitCode: 6,
+        );
+      }
+    },
+  );
 
   /// Retires the source of a conversion.
   ///
@@ -1056,6 +1138,16 @@ interface class AuthoringPublicationService {
       'authoring-recovery',
       plan.planId,
     );
+    // The retained payload is bound to one plan. A retry never overwrites
+    // the payload of an earlier attempt: the previous evidence is kept
+    // until its transaction is recovered.
+    if (_io.type(root, followLinks: false) != FileSystemEntityType.notFound) {
+      throw MambaException(
+        'The retained recovery payload of this plan already exists; the '
+        'previous evidence is never overwritten.',
+        exitCode: 6,
+      );
+    }
     _io.createDirectory(root);
     _state.protectDirectory(root);
     if (source.isPackage) {
@@ -1218,6 +1310,28 @@ interface class AuthoringPublicationService {
       } on Exception {
         // The original failure is reported.
       }
+    }
+  }
+
+  /// Removes a staged candidate and its empty private directories.
+  ///
+  /// The staging root is shared with the ordinary lifecycle staging, so only
+  /// an empty candidate directory and an empty authoring staging root are
+  /// removed. A preparation artifact of another candidate is never removed.
+  void _removeStagedCandidate(LifecycleContext context, String staged) {
+    _removeIfPresent(staged);
+    final root = _fileSystem.path.join(
+      context.stateRoot(),
+      authoringStagingDirectoryName,
+    );
+    var parent = _fileSystem.path.dirname(staged);
+    while (_fileSystem.path.isWithin(root, parent) ||
+        _fileSystem.path.equals(root, parent)) {
+      final type = _io.type(parent, followLinks: false);
+      if (type != FileSystemEntityType.directory) return;
+      if (_io.list(parent).isNotEmpty) return;
+      _io.deleteEmptyDirectory(parent);
+      parent = _fileSystem.path.dirname(parent);
     }
   }
 
@@ -1388,6 +1502,7 @@ interface class AuthoringPublicationService {
     _Source? source, {
     String? recoveryPath,
   }) {
+    final receiptId = authoringReceiptId(plan.planId, target.output);
     final transaction = AuthoringTransaction(
       transactionId: _recovery.newTransactionId(),
       planId: plan.planId,
@@ -1399,30 +1514,149 @@ interface class AuthoringPublicationService {
       target: target.artifactLocation,
       source: source?.path,
       sourceSha256: source?.markerSha256,
+      sourceInstallationId: source?.installationId,
+      root: target.root,
+      form: target.form,
+      nativeName: _nativeName(plan),
       recoveryPath: recoveryPath,
-      receiptId: authoringReceiptId(plan.planId, target.output),
+      receiptId: receiptId,
       candidateSha256: _digestBytes(_candidateOf(plan)),
-      observations: <String, Object?>{
-        if (recoveryPath != null)
-          'payloadMembers': <String>[
-            for (final entry in _io.list(recoveryPath))
-              _fileSystem.path.basename(entry.path),
-          ],
+      observations: const <String, Object?>{},
+      evidence: <String, Object?>{
+        'version': authoringEvidenceVersion,
+        'payloadPath': recoveryPath,
+        'payloadManifest': recoveryPath == null
+            ? null
+            : authoringContentEvidence(_fileSystem, recoveryPath),
+        'plannedManifest': _plannedTargetManifest(plan, target, source),
+        'publishedManifest': null,
+        'receiptTarget': target.output,
+      },
+      authority: <String, Object?>{
+        'scope': context.scope.name,
+        'stateRoot': context.stateRoot(),
+        'projectRoot': context.projectRoot,
+        'home': _effectiveHome(context),
+        'userStateRoot': _userStateRoot(context),
       },
     );
     _recovery.persist(context.stateRoot(), transaction);
     return transaction;
   }
 
+  /// The full target manifest expected immediately after publication.
+  List<Map<String, Object?>> _plannedTargetManifest(
+    AuthoringPlan plan,
+    _Target target,
+    _Source? source,
+  ) {
+    final candidate = _candidateOf(plan);
+    if (target.directory == null) {
+      return <Map<String, Object?>>[
+        <String, Object?>{
+          'path': _fileSystem.path.basename(target.output),
+          'type': 'file',
+          'length': candidate.length,
+          'sha256': _digestBytes(candidate),
+        },
+      ];
+    }
+    final members = <String, Map<String, Object?>>{};
+    final retainsSource =
+        source != null &&
+        source.isPackage &&
+        (plan.operation == AuthoringOperation.edit ||
+            plan.operation == AuthoringOperation.clone ||
+            _fileSystem.path.equals(source.path, target.artifactLocation));
+    if (retainsSource) {
+      for (final entry in readPackageManifest(
+        _fileSystem,
+        source.path,
+      ).entries) {
+        members[entry['path']! as String] = <String, Object?>{...entry};
+      }
+    }
+    void addDirectory(String relative) {
+      if (relative.isEmpty || relative == '.') return;
+      members[relative] = <String, Object?>{
+        'path': relative,
+        'type': 'directory',
+        'length': 0,
+        'sha256': null,
+      };
+    }
+
+    void addParents(String relative) {
+      final parts = relative.split('/');
+      for (var index = 1; index < parts.length; index++) {
+        addDirectory(parts.take(index).join('/'));
+      }
+    }
+
+    void addFile(String relative, List<int> bytes) {
+      addParents(relative);
+      members[relative] = <String, Object?>{
+        'path': relative,
+        'type': 'file',
+        'length': bytes.length,
+        'sha256': _digestBytes(bytes),
+      };
+    }
+
+    addFile('SKILL.md', candidate);
+    if (plan.sidecar != null) {
+      addFile('agents/openai.yaml', utf8.encode(plan.sidecar!));
+    }
+    final entries = members.values.toList()
+      ..sort((left, right) => '${left['path']}'.compareTo('${right['path']}'));
+    return entries;
+  }
+
+  /// Verifies the published target against the reviewed expectation.
+  ///
+  /// The publication never blesses what it observes. The observed content
+  /// must equal the reviewed plan exactly: an unexpected member, a missing
+  /// member or a changed byte is a failed publication, not a reviewed one.
+  List<Map<String, Object?>> _verifyPublishedEvidence(
+    AuthoringTransaction transaction,
+    _Target target,
+  ) {
+    final planned = transaction.plannedManifest;
+    if (planned == null) {
+      throw MambaException(
+        'The authoring transaction records no reviewed target evidence.',
+        exitCode: 6,
+      );
+    }
+    final observed = authoringContentEvidence(
+      _fileSystem,
+      target.artifactLocation,
+    );
+    if (!authoringContentEvidenceMatches(planned, observed)) {
+      throw MambaException(
+        'The published native target does not match the reviewed evidence.',
+        exitCode: 6,
+      );
+    }
+    return observed;
+  }
+
   /// Records the published phase of one ordinary publication.
-  void _markPublished(
+  AuthoringTransaction _markPublished(
     LifecycleContext context,
     AuthoringTransaction transaction,
+    _Target target,
   ) {
-    _recovery.persist(
-      context.stateRoot(),
-      transaction.copyWith(phase: AuthoringTransactionPhase.published),
+    final observed = _verifyPublishedEvidence(transaction, target);
+    final published = transaction.copyWith(
+      phase: AuthoringTransactionPhase.published,
+      evidence: <String, Object?>{
+        ...transaction.evidence,
+        'publishedManifest': observed,
+      },
     );
+    _recovery.persist(context.stateRoot(), published);
+    return published;
   }
 
   /// Writes the authoring receipt and records the committed phase.
@@ -1472,6 +1706,37 @@ interface class AuthoringPublicationService {
       context.stateRoot(),
       transaction.copyWith(phase: AuthoringTransactionPhase.completed),
     );
+  }
+
+  /// The effective home of one context.
+  ///
+  /// The home is the root of the user native configuration. It is bound to
+  /// the transaction when the host offers one.
+  String? _effectiveHome(LifecycleContext context) {
+    try {
+      return context.requireHome();
+    } on MambaException {
+      return context.home;
+    }
+  }
+
+  /// The state root of the user scope.
+  ///
+  /// The user scope is part of the authority of the publication when the
+  /// host configures one. An unconfigured scope is never bound and never
+  /// blocks a mutation.
+  String? _userStateRoot(LifecycleContext context) {
+    final explicit = context.options.stateDir;
+    if (explicit != null) return context.resolvePath(explicit);
+    try {
+      final user = LifecycleContext.resolve(
+        context.options.copyWith(scope: LifecycleScope.user),
+        fileSystem: _fileSystem,
+      );
+      return user.stateRoot();
+    } on MambaException {
+      return null;
+    }
   }
 
   /// A new coordinated transaction identifier.

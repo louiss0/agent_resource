@@ -10,6 +10,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
+import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
@@ -23,6 +24,12 @@ const Set<String> _privateStateDirectories = <String>{
   'coordination',
   'conversions',
   'conversion-participants',
+  // The private storage of the ordinary authoring authority. It is evidence
+  // of an authoring act, not an installation ledger.
+  authoringTransactionDirectoryName,
+  authoringRecoveryDirectoryName,
+  authoringStagingDirectoryName,
+  'authoring-receipts',
 };
 const maxManagementDocumentBytes = 8 * 1024 * 1024;
 const maxManagementDepth = 32;
@@ -1113,6 +1120,7 @@ interface class LifecycleStateService {
     Iterable<String> locations = const [],
     Set<String> installationIds = const {},
     Set<String> packKeys = const {},
+    Set<String> excludedAuthoringEvidencePaths = const {},
     required Future<T> Function() body,
   }) => _serialized(context, context.stateRoot(), () {
     checkPendingConversions(
@@ -1120,6 +1128,7 @@ interface class LifecycleStateService {
       locations: locations,
       installationIds: installationIds,
       packKeys: packKeys,
+      excludedAuthoringEvidencePaths: excludedAuthoringEvidencePaths,
     );
     return body();
   }, coordinated: true);
@@ -4560,6 +4569,7 @@ interface class LifecycleStateService {
     Set<String> installationIds = const {},
     Set<String> packKeys = const {},
     Set<String> validatedRecoveryPaths = const {},
+    Set<String> excludedAuthoringEvidencePaths = const {},
     ({
       ArtifactKind kind,
       String name,
@@ -4569,6 +4579,12 @@ interface class LifecycleStateService {
     uniqueness,
   }) {
     try {
+      _blockPendingAuthoring(
+        context,
+        locations: locations,
+        excluded: excludedAuthoringEvidencePaths,
+        uniqueness: uniqueness,
+      );
       final touchedIds = <String>{...installationIds};
       bool overlaps(String path) =>
           locations.any((location) => _pathsOverlap(location, path));
@@ -4803,19 +4819,102 @@ interface class LifecycleStateService {
 
   void _blockPending(String state, String location) {
     final root = io.fs.path.join(state, 'transactions');
-    if (io.type(root, followLinks: false) == FileSystemEntityType.notFound) {
-      return;
+    if (io.type(root, followLinks: false) != FileSystemEntityType.notFound) {
+      for (final file in io.list(root)) {
+        if (io.fs.path.extension(file.path) != '.json') continue;
+        final transaction = _readTransaction(file.path);
+        final phase = transaction['phase'];
+        const terminal = ['committed', 'rolledBack', 'failedRestored'];
+        if (terminal.contains(phase)) continue;
+        if (transaction['location'] is String &&
+            io.fs.path.equals(transaction['location']! as String, location)) {
+          throw MambaException(
+            'A pending transaction blocks this installation: ${transaction['transactionId']}',
+            exitCode: 6,
+          );
+        }
+      }
     }
-    for (final file in io.list(root)) {
-      if (io.fs.path.extension(file.path) != '.json') continue;
-      final transaction = _readTransaction(file.path);
-      final phase = transaction['phase'];
-      const terminal = ['committed', 'rolledBack', 'failedRestored'];
-      if (terminal.contains(phase)) continue;
-      if (transaction['location'] is String &&
-          io.fs.path.equals(transaction['location']! as String, location)) {
+    _blockPendingAuthoringIn(state, location: location);
+  }
+
+  /// Refuses a mutation that a pending ordinary authoring transaction
+  /// reserves.
+  ///
+  /// The exclusion names the exact evidence document of one validated
+  /// transaction: it never exempts another scope that happens to carry the
+  /// same identity, and it never disables the guard for the other
+  /// transactions of the scope.
+  void _blockPendingAuthoring(
+    LifecycleContext context, {
+    Iterable<String> locations = const [],
+    Set<String> excluded = const {},
+    ({
+      ArtifactKind kind,
+      String name,
+      List<String> roots,
+      String? nativeProfile,
+    })?
+    uniqueness,
+  }) {
+    for (final state in _coordinationStates(context)) {
+      _blockPendingAuthoringIn(
+        state,
+        locations: locations,
+        excluded: excluded,
+        uniqueness: uniqueness,
+      );
+    }
+  }
+
+  /// Refuses a mutation that a pending ordinary authoring transaction of one
+  /// state reserves.
+  void _blockPendingAuthoringIn(
+    String state, {
+    String? location,
+    Iterable<String> locations = const [],
+    Set<String> excluded = const {},
+    ({
+      ArtifactKind kind,
+      String name,
+      List<String> roots,
+      String? nativeProfile,
+    })?
+    uniqueness,
+  }) {
+    final candidates = <String>[?location, ...locations];
+    final directory = io.fs.path.join(state, authoringTransactionDirectoryName);
+    for (final record in pendingAuthoringTransactions(io.fs, directory)) {
+      final reserved = record.reserves(io.fs, candidates);
+      if (reserved) {
+        if (excluded.contains(record.documentPath)) {
+          // The validated authority of the caller reserves this location:
+          // its own recovery is not blocked by itself.
+          continue;
+        }
         throw MambaException(
-          'A pending transaction blocks this installation: ${transaction['transactionId']}',
+          'A pending authoring transaction ${record.transactionId} blocks '
+          'this mutation.',
+          exitCode: 6,
+        );
+      }
+      final unique = uniqueness;
+      if (unique == null) continue;
+      final name = record.nativeName;
+      if (name == null || record.root == null) continue;
+      if (!unique.roots.any((root) => _pathsOverlap(root, record.root!))) {
+        continue;
+      }
+      if (unique.nativeProfile != null &&
+          record.profile != unique.nativeProfile) {
+        continue;
+      }
+      if (record.profile == 'pi'
+          ? name.toLowerCase() == unique.name.toLowerCase()
+          : name == unique.name) {
+        throw MambaException(
+          'A pending authoring transaction ${record.transactionId} reserves '
+          'the native name ${unique.name}.',
           exitCode: 6,
         );
       }

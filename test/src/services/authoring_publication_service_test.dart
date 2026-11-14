@@ -584,7 +584,13 @@ void main() {
 
         await expectLater(
           publish(reviewed),
-          throwsA(isA<FileSystemException>()),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
         );
         expect(
           fs.file('/work/project/.claude/skills/demo/SKILL.md').existsSync(),
@@ -863,7 +869,13 @@ void main() {
 
         await expectLater(
           publish(reviewed),
-          throwsA(isA<FileSystemException>()),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              6,
+            ),
+          ),
         );
         // The source survives an interrupted publication and the recovery copy
         // of the previous bytes is retained.
