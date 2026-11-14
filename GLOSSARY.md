@@ -49,6 +49,18 @@ The protected copy of the previous bytes of an edited, replaced or retired sourc
 **Instruction draft**:
 An application-owned, protected editing copy of instruction text retained until explicit discard or successful publication cleanup. A draft records authoring intent, not publication approval or installation ownership, and resuming it requires fresh current-state review.
 
+**Editor interaction**:
+One editing session over a protected instruction draft. It ends in an edited draft, an unfinished session, a hand-over of the draft as a body file, or a cancellation. It never grants permission to publish.
+
+**Editor command**:
+The operator's choice of the editor program and its arguments. It names one program and never carries an instruction to a command processor.
+
+**Editor configuration**:
+The parsed spelling of one editor as an executable and an argument vector. It names one program and never carries an instruction to a command processor. It is read from an explicit choice or from the `VISUAL`/`EDITOR` configuration variables.
+
+**Saved-and-finished acknowledgement**:
+The operator's confirmation that the edited instructions were saved and that the editing is over. It permits the draft to be read and reviewed; it is never a decision to publish.
+
 **Authoring transaction**:
 The versioned evidence of one ordinary authoring publication. It binds the reviewed plan, the published target, the reviewed source and the phase of the publication, and it is the authority of an interrupted publication. It is not an installation record.
 
