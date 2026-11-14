@@ -215,6 +215,7 @@ interface class AuthoringPlanService {
         'form': placement.form,
         'sidecar': placement.sidecar,
         'directory': placement.directory,
+        'observation': targetObservation,
       },
       'ownership': ownership.name,
       'fields': canonicalJsonForHash(fields),

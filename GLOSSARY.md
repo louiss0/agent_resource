@@ -46,6 +46,9 @@ The evidence of one authoring act for an unmanaged output. A receipt is not an i
 **Authoring recovery copy**:
 The protected copy of the previous bytes of an edited, replaced or retired source. It is evidence of the earlier content, not an installation record, and it does not restore ownership of the source.
 
+**Instruction draft**:
+An application-owned, protected editing copy of instruction text retained until explicit discard or successful publication cleanup. A draft records authoring intent, not publication approval or installation ownership, and resuming it requires fresh current-state review.
+
 **Authoring transaction**:
 The versioned evidence of one ordinary authoring publication. It binds the reviewed plan, the published target, the reviewed source and the phase of the publication, and it is the authority of an interrupted publication. It is not an installation record.
 

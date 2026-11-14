@@ -156,12 +156,17 @@ Prompts declare `policy.allow_implicit_invocation: false` in
   - A Prompt to Skill reclassification has no supported direction.
 - **Identity**: the plan identity is a SHA-256 digest over the canonical
   operation, kind, profile, scope, conversion, source observation, target
-  placement, ownership, merged fields, field intents, body digest, decisions,
+  placement and its current occupancy observation, ownership, merged fields,
+  field intents, body digest, decisions,
   reference mappings, role and delegation observations, reference choices and
   cross-scope observations. The source observation binds the marker digest
   and the reviewed package member manifest of the source, and the target
   placement binds the package directory of the placement. Equal proposals
-  produce the same identity; a changed proposal produces a different one.
+  produce the same identity; a changed proposal or target-occupancy observation
+  produces a different one. The occupancy binding applies to every authoring
+  operation, not just draft resumption. Plan identities issued before this
+  binding was added are stale: rebuild and review the current plan rather than
+  reusing an old publication token or overriding the comparison.
 - **Package members**: the reviewed manifest of a package source binds every
   owned member by relative path, type, length and content digest. The
   manifest is bounded: a link, an unsupported entry, an exhausted entry,

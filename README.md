@@ -472,6 +472,36 @@ An unrelated name, an unrelated root, and an unrelated project are not
 blocked. A transaction that reached a terminal phase releases its reservation
 through the reviewed recovery interface.
 
+### Find and resume retained instruction drafts
+
+```text
+agent_resource authoring draft list [--scope project|user] [--format json]
+agent_resource authoring draft inspect <draft-id>
+agent_resource authoring draft resume <draft-id>
+agent_resource authoring draft discard <draft-id> --dry-run
+agent_resource authoring draft discard <draft-id> --apply --yes
+```
+
+Drafts are protected editing storage, not published resources or native
+transaction recovery payloads. These commands default to project scope and
+accept `--cwd`, `--project-root`, `--home`, and `--state-dir`. List/inspect and
+resume are read-only and never print instructions. Resume builds a fresh plan
+against current source, destination, and ownership observations; it does not
+publish or reuse an old approval. A ready plan still needs separate publication
+consent in a supported authoring frontend.
+
+Discard previews by default. Explicit `--apply --yes` deletes only verified,
+application-owned draft entries; it never removes the original body file.
+Drafts have no automatic expiry. Unresolved or unsafe evidence is retained,
+not guessed away. Privacy is verified before sensitive writes, and read-only
+operations do not repair permissions. Arbitrary editor backups, history, and
+cloud copies remain outside the storage confidentiality guarantee.
+
+The shared module preserves file/explicit-stdin/literal multiline body inputs;
+interactive draft preparation and editor launching are distinct from dry-run.
+No new public create/edit/apply workflow is enabled by this slice. Details and
+verification limits: [protected instruction drafts](docs/specs/protected-instruction-drafts.md).
+
 ### Inspect and validate one Skill directory
 
 ```text

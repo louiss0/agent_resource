@@ -18,6 +18,7 @@ import 'src/services/agent_graph_service.dart';
 import 'src/services/agent_installation_service.dart';
 import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/authoring_recovery_service.dart';
+import 'src/services/instruction_draft_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 import 'src/services/parent_config_service.dart';
 import 'src/services/prompt_read_service.dart';
@@ -45,6 +46,7 @@ Executor createExecutor({
   AgentConversionService? agentConversion,
   ConversionCoordinator? conversionRecovery,
   AuthoringRecoveryService? authoringRecovery,
+  InstructionDraftService? instructionDrafts,
   PromptReadService? promptRead,
   PackLifecycleService? packLifecycle,
   void Function(String)? deprecationWarning,
@@ -68,6 +70,8 @@ Executor createExecutor({
             fileSystem: fileSystem,
             state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
           ),
+      drafts: instructionDrafts,
+      fileSystem: fileSystem,
     ),
     SkillCommand(
       installation: skillInstallation,
