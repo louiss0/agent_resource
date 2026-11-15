@@ -237,7 +237,7 @@ publication stays an internal transition.
 
 ### Pending guard verification (#93)
 
-The focused coordinator and guard suites pass 57 tests. They cover the refusal
+The focused coordinator and guard suites pass 58 tests. They cover the refusal
 of the registered `agent remove` and `agent replace` commands, the registered
 `skill remove` command, Agent and Skill installation, parent-unit application,
 pack cleanup metadata, and legacy origin updates while a controlled pending
@@ -245,8 +245,10 @@ transaction exists. The cases distinguish a pending conflict from unavailable
 authority, cover a changed occupant, a substituted terminal coordinator, a
 missing coordinator, a corrupt participant, an unknown evidence schema, an
 abandoned participant reference, and a participant reference observed from
-another project. The unrelated-root cases prove that a reservation does not
-block an unrelated name or an unrelated root.
+another project. A reserved target participant refuses a mutation of its
+target path while an unrelated path and name in the same root stay mutable.
+The unrelated-root cases prove that a reservation does not block an unrelated
+name or an unrelated root.
 
 The complete suite passes on Windows with 887 passing and four platform skips
 using `dart test --concurrency=2 --timeout=2m`. `dart analyze` reports no
