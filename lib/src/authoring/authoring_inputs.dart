@@ -109,6 +109,7 @@ final class AuthoringInputs {
     this.decisions = const <String>{},
     this.references = const <String, String>{},
     this.conversion,
+    this.sourceScope,
   });
 
   final AuthoringOperation operation;
@@ -137,6 +138,14 @@ final class AuthoringInputs {
 
   final ConversionDirection? conversion;
 
+  /// The scope of a tracked source.
+  ///
+  /// A tracked source may live in the other scope. The source scope selects
+  /// the ledger that owns the source, while the scope of the inputs stays
+  /// the scope of the published output. An unmanaged source has no scope:
+  /// its path names its location.
+  final LifecycleScope? sourceScope;
+
   /// The supported native fields for the selected kind and profile.
   NativeFieldMatrix get matrix => NativeFieldMatrix.forKind(kind, profile);
 }
@@ -164,6 +173,7 @@ AuthoringInputs parseAuthoringInputs({
   Set<String> decisions = const <String>{},
   Map<String, String> references = const <String, String>{},
   ConversionDirection? conversion,
+  LifecycleScope? sourceScope,
 }) {
   if (profile == AuthoringProfile.global && kind != AuthoringKind.prompt) {
     throw MambaException(
@@ -284,6 +294,19 @@ AuthoringInputs parseAuthoringInputs({
       exitCode: 4,
     );
   }
+  if (sourceScope == LifecycleScope.all) {
+    throw MambaException(
+      'A source scope selects one scope: project or user.',
+      exitCode: 4,
+    );
+  }
+  if (sourceScope != null && trimmedInstallation == null) {
+    throw MambaException(
+      'A source scope applies to a tracked source selected by --installation; '
+      'an unmanaged source is selected by its path.',
+      exitCode: 4,
+    );
+  }
   final source = AuthoringSourceSelection(
     path: trimmedSource,
     installationId: trimmedInstallation,
@@ -303,6 +326,7 @@ AuthoringInputs parseAuthoringInputs({
     decisions: Set<String>.unmodifiable(decisions),
     references: Map<String, String>.unmodifiable(references),
     conversion: conversion,
+    sourceScope: sourceScope,
   );
 }
 

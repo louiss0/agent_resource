@@ -99,6 +99,12 @@ frontend and migration tickets rather than by this module.
 - A classification change routes through the conversion path. A Skill to
   Prompt edit is published as a conversion, and a Prompt to Skill edit is
   refused by the plan.
+- A tracked source of the other scope migrates into the scope of the
+  operation: the converted target is published in the target scope and the
+  source is retired in the scope that owns it. The coordinated transition
+  writes both ledgers, so the source scope never keeps a live installation
+  of a retired source. An edit of a tracked source of the other scope stays
+  in place and is replaced in the scope that owns the source.
 - A tracked conversion is published through the coordinated transition, so
   the ownership, the identity, the ledger reconciliation and the recovery
   payload follow the conversion contract. A same-location, same-form
@@ -141,6 +147,9 @@ frontend and migration tickets rather than by this module.
   source or a changed placement produces a different plan identity. The
   native destination of the placement follows the selected profile, which the
   plan identity already binds.
+- The authoring inputs carry the scope of a tracked source. The source scope
+  selects the ledger that owns the source, while the scope of the inputs
+  stays the scope of the published output.
 - The Pi Skill to Prompt conversion publishes a standalone native template in
   the Pi prompt root and records that the source must be removed, instead of
   proposing an in-place reclassification.
@@ -154,12 +163,15 @@ frontend and migration tickets rather than by this module.
 The focused suite in
 `test/src/services/authoring_publication_service_test.dart` covers the
 author-only and managed publication of Skill packages, Agent files and Prompt
-files, the clone of the owned package members, the refusal of an occupied
-target, a stale identity, a missing approval, a managed Prompt request, a
-changed source, a native name collision, a source-folder output, the ordinary
-and the tracked conversion, the reclassification of a Skill into a Prompt, the
-refusal of a Prompt to Skill reclassification, a failed publication and an
-interrupted conversion publication.
+files, the clone of the owned package members, the composition of a new
+output from a source, the refusal of an occupied target, a stale identity, a
+missing approval, a managed Prompt request, a managed request outside an
+eligible native location, an unresolved required field, a changed source, a
+native name collision, a source-folder output, the ordinary and the tracked
+conversion, the reclassification of a Skill into a Prompt, the refusal of a
+Prompt to Skill reclassification, the migration of a tracked source of the
+other scope into the target scope, a failed publication and an interrupted
+conversion publication.
 
 The complete Dart suite passes locally on Windows with 909 passing and four
 platform-skipped tests. `dart analyze` reports no findings.
@@ -177,10 +189,6 @@ product decision, not by an unfinished implementation.
   representation, so this publication stays outside the coordinated
   transition. Whether an unmanaged Pi template may be published as a first
   class conversion target is a product question that is not settled here.
-- The authoring plan resolves a tracked source in the selected scope, so an
-  authoring conversion does not reach the cross-scope transition of the
-  coordinator. A cross-scope authoring transition needs an explicit source
-  scope in the plan.
 - The recovery of an interrupted ordinary publication is limited to the
   retained recovery copy. A reviewed recovery interface for the ordinary
   authoring path is not part of this slice.
