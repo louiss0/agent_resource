@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io' show FileSystemException;
 
+import 'package:agent_resource/src/authoring/authoring_authority.dart';
 import 'package:agent_resource/src/authoring/authoring_inputs.dart';
 import 'package:agent_resource/src/authoring/authoring_transaction.dart';
 import 'package:agent_resource/src/services/authoring_plan_service.dart';
@@ -8,6 +9,7 @@ import 'package:agent_resource/src/services/authoring_publication_service.dart';
 import 'package:agent_resource/src/services/authoring_recovery_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:crypto/crypto.dart';
+import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
 import 'package:test/test.dart';
@@ -44,6 +46,20 @@ class _FaultyIO extends LifecycleIO {
       return;
     }
     throw FileSystemException('Injected failure', path);
+  }
+}
+
+/// An authority that configures the user scope only when the host names it.
+///
+/// The authority replaces the platform state root of the host with the
+/// explicit state root alone, so the fixtures that use it describe the same
+/// host on every platform.
+class _NamedUserScopeAuthority implements AuthoringAuthority {
+  @override
+  String? userStateRoot(LifecycleContext context, fslib.FileSystem fileSystem) {
+    final explicit = context.options.stateDir;
+    if (explicit == null) return null;
+    return context.resolvePath(explicit);
   }
 }
 
@@ -126,15 +142,33 @@ void main() {
     return plan;
   }
 
+  /// The options of a host without a user scope authority.
+  ///
+  /// The host names no state root, so its user scope authority is never
+  /// configured.
+  LifecycleOptions withoutUserScope() => LifecycleOptions(
+    processWorkingDirectory: options.processWorkingDirectory,
+    environment: options.environment,
+    scope: options.scope,
+    cwd: options.cwd,
+    projectRoot: options.projectRoot,
+    home: options.home,
+  );
+
   /// Publishes the reviewed plan and stops at the selected failure.
-  Future<void> publish(AuthoringPlan plan, {String? failingPath}) async {
+  Future<void> publish(
+    AuthoringPlan plan, {
+    String? failingPath,
+    LifecycleOptions? withOptions,
+    AuthoringPublicationService? withPublication,
+  }) async {
     io.failingOperation = 'write';
     io.failingPath = failingPath;
     await expectLater(
-      publication.publish(
+      (withPublication ?? publication).publish(
         AuthoringPublicationRequest(
           plan: plan,
-          options: options,
+          options: withOptions ?? options,
           planId: plan.planId,
           approved: true,
         ),
@@ -1716,21 +1750,30 @@ void main() {
     });
 
     test('an unavailable user authority refuses the recovery', () async {
-      final plan = await editPlan();
-      await publish(plan, failingPath: 'authoring-receipts');
-      final transactionId = transactions().single['transactionId']! as String;
-      final unavailable = LifecycleOptions(
-        processWorkingDirectory: options.processWorkingDirectory,
-        environment: options.environment,
-        scope: options.scope,
-        cwd: options.cwd,
-        projectRoot: options.projectRoot,
-        home: options.home,
+      // The host of the publication configures a user scope authority; the
+      // host that reads the evidence configures none.
+      final hostRecovery = AuthoringRecoveryService(
+        fileSystem: fs,
+        state: state,
+        authority: _NamedUserScopeAuthority(),
       );
+      final hostPublication = AuthoringPublicationService(
+        fileSystem: fs,
+        state: state,
+        recovery: hostRecovery,
+        authority: _NamedUserScopeAuthority(),
+      );
+      final plan = await editPlan();
+      await publish(
+        plan,
+        failingPath: 'authoring-receipts',
+        withPublication: hostPublication,
+      );
+      final transactionId = transactions().single['transactionId']! as String;
 
       // The original user scope authority cannot be resolved any more.
       await expectLater(
-        recovery.inspect(unavailable, transactionId),
+        hostRecovery.inspect(withoutUserScope(), transactionId),
         throwsA(
           isA<MambaException>()
               .having((error) => error.exitCode, 'status', 6)
@@ -1964,47 +2007,31 @@ void main() {
     });
 
     test('a newly resolvable authority refuses the recovery', () async {
-      final unconfigured = LifecycleOptions(
-        processWorkingDirectory: options.processWorkingDirectory,
-        environment: options.environment,
-        scope: options.scope,
-        cwd: options.cwd,
-        projectRoot: options.projectRoot,
-        home: options.home,
+      // The recorded context binds no user scope authority: its host names no
+      // state root.
+      final hostRecovery = AuthoringRecoveryService(
+        fileSystem: fs,
+        state: state,
+        authority: _NamedUserScopeAuthority(),
+      );
+      final hostPublication = AuthoringPublicationService(
+        fileSystem: fs,
+        state: state,
+        recovery: hostRecovery,
+        authority: _NamedUserScopeAuthority(),
       );
       final plan = await editPlan();
-      io.failingOperation = 'write';
-      io.failingPath = 'authoring-receipts';
-      await expectLater(
-        publication.publish(
-          AuthoringPublicationRequest(
-            plan: plan,
-            options: unconfigured,
-            planId: plan.planId,
-            approved: true,
-          ),
-        ),
-        throwsA(
-          isA<MambaException>().having((error) => error.exitCode, 'status', 6),
-        ),
+      await publish(
+        plan,
+        failingPath: 'authoring-receipts',
+        withOptions: withoutUserScope(),
+        withPublication: hostPublication,
       );
-      io.failingOperation = null;
-      io.failingPath = null;
       final transactionId = transactions().single['transactionId']! as String;
-      // The host now offers a home and a user ledger that the recorded
-      // context never bound: the authority is never rebaselined.
-      final configured = LifecycleOptions(
-        processWorkingDirectory: options.processWorkingDirectory,
-        environment: options.environment,
-        scope: options.scope,
-        cwd: options.cwd,
-        projectRoot: options.projectRoot,
-        home: options.home,
-        stateDir: options.stateDir,
-      );
-
+      // The host now offers a user ledger that the recorded context never
+      // bound: the authority is never rebaselined.
       await expectLater(
-        recovery.inspect(configured, transactionId),
+        hostRecovery.inspect(options, transactionId),
         throwsA(
           isA<MambaException>()
               .having((error) => error.exitCode, 'status', 6)

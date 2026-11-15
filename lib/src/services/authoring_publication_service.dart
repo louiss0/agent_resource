@@ -7,6 +7,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
+import '../authoring/authoring_authority.dart';
 import '../authoring/authoring_inputs.dart';
 import '../authoring/authoring_profiles.dart';
 import '../authoring/authoring_receipt.dart';
@@ -127,6 +128,7 @@ interface class AuthoringPublicationService {
     SkillLifecycleService? skills,
     ConversionCoordinator? coordinator,
     AuthoringRecoveryService? recovery,
+    AuthoringAuthority? authority,
   }) {
     final io = LifecycleIO(fs: fileSystem);
     final resolved = state ?? LifecycleStateService(io: io);
@@ -137,7 +139,12 @@ interface class AuthoringPublicationService {
       skills ?? SkillLifecycleService(state: resolved, fileSystem: fileSystem),
       coordinator ?? ConversionCoordinator(io: io, state: resolved),
       recovery ??
-          AuthoringRecoveryService(fileSystem: fileSystem, state: resolved),
+          AuthoringRecoveryService(
+            fileSystem: fileSystem,
+            state: resolved,
+            authority: authority ?? const AuthoringAuthority(),
+          ),
+      authority ?? const AuthoringAuthority(),
     );
   }
 
@@ -148,6 +155,7 @@ interface class AuthoringPublicationService {
     this._skills,
     this._coordinator,
     this._recovery,
+    this._authority,
   );
   final fslib.FileSystem _fileSystem;
   final LifecycleStateService _state;
@@ -155,6 +163,7 @@ interface class AuthoringPublicationService {
   final SkillLifecycleService _skills;
   final ConversionCoordinator _coordinator;
   final AuthoringRecoveryService _recovery;
+  final AuthoringAuthority _authority;
   final ConversionEvidenceService _evidence = ConversionEvidenceService();
 
   LifecycleIO get _io => _state.io;
@@ -1750,20 +1759,10 @@ interface class AuthoringPublicationService {
   ///
   /// The user scope is part of the authority of the publication when the
   /// host configures one. An unconfigured scope is never bound and never
-  /// blocks a mutation.
-  String? _userStateRoot(LifecycleContext context) {
-    final explicit = context.options.stateDir;
-    if (explicit != null) return context.resolvePath(explicit);
-    try {
-      final user = LifecycleContext.resolve(
-        context.options.copyWith(scope: LifecycleScope.user),
-        fileSystem: _fileSystem,
-      );
-      return user.stateRoot();
-    } on MambaException {
-      return null;
-    }
-  }
+  /// blocks a mutation. The authority of the host decides which user scope
+  /// it configures.
+  String? _userStateRoot(LifecycleContext context) =>
+      _authority.userStateRoot(context, _fileSystem);
 
   /// A new coordinated transaction identifier.
   String _newTransactionId() => _evidence.newTransactionId();
