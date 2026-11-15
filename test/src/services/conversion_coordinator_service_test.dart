@@ -2764,6 +2764,82 @@ track = { kind = "local" }
         );
       },
     );
+    test(
+      'a pending target participant refuses a mutation of its reserved path',
+      () async {
+        final original = seedRequest();
+        fs
+            .file(original.source.location)
+            .writeAsStringSync(
+              '---\nname: reviewer\ndescription: Review.\n---\nOriginal.\n',
+            );
+        final request = ConversionTransitionRequest(
+          transactionId: original.transactionId,
+          options: options,
+          source: sourceParticipant(
+            location: original.source.location,
+            nativeRoot: original.source.nativeRoot!,
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+          ),
+          target: targetParticipant(
+            location: '/work/project/.claude/agents/taken.md',
+            nativeRoot: '/work/project/.claude/agents',
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+          ),
+          targetFiles: {
+            'taken.md': utf8.encode(
+              '---\nname: taken\ndescription: Work.\n---\nWork.\n',
+            ),
+          },
+        );
+        io.after = (operation, path) {
+          if (operation == 'write' &&
+              path.endsWith('/conversions/${request.transactionId}.json')) {
+            throw StateError('Interrupted after intent');
+          }
+        };
+        await expectLater(coordinator.execute(request), throwsStateError);
+        io.after = null;
+        fs.file('/incoming/other.md')
+          ..createSync(recursive: true)
+          ..writeAsStringSync(
+            '---\nname: other\ndescription: Work.\n---\nWork.\n',
+          );
+        Future<LifecycleResult> install(String output) =>
+            AgentLifecycleService(fileSystem: fs).install(
+              AgentInstallInput(
+                options: options.copyWith(approved: true),
+                source: '/incoming/other.md',
+                harness: AgentHarness.claude,
+                output: output,
+              ),
+            );
+        await expectLater(
+          install('/work/project/.claude/agents/taken.md'),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'status', 6)
+                .having(
+                  (error) => error.message,
+                  'diagnostic',
+                  contains('Pending coordinated transaction'),
+                ),
+          ),
+        );
+        expect(
+          fs.file('/work/project/.claude/agents/taken.md').existsSync(),
+          isFalse,
+        );
+        // An unrelated path and an unrelated name stay mutable.
+        expect(
+          (await install('/work/project/.claude/agents/other.md')).outcome,
+          'installed',
+        );
+      },
+    );
+
     test('a participant reference in another project names the blocking transaction', () async {
       final original = seedRequest();
       final userSource = '/home/user/.claude/agents/reviewer.md';
