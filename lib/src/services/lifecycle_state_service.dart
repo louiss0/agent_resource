@@ -10,6 +10,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
+import '../conversion/conversion_restore_evidence.dart';
 import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
 import '../skill_files.dart';
@@ -24,6 +25,9 @@ const Set<String> _privateStateDirectories = <String>{
   'coordination',
   'conversions',
   'conversion-participants',
+  // The private storage of the completed conversion inverse restore. It is
+  // evidence of an inverse restore, not an installation ledger.
+  conversionRestoreDirectoryName,
   // The private storage of the ordinary authoring authority. It is evidence
   // of an authoring act, not an installation ledger.
   authoringTransactionDirectoryName,
@@ -1031,6 +1035,105 @@ interface class LifecycleStateService {
         target: null,
         retiredSource: retiredSource,
       );
+    }
+  }
+
+  /// Applies one completed-conversion inverse restore to the ledgers.
+  ///
+  /// The restore reinstates the original installation identity and history and
+  /// retires the converted target. A changed target ownership, a missing
+  /// ledger or a changed membership is refused; the restore never overwrites
+  /// a later edit.
+  ///
+  /// The transition is idempotent: a resumed restore accepts the exact state
+  /// that its own earlier write produced and refuses every other occupant. A
+  /// crash after a durable ledger write therefore resumes instead of wedging.
+  /// The ledgers of the participating scopes are written one scope at a time,
+  /// so a cross-scope restore can be observed half applied and stays guarded
+  /// until it is reconciled.
+  Future<void> applyConversionRestore({
+    required LifecycleContext context,
+    required Map<LifecycleScope, InstallationRecord> restored,
+    required Map<LifecycleScope, InstallationRecord> retiredTargets,
+    required Map<LifecycleScope, InstallationRecord> previous,
+    required String restoreId,
+  }) async {
+    final scopes = <LifecycleScope>{...restored.keys, ...retiredTargets.keys};
+    for (final scope in scopes) {
+      final state = context.stateRoot(scope);
+      final records = _readRecords(state);
+      final updated = <InstallationRecord>[...records];
+      // The acceptable forms of every touched identity: the reviewed
+      // previous state, the exact state that this restore produced, or the
+      // intended new state. Every other occupant is refused.
+      final acceptable = <String, Set<String>>{};
+      final intended = <String, InstallationRecord>{};
+      final refusals = <String, String>{};
+      final retired = retiredTargets[scope];
+      if (retired != null) {
+        final removed = retired.copyWith(
+          lifecycle: 'removed',
+          origin: <String, Object?>{
+            ...retired.origin,
+            'conversionRestoredBy': restoreId,
+          },
+        );
+        acceptable
+            .putIfAbsent(retired.installationId, () => <String>{})
+            .add(jsonEncode(retired.toJson()));
+        acceptable[retired.installationId]!.add(jsonEncode(removed.toJson()));
+        intended[retired.installationId] = removed;
+        refusals[retired.installationId] =
+            'The converted target ownership changed; the restore is refused.';
+      }
+      final reinstate = restored[scope];
+      if (reinstate != null) {
+        acceptable
+            .putIfAbsent(reinstate.installationId, () => <String>{})
+            .add(jsonEncode(reinstate.toJson()));
+        final before = previous[scope];
+        if (before != null &&
+            before.installationId == reinstate.installationId) {
+          acceptable[reinstate.installationId]!.add(
+            jsonEncode(before.toJson()),
+          );
+        }
+        intended[reinstate.installationId] = reinstate;
+        refusals[reinstate.installationId] =
+            'The original ownership changed; the restore is refused.';
+      }
+      for (final entry in intended.entries) {
+        final index = updated.indexWhere(
+          (record) => record.installationId == entry.key,
+        );
+        if (index < 0 ||
+            !acceptable[entry.key]!.contains(
+              jsonEncode(updated[index].toJson()),
+            )) {
+          throw MambaException(refusals[entry.key]!, exitCode: 6);
+        }
+        updated[index] = entry.value;
+      }
+      final locations = <String>{};
+      for (final record in updated) {
+        if (record.lifecycle != 'live') continue;
+        if (!locations.add(_pathKey(record.location))) {
+          throw MambaException(
+            'The restore would overlap a live installation.',
+            exitCode: 4,
+          );
+        }
+      }
+      final path = io.fs.path.join(state, 'installations.json');
+      final existing =
+          io.type(path, followLinks: false) == FileSystemEntityType.notFound
+          ? const <String, Object?>{}
+          : _object(_readManagementJson(path), 'installation ledger');
+      _writeManagementJson(path, <String, Object?>{
+        ...existing,
+        'schemaVersion': managementSchemaVersion,
+        'installations': [for (final record in updated) record.toJson()],
+      });
     }
   }
 
@@ -4558,9 +4661,33 @@ interface class LifecycleStateService {
     }
   }
 
-  void _blockPendingAcrossScopes(LifecycleContext context, String location) {
+  void _blockPendingAcrossScopes(
+    LifecycleContext context,
+    String location, {
+    Set<String> validatedPaths = const {},
+  }) {
     for (final state in _coordinationStates(context)) {
-      _blockPending(state, location);
+      _blockPending(state, location, validatedPaths: validatedPaths);
+    }
+  }
+
+  /// Refuses a mutation that a pending transaction or authoring transaction
+  /// reserves at one of the locations.
+  ///
+  /// The check is the location bound guard of the ordinary mutation paths. It
+  /// complements [checkPendingConversions], which binds the identities and
+  /// the participant authority.
+  void checkPendingMutations(
+    LifecycleContext context, {
+    Iterable<String> locations = const [],
+    Set<String> validatedPaths = const {},
+  }) {
+    for (final location in locations) {
+      _blockPendingAcrossScopes(
+        context,
+        location,
+        validatedPaths: validatedPaths,
+      );
     }
   }
 
@@ -4587,6 +4714,13 @@ interface class LifecycleStateService {
         locations: locations,
         excluded: excludedAuthoringEvidencePaths,
         uniqueness: uniqueness,
+      );
+      _blockPendingInverseRestores(
+        _coordinationStates(context),
+        locations: locations,
+        installationIds: installationIds,
+        packKeys: packKeys,
+        validatedPaths: validatedRecoveryPaths,
       );
       final touchedIds = <String>{...installationIds};
       bool overlaps(String path) =>
@@ -4769,6 +4903,93 @@ interface class LifecycleStateService {
     }
   }
 
+  /// Refuses a mutation that a pending inverse restore reserves.
+  ///
+  /// The inverse restore of a completed conversion reserves its original
+  /// source, its converted target and the identities of both participants
+  /// until the inverse transaction is terminal. An old mutator of any scope
+  /// therefore cannot change a reserved path or identity while the inverse
+  /// restore is pending. A corrupt or unreadable inverse authority is not
+  /// evidence of a free state: it refuses the mutation.
+  void _blockPendingInverseRestores(
+    Iterable<String> states, {
+    Iterable<String> locations = const [],
+    Set<String> installationIds = const {},
+    Set<String> packKeys = const {},
+    Set<String> validatedPaths = const {},
+    String? location,
+  }) {
+    for (final state in states) {
+      final root = io.fs.path.join(state, conversionRestoreDirectoryName);
+      _requireUnlinkedCoordinationPath(root);
+      final type = io.type(root, followLinks: false);
+      if (type == FileSystemEntityType.notFound) continue;
+      if (type != FileSystemEntityType.directory) {
+        throw const FormatException(
+          'Inverse restore authority is not a directory.',
+        );
+      }
+      for (final entry in io.list(root)) {
+        if (io.type(entry.path, followLinks: false) !=
+            FileSystemEntityType.file) {
+          continue;
+        }
+        if (io.fs.path.extension(entry.path) != '.json') continue;
+        if (validatedPaths.any(
+          (validated) => io.fs.path.equals(entry.path, validated),
+        )) {
+          continue;
+        }
+        final evidence = _readInverseRestoreEvidence(entry.path);
+        if (evidence.phase == ConversionRestorePhase.completed ||
+            evidence.phase == ConversionRestorePhase.rolledBack) {
+          continue;
+        }
+        final candidates = <String>[?location, ...locations];
+        final reserved = candidates.any(
+          (candidate) =>
+              _pathsOverlap(candidate, evidence.sourceLocation) ||
+              _pathsOverlap(candidate, evidence.targetLocation),
+        );
+        final reservedIdentity =
+            installationIds.contains(evidence.sourceInstallationId) ||
+            installationIds.contains(evidence.targetInstallationId);
+        final reservedPack = evidence.packKeys.any(packKeys.contains);
+        if (reserved || reservedIdentity || reservedPack) {
+          throw MambaException(
+            'A pending inverse restore ${evidence.restoreId} blocks this '
+            'mutation.',
+            exitCode: 6,
+          );
+        }
+      }
+    }
+  }
+
+  /// Reads one inverse restore evidence document.
+  ConversionRestoreEvidence _readInverseRestoreEvidence(String path) {
+    _requireUnlinkedCoordinationPath(path);
+    if (io.type(path, followLinks: false) != FileSystemEntityType.file) {
+      throw const FormatException('Missing inverse restore evidence.');
+    }
+    final bytes = io.read(path, maxConversionRestoreEvidenceBytes);
+    _chargeManagementBytes(bytes.length, Zone.current);
+    final ConversionRestoreEvidence evidence;
+    try {
+      evidence = ConversionRestoreEvidence.decode(utf8.decode(bytes));
+    } on FormatException catch (error) {
+      throw FormatException(
+        'Invalid inverse restore evidence: ${error.message}',
+      );
+    }
+    if (io.fs.path.basename(path) != '${evidence.restoreId}.json') {
+      throw const FormatException(
+        'Inverse restore evidence identity mismatch.',
+      );
+    }
+    return evidence;
+  }
+
   ConversionEvidence _readConversionParticipant(String path) {
     _requireUnlinkedCoordinationPath(path);
     if (io.type(path, followLinks: false) != FileSystemEntityType.file) {
@@ -4820,7 +5041,16 @@ interface class LifecycleStateService {
     return states.toList();
   }
 
-  void _blockPending(String state, String location) {
+  void _blockPending(
+    String state,
+    String location, {
+    Set<String> validatedPaths = const {},
+  }) {
+    _blockPendingInverseRestores(
+      <String>[state],
+      location: location,
+      validatedPaths: validatedPaths,
+    );
     final root = io.fs.path.join(state, 'transactions');
     if (io.type(root, followLinks: false) != FileSystemEntityType.notFound) {
       for (final file in io.list(root)) {

@@ -1265,7 +1265,13 @@ void main() {
             expect(fs.directory('/state').existsSync(), isFalse);
           });
         });
-        for (final action in ['list', 'inspect', 'recover', 'cleanup']) {
+        for (final action in [
+          'list',
+          'inspect',
+          'recover',
+          'restore',
+          'cleanup',
+        ]) {
           group(action, () {
             test('registered help is read-only and rejects undeclared direction overrides', () async {
               seed();
