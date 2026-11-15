@@ -19,6 +19,8 @@ It adds:
   document of one ordinary publication.
 - `lib/src/authoring/authoring_receipt.dart`: the protected authoring receipt
   of one unmanaged output.
+- `lib/src/authoring/authoring_authority.dart`: the authority that decides
+  which user scope the host configures.
 - `lib/src/services/authoring_recovery_service.dart`: the inventory, the
   inspection, the reviewed recovery and the reviewed cleanup.
 - `lib/authoring.dart` and `lib/authoring_action.dart`: the registered
@@ -41,6 +43,12 @@ publish.
   root of the user scope when the host configures one. Copied evidence never
   authorizes a recovery in another scope, another project, another home or
   another user ledger.
+- The `AuthoringAuthority` of the host decides which user scope it
+  configures. The default authority derives it from the platform state root
+  of the host and an explicit state root. A host that configures no user
+  scope binds no user authority, and the publication and the recovery read
+  the same authority: the recorded user scope and the reviewed user scope
+  are never resolved by different rules.
 - A scope that the host does not configure is never bound and never blocks a
   mutation: the authority of the recorded context decides which scope is
   read. An authority that the recorded context requires but that the host
@@ -189,6 +197,25 @@ published an ordinary output, interrupted it, inspected it, rolled it back
 and confirmed the restored source, the retained receipt and the empty
 private staging on the real local filesystem. `dart analyze` reports no
 findings.
+
+The CI run `43737884983` failed two cases of this suite on Ubuntu and on
+macOS: `an unavailable user authority refuses the recovery` and `a newly
+resolvable authority refuses the recovery`. Both fixtures derived the user
+scope authority of the host from the platform state root of the host, so
+they described the *unavailable* authority only on a host without a
+platform state root and described *another user state root* everywhere
+else. The refusal itself was correct on every platform; the expected
+diagnostic was not portable.
+
+The two cases now read the user scope authority from an injected
+`AuthoringAuthority` that configures the user scope only when the host
+names it. The fixtures are the same on every platform and the refusal
+stays the refusal of the recorded authority: an authority that the host
+cannot resolve and an authority that the host offers later are both
+refused. The default authority of the services is unchanged, so the
+production behaviour of the host is the platform behaviour of the host.
+The re-run of the two cases on Ubuntu and on macOS is pending a CI run;
+no POSIX run was exercised locally.
 
 The checks are static ownership and recovery evidence. No Claude, Codex or Pi
 runtime was exercised, no native harness activation was proven and the

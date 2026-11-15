@@ -6,6 +6,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../authoring/authoring_authority.dart';
 import '../authoring/authoring_receipt.dart';
 import '../authoring/authoring_transaction.dart';
 import '../skill_files.dart';
@@ -39,16 +40,22 @@ interface class AuthoringRecoveryService {
   factory AuthoringRecoveryService({
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     LifecycleStateService? state,
+    AuthoringAuthority? authority,
   }) {
     final io = LifecycleIO(fs: fileSystem);
     final resolved = state ?? LifecycleStateService(io: io);
-    return AuthoringRecoveryService._(fileSystem, resolved);
+    return AuthoringRecoveryService._(
+      fileSystem,
+      resolved,
+      authority ?? const AuthoringAuthority(),
+    );
   }
 
-  AuthoringRecoveryService._(this._fileSystem, this._state);
+  AuthoringRecoveryService._(this._fileSystem, this._state, this._authority);
 
   final fslib.FileSystem _fileSystem;
   final LifecycleStateService _state;
+  final AuthoringAuthority _authority;
 
   /// The ownership authority of the recovery.
   LifecycleStateService get state => _state;
@@ -1578,19 +1585,10 @@ interface class AuthoringRecoveryService {
   ///
   /// A scope that the host does not configure is not part of the authority:
   /// it never binds a transaction and it never blocks a recovery.
-  String? _userStateRoot(LifecycleContext context) {
-    final explicit = context.options.stateDir;
-    if (explicit != null) return context.resolvePath(explicit);
-    try {
-      final user = LifecycleContext.resolve(
-        context.options.copyWith(scope: LifecycleScope.user),
-        fileSystem: _fileSystem,
-      );
-      return user.stateRoot();
-    } on MambaException {
-      return null;
-    }
-  }
+  ///
+  /// The authority of the host decides which user scope it configures.
+  String? _userStateRoot(LifecycleContext context) =>
+      _authority.userStateRoot(context, _fileSystem);
 
   /// The authority context of one recorded transaction.
   AuthoringTransaction? _authorityDocument(
