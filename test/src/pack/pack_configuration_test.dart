@@ -413,6 +413,39 @@ path = "../sources/pack"
       },
     );
 
+    test('the explicit home wins over the environment of the process', () {
+      expect(
+        PackConfiguration.userConfigPath(
+          environment: {'APPDATA': r'C:\Users\me\AppData\Roaming'},
+          operatingSystem: 'windows',
+          home: r'C:\Users\sandbox',
+        ),
+        p.windows.normalize(
+          r'C:\Users\sandbox\AppData\Roaming\AgentResource\agent-resources.toml',
+        ),
+      );
+      expect(
+        PackConfiguration.userConfigPath(
+          environment: {'HOME': '/Users/me'},
+          operatingSystem: 'macos',
+          home: '/Users/sandbox',
+        ),
+        p.posix.normalize(
+          '/Users/sandbox/Library/Application Support/AgentResource/agent-resources.toml',
+        ),
+      );
+      expect(
+        PackConfiguration.userConfigPath(
+          environment: {'HOME': '/home/me', 'XDG_CONFIG_HOME': '/xdg/config'},
+          operatingSystem: 'linux',
+          home: '/home/sandbox',
+        ),
+        p.posix.normalize(
+          '/home/sandbox/.config/agent-resource/agent-resources.toml',
+        ),
+      );
+    });
+
     test('collects independent semantic errors with actionable key paths', () {
       final error = _parseError(r'''
 schema_version = 2

@@ -70,6 +70,11 @@ discovered Skill packages.
   pack. A manual-only resource that carries bundled resources or forbidden
   content is an invalid Prompt candidate: it is refused and never installed as
   an ordinary Skill.
+- Unknown invocation controls never default to an ordinary Skill. A resource
+  whose native invocation control is malformed in the view of a requested
+  target is refused for that target: malformed metadata is not proof that the
+  documented defaults apply. The refusal stays per target: an ordinary Skill
+  view of another harness is not blocked by the unknown controls of this one.
 - An untyped operation retains the Skill and Agent defaults. It never opts
   into the Prompt selection and never installs a standalone template.
 - The prompt kind applies to `pack install` and to `pack validate`. The
@@ -104,10 +109,18 @@ discovered Skill packages.
 | The prompt kind is used without an explicit target | 2 |
 | An explicitly selected name is not a Prompt candidate | 2 |
 | An ordinary Skill selection would install an invalid Prompt | 2 |
+| An ordinary Skill selection would install unknown invocation controls | 2 |
 | A pending coordinated transaction reserves the pack | 6 |
 
 Every refusal happens before the installation effect: the source, the state,
 the ledger and the pack membership are unchanged.
+
+## Configuration discovery
+
+- The explicit home directory of a pack request discovers the user
+  configuration. The environment of the process never overrides an explicit
+  home: the environment only discovers the user configuration when the request
+  declares no home.
 
 ## Evidence and limits
 

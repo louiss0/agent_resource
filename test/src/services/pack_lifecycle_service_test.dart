@@ -172,6 +172,29 @@ track = { kind = "local" }
       },
     );
 
+    test('the explicit home discovers the user configuration without the environment', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+
+      // The environment declares no home: the explicit home of the
+      // request discovers the user configuration.
+      final result = await service.execute(
+        PackLifecycleRequest(
+          operation: PackOperation.validate,
+          resourceType: PackResourceType.skill,
+          pack: 'local/demo',
+          processWorkingDirectory: sandbox.path,
+          environment: const <String, String>{},
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+          target: 'codex',
+        ),
+      );
+
+      expect(result.outcome, 'valid');
+    });
+
     test('installs a native Skill and Agent with source evidence', () async {
       final service = PackLifecycleService(fileSystem: fs);
       final skills = await service.execute(
