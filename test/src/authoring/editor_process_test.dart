@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_resource/src/authoring/editor_interaction.dart';
@@ -243,23 +242,25 @@ Future<void> main(List<String> arguments) async {
     ),
   );
   watch.stop();
-  stdout.writeln(outcome.started);
-  stdout.writeln(watch.elapsedMilliseconds);
+  // The report is a file: the launched program inherits the streams of the
+  // parent, so the stream of the parent stays open while it runs on.
+  File(arguments[3]).writeAsStringSync(
+    '\${outcome.started}\\n\${watch.elapsedMilliseconds}\\n',
+  );
 }
 ''');
       final pidFile = File(p.join(directory.path, 'helper.pid'));
+      final reportFile = File(p.join(directory.path, 'report.txt'));
       final process = await Process.start(Platform.resolvedExecutable, <String>[
         '--packages=${p.join(Directory.current.path, '.dart_tool', 'package_config.json')}',
         parent.path,
         Platform.resolvedExecutable,
         helper.path,
         pidFile.path,
+        reportFile.path,
       ], workingDirectory: Directory.current.path);
       addTearDown(() => process.kill(ProcessSignal.sigkill));
 
-      // The parent reports the duration of its own launch, so that the
-      // measurement covers the launch and not the start-up of the parent.
-      final output = await process.stdout.transform(utf8.decoder).join();
       final code = await process.exitCode.timeout(
         const Duration(seconds: 20),
         onTimeout: () => -1,
@@ -272,7 +273,9 @@ Future<void> main(List<String> arguments) async {
         reason:
             'The parent did not exit; it waited for the program it launched.',
       );
-      final lines = output.trim().split('\n');
+      // The parent reports the duration of its own launch, so that the
+      // measurement covers the launch and not the start-up of the parent.
+      final lines = reportFile.readAsStringSync().trim().split('\n');
       expect(lines.first, 'true');
       final elapsed = int.tryParse(lines.last) ?? -1;
       expect(
