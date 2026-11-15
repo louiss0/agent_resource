@@ -108,7 +108,7 @@ Agents:
 | Field | Claude | Codex | Pi |
 | --- | --- | --- | --- |
 | `name` | required | required | required |
-| `description` | required | optional | required |
+| `description` | required | required | required |
 | `model` | optional | optional | required |
 | `tools` | optional | — | required |
 | `skills` | optional | optional | — |

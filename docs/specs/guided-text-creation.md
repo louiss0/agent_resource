@@ -22,6 +22,7 @@ option: a JSON request is not a body, not a proposal, and not an input.
 | `--profile` | The native profile of the created resource (`claude`, `codex`, `pi`, and `global` for Prompts only). It is never inferred. |
 | `--scope` | The scope of the created output. Defaults to `project`. |
 | `--name`, `--description`, `--model`, `--tools`, `--skills`, `--argument-hint`, `--license`, `--compatibility` | The documented native field subset. An omitted flag declares nothing. |
+| `--allowed-tools`, `--disallowed-tools`, `--metadata` | The native Skill declarations: two complete tool lists and one metadata table of `name=value` entries. |
 | `--body-file`, `--body-stdin`, `--body-text` | The instruction body. Exactly one selector is allowed. |
 | `--output` | An explicit placement of the created output. |
 | `--manage` | The explicit request for a managed installation record. |
@@ -30,18 +31,22 @@ option: a JSON request is not a body, not a proposal, and not an input.
 
 A supplied list replaces the whole native list field; an omitted list keeps
 the source value. A field that the selected profile does not support is
-refused with the supported field names of that profile.
+refused with the supported field names of that profile. The mapping is
+native-profile aware: `--skills` names a list of skill names where the native
+form is a list, and the Codex Agent profile, whose native `skills` form is a
+table, refuses that selection with the reason instead of flattening it.
 
 ## The interaction boundary
 
 - The guided flow is the default on a usable terminal. It collects the
   missing required native fields, opens the configured editor for the
   instruction body when no body was supplied, validates the proposal, shows
-  the target, the ownership and the declared changes, and asks for the
+  the target, the ownership and the declared native values, and asks for the
   publication confirmation in the same flow.
 - `--unattended` and `--format json` never prompt and never wait. Every
   required value must be supplied explicitly. A machine-readable output
-  contains the report only.
+  contains the report only. A run that misses a required native field
+  reports the missing field instead of asking for it.
 - `--interactive` without a usable terminal is refused; the operator is told
   to supply every value explicitly instead.
 - `--dry-run` plans and nothing else: it never launches an editor, never
@@ -51,6 +56,19 @@ refused with the supported field names of that profile.
   arguments, never a shell expression. Closing the editor is never
   publication consent, and unchanged text is never an automatic
   cancellation.
+- The publication consent is asked only when the run is interactive and the
+  publication was not already approved with `--yes`. The consent question
+  carries the reviewed target, the ownership and the native declaration
+  values. The instruction body is never part of that question: only its
+  length and its digest are reported.
+
+## The standard input
+
+`--body-stdin` selects the standard input as the instruction body. The
+create routes buffer the piped standard input of the invocation, and the
+buffer is used only when `--body-stdin` selects it. An interactive terminal
+is never read, an invocation without a piped standard input is refused with
+the reason instead of waiting, and the body is read exactly once.
 
 ## Ownership
 
@@ -64,10 +82,20 @@ checked for the native name uniqueness and the occupied-target rules.
 
 An editor-led run prepares a protected application-owned draft. The draft is
 retained on cancellation, on a failed launch and on a refused proposal, and
-its location is reported. A successful publication removes the draft it
-created and never removes the original body file of the operator. A cleanup
-failure is reported next to the published output: the report states
-`published: true` and names the cleanup failure instead of hiding it.
+its location is reported. Every outcome that retains a draft names it: the
+planned, the rejected and the published reports carry `draftId` and
+`draftPath`, and every refusal after the draft was prepared names the draft
+in its message. The operator can therefore resume the draft with its
+identity.
+
+The fields that the guided flow collects are part of the retained intent, so
+a resume rebuilds the proposal with the collected values instead of losing
+them.
+
+A successful publication removes the draft it created and never removes the
+original body file of the operator. A cleanup failure is reported next to
+the published output: the report states `published: true` and names the
+cleanup failure instead of hiding it.
 
 ## The Agent bound-role route
 
@@ -78,6 +106,10 @@ requires `--ack-clients-stopped` and its own approval. The definition source
 is a stable path: the reviewed plan identity covers its digest, so the
 review and the apply must name the same file with the same content.
 
+The bound-role route accepts no standalone authoring selection. Every
+standalone flag is refused before any effect, with the reason that the
+standalone Agent is published first and named with `--definition-source`.
+
 A standalone creation never changes a declaring config, never adopts a
 source and never registers a role.
 
@@ -87,6 +119,25 @@ source and never registers a role.
 `--request` alias with actionable migration guidance that names the
 replacement selections. There is no compatibility escape and no hidden
 JSON route.
+
+### Scope judgment for the lifecycle routes
+
+The lifecycle routes `agent adopt`, `agent replace` and `agent remove` keep
+their bound-role operation envelope. That envelope is a parent and lifecycle
+management surface, not the authoring operation document: its operation must
+match the selected command, so a `create` operation is refused there with
+"The bound-role request operation must match the selected command." There is
+therefore no JSON route that creates a resource.
+
+The plain-text authoring decision retires the JSON authoring and conversion
+operation document, and this slice delivers that for the creation route. The
+adoption, replacement and removal of an installed resource and its parent
+registration are a different capability with their own validators, their own
+plan identities and their own stopped-client acknowledgement. Migrating them
+to named selections is a separate change of that surface; deleting them here
+would remove a working capability that this ticket does not replace. The
+stopped-client guidance names both spellings truthfully: `--ack-clients-stopped`
+on the create route and `--clients-stopped` on the lifecycle routes.
 
 ## Limits
 

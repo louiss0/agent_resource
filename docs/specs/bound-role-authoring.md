@@ -27,7 +27,7 @@ adds no new parent authority, no implicit adoption and no implicit management.
 | `--ownership` | `definition` publishes the definition only; `both` publishes the definition and registers the role. |
 | `--definition-source` | The reviewed native Codex definition that is published. It may be the candidate the shared guided authoring flow reviewed. |
 | `--definition-output` | The explicit placement of the published definition. |
-| `--ack-clients-stopped` | The independent acknowledgement that native clients are stopped for a parent write. |
+| `--ack-clients-stopped` | The independent acknowledgement that native clients are stopped for a parent write. The lifecycle routes spell the same acknowledgement `--clients-stopped`. |
 
 No operation-document option is part of this vocabulary. The retired JSON
 request route is not reinterpreted; `boundRoleRequestMigrationGuidance` names

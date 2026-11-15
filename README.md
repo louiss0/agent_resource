@@ -637,18 +637,23 @@ wait, so an unattended call must supply every value explicitly. `--editor`
 selects an editor executable with its arguments; it is never a shell
 expression.
 
-The reviewed proposal names its target, its ownership and its changes before
-the publication is confirmed in the same flow. `--apply --yes` publishes
-without a question, `--dry-run` plans without an editor, without a draft and
-without a write, and `--plan-id` binds the publication to one reviewed plan
-identity. A new output is author-only: no installation record is created
-unless `--manage` selects a supported managed form, and a Prompt has no
-managed lifecycle at all.
+`--body-stdin` reads the piped standard input of the invocation. An
+interactive terminal is never read and an invocation without a piped
+standard input is refused instead of waiting.
+
+The reviewed proposal names its target, its ownership and its declared native
+values before the publication is confirmed in the same flow. `--apply --yes`
+publishes without a question, `--dry-run` plans without an editor, without a
+draft and without a write, and `--plan-id` binds the publication to one
+reviewed plan identity. A new output is author-only: no installation record
+is created unless `--manage` selects a supported managed form, and a Prompt
+has no managed lifecycle at all.
 
 A successful publication removes the retained application-owned draft and
-never removes the original body file. A cleanup failure is reported next to
-the published output instead of hiding it. The contract is in
-`docs/specs/guided-text-creation.md`.
+never removes the original body file. Every outcome that retains a draft
+names it, so a cancelled or refused run can be resumed. A cleanup failure is
+reported next to the published output instead of hiding it. The contract is
+in `docs/specs/guided-text-creation.md`.
 
 ### Create, clone, edit, compose, and convert native Agents
 
