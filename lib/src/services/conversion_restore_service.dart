@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:mamba/mamba.dart';
 
+import '../authoring/authoring_authority.dart';
 import '../authoring/authoring_receipt.dart';
 import '../authoring/authoring_transaction.dart';
 import '../conversion/conversion_evidence.dart';
@@ -38,12 +39,13 @@ final class ConversionRestorePlan {
 final class ConversionRestoreService {
   ConversionRestoreService({
     required LifecycleIO io,
-    required LifecycleStateService state,
+    required this._state,
     ConversionEvidenceService? evidence,
+    this._authority = const AuthoringAuthority(),
   }) : _io = io,
-       _state = state,
        _evidence = evidence ?? ConversionEvidenceService(fileSystem: io.fs);
 
+  final AuthoringAuthority _authority;
   final LifecycleIO _io;
   final LifecycleStateService _state;
   final ConversionEvidenceService _evidence;
@@ -375,9 +377,17 @@ final class ConversionRestoreService {
         exitCode: 4,
       );
     }
-    final recordedRoot = authority['stateRoot'];
-    if (recordedRoot is String &&
-        !_io.fs.path.equals(recordedRoot, context.stateRoot())) {
+    String? home;
+    try {
+      home = context.requireHome();
+    } on MambaException {
+      home = context.home;
+    }
+    if (authority['stateRoot'] != context.stateRoot() ||
+        authority['projectRoot'] != context.projectRoot ||
+        authority['home'] != home ||
+        authority['userStateRoot'] !=
+            _authority.userStateRoot(context, _io.fs)) {
       throw MambaException(
         'The recorded authority of the ordinary conversion changed.',
         exitCode: 6,
@@ -755,9 +765,9 @@ final class ConversionRestoreService {
         'retiredTarget': subject.targetLocation,
         'receiptId': subject.transaction.receiptId,
       };
-    } on MambaException catch (error) {
+    } on MambaException {
       _markRecoveryRequired(context, evidence);
-      throw error;
+      rethrow;
     } catch (error) {
       _markRecoveryRequired(context, evidence);
       throw MambaException(
@@ -1958,9 +1968,9 @@ final class ConversionRestoreService {
         'restoredSource': evidence.sourceLocation,
         'retiredTarget': evidence.targetLocation,
       };
-    } on MambaException catch (error) {
+    } on MambaException {
       _markRecoveryRequired(context, evidence);
-      throw error;
+      rethrow;
     } catch (error) {
       _markRecoveryRequired(context, evidence);
       throw MambaException(

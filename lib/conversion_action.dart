@@ -12,56 +12,52 @@ enum ConversionAction { list, inspect, recover, restore, cleanup }
 
 /// Recovery never accepts a caller-selected rollback/complete override.
 final class ConversionActionCommand extends Command {
-  ConversionActionCommand(
-    this._coordinator,
-    this._action, {
-    ConversionRestoreService? restore,
-  }) : _restore = restore,
-       super(
-         mandatoryPositionals: [if (_action != ConversionAction.list) _id],
-         options: [
-           _scope,
-           _format,
-           _cwd,
-           _projectRoot,
-           _home,
-           _stateDir,
-           if (_action == ConversionAction.recover ||
-               _action == ConversionAction.restore ||
-               _action == ConversionAction.cleanup)
-             _plan,
-         ],
-         flags: [
-           if (_action == ConversionAction.recover ||
-               _action == ConversionAction.restore ||
-               _action == ConversionAction.cleanup) ...[
-             _apply,
-             _yes,
-             _dryRun,
-           ],
-           if (_action == ConversionAction.restore) _cleanup,
-         ],
-         conflicts: {
-           if (_action == ConversionAction.recover ||
-               _action == ConversionAction.restore ||
-               _action == ConversionAction.cleanup)
-             'apply': const ['dry-run'],
-         },
-         longDescription:
-             'Offline transaction evidence only; no harness execution. '
-             'Inspection and default recovery/restore/cleanup planning write '
-             'nothing. Apply requires --apply --yes --plan-id from a fresh '
-             'review. Recovery direction is fixed by the protected commit '
-             'decision. Restore is the inverse of a completed conversion: it '
-             'reinstates the original source from the retained independent '
-             'payload, retires the converted target and preserves the outgoing '
-             'target as evidence. A cleaned payload forfeits the restore. '
-             '--cleanup removes the retained private copies of a terminal '
-             'inverse restore and keeps its evidence document as an audit '
-             'tombstone. '
-             'Cleanup removes only verified terminal private payloads, retaining '
-             'the audit receipt; it forfeits payload-based restore and is not secure erasure.',
-       );
+  ConversionActionCommand(this._coordinator, this._action, {this._restore})
+    : super(
+        mandatoryPositionals: [if (_action != ConversionAction.list) _id],
+        options: [
+          _scope,
+          _format,
+          _cwd,
+          _projectRoot,
+          _home,
+          _stateDir,
+          if (_action == ConversionAction.recover ||
+              _action == ConversionAction.restore ||
+              _action == ConversionAction.cleanup)
+            _plan,
+        ],
+        flags: [
+          if (_action == ConversionAction.recover ||
+              _action == ConversionAction.restore ||
+              _action == ConversionAction.cleanup) ...[
+            _apply,
+            _yes,
+            _dryRun,
+          ],
+          if (_action == ConversionAction.restore) _cleanup,
+        ],
+        conflicts: {
+          if (_action == ConversionAction.recover ||
+              _action == ConversionAction.restore ||
+              _action == ConversionAction.cleanup)
+            'apply': const ['dry-run'],
+        },
+        longDescription:
+            'Offline transaction evidence only; no harness execution. '
+            'Inspection and default recovery/restore/cleanup planning write '
+            'nothing. Apply requires --apply --yes --plan-id from a fresh '
+            'review. Recovery direction is fixed by the protected commit '
+            'decision. Restore is the inverse of a completed conversion: it '
+            'reinstates the original source from the retained independent '
+            'payload, retires the converted target and preserves the outgoing '
+            'target as evidence. A cleaned payload forfeits the restore. '
+            '--cleanup removes the retained private copies of a terminal '
+            'inverse restore and keeps its evidence document as an audit '
+            'tombstone. '
+            'Cleanup removes only verified terminal private payloads, retaining '
+            'the audit receipt; it forfeits payload-based restore and is not secure erasure.',
+      );
 
   final ConversionCoordinator _coordinator;
   final ConversionRestoreService? _restore;

@@ -375,7 +375,8 @@ void main() {
               .file('/work/project/.agent-resource/installations.json')
               .readAsStringSync(),
         ) as Map<String, Object?>;
-        final records = (ledger['installations'] as List).cast<Map>();
+        final records = (ledger['installations'] as List)
+            .cast<Map<String, Object?>>();
         final restored = records.singleWhere(
           (record) => record['installationId'] == _sourceInstallationId,
         );
@@ -423,7 +424,8 @@ void main() {
               .file('/work/project/.agent-resource/installations.json')
               .readAsStringSync(),
         ) as Map<String, Object?>;
-        final records = (ledger['installations'] as List).cast<Map>();
+        final records = (ledger['installations'] as List)
+            .cast<Map<String, Object?>>();
         expect(records.length, 1);
         expect(records.single['installationId'], _sourceInstallationId);
         expect(records.single['location'], source);
@@ -525,7 +527,7 @@ void main() {
       );
       final document = jsonDecode(ledger.readAsStringSync()) as Map;
       final records = document['installations'] as List;
-      for (final record in records.cast<Map>()) {
+      for (final record in records.cast<Map<String, Object?>>()) {
         if (record['lifecycle'] != 'live') continue;
         record['nativeDestination'] = 'native';
       }
@@ -700,7 +702,8 @@ void main() {
               .file('/work/project/.agent-resource/installations.json')
               .readAsStringSync(),
         ) as Map<String, Object?>;
-        final records = (ledger['installations'] as List).cast<Map>();
+        final records = (ledger['installations'] as List)
+            .cast<Map<String, Object?>>();
         final restored = records.singleWhere(
           (record) => record['installationId'] == _sourceInstallationId,
         );
@@ -740,7 +743,8 @@ void main() {
         '/work/project/.agent-resource/installations.json',
       );
       final document = jsonDecode(ledger.readAsStringSync()) as Map;
-      for (final record in (document['installations'] as List).cast<Map>()) {
+      for (final record
+          in (document['installations'] as List).cast<Map<String, Object?>>()) {
         if (record['lifecycle'] != 'live') continue;
         final origin = record['origin'] as Map;
         expect(origin['conversionMembership'], isNotNull);
@@ -807,7 +811,8 @@ void main() {
             .file('/work/project/.agent-resource/installations.json')
             .readAsStringSync(),
       ) as Map<String, Object?>;
-      final projectRecords = (project['installations'] as List).cast<Map>();
+      final projectRecords = (project['installations'] as List)
+          .cast<Map<String, Object?>>();
       final restored = projectRecords.singleWhere(
         (record) => record['installationId'] == _sourceInstallationId,
       );
@@ -817,7 +822,8 @@ void main() {
       final user = jsonDecode(
         fs.file('/work/state/installations.json').readAsStringSync(),
       ) as Map<String, Object?>;
-      final userRecords = (user['installations'] as List).cast<Map>();
+      final userRecords = (user['installations'] as List)
+          .cast<Map<String, Object?>>();
       final retired = userRecords.singleWhere(
         (record) => record['installationId'] != _sourceInstallationId,
       );
@@ -986,7 +992,8 @@ void main() {
               .file('/work/project/.agent-resource/installations.json')
               .readAsStringSync(),
         ) as Map<String, Object?>;
-        final projectRecords = (project['installations'] as List).cast<Map>();
+        final projectRecords = (project['installations'] as List)
+            .cast<Map<String, Object?>>();
         final reinstated = projectRecords.singleWhere(
           (record) => record['installationId'] == _sourceInstallationId,
         );
@@ -994,7 +1001,8 @@ void main() {
         final user = jsonDecode(
           fs.file('/work/state/installations.json').readAsStringSync(),
         ) as Map<String, Object?>;
-        final userRecords = (user['installations'] as List).cast<Map>();
+        final userRecords = (user['installations'] as List)
+            .cast<Map<String, Object?>>();
         final retired = userRecords.singleWhere(
           (record) => record['installationId'] != _sourceInstallationId,
         );
@@ -1660,6 +1668,28 @@ void main() {
           .replaceAll('.json', '');
       return (transactionId: transactionId, planId: reviewed.planId);
     }
+
+    test('refuses ordinary restore from another recorded home', () async {
+      final published = await publishOrdinary();
+      fs.directory('/home/other').createSync(recursive: true);
+      await expectLater(
+        restore.restoreReviewed(
+          LifecycleOptions(
+            processWorkingDirectory: '/work/project',
+            environment: const <String, String>{},
+            scope: LifecycleScope.project,
+            cwd: '/work/project',
+            projectRoot: '/work/project',
+            home: '/home/other',
+            stateDir: '/work/state',
+            approved: true,
+            dryRun: true,
+          ),
+          published.transactionId,
+        ),
+        throwsA(isA<MambaException>()),
+      );
+    });
 
     test(
       'refuses an ordinary resume that would overwrite a new occupant',
@@ -2776,7 +2806,9 @@ void main() {
           '/work/project/.agent-resource/installations.json',
         );
         final document = jsonDecode(ledger.readAsStringSync()) as Map;
-        for (final record in (document['installations'] as List).cast<Map>()) {
+        for (final record
+            in (document['installations'] as List)
+                .cast<Map<String, Object?>>()) {
           if (record['lifecycle'] != 'removed') continue;
           (record['origin'] as Map)['packKey'] = 'pack-two';
         }
@@ -2824,7 +2856,8 @@ void main() {
         '/work/project/.agent-resource/installations.json',
       );
       final document = jsonDecode(ledger.readAsStringSync()) as Map;
-      for (final record in (document['installations'] as List).cast<Map>()) {
+      for (final record
+          in (document['installations'] as List).cast<Map<String, Object?>>()) {
         if (record['lifecycle'] != 'live') continue;
         (record['origin'] as Map).remove('conversionMembership');
       }
