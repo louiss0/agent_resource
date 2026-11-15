@@ -60,6 +60,8 @@ final class ConversionRestoreEvidence {
     this.sourceRecord,
     this.targetRecord,
     this.retiredSourceRecord,
+    this.peerScope,
+    this.peerStateRoot,
     this.packKeys = const <String>[],
     this.resourceNames = const <String>[],
     this.packAuthority = const <String, Object?>{},
@@ -92,6 +94,8 @@ final class ConversionRestoreEvidence {
       'sourceRecord',
       'targetRecord',
       'retiredSourceRecord',
+      'peerScope',
+      'peerStateRoot',
       'packKeys',
       'resourceNames',
       'packAuthority',
@@ -167,6 +171,12 @@ final class ConversionRestoreEvidence {
       retiredSourceRecord: map['retiredSourceRecord'] == null
           ? null
           : _object(map['retiredSourceRecord'], 'retired source record'),
+      peerScope: map['peerScope'] == null
+          ? null
+          : _enumValue(_string(map, 'peerScope'), const ['project', 'user']),
+      peerStateRoot: map['peerStateRoot'] == null
+          ? null
+          : _absolutePath(_string(map, 'peerStateRoot')),
       packKeys: _stringList(map['packKeys']),
       resourceNames: _stringList(map['resourceNames']),
       packAuthority: map['packAuthority'] == null
@@ -243,6 +253,19 @@ final class ConversionRestoreEvidence {
   /// refuse every other occupant.
   final Map<String, Object?>? retiredSourceRecord;
 
+  /// The scope that does not coordinate the inverse restore.
+  ///
+  /// The peer scope holds the participant marker that reserves the source,
+  /// the target and the identities of the pending inverse restore in the
+  /// realm that does not coordinate it.
+  final String? peerScope;
+
+  /// The recorded state root of the peer scope.
+  ///
+  /// The root is the recorded authority of the host. An unconfigured realm
+  /// has no recorded root and is never invented.
+  final String? peerStateRoot;
+
   /// The upstream pack keys that the restore reserves.
   ///
   /// A pending inverse restore reserves its pack keys, so an old pack
@@ -298,6 +321,8 @@ final class ConversionRestoreEvidence {
       'sourceRecord': sourceRecord,
       'targetRecord': targetRecord,
       'retiredSourceRecord': retiredSourceRecord,
+      'peerScope': peerScope,
+      'peerStateRoot': peerStateRoot,
       'packKeys': packKeys,
       'resourceNames': resourceNames,
       'packAuthority': packAuthority,
@@ -335,6 +360,8 @@ final class ConversionRestoreEvidence {
     sourceRecord: sourceRecord,
     targetRecord: targetRecord,
     retiredSourceRecord: retiredSourceRecord,
+    peerScope: peerScope,
+    peerStateRoot: peerStateRoot,
     packKeys: packKeys,
     resourceNames: resourceNames,
     packAuthority: packAuthority,
@@ -352,6 +379,7 @@ final class ConversionRestoreEvidence {
     'sourceLocation': sourceLocation,
     'targetLocation': targetLocation,
     'artifactKind': artifactKind,
+    'subjectKind': subjectKind,
     'sourceScope': sourceScope,
     'targetScope': targetScope,
     'inPlace': inPlace,
@@ -365,6 +393,8 @@ final class ConversionRestoreEvidence {
     'sourceRecord': sourceRecord,
     'targetRecord': targetRecord,
     'retiredSourceRecord': retiredSourceRecord,
+    'peerScope': peerScope,
+    'peerStateRoot': peerStateRoot,
     'packKeys': packKeys,
     'resourceNames': resourceNames,
     'packAuthority': packAuthority,

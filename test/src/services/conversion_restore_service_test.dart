@@ -28,6 +28,16 @@ class _FaultyIO extends LifecycleIO {
   String? failingPath;
   bool Function(String path)? failBeforeWrite;
   bool Function(String path)? failAfterRename;
+
+  /// The evidence document of the coordinating scope.
+  String? coordinatorEvidencePath;
+
+  /// The participant marker of the other scope.
+  String? peerMarkerPath;
+
+  /// The number of coordinator writes after which the peer marker fails.
+  int? failPeerMarkerAfter;
+  int coordinatorWrites = 0;
   void Function(String operation, String path)? after;
 
   @override
@@ -35,7 +45,13 @@ class _FaultyIO extends LifecycleIO {
     if (failBeforeWrite != null && failBeforeWrite!(path)) {
       throw StateError('Simulated process interruption');
     }
+    if (failPeerMarkerAfter != null &&
+        path == peerMarkerPath &&
+        coordinatorWrites >= failPeerMarkerAfter!) {
+      throw StateError('Simulated crash before the peer marker');
+    }
     super.write(path, bytes);
+    if (path == coordinatorEvidencePath) coordinatorWrites++;
     after?.call('write', path);
   }
 
@@ -70,7 +86,7 @@ void main() {
   late ConversionRestoreService restore;
   late LifecycleOptions options;
 
-  setUp(() {
+  void reset() {
     fs = MemoryFileSystem();
     fs.directory('/work/project').createSync(recursive: true);
     fs.directory('/home/user').createSync(recursive: true);
@@ -95,7 +111,9 @@ void main() {
       home: '/home/user',
       stateDir: '/work/state',
     );
-  });
+  }
+
+  setUp(reset);
 
   void seedLedger({
     required String location,
@@ -1593,6 +1611,456 @@ void main() {
         (result as MambaFailureResult).message,
         contains('exact fresh --plan-id'),
       );
+    });
+  });
+
+  group('durable boundaries and recorded authority', () {
+    /// Publishes an ordinary conversion through the real publisher.
+    Future<({String transactionId, String planId})> publishOrdinary({
+      String source = '/work/source/demo',
+      LifecycleScope scope = LifecycleScope.project,
+      LifecycleOptions? selected,
+    }) async {
+      final plans = AuthoringPlanService(fileSystem: fs, state: state);
+      final publication = AuthoringPublicationService(
+        fileSystem: fs,
+        state: state,
+      );
+      fs.directory(source).createSync(recursive: true);
+      fs
+          .file('$source/SKILL.md')
+          .writeAsStringSync(
+            '---\nname: demo\ndescription: Demonstrates the authoring.\n'
+            '---\nOriginal instructions.',
+          );
+      final inputs = parseAuthoringInputs(
+        operation: AuthoringOperation.convert,
+        kind: AuthoringKind.prompt,
+        profile: AuthoringProfile.pi,
+        scope: scope,
+        sourcePath: source,
+        conversion: ConversionDirection.skillToPrompt,
+      );
+      final reviewed = await plans.plan(inputs, selected ?? options);
+      expect(reviewed.ready, isTrue, reason: '${reviewed.diagnostics}');
+      await publication.publish(
+        AuthoringPublicationRequest(
+          plan: reviewed,
+          options: selected ?? options,
+          planId: reviewed.planId,
+          approved: true,
+        ),
+      );
+      final transactionId = fs
+          .directory('/work/project/.agent-resource/authoring-transactions')
+          .listSync()
+          .whereType<fslib.File>()
+          .single
+          .basename
+          .replaceAll('.json', '');
+      return (transactionId: transactionId, planId: reviewed.planId);
+    }
+
+    test(
+      'refuses an ordinary resume that would overwrite a new occupant',
+      () async {
+        final published = await publishOrdinary();
+        final review = await restore.restoreReviewed(
+          approved(dryRun: true),
+          published.transactionId,
+        );
+        io.failBeforeWrite = (path) => path.endsWith('commit.json');
+        await expectLater(
+          restore.restoreReviewed(
+            approved(),
+            published.transactionId,
+            planId: review.data['planId']! as String,
+          ),
+          throwsA(isA<MambaException>()),
+        );
+        io.failBeforeWrite = null;
+        // A new occupant appears at the original source location.
+        fs.file('/work/source/demo/foreign.md')
+          ..createSync(recursive: true)
+          ..writeAsStringSync('foreign');
+        await expectLater(
+          restore.restoreReviewed(
+            approved(dryRun: true),
+            published.transactionId,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('new occupant'),
+            ),
+          ),
+        );
+        expect(
+          fs.file('/work/source/demo/foreign.md').readAsStringSync(),
+          'foreign',
+        );
+      },
+    );
+
+    test(
+      'refuses an ordinary apply that would overwrite a new occupant',
+      () async {
+        final published = await publishOrdinary();
+        final review = await restore.restoreReviewed(
+          approved(dryRun: true),
+          published.transactionId,
+        );
+        fs.file('/work/source/demo/foreign.md')
+          ..createSync(recursive: true)
+          ..writeAsStringSync('foreign');
+        await expectLater(
+          restore.restoreReviewed(
+            approved(),
+            published.transactionId,
+            planId: review.data['planId']! as String,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('new occupant'),
+            ),
+          ),
+        );
+        expect(
+          fs.file('/work/source/demo/foreign.md').readAsStringSync(),
+          'foreign',
+        );
+      },
+    );
+
+    test(
+      'refuses an ordinary conversion whose authoring receipt is missing',
+      () async {
+        final published = await publishOrdinary();
+        final receipt = fs
+            .directory('/work/project/.agent-resource/authoring-receipts')
+            .listSync()
+            .whereType<fslib.File>()
+            .single;
+        receipt.deleteSync();
+        await expectLater(
+          restore.restoreReviewed(
+            approved(dryRun: true),
+            published.transactionId,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('authoring receipt'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'refuses an ordinary conversion whose receipt was substituted',
+      () async {
+        final published = await publishOrdinary();
+        final receipt = fs
+            .directory('/work/project/.agent-resource/authoring-receipts')
+            .listSync()
+            .whereType<fslib.File>()
+            .single;
+        final document =
+            jsonDecode(receipt.readAsStringSync()) as Map<String, Object?>;
+        document['planId'] = 'authoring-plan-${'0' * 64}';
+        receipt.writeAsStringSync(jsonEncode(document));
+        await expectLater(
+          restore.restoreReviewed(
+            approved(dryRun: true),
+            published.transactionId,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('authoring receipt'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'reserves the recorded peer realm of an ordinary conversion',
+      () async {
+        const source = '/home/user/.claude/skills/demo';
+        final published = await publishOrdinary(source: source);
+        final review = await restore.restoreReviewed(
+          approved(dryRun: true),
+          published.transactionId,
+        );
+        final restoreId = review.data['restoreId']! as String;
+        // The inverse restore is interrupted before its decision, so the
+        // reservation of the peer realm is live.
+        io.failBeforeWrite = (path) => path.endsWith('commit.json');
+        await expectLater(
+          restore.restoreReviewed(
+            approved(),
+            published.transactionId,
+            planId: review.data['planId']! as String,
+          ),
+          throwsA(isA<MambaException>()),
+        );
+        io.failBeforeWrite = null;
+        // The participant marker reserves the recorded peer realm.
+        expect(
+          fs
+              .file('/work/state/conversion-restores/$restoreId.json')
+              .existsSync(),
+          isTrue,
+        );
+        // A mutator of the peer realm is refused while the inverse restore is
+        // pending.
+        final userContext = LifecycleContext.resolve(
+          options.copyWith(scope: LifecycleScope.user),
+          fileSystem: fs,
+        );
+        expect(
+          () => state.checkPendingConversions(
+            userContext,
+            locations: const <String>[source],
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('pending inverse restore'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'restores a project conversion without a configured user realm',
+      () async {
+        final local = LifecycleOptions(
+          processWorkingDirectory: '/work/project',
+          environment: const <String, String>{},
+          scope: LifecycleScope.project,
+          cwd: '/work/project',
+          projectRoot: '/work/project',
+          home: '/home/user',
+        );
+        final published = await publishOrdinary(selected: local);
+        final review = await restore.restoreReviewed(
+          local.copyWith(approved: true, dryRun: true),
+          published.transactionId,
+        );
+        expect(review.outcome, 'planned');
+        final result = await restore.restoreReviewed(
+          local.copyWith(approved: true),
+          published.transactionId,
+          planId: review.data['planId']! as String,
+        );
+        expect(result.outcome, 'restored');
+        expect(
+          fs.file('/work/source/demo/SKILL.md').readAsStringSync(),
+          contains('Original instructions.'),
+        );
+        // The managed conversion is restored in the same host without a
+        // configured user realm.
+        await completeConversion();
+        final managed = await restore.restoreReviewed(
+          local.copyWith(approved: true, dryRun: true),
+          _transactionId,
+        );
+        expect(managed.outcome, 'planned');
+        final managedResult = await restore.restoreReviewed(
+          local.copyWith(approved: true),
+          _transactionId,
+          planId: managed.data['planId']! as String,
+        );
+        expect(managedResult.outcome, 'restored');
+        expect(
+          fs
+              .file('/work/project/.claude/agents/reviewer.md')
+              .readAsStringSync(),
+          'original',
+        );
+      },
+    );
+
+    test(
+      'resumes after a crash between the coordinator and the peer marker',
+      () async {
+        const source = '/work/project/.claude/agents/reviewer.md';
+        const target = '/home/user/.pi/prompts/reviewer.md';
+        // The crash lands in every durable phase of the inverse restore.
+        for (var phase = 1; phase <= 5; phase++) {
+          reset();
+          fs.file(source)
+            ..createSync(recursive: true)
+            ..writeAsStringSync('original');
+          seedLedger(
+            location: source,
+            nativeRoot: '/work/project/.claude/agents',
+          );
+          final userOptions = options.copyWith(scope: LifecycleScope.user);
+          await coordinator.execute(
+            ConversionTransitionRequest(
+              transactionId: _transactionId,
+              options: userOptions,
+              source: sourceParticipant(
+                location: source,
+                nativeRoot: '/work/project/.claude/agents',
+                artifactKind: 'agent-file',
+                nativeForm: 'claude-agent-file',
+              ),
+              target: targetParticipant(
+                location: target,
+                nativeRoot: '/home/user/.pi/prompts',
+                artifactKind: 'prompt-template',
+                nativeForm: 'pi-prompt-template',
+                scope: 'user',
+              ),
+              targetFiles: {'reviewer.md': utf8.encode('converted')},
+            ),
+          );
+          final review = await restore.restoreReviewed(
+            userOptions.copyWith(approved: true, dryRun: true),
+            _transactionId,
+          );
+          final restoreId = review.data['restoreId']! as String;
+          io.coordinatorEvidencePath =
+              '/work/state/conversion-restores/$restoreId.json';
+          io.peerMarkerPath =
+              '/work/project/.agent-resource/conversion-restores/'
+              '$restoreId.json';
+          io.coordinatorWrites = 0;
+          io.failPeerMarkerAfter = phase;
+          await expectLater(
+            restore.restoreReviewed(
+              userOptions.copyWith(approved: true),
+              _transactionId,
+              planId: review.data['planId']! as String,
+            ),
+            throwsA(isA<MambaException>()),
+            reason: 'phase $phase',
+          );
+          io.failPeerMarkerAfter = null;
+          // The stale peer marker never wedges the restore.
+          final resumed = await restore.restoreReviewed(
+            userOptions.copyWith(approved: true, dryRun: true),
+            _transactionId,
+          );
+          expect(resumed.data['resume'], isTrue, reason: 'phase $phase');
+          final result = await restore.restoreReviewed(
+            userOptions.copyWith(approved: true),
+            _transactionId,
+            planId: resumed.data['planId']! as String,
+          );
+          expect(result.outcome, 'restored', reason: 'phase $phase');
+          // The reservation is re-established in the other realm.
+          expect(
+            fs
+                .file(
+                  '/work/project/.agent-resource/conversion-restores/'
+                  '$restoreId.json',
+                )
+                .existsSync(),
+            isTrue,
+            reason: 'phase $phase',
+          );
+          if (result.data['rolledBack'] == true) {
+            // The inverse restore rolled back before its decision. A fresh
+            // attempt restores the source.
+            final fresh = await restore.restoreReviewed(
+              userOptions.copyWith(approved: true, dryRun: true),
+              _transactionId,
+            );
+            expect(fresh.data['resume'], isFalse, reason: 'phase $phase');
+            await restore.restoreReviewed(
+              userOptions.copyWith(approved: true),
+              _transactionId,
+              planId: fresh.data['planId']! as String,
+            );
+          }
+          expect(
+            fs.file(source).readAsStringSync(),
+            'original',
+            reason: 'phase $phase',
+          );
+          expect(fs.file(target).existsSync(), isFalse, reason: 'phase $phase');
+        }
+      },
+    );
+
+    test('does not reinstate a declined pack membership', () async {
+      const source = '/work/project/.claude/skills/demo';
+      fs.directory(source).createSync(recursive: true);
+      fs.file('$source/SKILL.md').writeAsStringSync('original');
+      seedLedger(
+        location: source,
+        nativeRoot: '/work/project/.claude/skills',
+        kind: ArtifactKind.skillCopy,
+        nativeForm: 'claude-skill-directory',
+        origin: const <String, Object?>{
+          'status': 'evidenced',
+          'packKey': 'pack-one',
+          'resourceType': 'skill',
+          'resourceName': 'demo',
+          'track': <String, Object?>{'kind': 'exact'},
+        },
+      );
+      seedPackGroups(
+        selections: const <Map<String, Object?>>[
+          <String, Object?>{
+            'packKey': 'pack-one',
+            'resourceType': 'skill',
+            'resourceName': 'demo',
+            'scope': 'project',
+            'selected': false,
+            'excluded': true,
+            'membership': 'group',
+            'reason': 'declined',
+          },
+        ],
+      );
+      await coordinator.execute(
+        ConversionTransitionRequest(
+          transactionId: _transactionId,
+          options: options,
+          source: sourceParticipant(
+            location: source,
+            nativeRoot: '/work/project/.claude/skills',
+            artifactKind: 'skill-copy',
+            nativeForm: 'claude-skill-directory',
+          ),
+          target: targetParticipant(
+            location: '/work/project/.pi/prompts/demo',
+            nativeRoot: '/work/project/.pi/prompts',
+            artifactKind: 'skill-copy',
+            nativeForm: 'claude-skill-directory',
+          ),
+          targetFiles: {'SKILL.md': utf8.encode('converted')},
+        ),
+      );
+      final review = await restore.restoreReviewed(
+        approved(dryRun: true),
+        _transactionId,
+      );
+      await restore.restoreReviewed(
+        approved(),
+        _transactionId,
+        planId: review.data['planId']! as String,
+      );
+      final reinstated = ledgerRecords().singleWhere(
+        (record) => record['installationId'] == _sourceInstallationId,
+      );
+      final origin = reinstated['origin'] as Map<String, Object?>;
+      expect(origin.containsKey('track'), isFalse);
+      expect(origin['packKey'], 'pack-one');
     });
   });
 

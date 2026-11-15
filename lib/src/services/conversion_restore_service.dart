@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:mamba/mamba.dart';
 
+import '../authoring/authoring_receipt.dart';
 import '../authoring/authoring_transaction.dart';
 import '../conversion/conversion_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
@@ -143,12 +144,114 @@ final class ConversionRestoreService {
     ConversionRestoreEvidence evidence,
   ) => <String>{
     _io.fs.path.join(_restoreRoot(context), '${evidence.restoreId}.json'),
-    if (_peerScope(context, evidence) case final peer?)
-      _io.fs.path.join(
-        _restoreRootOf(context.stateRoot(peer)),
-        '${evidence.restoreId}.json',
-      ),
+    if (_peerRoot(context, evidence) case final root?)
+      _io.fs.path.join(_restoreRootOf(root), '${evidence.restoreId}.json'),
   };
+
+  /// Verifies the authoring receipt of an ordinary conversion.
+  ///
+  /// The receipt is the commit point of the ordinary publication. The inverse
+  /// restore binds the exact receipt of the reviewed plan and target and
+  /// refuses a missing, substituted or foreign receipt.
+  void _verifyAuthoringReceipt(
+    LifecycleContext context,
+    AuthoringTransaction transaction,
+  ) {
+    final receiptId = transaction.receiptId;
+    if (receiptId == null || receiptId.isEmpty) {
+      throw MambaException(
+        'The ordinary conversion recorded no authoring receipt; the commit '
+        'point of the publication is missing.',
+        exitCode: 6,
+      );
+    }
+    if (receiptId !=
+        authoringReceiptId(transaction.planId, transaction.target)) {
+      throw MambaException(
+        'The authoring receipt does not bind the reviewed plan and target.',
+        exitCode: 6,
+      );
+    }
+    final path = _io.fs.path.join(
+      context.stateRoot(),
+      authoringReceiptDirectoryName,
+      '$receiptId.json',
+    );
+    _requireUnlinked(path);
+    final type = _io.type(path, followLinks: false);
+    if (type == FileSystemEntityType.notFound) {
+      throw MambaException(
+        'The authoring receipt of the ordinary conversion is missing; the '
+        'commit point of the publication is missing.',
+        exitCode: 6,
+      );
+    }
+    if (type != FileSystemEntityType.file) {
+      throw MambaException(
+        'The authoring receipt of the ordinary conversion is not a file.',
+        exitCode: 6,
+      );
+    }
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(_io.read(path, 1024 * 1024)));
+    } on FormatException catch (error) {
+      throw MambaException(
+        'The authoring receipt of the ordinary conversion is corrupt: '
+        '${error.message}',
+        exitCode: 6,
+      );
+    }
+    if (decoded is! Map<String, Object?>) {
+      throw MambaException(
+        'The authoring receipt of the ordinary conversion is not an object.',
+        exitCode: 6,
+      );
+    }
+    if (decoded['schemaVersion'] != 1 ||
+        decoded['receiptId'] != receiptId ||
+        decoded['planId'] != transaction.planId ||
+        decoded['operation'] != transaction.operation ||
+        decoded['target'] != transaction.target ||
+        decoded['ownership'] != 'authorOnly' ||
+        decoded['derivedFrom'] != transaction.source ||
+        decoded['sourceInstallationId'] != null) {
+      throw MambaException(
+        'The authoring receipt does not bind the ordinary conversion.',
+        exitCode: 6,
+      );
+    }
+  }
+
+  /// The recorded peer authority of an ordinary conversion.
+  ///
+  /// The peer realm is the recorded host authority that does not coordinate
+  /// the publication. An unconfigured realm has no recorded root and is never
+  /// invented.
+  ({String? scope, String? root}) _recordedPeer(
+    AuthoringTransaction transaction,
+  ) {
+    final authority = transaction.authority;
+    final scope = authority['scope'];
+    if (scope == 'project') {
+      final userRoot = authority['userStateRoot'];
+      if (userRoot is String && userRoot.isNotEmpty) {
+        return (scope: 'user', root: userRoot);
+      }
+      return (scope: null, root: null);
+    }
+    if (scope == 'user') {
+      final projectRoot = authority['projectRoot'];
+      if (projectRoot is String && projectRoot.isNotEmpty) {
+        return (
+          scope: 'project',
+          root: _io.fs.path.join(projectRoot, '.agent-resource'),
+        );
+      }
+      return (scope: null, root: null);
+    }
+    return (scope: null, root: null);
+  }
 
   /// Restores an ordinary completed conversion of the ordinary publisher.
   ///
@@ -272,6 +375,15 @@ final class ConversionRestoreService {
         exitCode: 4,
       );
     }
+    final recordedRoot = authority['stateRoot'];
+    if (recordedRoot is String &&
+        !_io.fs.path.equals(recordedRoot, context.stateRoot())) {
+      throw MambaException(
+        'The recorded authority of the ordinary conversion changed.',
+        exitCode: 6,
+      );
+    }
+    _verifyAuthoringReceipt(context, transaction);
     final recordedPayload = transaction.evidence['payloadManifest'];
     final recordedTarget = transaction.evidence['publishedManifest'];
     if (recordedPayload is! List || recordedTarget is! List) {
@@ -335,6 +447,9 @@ final class ConversionRestoreService {
     _AuthoringSubject subject,
     ConversionRestoreEvidence evidence,
   ) async {
+    // The original source location must still be free or reviewed. A new
+    // occupant is refused; the resume never merges over it.
+    _requireFreeOriginalSource(subject);
     final staging = _stagingPath(context, evidence.restoreId);
     final restored = _restoredPath(evidence, staging);
     if (_io.type(restored, followLinks: false) !=
@@ -411,19 +526,12 @@ final class ConversionRestoreService {
     }
     // The original source location must be free unless the conversion
     // replaced the source in place.
-    if (!subject.inPlace &&
-        _io.type(subject.sourceLocation, followLinks: false) !=
-            FileSystemEntityType.notFound) {
-      throw MambaException(
-        'A new occupant appeared at the original source location; the restore '
-        'is refused.',
-        exitCode: 6,
-      );
-    }
+    _requireFreeOriginalSource(subject);
     final attempt = _restoreAttempt(
       restoreRoot,
       subject.transaction.transactionId,
     );
+    final peer = _recordedPeer(subject.transaction);
     final evidence = ConversionRestoreEvidence(
       restoreId: _restoreId(subject.transaction.transactionId, attempt),
       transactionId: subject.transaction.transactionId,
@@ -435,6 +543,8 @@ final class ConversionRestoreService {
       subjectKind: 'authoring',
       sourceScope: context.scope.name,
       targetScope: context.scope.name,
+      peerScope: peer.scope,
+      peerStateRoot: peer.root,
       inPlace: subject.inPlace,
       payloadPath: subject.payloadPath,
       payloadDigest: _authoringDigest(subject.payloadEntries),
@@ -461,6 +571,31 @@ final class ConversionRestoreService {
     };
     data['planId'] = _reviewDigest(data);
     return ConversionRestorePlan(evidence: current, data: data);
+  }
+
+  /// Requires that the original source location is free or reviewed.
+  ///
+  /// The location may hold nothing, the reviewed original content of an
+  /// already restored source, or the published target of an in place
+  /// conversion. Every other occupant is refused: the restore never merges
+  /// over a foreign member and never overwrites a new occupant.
+  void _requireFreeOriginalSource(_AuthoringSubject subject) {
+    final location = subject.sourceLocation;
+    if (_io.type(location, followLinks: false) ==
+        FileSystemEntityType.notFound) {
+      return;
+    }
+    final occupied = _authoringEntries(location);
+    if (_sameAuthoringContent(subject.payloadEntries, occupied)) return;
+    if (subject.inPlace &&
+        _sameAuthoringContent(subject.targetEntries, occupied)) {
+      return;
+    }
+    throw MambaException(
+      'A new occupant appeared at the original source location; the restore '
+      'is refused.',
+      exitCode: 6,
+    );
   }
 
   /// The exact current observations of an ordinary conversion.
@@ -634,15 +769,35 @@ final class ConversionRestoreService {
 
   /// Restores the original source of an ordinary conversion.
   void _restoreAuthoringSource(_AuthoringSubject subject, String restored) {
-    if (subject.payloadIsFile) {
-      _io.createDirectory(_io.fs.path.dirname(subject.sourceLocation));
-      _io.copyFile(
-        _io.fs.path.join(restored, 'source'),
-        subject.sourceLocation,
+    final location = subject.sourceLocation;
+    final type = _io.type(location, followLinks: false);
+    if (type != FileSystemEntityType.notFound) {
+      final occupied = _authoringEntries(location);
+      final matchesOriginal = _sameAuthoringContent(
+        subject.payloadEntries,
+        occupied,
       );
+      final matchesPublished =
+          subject.inPlace &&
+          _sameAuthoringContent(subject.targetEntries, occupied);
+      if (matchesOriginal) return;
+      if (!matchesPublished) {
+        throw MambaException(
+          'A new occupant appeared at the original source location; the '
+          'restore is refused.',
+          exitCode: 6,
+        );
+      }
+      // The published target occupies the original location of an in place
+      // conversion. It is replaced by the reviewed original.
+      _io.delete(location);
+    }
+    if (subject.payloadIsFile) {
+      _io.createDirectory(_io.fs.path.dirname(location));
+      _io.copyFile(_io.fs.path.join(restored, 'source'), location);
       return;
     }
-    _copyTree(restored, subject.sourceLocation);
+    _copyTree(restored, location);
   }
 
   /// Rolls an interrupted ordinary inverse restore back.
@@ -723,10 +878,9 @@ final class ConversionRestoreService {
   ) {
     final authority = <String, Object?>{};
     for (final scope in const [LifecycleScope.project, LifecycleScope.user]) {
-      final path = _io.fs.path.join(
-        context.stateRoot(scope),
-        'installations.json',
-      );
+      final root = _scopeStateRoot(context, scope);
+      if (root == null) continue;
+      final path = _io.fs.path.join(root, 'installations.json');
       final type = _io.type(path, followLinks: false);
       if (type == FileSystemEntityType.notFound) continue;
       if (type != FileSystemEntityType.file) {
@@ -797,24 +951,39 @@ final class ConversionRestoreService {
 
   /// Whether the upstream pack membership of the source is still active.
   ///
-  /// The membership is active only while the pack authority still records an
-  /// approval or a selection of the restored resource. A retired membership is
-  /// never resurrected by the restore.
+  /// The membership is active only while the pack authority records an
+  /// active approval or selection of the restored resource: a declined, an
+  /// excluded or a removed membership is retired and is never resurrected by
+  /// the restore. The pack catalog bounds the membership: a pack that the
+  /// authority records as removed has no live membership.
   bool _packMembershipActive(
     Map<String, Object?> authority,
     String? resourceName,
   ) {
     if (resourceName == null) return false;
+    var active = false;
     for (final entry in authority.entries) {
       final group = entry.key.split('/').last;
-      if (group != 'approvals' && group != 'selections') continue;
       final records = entry.value;
       if (records is! List) continue;
+      if (group == 'packs') {
+        for (final record in records.cast<Map<String, Object?>>()) {
+          if (record['removed'] == true) return false;
+        }
+        continue;
+      }
+      if (group != 'approvals' && group != 'selections') continue;
       for (final record in records.cast<Map<String, Object?>>()) {
-        if (record['resourceName'] == resourceName) return true;
+        if (record['resourceName'] != resourceName) continue;
+        if (record['selected'] == false ||
+            record['excluded'] == true ||
+            record['membership'] == 'removed') {
+          return false;
+        }
+        active = true;
       }
     }
-    return false;
+    return active;
   }
 
   /// The upstream pack binding of the restored participants.
@@ -1090,7 +1259,7 @@ final class ConversionRestoreService {
         data: <String, Object?>{
           ...data,
           'cleanupStatus': 'cleaned',
-          'peerMarkerRemoved': _peerScope(context, evidence) != null,
+          'peerMarkerRemoved': _peerRoot(context, evidence) != null,
         },
       );
     }
@@ -1113,10 +1282,10 @@ final class ConversionRestoreService {
     LifecycleContext context,
     ConversionRestoreEvidence evidence,
   ) {
-    final peer = _peerScope(context, evidence);
-    if (peer == null) return;
+    final root = _peerRoot(context, evidence);
+    if (root == null) return;
     final path = _io.fs.path.join(
-      _restoreRootOf(context.stateRoot(peer)),
+      _restoreRootOf(root),
       '${evidence.restoreId}.json',
     );
     final type = _io.type(path, followLinks: false);
@@ -1295,6 +1464,11 @@ final class ConversionRestoreService {
     final ownership = await _reviewOwnership(context, original);
     final pack = _packBinding(context, ownership);
     final attempt = _restoreAttempt(restoreRoot, transactionId);
+    final peer = _coordinatedPeer(
+      context,
+      source.ownershipBefore?.scope ?? context.scope.name,
+      target.ownershipAfter?.scope ?? context.scope.name,
+    );
     final evidence = ConversionRestoreEvidence(
       restoreId: _restoreId(transactionId, attempt),
       transactionId: transactionId,
@@ -1305,6 +1479,8 @@ final class ConversionRestoreService {
       artifactKind: target.artifactKind,
       sourceScope: source.ownershipBefore?.scope ?? context.scope.name,
       targetScope: target.ownershipAfter?.scope ?? context.scope.name,
+      peerScope: peer.scope?.name,
+      peerStateRoot: peer.root,
       inPlace: inPlace,
       payloadPath: payload.path,
       payloadDigest: payload.digest,
@@ -1600,7 +1776,8 @@ final class ConversionRestoreService {
       evidence.payloadPath,
       _evidence.evidencePath(context.stateRoot(), original.transactionId),
       for (final scope in const [LifecycleScope.project, LifecycleScope.user])
-        _io.fs.path.join(context.stateRoot(scope), 'installations.json'),
+        if (_scopeStateRoot(context, scope) case final root?)
+          _io.fs.path.join(root, 'installations.json'),
     };
     for (final path in paths) {
       _requireUnlinked(path);
@@ -1618,13 +1795,23 @@ final class ConversionRestoreService {
   ) async {
     final records = <LifecycleScope, List<InstallationRecord>>{};
     for (final scope in const [LifecycleScope.project, LifecycleScope.user]) {
+      final root = _scopeStateRoot(context, scope);
+      if (root == null) continue;
       final scopeContext = scope == context.scope
           ? context
           : LifecycleContext.resolve(
               context.options.copyWith(scope: scope),
               fileSystem: _io.fs,
             );
-      records[scope] = _state.records(scopeContext);
+      try {
+        records[scope] = _state.records(scopeContext);
+      } on MambaException {
+        // A realm that the host did not configure has no authority to
+        // observe. The restore never treats the missing realm as a free
+        // state of the participants it does observe.
+        if (scope == context.scope) rethrow;
+        records[scope] = const <InstallationRecord>[];
+      }
     }
     return records;
   }
@@ -1972,29 +2159,73 @@ final class ConversionRestoreService {
     LifecycleContext context,
     ConversionRestoreEvidence evidence,
   ) {
-    final peer = _peerScope(context, evidence);
-    if (peer == null) return;
+    final root = _peerRoot(context, evidence);
+    if (root == null) return;
     _state.writeProtectedDocument(
-      _io.fs.path.join(
-        _restoreRootOf(context.stateRoot(peer)),
-        '${evidence.restoreId}.json',
-      ),
+      _io.fs.path.join(_restoreRootOf(root), '${evidence.restoreId}.json'),
       utf8.encode(evidence.copyWith(participantMarker: true).encode()),
     );
   }
 
   /// The scope that does not coordinate the inverse restore.
+  ///
+  /// The peer scope is the recorded authority of the realm that does not
+  /// coordinate the restore. An unconfigured realm has no peer scope.
   LifecycleScope? _peerScope(
     LifecycleContext context,
     ConversionRestoreEvidence evidence,
   ) {
-    for (final scope in <LifecycleScope>{
-      LifecycleScope.values.byName(evidence.sourceScope),
-      LifecycleScope.values.byName(evidence.targetScope),
-    }) {
-      if (scope != context.scope) return scope;
+    final scope = evidence.peerScope;
+    if (scope == null) return null;
+    return LifecycleScope.values.byName(scope);
+  }
+
+  /// The recorded state root of the peer scope.
+  String? _peerRoot(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+  ) {
+    final recorded = evidence.peerStateRoot;
+    if (recorded != null) return recorded;
+    final peer = _peerScope(context, evidence);
+    if (peer == null) return null;
+    return _scopeStateRoot(context, peer);
+  }
+
+  /// The state root of one scope, when the host configured it.
+  ///
+  /// The selected scope always resolves. Another scope resolves only when the
+  /// host configured its realm: an unconfigured realm is not a free state and
+  /// it is not an invented authority either. The restore observes and
+  /// reserves only the realms that exist.
+  String? _scopeStateRoot(LifecycleContext context, LifecycleScope scope) {
+    if (scope == context.scope) return context.stateRoot(scope);
+    try {
+      return context.stateRoot(scope);
+    } on MambaException {
+      return null;
     }
-    return null;
+  }
+
+  /// The peer scope and root of a coordinated restore.
+  ///
+  /// The managed conversion coordinates in the scope of its target. The peer
+  /// is the other realm, when the host configured it.
+  ({LifecycleScope? scope, String? root}) _coordinatedPeer(
+    LifecycleContext context,
+    String sourceScope,
+    String targetScope,
+  ) {
+    for (final scope in <LifecycleScope>{
+      LifecycleScope.values.byName(sourceScope),
+      LifecycleScope.values.byName(targetScope),
+    }) {
+      if (scope == context.scope) continue;
+      final root = _scopeStateRoot(context, scope);
+      if (root == null) continue;
+      return (scope: scope, root: root);
+    }
+    return (scope: null, root: null);
   }
 
   /// Verifies the participant marker of the other scope.
@@ -2002,14 +2233,20 @@ final class ConversionRestoreService {
   /// A missing marker is recoverable: the apply re-establishes the
   /// reservation before any live effect. A marker that carries another
   /// document is a substituted reservation and is refused.
+  ///
+  /// A marker of an earlier phase of the same inverse restore is stale after
+  /// a crash between the coordinator write and the peer write. It is accepted
+  /// and re-established. A marker that claims a later phase than the
+  /// coordinator, another identity, another scope or another schema is an
+  /// unauthorized state and is refused.
   void _verifyParticipantMarker(
     LifecycleContext context,
     ConversionRestoreEvidence evidence,
   ) {
-    final peer = _peerScope(context, evidence);
-    if (peer == null) return;
+    final root = _peerRoot(context, evidence);
+    if (root == null) return;
     final path = _io.fs.path.join(
-      _restoreRootOf(context.stateRoot(peer)),
+      _restoreRootOf(root),
       '${evidence.restoreId}.json',
     );
     final type = _io.type(path, followLinks: false);
@@ -2043,13 +2280,36 @@ final class ConversionRestoreService {
         marker.targetLocation != expected.targetLocation ||
         marker.payloadDigest != expected.payloadDigest ||
         marker.outgoingDigest != expected.outgoingDigest ||
-        marker.phase != expected.phase) {
+        marker.createdScope != expected.createdScope) {
       throw MambaException(
         'The inverse restore participant authority changed.',
         exitCode: 6,
       );
     }
+    final markerOrder = _phaseOrder(marker.phase);
+    final expectedOrder = _phaseOrder(expected.phase);
+    if (markerOrder >= 0 && expectedOrder >= 0 && markerOrder > expectedOrder) {
+      throw MambaException(
+        'The inverse restore participant authority claims an unauthorized '
+        'state.',
+        exitCode: 6,
+      );
+    }
   }
+
+  /// The order of the forward phases of an inverse restore.
+  ///
+  /// A rolled back or a recovery required inverse restore is not a forward
+  /// phase: it carries no order and never outranks another phase.
+  int _phaseOrder(ConversionRestorePhase phase) => switch (phase) {
+    ConversionRestorePhase.prepared => 0,
+    ConversionRestorePhase.published => 1,
+    ConversionRestorePhase.committed => 2,
+    ConversionRestorePhase.reconciled => 3,
+    ConversionRestorePhase.completed => 4,
+    ConversionRestorePhase.rolledBack => -1,
+    ConversionRestorePhase.recoveryRequired => -1,
+  };
 
   void _markRecoveryRequired(
     LifecycleContext context,
@@ -2060,7 +2320,7 @@ final class ConversionRestoreService {
         context,
         evidence.copyWith(phase: ConversionRestorePhase.recoveryRequired),
       );
-    } on Exception {
+    } catch (error) {
       // The retained evidence stays as it is; the refusal is reported to the
       // caller and the pending restore remains guarded.
     }
