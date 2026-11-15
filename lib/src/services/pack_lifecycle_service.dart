@@ -876,6 +876,21 @@ interface class PackLifecycleService {
           ),
         );
       }
+      final selectedSkills = selected
+          .where(
+            (resource) => resource.candidate.type == PackResourceType.skill,
+          )
+          .toList();
+      if (selectedSkills.isNotEmpty) {
+        failures.addAll(
+          await _skillPromptFallbackFailures(
+            request,
+            pack,
+            configuration,
+            selectedSkills,
+          ),
+        );
+      }
       if (failures.isNotEmpty) {
         throw MambaException(
           'Pack validation failed for ${pack.key}; no managed state was changed.\n'
@@ -909,6 +924,41 @@ interface class PackLifecycleService {
     } finally {
       await workspace.close();
     }
+  }
+
+  /// The Prompt failures of the selected ordinary Skills.
+  ///
+  /// A manual-only Skill that is an invalid Prompt in a target view is not an
+  /// ordinary Skill fallback. The validation refuses the same selection that
+  /// the installation refuses, and the Prompt policy never reaches a target
+  /// whose view is an ordinary Skill.
+  Future<List<String>> _skillPromptFallbackFailures(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    PackConfiguration configuration,
+    List<_InspectedPackResource> scope,
+  ) async {
+    final requested = _requestedTargets(request, pack, configuration);
+    final targets = requested.isEmpty
+        ? const <String>['claude', 'codex']
+        : requested;
+    final failures = <String>[];
+    for (final resource in scope) {
+      final view = await _promptService.inspectView(resource.candidate.path);
+      try {
+        _promptService.requireNoInvalidPromptFallback(
+          candidate: PackPromptCandidate(
+            name: resource.name ?? resource.candidate.relativePath,
+            source: view,
+            template: view.isTemplate,
+          ),
+          targets: targets,
+        );
+      } on MambaException catch (error) {
+        failures.add('${resource.label}: ${error.message}');
+      }
+    }
+    return failures;
   }
 
   /// The Prompt failures of the selected scope candidates.

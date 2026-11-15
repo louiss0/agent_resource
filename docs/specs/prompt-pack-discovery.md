@@ -85,6 +85,10 @@ a management state, never enroll a membership and never advance an inventory.
 - The validation inspects the reviewed source and its staged output, so the
   pack admission and the root Markdown migration cannot disguise an invalid
   Prompt.
+- An ordinary Skill selection never falls back past the Prompt checks: a
+  selected Skill that is an invalid Prompt in a target view is refused, the
+  same way the installation refuses it. The Prompt policy never reaches a
+  target whose view of that source is an ordinary Skill.
 - The validation reports the failures of the selected sources and changes no
   managed state.
 
@@ -93,6 +97,7 @@ a management state, never enroll a membership and never advance an inventory.
 | Refusal | Status |
 | --- | --- |
 | A conflicting declaration of one source path | 2 |
+| A selected Skill is an invalid Prompt in a target view | 2 |
 | A selected source is not a valid Prompt for a requested target | 2 |
 | A selected source is a standalone template | 2 |
 | A requested target is Pi | 2 |
@@ -110,8 +115,15 @@ and IO refusals, the unchanged source and lock document, the pending
 transaction guard, the discovery of the Prompt root, the standalone template
 without a profile and the CLI registration.
 
-The complete Dart suite passes locally on Windows with 976 passing and four
-platform-skipped tests. `dart analyze` reports no findings.
+The focused suites of this slice are
+`test/src/services/pack_discovery_service_test.dart`,
+`test/src/services/pack_discovery_validation_test.dart`,
+`test/src/services/pack_prompt_service_test.dart`,
+`test/src/installation/prompt_source_discovery_test.dart`,
+`test/pack_test.dart` and `test/pack_action_test.dart`. `dart analyze` reports
+no findings. The complete Dart suite is not claimed here: the repository
+baseline of the parent session recorded one timing-sensitive editor failure
+under concurrent load.
 
 The checks are static validity, ownership and readiness evidence. No Claude,
 Codex or Pi runtime was exercised, and no native harness activation was
