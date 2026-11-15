@@ -296,6 +296,39 @@ void main() {
         expect(requests.single.inheritTerminal, isFalse);
       });
 
+      test('a documented wait is the completion evidence and needs no '
+          'acknowledgement', () async {
+        final draftId = await prepareDraft();
+
+        final outcome = await service.edit(
+          options,
+          draftId,
+          editorChoice: 'Code.exe --wait',
+        );
+
+        expect(requests.single.executable, '/programs/Code.exe');
+        expect(acknowledgements, isEmpty);
+        expect(outcome, isA<EditorEditCompleted>());
+        expect(
+          (outcome as EditorEditCompleted).completion,
+          EditorCompletionMode.documentedWait,
+        );
+      });
+
+      test('an unchanged edited draft is not a cancellation', () async {
+        final draftId = await prepareDraft();
+
+        final outcome = await service.edit(
+          options,
+          draftId,
+          editorChoice: 'code --wait',
+        );
+
+        final completed = outcome as EditorEditCompleted;
+        expect(completed.body.text, body);
+        expect(completed.body.edited, isFalse);
+      });
+
       test('the platform default editor is launched through the platform '
           'action', () async {
         final draftId = await prepareDraft();
@@ -421,6 +454,53 @@ void main() {
         expect(requests, hasLength(2));
         expect(requests.last.executable, '/programs/other');
         expect(outcome, isA<EditorEditCompleted>());
+      });
+
+      test('a session without a display offers the alternatives instead of '
+          'opening the platform default editor', () async {
+        final draftId = await prepareDraft();
+        service = buildService(
+          environment: const EditorSessionEnvironment(
+            hasTerminal: true,
+            hasDisplay: false,
+          ),
+        );
+
+        final outcome = await service.edit(options, draftId);
+
+        expect(recoveries.single.reason, contains('display'));
+        expect(requests, isEmpty);
+        expect(outcome, isA<EditorEditCancelled>());
+        expect(await drafts.find(options, draftId), isNotNull);
+      });
+
+      test('an alternative editor that cannot be used offers the alternatives '
+          'again', () async {
+        final draftId = await prepareDraft();
+        service = buildService(
+          processRunner: (request) async {
+            requests.add(request);
+            return const EditorProcessOutcome.failed('The editor failed.');
+          },
+          recover: (request) async {
+            recoveries.add(request);
+            if (recoveries.length == 1) {
+              return const EditorRecoveryOtherEditor('other --wait && more');
+            }
+            return const EditorRecoveryCancel();
+          },
+        );
+
+        final outcome = await service.edit(
+          options,
+          draftId,
+          editorChoice: 'code --wait',
+        );
+
+        expect(recoveries, hasLength(2));
+        expect(recoveries.last.reason, contains('shell expression'));
+        expect(requests, hasLength(1));
+        expect(outcome, isA<EditorEditCancelled>());
       });
 
       test(
@@ -550,10 +630,7 @@ void main() {
         );
 
         expect(outcome, isA<EditorEditCancelled>());
-        expect(
-          (outcome as EditorEditCancelled).reason,
-          contains('not found'),
-        );
+        expect((outcome as EditorEditCancelled).reason, contains('not found'));
         expect(requests, isEmpty);
       });
 

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_resource/src/authoring/editor_interaction.dart';
@@ -233,6 +234,7 @@ import 'package:agent_resource/src/authoring/editor_interaction.dart';
 import 'package:agent_resource/src/authoring/editor_process.dart';
 
 Future<void> main(List<String> arguments) async {
+  final watch = Stopwatch()..start();
   final outcome = await const RealEditorProcessRunner().run(
     EditorProcessRequest(
       executable: arguments[0],
@@ -240,7 +242,9 @@ Future<void> main(List<String> arguments) async {
       environment: Platform.environment,
     ),
   );
+  watch.stop();
   stdout.writeln(outcome.started);
+  stdout.writeln(watch.elapsedMilliseconds);
 }
 ''');
       final pidFile = File(p.join(directory.path, 'helper.pid'));
@@ -253,12 +257,13 @@ Future<void> main(List<String> arguments) async {
       ], workingDirectory: Directory.current.path);
       addTearDown(() => process.kill(ProcessSignal.sigkill));
 
-      final watch = Stopwatch()..start();
+      // The parent reports the duration of its own launch, so that the
+      // measurement covers the launch and not the start-up of the parent.
+      final output = await process.stdout.transform(utf8.decoder).join();
       final code = await process.exitCode.timeout(
         const Duration(seconds: 20),
         onTimeout: () => -1,
       );
-      watch.stop();
       await _stopHelper(pidFile);
 
       expect(
@@ -267,7 +272,16 @@ Future<void> main(List<String> arguments) async {
         reason:
             'The parent did not exit; it waited for the program it launched.',
       );
-      expect(watch.elapsed, lessThan(const Duration(seconds: 10)));
+      final lines = output.trim().split('\n');
+      expect(lines.first, 'true');
+      final elapsed = int.tryParse(lines.last) ?? -1;
+      expect(
+        elapsed,
+        lessThan(5000),
+        reason:
+            'The launch waited for the program it launched; a detached launch '
+            'returns at once while the helper runs on for 30 seconds.',
+      );
     });
   });
 }
