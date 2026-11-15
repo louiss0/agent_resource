@@ -1,13 +1,25 @@
 import 'dart:convert';
+import 'dart:io' as io;
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/services/guided_authoring_service.dart';
 import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
+import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
-void main() {
+import 'support/compiled_cli_test_support.dart';
+import 'support/process_test_support.dart';
+
+Future<void> main() async {
+  final root = _findProjectRoot();
+  final packageConfig = p.join(root, '.dart_tool', 'package_config.json');
+  final entrypoint = await compileTestCli(
+    script: p.join(root, 'bin', 'agent_resource.dart'),
+    packageConfig: packageConfig,
+  );
+
   group('skill create', () {
     late FileSystem fs;
     late Directory sandbox;
@@ -149,6 +161,19 @@ void main() {
         expect(
           marker.readAsStringSync(),
           contains('Follow the selected task.'),
+        );
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agent-resource',
+                  'installations.json',
+                ),
+              )
+              .existsSync(),
+          isFalse,
+          reason: 'An author-only output owns no installation record.',
         );
       },
     );
@@ -366,4 +391,77 @@ void main() {
       expect((result as MambaFailureResult).message, contains('--yes'));
     });
   });
+
+  group('skill create in the production CLI', () {
+    test('publishes the reviewed output and reports it', () async {
+      final sandbox = io.Directory.systemTemp.createTempSync('skill-create-');
+      try {
+        final project = io.Directory(p.join(sandbox.path, 'project'))
+          ..createSync();
+        final home = io.Directory(p.join(sandbox.path, 'home'))..createSync();
+        final result = await runDartScript(
+          script: entrypoint,
+          packageConfig: packageConfig,
+          workingDirectory: project,
+          environment: io.Platform.environment,
+          arguments: [
+            'skill',
+            'create',
+            '--profile',
+            'claude',
+            '--name',
+            'demo',
+            '--description',
+            'Demo resource.',
+            '--body-text',
+            'Follow the selected task.',
+            '--apply',
+            '--yes',
+            '--unattended',
+            '--format',
+            'json',
+            '--cwd',
+            '${project.path}${io.Platform.pathSeparator}',
+            '--project-root',
+            '${project.path}${io.Platform.pathSeparator}',
+            '--home',
+            '${home.path}${io.Platform.pathSeparator}',
+          ],
+        );
+
+        expect(result.exitCode, 0, reason: result.stderr);
+        final report = jsonDecode(result.stdout) as Map<String, Object?>;
+        final data = report['data']! as Map<String, Object?>;
+        expect(report['command'], 'skill create');
+        expect(report['outcome'], 'published');
+        expect(data['published'], isTrue);
+        expect(data['ownership'], 'authorOnly');
+        final marker = io.File(
+          p.join(project.path, '.claude', 'skills', 'demo', 'SKILL.md'),
+        );
+        expect(marker.existsSync(), isTrue);
+        expect(
+          marker.readAsStringSync(),
+          contains('Follow the selected task.'),
+        );
+      } finally {
+        await sandbox.delete(recursive: true);
+      }
+    });
+  });
+}
+
+/// The package root of the running suite.
+String _findProjectRoot() {
+  var candidate = io.Directory.current.absolute;
+  while (true) {
+    if (io.File(p.join(candidate.path, 'pubspec.yaml')).existsSync()) {
+      return candidate.path;
+    }
+    final parent = candidate.parent;
+    if (parent.path == candidate.path) {
+      throw StateError('Could not locate the package root.');
+    }
+    candidate = parent;
+  }
 }
