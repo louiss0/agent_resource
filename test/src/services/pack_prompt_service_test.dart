@@ -166,6 +166,43 @@ track = { kind = "local" }
           .writeAsStringSync('Notes.\n');
     }
 
+    /// Seeds a Skill whose Codex invocation control is malformed.
+    ///
+    /// The sidecar declares an unsupported field: the Codex control
+    /// evidence is unknown instead of an ordinary Skill fact. The native
+    /// Skill validation accepts the sidecar, so only the Prompt policy
+    /// refuses the ordinary Skill fallback.
+    void seedUnknownControlSkill() {
+      final unknown = fs.directory(
+        fs.path.join(source.path, 'skills', 'unknown'),
+      )..createSync(recursive: true);
+      fs.file(fs.path.join(unknown.path, 'SKILL.md')).writeAsStringSync('''
+---
+name: unknown
+description: A malformed invocation control.
+---
+# Unknown
+''');
+      final agents = fs.directory(fs.path.join(unknown.path, 'agents'))
+        ..createSync(recursive: true);
+      fs.file(fs.path.join(agents.path, 'openai.yaml')).writeAsStringSync('''
+interface:
+  display_name: Demo
+unsupported_field: value
+''');
+      fs
+          .file(fs.path.join(source.path, 'agent-resources.toml'))
+          .writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/prompt"
+[[catalog.skills]]
+path = "skills/plain"
+[[catalog.skills]]
+path = "skills/unknown"
+''');
+    }
+
     void seedMigratedRootFile() {
       final prompt = fs.directory(
         fs.path.join(source.path, 'skills', 'prompt'),
@@ -424,6 +461,75 @@ track = { kind = "local" }
         );
         expect(ledger(), isEmpty);
         expect(installedFiles(), isEmpty);
+      },
+    );
+
+    test(
+      'refuses unknown invocation controls without an ordinary Skill fallback',
+      () async {
+        seedUnknownControlSkill();
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+        // The Codex control evidence is malformed: the ordinary Skill
+        // selection never defaults to an ordinary Skill for unknown controls.
+        await expectLater(
+          service.execute(
+            request(
+              PackOperation.install,
+              resourceTypes: const <PackResourceType>[PackResourceType.skill],
+              only: const <String>['unknown'],
+              target: 'codex',
+            ),
+          ),
+          throwsA(
+            isA<MambaException>()
+                .having(
+                  (error) => error.exitCode,
+                  'status',
+                  PackProcessStatus.invalidInput.code,
+                )
+                .having(
+                  (error) => error.message,
+                  'diagnostic',
+                  contains('unknown invocation controls'),
+                ),
+          ),
+        );
+        expect(ledger(), isEmpty);
+        expect(installedFiles(), isEmpty);
+      },
+    );
+
+    test(
+      'the ordinary Skill view of another consumer is not blocked',
+      () async {
+        seedUnknownControlSkill();
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+        // The Claude view of the same source is an ordinary Skill: the
+        // Codex restriction does not reach it.
+        final result = await service.execute(
+          request(
+            PackOperation.install,
+            resourceTypes: const <PackResourceType>[PackResourceType.skill],
+            only: const <String>['unknown'],
+            target: 'claude',
+          ),
+        );
+
+        expect(result.outcome, 'completed');
+        expect(
+          installedFiles(),
+          contains(
+            fs.path.join(
+              project.path,
+              '.claude',
+              'skills',
+              'unknown',
+              'SKILL.md',
+            ),
+          ),
+        );
       },
     );
 

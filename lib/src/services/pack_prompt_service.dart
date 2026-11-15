@@ -226,8 +226,8 @@ interface class PackPromptService {
     required PackPromptCandidate candidate,
     required List<String> targets,
   }) {
-    if (!candidate.isPromptAnywhere) return;
     for (final consumer in consumersOf(targets)) {
+      _requireKnownControls(candidate: candidate, consumer: consumer);
       if (candidate.source.isPrompt(consumer) &&
           !candidate.source.isValidFor(consumer)) {
         throw MambaException(
@@ -250,6 +250,38 @@ interface class PackPromptService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
+    }
+  }
+
+  /// Refuses an ordinary Skill whose invocation controls are unknown.
+  ///
+  /// Unknown controls never default to an ordinary Skill: malformed native
+  /// metadata is not proof that the documented defaults apply. The refusal
+  /// is per consumer view: an ordinary Skill view of another consumer is
+  /// not blocked by the Prompt restrictions of this consumer.
+  void _requireKnownControls({
+    required PackPromptCandidate candidate,
+    required PromptConsumer consumer,
+  }) {
+    final views = <(String, PackPromptView)>[
+      ('', candidate.source),
+      if (candidate.staged != null)
+        ('The staged output of ', candidate.staged!),
+    ];
+    for (final (prefix, view) in views) {
+      final classification = view.classificationOf(consumer);
+      if (classification != PromptClassification.malformed &&
+          classification != PromptClassification.unclassified) {
+        continue;
+      }
+      final diagnostics = _diagnostics(view.diagnosticsFor(consumer));
+      throw MambaException(
+        '$prefix${candidate.name} has unknown invocation controls for the '
+        '${_targetLabel(consumer)} target'
+        '${diagnostics.isEmpty ? '' : ': $diagnostics'} '
+        'It is not installed as an ordinary Skill.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
     }
   }
 

@@ -428,6 +428,62 @@ track = { kind = "local" }
           expect(projectFileExists('.claude/agents/writer.md'), isTrue);
         });
 
+        test('refuses unknown invocation controls without an ordinary Skill fallback', () async {
+          final unknown = fs.directory(
+            fs.path.join(sandbox.path, 'source', 'skills', 'unknown'),
+          )..createSync(recursive: true);
+          fs.file(fs.path.join(unknown.path, 'SKILL.md')).writeAsStringSync('''
+---
+name: unknown
+description: A malformed invocation control.
+---
+# Unknown
+''');
+          final agents = fs.directory(fs.path.join(unknown.path, 'agents'))
+            ..createSync(recursive: true);
+          fs.file(fs.path.join(agents.path, 'openai.yaml')).writeAsStringSync(
+            '''
+interface:
+  display_name: Demo
+unsupported_field: value
+''',
+          );
+          fs
+              .file(
+                fs.path.join(sandbox.path, 'source', 'agent-resources.toml'),
+              )
+              .writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/reviewer"
+[[catalog.skills]]
+path = "skills/unknown"
+[[catalog.agents]]
+path = "agents/writer.md"
+profile = "claude"
+''');
+
+          final result = await createExecutor(fileSystem: fs).fake().execute([
+            ...invocation('install'),
+            '--type',
+            'skill',
+            '--only',
+            'unknown',
+            '--target',
+            'codex',
+          ]);
+
+          expect(
+            result,
+            isA<MambaFailureResult>().having(
+              (value) => value.message,
+              'message',
+              contains('unknown invocation controls'),
+            ),
+          );
+          expect(projectFileExists('.agents/skills/unknown/SKILL.md'), isFalse);
+        });
+
         test('removes selected names from both types', () async {
           await runSuccessfully(invocation('install'));
 
