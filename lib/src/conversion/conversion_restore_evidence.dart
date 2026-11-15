@@ -46,6 +46,7 @@ final class ConversionRestoreEvidence {
     required this.sourceLocation,
     required this.targetLocation,
     required this.artifactKind,
+    this.subjectKind = 'conversion',
     required this.sourceScope,
     required this.targetScope,
     required this.inPlace,
@@ -58,6 +59,10 @@ final class ConversionRestoreEvidence {
     this.targetInstallationId,
     this.sourceRecord,
     this.targetRecord,
+    this.retiredSourceRecord,
+    this.packKeys = const <String>[],
+    this.resourceNames = const <String>[],
+    this.packAuthority = const <String, Object?>{},
     this.approvals = const <String, bool>{},
     this.participantMarker = false,
   });
@@ -73,6 +78,7 @@ final class ConversionRestoreEvidence {
       'sourceLocation',
       'targetLocation',
       'artifactKind',
+      'subjectKind',
       'sourceScope',
       'targetScope',
       'inPlace',
@@ -85,6 +91,10 @@ final class ConversionRestoreEvidence {
       'targetInstallationId',
       'sourceRecord',
       'targetRecord',
+      'retiredSourceRecord',
+      'packKeys',
+      'resourceNames',
+      'packAuthority',
       'approvals',
       'participantMarker',
       'digest',
@@ -100,7 +110,7 @@ final class ConversionRestoreEvidence {
       throw const FormatException('Invalid conversion restore identifier.');
     }
     final transactionId = _string(map, 'transactionId');
-    if (!RegExp(r'^cvx_[a-f0-9]{32}$').hasMatch(transactionId)) {
+    if (!RegExp(r'^(cvx|aut)_[a-f0-9]{32}$').hasMatch(transactionId)) {
       throw const FormatException('Invalid conversion transaction identifier.');
     }
     final approvals = <String, bool>{};
@@ -126,6 +136,12 @@ final class ConversionRestoreEvidence {
       sourceLocation: _absolutePath(_string(map, 'sourceLocation')),
       targetLocation: _absolutePath(_string(map, 'targetLocation')),
       artifactKind: _string(map, 'artifactKind'),
+      subjectKind: map.containsKey('subjectKind')
+          ? _enumValue(_string(map, 'subjectKind'), const [
+              'conversion',
+              'authoring',
+            ])
+          : 'conversion',
       sourceScope: _enumValue(_string(map, 'sourceScope'), const [
         'project',
         'user',
@@ -148,6 +164,14 @@ final class ConversionRestoreEvidence {
       targetRecord: map['targetRecord'] == null
           ? null
           : _object(map['targetRecord'], 'target record'),
+      retiredSourceRecord: map['retiredSourceRecord'] == null
+          ? null
+          : _object(map['retiredSourceRecord'], 'retired source record'),
+      packKeys: _stringList(map['packKeys']),
+      resourceNames: _stringList(map['resourceNames']),
+      packAuthority: map['packAuthority'] == null
+          ? const <String, Object?>{}
+          : _object(map['packAuthority'], 'pack authority'),
       approvals: approvals,
       participantMarker: map.containsKey('participantMarker')
           ? _bool(map, 'participantMarker')
@@ -175,7 +199,16 @@ final class ConversionRestoreEvidence {
 
   /// The location of the converted target that is retired by the restore.
   final String targetLocation;
+
+  /// The artifact kind of the restored conversion.
   final String artifactKind;
+
+  /// The kind of the restored conversion authority.
+  ///
+  /// A managed conversion is restored from the conversion evidence of the
+  /// coordinator. An ordinary conversion is restored from the authoring
+  /// evidence of the ordinary publisher. The two authorities never mix.
+  final String subjectKind;
   final String sourceScope;
   final String targetScope;
 
@@ -202,6 +235,30 @@ final class ConversionRestoreEvidence {
 
   /// The installation record of the converted target at review time.
   final Map<String, Object?>? targetRecord;
+
+  /// The retired record of the original source at review time.
+  ///
+  /// The record is the exact state that the inverse restore replaces. It
+  /// lets a resumed inverse restore accept its own already applied state and
+  /// refuse every other occupant.
+  final Map<String, Object?>? retiredSourceRecord;
+
+  /// The upstream pack keys that the restore reserves.
+  ///
+  /// A pending inverse restore reserves its pack keys, so an old pack
+  /// mutation cannot change the membership that the restore observes.
+  final List<String> packKeys;
+
+  /// The native resource names of the observed pack membership.
+  final List<String> resourceNames;
+
+  /// The observed pack authority of the restored participants.
+  ///
+  /// The authority is the current content of the pack groups of the shared
+  /// state document: the packs, the snapshots, the approvals, the selections
+  /// and the operations that mention the restored participants. The restore
+  /// binds the exact observation and refuses a changed authority.
+  final Map<String, Object?> packAuthority;
   final Map<String, bool> approvals;
 
   /// Whether this document is the participant marker of another scope.
@@ -227,6 +284,7 @@ final class ConversionRestoreEvidence {
       'sourceLocation': sourceLocation,
       'targetLocation': targetLocation,
       'artifactKind': artifactKind,
+      'subjectKind': subjectKind,
       'sourceScope': sourceScope,
       'targetScope': targetScope,
       'inPlace': inPlace,
@@ -239,6 +297,10 @@ final class ConversionRestoreEvidence {
       'targetInstallationId': targetInstallationId,
       'sourceRecord': sourceRecord,
       'targetRecord': targetRecord,
+      'retiredSourceRecord': retiredSourceRecord,
+      'packKeys': packKeys,
+      'resourceNames': resourceNames,
+      'packAuthority': packAuthority,
       'approvals': approvals,
     };
     return sha256
@@ -259,6 +321,7 @@ final class ConversionRestoreEvidence {
     sourceLocation: sourceLocation,
     targetLocation: targetLocation,
     artifactKind: artifactKind,
+    subjectKind: subjectKind,
     sourceScope: sourceScope,
     targetScope: targetScope,
     inPlace: inPlace,
@@ -271,6 +334,10 @@ final class ConversionRestoreEvidence {
     targetInstallationId: targetInstallationId,
     sourceRecord: sourceRecord,
     targetRecord: targetRecord,
+    retiredSourceRecord: retiredSourceRecord,
+    packKeys: packKeys,
+    resourceNames: resourceNames,
+    packAuthority: packAuthority,
     approvals: approvals,
     participantMarker: participantMarker ?? this.participantMarker,
   );
@@ -297,6 +364,10 @@ final class ConversionRestoreEvidence {
     'targetInstallationId': targetInstallationId,
     'sourceRecord': sourceRecord,
     'targetRecord': targetRecord,
+    'retiredSourceRecord': retiredSourceRecord,
+    'packKeys': packKeys,
+    'resourceNames': resourceNames,
+    'packAuthority': packAuthority,
     'approvals': approvals,
     'participantMarker': participantMarker,
     'digest': digest,
@@ -421,6 +492,21 @@ int _integer(Map<String, Object?> map, String key) {
     throw FormatException('The $key must be an integer.');
   }
   return value;
+}
+
+List<String> _stringList(Object? value) {
+  if (value == null) return const <String>[];
+  if (value is! List) {
+    throw const FormatException('The value must be a list.');
+  }
+  final result = <String>[];
+  for (final item in value) {
+    if (item is! String || item.isEmpty) {
+      throw const FormatException('A list member must be a nonblank string.');
+    }
+    result.add(item);
+  }
+  return result;
 }
 
 String _enumValue(String value, List<String> allowed) {

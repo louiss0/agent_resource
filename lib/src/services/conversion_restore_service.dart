@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:mamba/mamba.dart';
 
+import '../authoring/authoring_transaction.dart';
 import '../conversion/conversion_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
 import '../skill_files.dart';
@@ -58,6 +59,9 @@ final class ConversionRestoreService {
   }) async {
     final context = LifecycleContext.resolve(options, fileSystem: _io.fs);
     Future<LifecycleResult> run() async {
+      if (isAuthoringTransactionId(transactionId)) {
+        return _restoreAuthoring(context, transactionId, planId);
+      }
       final original = await _readOriginal(context, transactionId);
       final plan = await _plan(context, original, transactionId);
       if (context.dryRun) {
@@ -145,6 +149,734 @@ final class ConversionRestoreService {
         '${evidence.restoreId}.json',
       ),
   };
+
+  /// Restores an ordinary completed conversion of the ordinary publisher.
+  ///
+  /// The ordinary publisher does not write conversion evidence: it retains
+  /// the independent payload of the source, publishes the native target and
+  /// records an authoring transaction, a receipt and the retained payload.
+  /// That durable authority is the authority of the inverse restore. The
+  /// restore reinstates the original source, retires the converted target and
+  /// never adopts the source as an installation.
+  Future<LifecycleResult> _restoreAuthoring(
+    LifecycleContext context,
+    String transactionId,
+    String? planId,
+  ) async {
+    Future<LifecycleResult> run() async {
+      final subject = _readAuthoringSubject(context, transactionId);
+      final plan = await _planAuthoring(context, subject);
+      if (context.dryRun) {
+        return LifecycleResult(
+          command: 'prompt conversion restore',
+          outcome: 'planned',
+          data: plan.data,
+        );
+      }
+      _requireApproval(context, planId, plan.data['planId']);
+      final result = await _applyAuthoring(context, subject, plan);
+      return LifecycleResult(
+        command: 'prompt conversion restore',
+        outcome: 'restored',
+        data: <String, Object?>{...plan.data, ...result},
+      );
+    }
+
+    if (context.dryRun) return run();
+    return _state.runCoordinated(
+      context: context,
+      location: context.stateRoot(),
+      body: run,
+    );
+  }
+
+  /// Reads the durable authority of one ordinary completed conversion.
+  _AuthoringSubject _readAuthoringSubject(
+    LifecycleContext context,
+    String transactionId,
+  ) {
+    final path = _io.fs.path.join(
+      context.stateRoot(),
+      authoringTransactionDirectoryName,
+      '$transactionId.json',
+    );
+    _requireUnlinked(path);
+    final type = _io.type(path, followLinks: false);
+    if (type == FileSystemEntityType.notFound) {
+      throw MambaException(
+        'No authoring evidence exists for $transactionId.',
+        exitCode: 4,
+      );
+    }
+    if (type != FileSystemEntityType.file) {
+      throw MambaException(
+        'The authoring transaction path is not a regular file: $path',
+        exitCode: 6,
+      );
+    }
+    final AuthoringTransactionDocument document;
+    try {
+      document = decodeAuthoringTransactionDocument(
+        utf8.decode(_io.read(path, maxAuthoringTransactionBytes)),
+      );
+    } on FormatException catch (error) {
+      throw MambaException(
+        'The authoring transaction document is not usable: ${error.message}',
+        exitCode: 6,
+      );
+    }
+    if (document is! CurrentAuthoringTransactionDocument) {
+      throw MambaException(
+        'The authoring transaction document is not actionable.',
+        exitCode: 6,
+      );
+    }
+    final transaction = document.transaction;
+    if (transaction.transactionId != transactionId) {
+      throw MambaException(
+        'The authoring transaction document does not carry its own identity.',
+        exitCode: 6,
+      );
+    }
+    if (transaction.operation != 'convert') {
+      throw MambaException(
+        'The authoring transaction is not a conversion.',
+        exitCode: 4,
+      );
+    }
+    if (transaction.ownership != 'authorOnly') {
+      throw MambaException(
+        'A tracked conversion is restored from its conversion evidence.',
+        exitCode: 4,
+      );
+    }
+    if (transaction.phase != AuthoringTransactionPhase.completed) {
+      throw MambaException(
+        'Only a completed ordinary conversion can be restored.',
+        exitCode: 4,
+      );
+    }
+    final source = transaction.source;
+    final recovery = transaction.recoveryPath;
+    if (source == null || recovery == null) {
+      throw MambaException(
+        'The ordinary conversion retained no independent source payload.',
+        exitCode: 6,
+      );
+    }
+    final authority = transaction.authority;
+    if (authority['scope'] != context.scope.name) {
+      throw MambaException(
+        'The ordinary conversion belongs to another scope.',
+        exitCode: 4,
+      );
+    }
+    final recordedPayload = transaction.evidence['payloadManifest'];
+    final recordedTarget = transaction.evidence['publishedManifest'];
+    if (recordedPayload is! List || recordedTarget is! List) {
+      throw MambaException(
+        'The ordinary conversion retained no content evidence.',
+        exitCode: 6,
+      );
+    }
+    final payloadEntries = recordedPayload.cast<Map<String, Object?>>();
+    final targetEntries = recordedTarget.cast<Map<String, Object?>>();
+    return _AuthoringSubject(
+      transaction: transaction,
+      sourceLocation: source,
+      targetLocation: transaction.target,
+      payloadPath: recovery,
+      payloadEntries: payloadEntries,
+      targetEntries: targetEntries,
+      payloadIsFile:
+          payloadEntries.length == 1 &&
+          payloadEntries.single['path'] == 'source',
+      inPlace: _io.fs.path.equals(source, transaction.target),
+    );
+  }
+
+  /// Reviews the exact current observations of an ordinary conversion.
+  Future<ConversionRestorePlan> _planAuthoring(
+    LifecycleContext context,
+    _AuthoringSubject subject,
+  ) async {
+    final restoreRoot = _restoreRoot(context);
+    final retained = _readRetainedRestores(
+      restoreRoot,
+      subject.transaction.transactionId,
+    );
+    if (retained.any(
+      (evidence) => evidence.phase == ConversionRestorePhase.completed,
+    )) {
+      throw MambaException(
+        'The completed conversion was already restored.',
+        exitCode: 4,
+      );
+    }
+    final resumable = retained
+        .where((evidence) => !evidence.completed)
+        .toList(growable: false);
+    if (resumable.length > 1) {
+      throw MambaException(
+        'More than one inverse restore is pending for this conversion.',
+        exitCode: 6,
+      );
+    }
+    if (resumable.isNotEmpty) {
+      return _resumePlanAuthoring(context, subject, resumable.single);
+    }
+    return _freshPlanAuthoring(context, subject, restoreRoot);
+  }
+
+  /// Reviews the resume of an interrupted ordinary inverse restore.
+  Future<ConversionRestorePlan> _resumePlanAuthoring(
+    LifecycleContext context,
+    _AuthoringSubject subject,
+    ConversionRestoreEvidence evidence,
+  ) async {
+    final staging = _stagingPath(context, evidence.restoreId);
+    final restored = _restoredPath(evidence, staging);
+    if (_io.type(restored, followLinks: false) !=
+            FileSystemEntityType.notFound &&
+        !_sameAuthoringContent(
+          subject.payloadEntries,
+          _authoringEntries(restored),
+        )) {
+      throw MambaException(
+        'The staged inverse restore payload changed.',
+        exitCode: 6,
+      );
+    }
+    final observations = await _authoringObservations(context, subject);
+    final data = <String, Object?>{
+      'transactionId': subject.transaction.transactionId,
+      'restoreId': evidence.restoreId,
+      'action': 'restore',
+      'scope': context.scope.name,
+      'phase': 'completed',
+      'restorePhase': evidence.phase.name,
+      'resume': true,
+      'source': subject.sourceLocation,
+      'target': subject.targetLocation,
+      'inPlace': subject.inPlace,
+      'sourceManaged': false,
+      'observations': observations,
+    };
+    data['planId'] = _reviewDigest(data);
+    return ConversionRestorePlan(evidence: evidence, data: data);
+  }
+
+  /// Reviews a fresh inverse restore of an ordinary conversion.
+  Future<ConversionRestorePlan> _freshPlanAuthoring(
+    LifecycleContext context,
+    _AuthoringSubject subject,
+    String restoreRoot,
+  ) async {
+    // The retained payload is the only authority of the original content.
+    if (_io.type(subject.payloadPath, followLinks: false) ==
+        FileSystemEntityType.notFound) {
+      throw MambaException(
+        'The retained recovery payload was cleaned; the completed conversion '
+        'can no longer be restored.',
+        exitCode: 6,
+      );
+    }
+    if (!_sameAuthoringContent(
+      subject.payloadEntries,
+      _authoringEntries(subject.payloadPath),
+    )) {
+      throw MambaException(
+        'The retained recovery payload is missing or changed.',
+        exitCode: 6,
+      );
+    }
+    // The published target must still be the published target.
+    if (_io.type(subject.targetLocation, followLinks: false) ==
+        FileSystemEntityType.notFound) {
+      throw MambaException(
+        'The converted target is missing; the restore is refused.',
+        exitCode: 6,
+      );
+    }
+    if (!_sameAuthoringContent(
+      subject.targetEntries,
+      _authoringEntries(subject.targetLocation),
+    )) {
+      throw MambaException(
+        'The converted target changed since the conversion; the restore is '
+        'refused.',
+        exitCode: 6,
+      );
+    }
+    // The original source location must be free unless the conversion
+    // replaced the source in place.
+    if (!subject.inPlace &&
+        _io.type(subject.sourceLocation, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+      throw MambaException(
+        'A new occupant appeared at the original source location; the restore '
+        'is refused.',
+        exitCode: 6,
+      );
+    }
+    final attempt = _restoreAttempt(
+      restoreRoot,
+      subject.transaction.transactionId,
+    );
+    final evidence = ConversionRestoreEvidence(
+      restoreId: _restoreId(subject.transaction.transactionId, attempt),
+      transactionId: subject.transaction.transactionId,
+      phase: ConversionRestorePhase.prepared,
+      createdScope: context.scope.name,
+      sourceLocation: subject.sourceLocation,
+      targetLocation: subject.targetLocation,
+      artifactKind: subject.transaction.kind,
+      subjectKind: 'authoring',
+      sourceScope: context.scope.name,
+      targetScope: context.scope.name,
+      inPlace: subject.inPlace,
+      payloadPath: subject.payloadPath,
+      payloadDigest: _authoringDigest(subject.payloadEntries),
+      outgoingDigest: _authoringDigest(subject.targetEntries),
+      observations: const <String, Object?>{},
+      sourceManaged: false,
+      approvals: const <String, bool>{'authoringRestore': true},
+    );
+    final observations = await _authoringObservations(context, subject);
+    final current = evidence.copyWith(observations: observations);
+    final data = <String, Object?>{
+      'transactionId': subject.transaction.transactionId,
+      'restoreId': current.restoreId,
+      'action': 'restore',
+      'scope': context.scope.name,
+      'phase': 'completed',
+      'restorePhase': current.phase.name,
+      'resume': false,
+      'source': subject.sourceLocation,
+      'target': subject.targetLocation,
+      'inPlace': subject.inPlace,
+      'sourceManaged': false,
+      'observations': observations,
+    };
+    data['planId'] = _reviewDigest(data);
+    return ConversionRestorePlan(evidence: current, data: data);
+  }
+
+  /// The exact current observations of an ordinary conversion.
+  Future<Map<String, Object?>> _authoringObservations(
+    LifecycleContext context,
+    _AuthoringSubject subject,
+  ) async {
+    final observations = <String, Object?>{};
+    for (final path in <String>{
+      subject.sourceLocation,
+      subject.targetLocation,
+      subject.payloadPath,
+    }) {
+      _requireUnlinked(path);
+      observations[path] =
+          _io.type(path, followLinks: false) == FileSystemEntityType.notFound
+          ? null
+          : _manifestDigest(path);
+    }
+    return observations;
+  }
+
+  /// Applies the reviewed inverse restore of an ordinary conversion.
+  Future<Map<String, Object?>> _applyAuthoring(
+    LifecycleContext context,
+    _AuthoringSubject subject,
+    ConversionRestorePlan plan,
+  ) async {
+    final evidence = plan.evidence;
+    final staging = _stagingPath(context, evidence.restoreId);
+    final restored = _restoredPath(evidence, staging);
+    final outgoing = _outgoingPath(evidence, staging);
+    final decision = _io.fs.path.join(staging, 'commit.json');
+    try {
+      _requireUnlinked(staging);
+      final resuming = plan.data['resume'] == true;
+      if (resuming &&
+          _io.type(decision, followLinks: false) ==
+              FileSystemEntityType.notFound) {
+        _rollbackAuthoring(context, evidence, subject);
+        return <String, Object?>{
+          'restorePhase': ConversionRestorePhase.rolledBack.name,
+          'rolledBack': true,
+        };
+      }
+      if (_io.type(staging, followLinks: false) ==
+          FileSystemEntityType.notFound) {
+        _io.createDirectory(staging);
+      }
+      _state.protectDirectory(staging);
+      _persist(
+        context,
+        evidence.copyWith(phase: ConversionRestorePhase.prepared),
+      );
+
+      // Stage the retained independent payload of the original source.
+      if (_io.type(restored, followLinks: false) ==
+          FileSystemEntityType.notFound) {
+        _copyTree(evidence.payloadPath, restored);
+      }
+      if (!_sameAuthoringContent(
+        subject.payloadEntries,
+        _authoringEntries(restored),
+      )) {
+        throw MambaException(
+          'The staged inverse restore payload does not match the retained '
+          'recovery payload.',
+          exitCode: 6,
+        );
+      }
+
+      // Preserve the outgoing target as evidence before it is retired.
+      final decided =
+          _io.type(decision, followLinks: false) == FileSystemEntityType.file;
+      if (_io.type(outgoing, followLinks: false) ==
+          FileSystemEntityType.notFound) {
+        if (decided) {
+          throw MambaException(
+            'The retained outgoing target evidence is missing; the inverse '
+            'restore cannot be completed.',
+            exitCode: 6,
+          );
+        }
+        if (_io.type(subject.targetLocation, followLinks: false) ==
+            FileSystemEntityType.notFound) {
+          throw MambaException(
+            'The converted target is missing; the outgoing target evidence '
+            'cannot be preserved.',
+            exitCode: 6,
+          );
+        }
+        _copyTree(subject.targetLocation, outgoing);
+      }
+      if (!_sameAuthoringContent(
+        subject.targetEntries,
+        _authoringEntries(outgoing),
+      )) {
+        throw MambaException(
+          'The retained outgoing target evidence changed.',
+          exitCode: 6,
+        );
+      }
+      _persist(
+        context,
+        evidence.copyWith(phase: ConversionRestorePhase.published),
+      );
+
+      // Publish the original source at its original location.
+      if (subject.inPlace) {
+        _io.delete(subject.sourceLocation);
+      }
+      _restoreAuthoringSource(subject, restored);
+      if (!_sameAuthoringContent(
+        subject.payloadEntries,
+        _authoringEntries(subject.sourceLocation),
+      )) {
+        throw MambaException(
+          'The restored source does not match the retained recovery payload.',
+          exitCode: 6,
+        );
+      }
+
+      // Commit the inverse decision.
+      _writeRestoreDecision(staging, evidence);
+      _persist(
+        context,
+        evidence.copyWith(phase: ConversionRestorePhase.committed),
+      );
+
+      // Retire the converted target. Its content is retained as evidence.
+      if (!subject.inPlace &&
+          _io.type(subject.targetLocation, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+        if (!_sameAuthoringContent(
+          subject.targetEntries,
+          _authoringEntries(subject.targetLocation),
+        )) {
+          throw MambaException(
+            'The converted target changed; the restore is refused.',
+            exitCode: 6,
+          );
+        }
+        _io.delete(subject.targetLocation);
+      }
+      _persist(
+        context,
+        evidence.copyWith(phase: ConversionRestorePhase.reconciled),
+      );
+      final completed = evidence.copyWith(
+        phase: ConversionRestorePhase.completed,
+      );
+      _persist(context, completed);
+      return <String, Object?>{
+        'restorePhase': completed.phase.name,
+        'outgoingTargetEvidence': outgoing,
+        'restoredSource': subject.sourceLocation,
+        'retiredTarget': subject.targetLocation,
+        'receiptId': subject.transaction.receiptId,
+      };
+    } on MambaException catch (error) {
+      _markRecoveryRequired(context, evidence);
+      throw error;
+    } catch (error) {
+      _markRecoveryRequired(context, evidence);
+      throw MambaException(
+        'The inverse restore needs recovery: $error',
+        exitCode: 6,
+      );
+    }
+  }
+
+  /// Restores the original source of an ordinary conversion.
+  void _restoreAuthoringSource(_AuthoringSubject subject, String restored) {
+    if (subject.payloadIsFile) {
+      _io.createDirectory(_io.fs.path.dirname(subject.sourceLocation));
+      _io.copyFile(
+        _io.fs.path.join(restored, 'source'),
+        subject.sourceLocation,
+      );
+      return;
+    }
+    _copyTree(restored, subject.sourceLocation);
+  }
+
+  /// Rolls an interrupted ordinary inverse restore back.
+  void _rollbackAuthoring(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+    _AuthoringSubject subject,
+  ) {
+    final staging = _stagingPath(context, evidence.restoreId);
+    final outgoing = _outgoingPath(evidence, staging);
+    if (subject.inPlace) {
+      if (_io.type(outgoing, followLinks: false) ==
+          FileSystemEntityType.notFound) {
+        throw MambaException(
+          'The retained outgoing target evidence is missing; the inverse '
+          'restore cannot be rolled back safely.',
+          exitCode: 6,
+        );
+      }
+      if (_io.type(subject.sourceLocation, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        _io.delete(subject.sourceLocation);
+      }
+      _copyTree(outgoing, subject.sourceLocation);
+    } else if (_io.type(subject.sourceLocation, followLinks: false) !=
+            FileSystemEntityType.notFound &&
+        _sameAuthoringContent(
+          subject.payloadEntries,
+          _authoringEntries(subject.sourceLocation),
+        )) {
+      _io.delete(subject.sourceLocation);
+    }
+    _persist(
+      context,
+      evidence.copyWith(phase: ConversionRestorePhase.rolledBack),
+    );
+  }
+
+  /// The content evidence of one location, bound like the publisher binds it.
+  List<Map<String, Object?>> _authoringEntries(String path) =>
+      authoringContentEvidence(_io.fs, path);
+
+  /// Whether two content manifests describe the same content.
+  ///
+  /// The retained payload of a single file source holds the marker under its
+  /// own name, while the restored source carries the original name. The
+  /// content itself must still be identical.
+  bool _sameAuthoringContent(
+    List<Map<String, Object?>> recorded,
+    List<Map<String, Object?>> current,
+  ) {
+    if (recorded.length == 1 &&
+        current.length == 1 &&
+        recorded.single['path'] == 'source') {
+      return recorded.single['sha256'] == current.single['sha256'] &&
+          recorded.single['length'] == current.single['length'] &&
+          recorded.single['type'] == current.single['type'];
+    }
+    return jsonEncode(recorded) == jsonEncode(current);
+  }
+
+  /// The digest that binds a content manifest.
+  String _authoringDigest(List<Map<String, Object?>> entries) =>
+      sha256.convert(utf8.encode(jsonEncode(entries))).toString();
+
+  /// The relevant pack authority of the restored participants.
+  ///
+  /// The authority is the current content of the pack groups of the shared
+  /// state document: the packs, the snapshots, the approvals, the selections
+  /// and the operations that mention the restored participants. The restore
+  /// binds the exact observation, refuses a changed authority and never
+  /// reinstates a retired upstream tracking.
+  Map<String, Object?> _packAuthority(
+    LifecycleContext context,
+    Set<String> installationIds,
+    Set<String> packKeys,
+    Set<String> resourceNames,
+  ) {
+    final authority = <String, Object?>{};
+    for (final scope in const [LifecycleScope.project, LifecycleScope.user]) {
+      final path = _io.fs.path.join(
+        context.stateRoot(scope),
+        'installations.json',
+      );
+      final type = _io.type(path, followLinks: false);
+      if (type == FileSystemEntityType.notFound) continue;
+      if (type != FileSystemEntityType.file) {
+        throw MambaException(
+          'The installation ledger is not a regular file: $path',
+          exitCode: 6,
+        );
+      }
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(utf8.decode(_io.read(path, 8 * 1024 * 1024)));
+      } on FormatException catch (error) {
+        throw MambaException(
+          'The installation ledger is not usable: ${error.message}',
+          exitCode: 6,
+        );
+      }
+      if (decoded is! Map<String, Object?>) {
+        throw MambaException(
+          'The installation ledger is not an object.',
+          exitCode: 6,
+        );
+      }
+      for (final group in const [
+        'packs',
+        'snapshots',
+        'approvals',
+        'selections',
+        'operations',
+      ]) {
+        final entries = decoded[group];
+        if (entries is! List) continue;
+        final relevant = <Map<String, Object?>>[];
+        for (final entry in entries) {
+          if (entry is! Map) continue;
+          final map = Map<String, Object?>.from(entry);
+          if (_mentionsPack(map, installationIds, packKeys, resourceNames)) {
+            relevant.add(map);
+          }
+        }
+        if (relevant.isEmpty) continue;
+        relevant.sort(
+          (left, right) => jsonEncode(left).compareTo(jsonEncode(right)),
+        );
+        authority['$scope/$group'] = relevant;
+      }
+    }
+    return authority;
+  }
+
+  /// Whether one pack record mentions the restored participants.
+  bool _mentionsPack(
+    Map<String, Object?> record,
+    Set<String> installationIds,
+    Set<String> packKeys,
+    Set<String> resourceNames,
+  ) {
+    for (final value in record.values) {
+      if (value is! String) continue;
+      if (installationIds.contains(value) ||
+          packKeys.contains(value) ||
+          resourceNames.contains(value)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Whether the upstream pack membership of the source is still active.
+  ///
+  /// The membership is active only while the pack authority still records an
+  /// approval or a selection of the restored resource. A retired membership is
+  /// never resurrected by the restore.
+  bool _packMembershipActive(
+    Map<String, Object?> authority,
+    String? resourceName,
+  ) {
+    if (resourceName == null) return false;
+    for (final entry in authority.entries) {
+      final group = entry.key.split('/').last;
+      if (group != 'approvals' && group != 'selections') continue;
+      final records = entry.value;
+      if (records is! List) continue;
+      for (final record in records.cast<Map<String, Object?>>()) {
+        if (record['resourceName'] == resourceName) return true;
+      }
+    }
+    return false;
+  }
+
+  /// The upstream pack binding of the restored participants.
+  ///
+  /// The binding names the pack keys and the native resource names of the
+  /// participants and observes the current pack authority that mentions them.
+  _PackBinding _packBinding(
+    LifecycleContext context,
+    _RestoreOwnership ownership,
+  ) {
+    final packKeys = <String>{};
+    final resourceNames = <String>{};
+    final installationIds = <String>{};
+    for (final record in <Map<String, Object?>?>[
+      ownership.sourceRecord,
+      ownership.targetRecord,
+      ownership.retiredSourceRecord,
+    ]) {
+      if (record == null) continue;
+      final origin = record['origin'];
+      if (origin is! Map) continue;
+      final packKey = origin['packKey'];
+      if (packKey is String) packKeys.add(packKey);
+      final resourceName = origin['resourceName'];
+      if (resourceName is String) resourceNames.add(resourceName);
+      final installationId = record['installationId'];
+      if (installationId is String) installationIds.add(installationId);
+    }
+    final authority = _packAuthority(
+      context,
+      installationIds,
+      packKeys,
+      resourceNames,
+    );
+    return _PackBinding(
+      packKeys: packKeys.toList()..sort(),
+      resourceNames: resourceNames.toList()..sort(),
+      authority: authority,
+    );
+  }
+
+  /// Verifies that the observed pack authority did not change.
+  void _verifyPackAuthority(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+  ) {
+    final installationIds = <String>{
+      if (evidence.sourceInstallationId != null) evidence.sourceInstallationId!,
+      if (evidence.targetInstallationId != null) evidence.targetInstallationId!,
+    };
+    final current = _packAuthority(
+      context,
+      installationIds,
+      evidence.packKeys.toSet(),
+      evidence.resourceNames.toSet(),
+    );
+    if (jsonEncode(current) != jsonEncode(evidence.packAuthority)) {
+      throw MambaException(
+        'The upstream pack authority changed; the restore is refused.',
+        exitCode: 6,
+      );
+    }
+  }
 
   /// Reads the completed conversion that is restored.
   Future<ConversionEvidence> _readOriginal(
@@ -295,6 +1027,21 @@ final class ConversionRestoreService {
         );
       }
       final evidence = terminal.single;
+      final own = _ownEvidencePaths(context, evidence);
+      // The cleanup honours the pending authority: a reservation of the
+      // source, the target, the identities or the pack keys refuses it.
+      _state.checkPendingConversions(
+        context,
+        locations: <String>[evidence.sourceLocation, evidence.targetLocation],
+        installationIds: <String>{
+          if (evidence.sourceInstallationId != null)
+            evidence.sourceInstallationId!,
+          if (evidence.targetInstallationId != null)
+            evidence.targetInstallationId!,
+        },
+        packKeys: evidence.packKeys.toSet(),
+        validatedRecoveryPaths: own,
+      );
       final staging = _stagingPath(context, evidence.restoreId);
       final roots = _privateRoots(staging);
       final observations = <String, Object?>{};
@@ -335,10 +1082,15 @@ final class ConversionRestoreService {
         }
         _io.delete(path);
       }
+      _cleanupParticipantMarker(context, evidence);
       return LifecycleResult(
         command: 'prompt conversion restore',
         outcome: 'cleaned',
-        data: <String, Object?>{...data, 'cleanupStatus': 'cleaned'},
+        data: <String, Object?>{
+          ...data,
+          'cleanupStatus': 'cleaned',
+          'peerMarkerRemoved': _peerScope(context, evidence) != null,
+        },
       );
     }
 
@@ -348,6 +1100,53 @@ final class ConversionRestoreService {
       location: context.stateRoot(),
       body: run,
     );
+  }
+
+  /// Removes the participant marker of the other scope.
+  ///
+  /// The marker is the reservation of the inverse restore in the scope that
+  /// does not coordinate it. The cleanup removes it only when it carries the
+  /// same inverse restore; the evidence document of the coordinator scope
+  /// remains as the audit tombstone.
+  void _cleanupParticipantMarker(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+  ) {
+    final peer = _peerScope(context, evidence);
+    if (peer == null) return;
+    final path = _io.fs.path.join(
+      _restoreRootOf(context.stateRoot(peer)),
+      '${evidence.restoreId}.json',
+    );
+    final type = _io.type(path, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return;
+    if (type != FileSystemEntityType.file) {
+      throw MambaException(
+        'The inverse restore participant authority is not a file.',
+        exitCode: 6,
+      );
+    }
+    final ConversionRestoreEvidence marker;
+    try {
+      marker = ConversionRestoreEvidence.decode(
+        utf8.decode(_io.read(path, maxConversionRestoreEvidenceBytes)),
+      );
+    } on FormatException catch (error) {
+      throw MambaException(
+        'The inverse restore participant authority is invalid: '
+        '${error.message}',
+        exitCode: 6,
+      );
+    }
+    if (marker.restoreId != evidence.restoreId ||
+        marker.transactionId != evidence.transactionId) {
+      throw MambaException(
+        'The inverse restore participant authority belongs to another '
+        'restore; the cleanup is refused.',
+        exitCode: 6,
+      );
+    }
+    _io.delete(path);
   }
 
   /// The private staging roots of one inverse restore.
@@ -493,6 +1292,7 @@ final class ConversionRestoreService {
     }
 
     final ownership = await _reviewOwnership(context, original);
+    final pack = _packBinding(context, ownership);
     final attempt = _restoreAttempt(restoreRoot, transactionId);
     final evidence = ConversionRestoreEvidence(
       restoreId: _restoreId(transactionId, attempt),
@@ -514,6 +1314,10 @@ final class ConversionRestoreService {
       targetInstallationId: target.identity?.installationId,
       sourceRecord: ownership.sourceRecord,
       targetRecord: ownership.targetRecord,
+      retiredSourceRecord: ownership.retiredSourceRecord,
+      packKeys: pack.packKeys,
+      resourceNames: pack.resourceNames,
+      packAuthority: pack.authority,
       approvals: original.approvals,
     );
     final observations = await _observations(context, original, evidence);
@@ -626,6 +1430,7 @@ final class ConversionRestoreService {
         }
       }
     }
+    Map<String, Object?>? retiredSourceRecord;
     if (sourceId != null && sourceId != targetId) {
       // The retired source record must still be retired by this conversion.
       // A later edit or a new installation of the same identity is refused.
@@ -647,10 +1452,12 @@ final class ConversionRestoreService {
           InstallationRecord.fromJson(sourceRecord),
         );
       }
+      retiredSourceRecord = retired.single.toJson();
     }
     return _RestoreOwnership(
       sourceRecord: sourceRecord,
       targetRecord: targetRecord,
+      retiredSourceRecord: retiredSourceRecord,
     );
   }
 
@@ -856,6 +1663,8 @@ final class ConversionRestoreService {
         context,
         evidence.copyWith(phase: ConversionRestorePhase.prepared),
       );
+      // The upstream pack authority must still be the observed authority.
+      _verifyPackAuthority(context, evidence);
 
       // Stage the retained independent payload of the original source.
       if (_io.type(restored, followLinks: false) ==
@@ -981,18 +1790,38 @@ final class ConversionRestoreService {
   ) async {
     final restored = <LifecycleScope, InstallationRecord>{};
     final retired = <LifecycleScope, InstallationRecord>{};
+    final previous = <LifecycleScope, InstallationRecord>{};
     final sourceRecord = evidence.sourceRecord;
     if (sourceRecord != null) {
       final record = InstallationRecord.fromJson(sourceRecord);
       final scope = LifecycleScope.values.byName(record.scope.name);
-      restored[scope] = record.copyWith(
-        lifecycle: 'live',
-        origin: <String, Object?>{
-          ...record.origin,
-          'restoredFromConversionTransaction': original.transactionId,
-          'conversionRestoredBy': evidence.restoreId,
-        },
-      );
+      final origin = <String, Object?>{
+        ...record.origin,
+        'restoredFromConversionTransaction': original.transactionId,
+        'conversionRestoredBy': evidence.restoreId,
+      };
+      // The upstream tracking is reinstated only while the pack authority
+      // still records the membership of the resource. A retired membership is
+      // never resurrected implicitly.
+      final resourceName = record.origin['resourceName'];
+      if (!_packMembershipActive(
+        evidence.packAuthority,
+        resourceName is String ? resourceName : null,
+      )) {
+        origin.remove('track');
+      }
+      restored[scope] = record.copyWith(lifecycle: 'live', origin: origin);
+      final retiredSource = evidence.retiredSourceRecord;
+      if (retiredSource != null) {
+        final before = InstallationRecord.fromJson(retiredSource);
+        if (before.installationId != record.installationId) {
+          throw MambaException(
+            'The original ownership changed; the restore is refused.',
+            exitCode: 6,
+          );
+        }
+        previous[scope] = before;
+      }
     }
     final targetRecord = evidence.targetRecord;
     if (targetRecord != null) {
@@ -1004,6 +1833,7 @@ final class ConversionRestoreService {
       context: context,
       restored: restored,
       retiredTargets: retired,
+      previous: previous,
       restoreId: evidence.restoreId,
     );
   }
@@ -1168,8 +1998,9 @@ final class ConversionRestoreService {
 
   /// Verifies the participant marker of the other scope.
   ///
-  /// A missing or changed marker is missing authority: the inverse restore is
-  /// refused instead of continuing with a half reserved participant.
+  /// A missing marker is recoverable: the apply re-establishes the
+  /// reservation before any live effect. A marker that carries another
+  /// document is a substituted reservation and is refused.
   void _verifyParticipantMarker(
     LifecycleContext context,
     ConversionRestoreEvidence evidence,
@@ -1182,10 +2013,9 @@ final class ConversionRestoreService {
     );
     final type = _io.type(path, followLinks: false);
     if (type == FileSystemEntityType.notFound) {
-      throw MambaException(
-        'The inverse restore participant authority is missing.',
-        exitCode: 6,
-      );
+      // The reservation is re-established by the apply before it publishes
+      // anything. The reservation is never silently lost.
+      return;
     }
     if (type != FileSystemEntityType.file) {
       throw MambaException(
@@ -1317,10 +2147,73 @@ final class ConversionRestoreService {
       sha256.convert(utf8.encode(jsonEncode(data))).toString();
 }
 
+/// The upstream pack binding of one reviewed inverse restore.
+final class _PackBinding {
+  const _PackBinding({
+    required this.packKeys,
+    required this.resourceNames,
+    required this.authority,
+  });
+
+  /// The reserved upstream pack keys.
+  final List<String> packKeys;
+
+  /// The observed native resource names.
+  final List<String> resourceNames;
+
+  /// The observed pack authority.
+  final Map<String, Object?> authority;
+}
+
+/// The durable authority of one ordinary completed conversion.
+final class _AuthoringSubject {
+  const _AuthoringSubject({
+    required this.transaction,
+    required this.sourceLocation,
+    required this.targetLocation,
+    required this.payloadPath,
+    required this.payloadEntries,
+    required this.targetEntries,
+    required this.payloadIsFile,
+    required this.inPlace,
+  });
+
+  /// The completed authoring transaction of the ordinary conversion.
+  final AuthoringTransaction transaction;
+
+  /// The original location of the converted source.
+  final String sourceLocation;
+
+  /// The location of the converted target that the restore retires.
+  final String targetLocation;
+
+  /// The retained independent payload of the original source.
+  final String payloadPath;
+
+  /// The recorded content evidence of the retained payload.
+  final List<Map<String, Object?>> payloadEntries;
+
+  /// The recorded content evidence of the published target.
+  final List<Map<String, Object?>> targetEntries;
+
+  /// Whether the retained payload holds a single marker file.
+  final bool payloadIsFile;
+
+  /// Whether the conversion replaced the source in place.
+  final bool inPlace;
+}
+
 /// The ownership observations of one reviewed inverse restore.
 final class _RestoreOwnership {
-  const _RestoreOwnership({this.sourceRecord, this.targetRecord});
+  const _RestoreOwnership({
+    this.sourceRecord,
+    this.targetRecord,
+    this.retiredSourceRecord,
+  });
 
   final Map<String, Object?>? sourceRecord;
   final Map<String, Object?>? targetRecord;
+
+  /// The retired record of the original source at review time.
+  final Map<String, Object?>? retiredSourceRecord;
 }

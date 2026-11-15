@@ -1040,13 +1040,19 @@ interface class LifecycleStateService {
   /// The restore reinstates the original installation identity and history and
   /// retires the converted target. A changed target ownership, a missing
   /// ledger or a changed membership is refused; the restore never overwrites
-  /// a later edit. The ledgers of the participating scopes are written one
-  /// scope at a time, so a cross-scope restore can be observed half applied
-  /// and stays guarded until it is reconciled.
+  /// a later edit.
+  ///
+  /// The transition is idempotent: a resumed restore accepts the exact state
+  /// that its own earlier write produced and refuses every other occupant. A
+  /// crash after a durable ledger write therefore resumes instead of wedging.
+  /// The ledgers of the participating scopes are written one scope at a time,
+  /// so a cross-scope restore can be observed half applied and stays guarded
+  /// until it is reconciled.
   Future<void> applyConversionRestore({
     required LifecycleContext context,
     required Map<LifecycleScope, InstallationRecord> restored,
     required Map<LifecycleScope, InstallationRecord> retiredTargets,
+    required Map<LifecycleScope, InstallationRecord> previous,
     required String restoreId,
   }) async {
     final scopes = <LifecycleScope>{...restored.keys, ...retiredTargets.keys};
@@ -1054,56 +1060,56 @@ interface class LifecycleStateService {
       final state = context.stateRoot(scope);
       final records = _readRecords(state);
       final updated = <InstallationRecord>[...records];
+      // The acceptable forms of every touched identity: the reviewed
+      // previous state, the exact state that this restore produced, or the
+      // intended new state. Every other occupant is refused.
+      final acceptable = <String, Set<String>>{};
+      final intended = <String, InstallationRecord>{};
+      final refusals = <String, String>{};
       final retired = retiredTargets[scope];
       if (retired != null) {
-        final index = updated.indexWhere(
-          (record) => record.installationId == retired.installationId,
+        final removed = retired.copyWith(
+          lifecycle: 'removed',
+          origin: <String, Object?>{
+            ...retired.origin,
+            'conversionRestoredBy': restoreId,
+          },
         );
-        if (index < 0) {
-          throw MambaException(
-            'The converted target ownership is missing; the restore is refused.',
-            exitCode: 6,
-          );
-        }
-        if (updated[index].lifecycle != 'live') {
-          if (jsonEncode(updated[index].toJson()) !=
-              jsonEncode(retired.toJson())) {
-            throw MambaException(
-              'The converted target ownership changed; the restore is refused.',
-              exitCode: 6,
-            );
-          }
-        } else {
-          updated[index] = retired.copyWith(
-            lifecycle: 'removed',
-            origin: <String, Object?>{
-              ...retired.origin,
-              'conversionRestoredBy': restoreId,
-            },
-          );
-        }
+        acceptable
+            .putIfAbsent(retired.installationId, () => <String>{})
+            .add(jsonEncode(retired.toJson()));
+        acceptable[retired.installationId]!.add(jsonEncode(removed.toJson()));
+        intended[retired.installationId] = removed;
+        refusals[retired.installationId] =
+            'The converted target ownership changed; the restore is refused.';
       }
       final reinstate = restored[scope];
       if (reinstate != null) {
-        final index = updated.indexWhere(
-          (record) => record.installationId == reinstate.installationId,
-        );
-        if (index >= 0) {
-          // The restored identity replaces the retired target record of the
-          // same identity; the outgoing target keeps its own evidence.
-          final replacesTarget =
-              retired != null &&
-              retired.installationId == reinstate.installationId;
-          if (!replacesTarget && updated[index].lifecycle != 'removed') {
-            throw MambaException(
-              'The original ownership changed; the restore is refused.',
-              exitCode: 6,
-            );
-          }
-          updated[index] = reinstate;
-        } else {
-          updated.add(reinstate);
+        acceptable
+            .putIfAbsent(reinstate.installationId, () => <String>{})
+            .add(jsonEncode(reinstate.toJson()));
+        final before = previous[scope];
+        if (before != null &&
+            before.installationId == reinstate.installationId) {
+          acceptable[reinstate.installationId]!.add(
+            jsonEncode(before.toJson()),
+          );
         }
+        intended[reinstate.installationId] = reinstate;
+        refusals[reinstate.installationId] =
+            'The original ownership changed; the restore is refused.';
+      }
+      for (final entry in intended.entries) {
+        final index = updated.indexWhere(
+          (record) => record.installationId == entry.key,
+        );
+        if (index < 0 ||
+            !acceptable[entry.key]!.contains(
+              jsonEncode(updated[index].toJson()),
+            )) {
+          throw MambaException(refusals[entry.key]!, exitCode: 6);
+        }
+        updated[index] = entry.value;
       }
       final locations = <String>{};
       for (final record in updated) {
@@ -4710,6 +4716,7 @@ interface class LifecycleStateService {
         _coordinationStates(context),
         locations: locations,
         installationIds: installationIds,
+        packKeys: packKeys,
         validatedPaths: validatedRecoveryPaths,
       );
       final touchedIds = <String>{...installationIds};
@@ -4905,6 +4912,7 @@ interface class LifecycleStateService {
     Iterable<String> states, {
     Iterable<String> locations = const [],
     Set<String> installationIds = const {},
+    Set<String> packKeys = const {},
     Set<String> validatedPaths = const {},
     String? location,
   }) {
@@ -4943,7 +4951,8 @@ interface class LifecycleStateService {
         final reservedIdentity =
             installationIds.contains(evidence.sourceInstallationId) ||
             installationIds.contains(evidence.targetInstallationId);
-        if (reserved || reservedIdentity) {
+        final reservedPack = evidence.packKeys.any(packKeys.contains);
+        if (reserved || reservedIdentity || reservedPack) {
           throw MambaException(
             'A pending inverse restore ${evidence.restoreId} blocks this '
             'mutation.',
