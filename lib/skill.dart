@@ -6,12 +6,14 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'src/skill_files.dart';
+import 'src/services/guided_authoring_service.dart';
 import 'src/services/prompt_read_service.dart';
 import 'src/services/prompt_inspection_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 import 'lifecycle.dart';
+import 'skill_create_command.dart';
 import 'skill_lifecycle_commands.dart';
 
 typedef InspectOperation = String Function(String skill);
@@ -25,12 +27,14 @@ final class SkillCommand extends GroupCommand {
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     SkillLifecycleService? lifecycle,
     SkillInstallationService? installation,
+    GuidedAuthoringService? guided,
   }) : super(
          _children(
            inspect ?? ((skill) => inspectSkill(skill, fs: fileSystem)),
            read,
            lifecycle,
            installation,
+           guided,
            fileSystem,
          ),
        );
@@ -40,11 +44,15 @@ final class SkillCommand extends GroupCommand {
     PromptReadService? read,
     SkillLifecycleService? lifecycle,
     SkillInstallationService? installation,
+    GuidedAuthoringService? guided,
     fslib.FileSystem fileSystem,
   ) {
     final service = lifecycle ?? SkillLifecycleService(fileSystem: fileSystem);
     final reader = read ?? PromptReadService(fileSystem: fileSystem);
     return [
+      SkillCreateCommand(
+        guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
+      ),
       SkillListCommand(service),
       InspectCommand(inspect, read: reader, fileSystem: fileSystem),
       ValidateCommand(read: reader, fileSystem: fileSystem),

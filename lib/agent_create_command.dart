@@ -1,230 +1,232 @@
-import 'dart:async';
-import 'dart:io';
+import 'dart:convert';
 
-import 'package:file/file.dart' as fslib;
-import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
-import 'authoring_command_support.dart';
 import 'lifecycle.dart' show LifecycleOutputFormat;
-import 'src/services/agent_authoring_service.dart';
-import 'src/services/bound_role_service.dart';
+import 'src/authoring/authoring_inputs.dart';
+import 'src/authoring/bound_role_authoring_inputs.dart';
+import 'src/authoring/guided_create_command.dart';
+import 'src/authoring/guided_create_fields.dart';
+import 'src/services/bound_role_authoring_service.dart';
+import 'src/services/bound_role_service.dart' show BoundOwnership;
 import 'src/services/lifecycle_state_service.dart';
 
-final class AgentCreateCommand extends Command {
+/// The guidance that replaces the retired JSON operation request.
+const String agentCreateMigrationGuidance =
+    'JSON operation-request authoring is retired. Use the named native '
+    'selections instead: --profile claude|codex|pi, --name, --description, '
+    '--model, --tools, --skills, --argument-hint, --license, '
+    '--compatibility, --body-file, --body-stdin or --body-text, --output, '
+    '--manage, --scope, --apply, --yes and --plan-id. For a Codex bound role '
+    'use --role-key, --config-file, --ownership, --definition-source, '
+    '--definition-output and --ack-clients-stopped.';
+
+/// The `agent create` command.
+///
+/// The command owns two routes that are switched together: the standalone
+/// creation of one native Agent and the explicit creation of a Codex
+/// bound-role Agent. The retired JSON operation request is refused with
+/// migration guidance; there is no compatibility escape.
+final class AgentCreateCommand extends GuidedCreateCommand {
   AgentCreateCommand({
-    AgentAuthoringService? service,
-    BoundRoleService? boundRoleService,
-    this._confirmation = defaultAuthoringConfirmation,
-  }) : _fileSystem = service?.fileSystem ?? const local.LocalFileSystem(),
-       _service = service ?? AgentAuthoringService(),
-       _boundRoleService =
-           boundRoleService ??
-           BoundRoleService(
-             fileSystem: service?.fileSystem ?? const local.LocalFileSystem(),
-           ),
+    required super.guided,
+    BoundRoleAuthoringService? boundRole,
+    super.terminal,
+  }) : _boundRole =
+           boundRole ??
+           BoundRoleAuthoringService(fileSystem: guided.fileSystem),
        super(
-         discretionaryPositionals: [_requestFile],
+         kind: AuthoringKind.agent,
+         positionals: <DiscretionaryPositional<Object?>>[_retiredRequest],
          options: [
-           _request,
-           _scope,
-           _format,
-           _cwd,
-           _projectRoot,
-           _home,
-           _claudeConfigDir,
-           _codexHome,
-           _piAgentDir,
-           _stateDir,
-           _planId,
+           _retiredRequestOption,
+           _roleKey,
+           _configFile,
+           _ownership,
+           _definitionSource,
+           _definitionOutput,
          ],
-         flags: const [
-           _apply,
-           _dryRun,
-           _yes,
-           _interactive,
-           _showInstructions,
-           _ackClientsStopped,
-           _clientsStopped,
-         ],
-         conflicts: const {
-           'apply': ['dry-run'],
-         },
+         flags: const [_ackClientsStopped],
          longDescription:
-             'Create a native Agent from explicit declarations or preserve '
-             'the version-1 Codex bound-role creation request workflow. The '
-             'canonical request is positional; --request remains a compatible '
-             'alias. Planning is read-only by default.',
+             'Create one native Agent, or one explicit Codex bound-role '
+             'Agent, from named native selections and a plain-text '
+             'instruction body. Select the native profile explicitly with '
+             '--profile; it is never inferred from a file name. The '
+             'instruction body comes from --body-file, --body-stdin or '
+             '--body-text; on a usable terminal the guided flow opens the '
+             'configured editor for the body when no body was supplied. A '
+             'new output is author-only: no installation record is created '
+             'unless --manage selects a supported managed form. The '
+             'reviewed proposal names its target, its ownership and its '
+             'changes before the publication is confirmed. --dry-run plans '
+             'without an editor, without a draft and without a write. A '
+             'published output removes the retained application-owned draft '
+             'and never removes the original body file. The bound-role '
+             'route publishes the reviewed Codex definition of '
+             '--definition-source and registers the role in the declaring '
+             'config only when --ownership selects it; a registration '
+             'requires --ack-clients-stopped and a separate approval. No '
+             'harness, provider or client is executed. The retired JSON '
+             'operation request is refused: $agentCreateMigrationGuidance',
        );
 
-  final AgentAuthoringService _service;
-  final fslib.FileSystem _fileSystem;
-  final BoundRoleService _boundRoleService;
-  final AuthoringConfirmation _confirmation;
+  final BoundRoleAuthoringService _boundRole;
 
-  static final _requestFile = FilePathPositional.optional(
+  static final _retiredRequest = FilePathPositional.optional(
     'operation-request',
     suffixes: const ['.json'],
+    description:
+        'Retired. A JSON operation request is refused with migration '
+        'guidance.',
   );
-  static final _request = FilePathOption('request', suffixes: const ['.json']);
-  static final _scope = ChoiceOption.withDefault(
-    'scope',
-    choices: const [LifecycleScope.project, LifecycleScope.user],
-    defaultValue: LifecycleScope.project,
-    description: 'Installation scope for the created target.',
+
+  static final _retiredRequestOption = FilePathOption(
+    'request',
+    suffixes: const ['.json'],
+    description:
+        'Retired. A JSON operation request is refused with migration '
+        'guidance.',
   );
-  static final _format = ChoiceOption.withDefault(
-    'format',
-    choices: LifecycleOutputFormat.values,
-    defaultValue: LifecycleOutputFormat.text,
-    description: 'Success output format.',
+
+  static final _roleKey = StringOption(
+    BoundRoleAuthoringFlags.roleKey,
+    description: 'The Codex role key of the created bound role.',
   );
-  static final _cwd = FolderPathOption('cwd');
-  static final _projectRoot = FolderPathOption('project-root');
-  static final _home = FolderPathOption('home');
-  static final _claudeConfigDir = FolderPathOption('claude-config-dir');
-  static final _codexHome = FolderPathOption('codex-home');
-  static final _piAgentDir = FolderPathOption('pi-agent-dir');
-  static final _stateDir = FolderPathOption('state-dir');
-  static final _planId = StringOption(
-    'plan-id',
-    description: 'Exact reviewed plan identity required for apply.',
+  static final _configFile = StringOption(
+    BoundRoleAuthoringFlags.configFile,
+    description: 'The declaring Codex config that owns the role registration.',
   );
-  static const _apply = BooleanFlag(
-    'apply',
-    description: 'Publish the reviewed plan instead of only planning.',
+  static final _ownership = ChoiceOption(
+    BoundRoleAuthoringFlags.ownership,
+    choices: BoundOwnership.values,
+    description:
+        'The ownership the bound-role operation claims: the definition, '
+        'the definition and its registration, or the registration alone.',
   );
-  static const _dryRun = BooleanFlag(
-    'dry-run',
-    description: 'Force read-only planning with no management artifacts.',
+  static final _definitionSource = StringOption(
+    BoundRoleAuthoringFlags.definitionSource,
+    description:
+        'The reviewed native Codex definition that the bound role '
+        'publishes.',
   );
-  static const _yes = BooleanFlag(
-    'yes',
-    description: 'Approve the exact reviewed publication.',
-  );
-  static const _interactive = BooleanFlag(
-    'interactive',
-    description: 'Explicitly review and confirm a fresh plan.',
-  );
-  static const _showInstructions = BooleanFlag(
-    'show-instructions',
-    description: 'Include private instruction text deliberately.',
+  static final _definitionOutput = StringOption(
+    BoundRoleAuthoringFlags.definitionOutput,
+    description: 'The explicit placement of the published definition.',
   );
   static const _ackClientsStopped = BooleanFlag(
-    'ack-clients-stopped',
-    description: 'Acknowledge native clients are stopped for parent writes.',
-  );
-  static const _clientsStopped = BooleanFlag(
-    'clients-stopped',
-    description: 'Compatibility alias for --ack-clients-stopped.',
+    BoundRoleAuthoringFlags.ackClientsStopped,
+    description:
+        'Acknowledge that the native clients are stopped for the parent '
+        'write.',
   );
 
   @override
   String get name => 'create';
 
   @override
+  String get commandPath => 'agent create';
+
+  @override
+  List<AuthoringProfile> get supportedProfiles => const <AuthoringProfile>[
+    AuthoringProfile.claude,
+    AuthoringProfile.codex,
+    AuthoringProfile.pi,
+  ];
+
+  @override
   String get shortDescription =>
-      'Plan or publish a reviewed native Agent creation.';
+      'Create a native Agent, or an explicit Codex bound role.';
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final format = valueOf(_format);
-    final interactive = valueOf(_interactive);
-    validateAuthoringMode(interactive: interactive, format: format);
-    final positional = valueOf(_requestFile);
-    final named = valueOf(_request);
-    final requestFile = selectOperationRequest(positional, named);
-    var options = LifecycleOptions(
-      processWorkingDirectory: _fileSystem.currentDirectory.path,
-      environment: Map<String, String>.unmodifiable(Platform.environment),
-      scope: valueOf(_scope),
-      cwd: valueOf(_cwd),
-      projectRoot: valueOf(_projectRoot),
-      home: valueOf(_home),
-      claudeConfigDir: valueOf(_claudeConfigDir),
-      codexHome: valueOf(_codexHome),
-      piAgentDir: valueOf(_piAgentDir),
-      stateDir: valueOf(_stateDir),
-      dryRun: valueOf(_dryRun),
-      approved: valueOf(_yes),
-    );
-
-    if (positional == null &&
-        named != null &&
-        isBoundRoleRequest(
-          named,
-          options.cwd ?? options.processWorkingDirectory,
-          fileSystem: _fileSystem,
-        )) {
-      if (valueOf(_apply) ||
-          valueOf(_planId) != null ||
-          interactive ||
-          valueOf(_showInstructions)) {
-        throw MambaException(
-          'The bound-role compatibility path uses request planId and does not accept rich authoring flags.',
-          exitCode: 1,
-        );
-      }
-      final request = parseBoundRoleRequest(
-        named,
-        options.cwd ?? options.processWorkingDirectory,
-        fileSystem: _fileSystem,
-      );
-      if (request.operation != BoundOperation.create) {
-        throw MambaException(
-          'The agent create request operation must be create.',
-        );
-      }
-      final acknowledged =
-          valueOf(_ackClientsStopped) || valueOf(_clientsStopped);
-      if (acknowledged != request.clientsStopped) {
-        throw MambaException(
-          'The request and command must agree on clientsStopped.',
-          exitCode: 4,
-        );
-      }
-      final result = await _boundRoleService.run(request, options);
-      return renderAuthoringResult(result, format);
+    if (valueOf(_retiredRequest) != null ||
+        valueOf(_retiredRequestOption) != null) {
+      throw MambaException(agentCreateMigrationGuidance, exitCode: 4);
     }
-
-    final request = parseAuthoringRequest(
-      requestFile,
-      options.cwd ?? options.processWorkingDirectory,
-      fileSystem: _fileSystem,
-    );
-    if (request.operation != AuthoringOperation.create) {
-      throw MambaException('The request operation must be create.');
+    if (_boundRoleSelected(valueOf)) {
+      return _runBoundRole(valueOf);
     }
-    final apply = valueOf(_apply);
-    var planId = valueOf(_planId);
-    if (interactive && apply && !options.approved) {
-      final planned = await _service.plan(
-        request,
-        options,
-        showInstructions: valueOf(_showInstructions),
+    return super.run(valueOf, args);
+  }
+
+  /// Whether the operator selected the bound-role route.
+  bool _boundRoleSelected(ValueOf valueOf) =>
+      valueOf(_roleKey) != null ||
+      valueOf(_configFile) != null ||
+      valueOf(_ownership) != null ||
+      valueOf(_definitionSource) != null ||
+      valueOf(_definitionOutput) != null ||
+      valueOf(_ackClientsStopped);
+
+  /// The explicit bound-role route.
+  Future<String> _runBoundRole(ValueOf valueOf) async {
+    final format = valueOf(GuidedCreateFields.format);
+    final interactive = resolveInteractive(valueOf, format);
+    final options = buildOptions(valueOf);
+    final inputs = parseBoundRoleAuthoringInputs(
+      roleKey: valueOf(_roleKey),
+      configFile: valueOf(_configFile),
+      ownership: valueOf(_ownership)?.name,
+      definitionSource: valueOf(_definitionSource),
+      definitionOutput: valueOf(_definitionOutput),
+      clientsStopped: valueOf(_ackClientsStopped),
+    );
+    if (valueOf(GuidedCreateFields.profile) != null ||
+        valueOf(GuidedCreateFields.name) != null ||
+        valueOf(GuidedCreateFields.description) != null ||
+        valueOf(GuidedCreateFields.bodyFile) != null ||
+        valueOf(GuidedCreateFields.bodyStdin) ||
+        valueOf(GuidedCreateFields.bodyText) != null ||
+        valueOf(GuidedCreateFields.output) != null ||
+        valueOf(GuidedCreateFields.manage)) {
+      throw MambaException(
+        'The bound-role route does not accept the standalone authoring '
+        'selections; publish the standalone Agent first and name it with '
+        '--${BoundRoleAuthoringFlags.definitionSource}.',
+        exitCode: 4,
       );
-      if (!await _confirmation(
-        'Apply agent create plan ${planned.result.data['planId']}?',
-      )) {
+    }
+    final planned = await _boundRole.plan(inputs, options);
+    final planId = planned.data['planId'] as String?;
+    final requested = valueOf(GuidedCreateFields.planId);
+    if (requested != null && requested != planId) {
+      throw MambaException(
+        'The supplied plan ID is stale; the current proposal is $planId.',
+        exitCode: 4,
+      );
+    }
+    final apply = valueOf(GuidedCreateFields.apply);
+    if (!apply) {
+      return _renderResult(planned, format);
+    }
+    if (interactive && !options.approved) {
+      final confirmed = await confirmation(
+        'Publish the reviewed bound role ${inputs.roleKey} and register it '
+        'in ${inputs.configFile}?',
+      );
+      if (!confirmed) {
         throw MambaException(
-          'Operation cancelled; live state is unchanged.',
+          'The publication was cancelled; no output was written.',
           exitCode: 7,
         );
       }
-      final freshPlanId = planned.result.data['planId']! as String;
-      if (planId != null && planId != freshPlanId) {
-        throw MambaException('The supplied plan ID is stale.', exitCode: 4);
-      }
-      planId = freshPlanId;
-      options = options.copyWith(approved: true);
+    } else if (!options.approved) {
+      throw MambaException(
+        'Publication requires --yes in an unattended session.',
+        exitCode: 4,
+      );
     }
-    final result = await _service.run(
-      request,
-      options,
-      apply: apply,
-      planId: planId,
-      showInstructions: valueOf(_showInstructions),
+    final published = await _boundRole.apply(
+      inputs,
+      options.copyWith(approved: true),
+      planId: planId!,
     );
-    return renderAuthoringResult(result, format);
+    return _renderResult(published, format);
   }
+
+  /// The rendered result of the bound-role route.
+  String _renderResult(LifecycleResult result, LifecycleOutputFormat format) =>
+      format == LifecycleOutputFormat.json
+      ? jsonEncode(result.envelope())
+      : result.renderText();
 }

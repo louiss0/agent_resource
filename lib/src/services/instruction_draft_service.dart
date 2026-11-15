@@ -110,10 +110,16 @@ interface class InstructionDraftService {
   ///
   /// A draft preparation is a distinct authoring interaction: it is refused
   /// in dry-run mode, where a read-only plan is the correct operation.
+  ///
+  /// The [body] override is the editor-led seam: a guided create prepares an
+  /// empty draft that the operator fills in the editor. The override never
+  /// replaces the original input of the operator; it is only the seed of the
+  /// protected working copy.
   Future<InstructionDraft> prepare(
     LifecycleOptions options,
-    AuthoringInputs inputs,
-  ) async {
+    AuthoringInputs inputs, {
+    AuthoringBodySelection? body,
+  }) async {
     if (options.dryRun) {
       throw MambaException(
         'A draft preparation writes protected storage; it is not available in '
@@ -136,7 +142,7 @@ interface class InstructionDraftService {
         exitCode: 4,
       );
     }
-    final selection = inputs.body;
+    final selection = body ?? inputs.body;
     if (selection == null) {
       throw MambaException(
         'A draft requires an explicit body input: a body file, standard input '
@@ -144,8 +150,8 @@ interface class InstructionDraftService {
         exitCode: 4,
       );
     }
-    final body = await _resolveBody(selection, context);
-    final bytes = utf8.encode(body.text);
+    final resolved = await _resolveBody(selection, context);
+    final bytes = utf8.encode(resolved.text);
     if (bytes.length > maxInstructionDraftBodyBytes) {
       throw MambaException(
         'The instruction body exceeds the 1 MiB limit.',
@@ -158,10 +164,10 @@ interface class InstructionDraftService {
       draftId: draftId,
       createdAt: DateTime.now().toUtc().toIso8601String(),
       intent: InstructionDraftIntent.from(inputs, context: context),
-      bodyOrigin: body.origin,
+      bodyOrigin: resolved.origin,
       bodySha256: _digestBytes(bytes),
       bodyByteLength: bytes.length,
-      bodySourcePath: body.sourcePath,
+      bodySourcePath: resolved.sourcePath,
     );
     // The ownership document is encoded and bounded before any sensitive
     // write. An oversized intent is refused while the storage is still
@@ -212,6 +218,31 @@ interface class InstructionDraftService {
       path: directory,
       metadataSha256: document.digest,
       createdAt: document.createdAt,
+    );
+  }
+
+  /// Resolves one instruction body without creating a draft.
+  ///
+  /// The read is bounded, the body file must be a regular non-link file and
+  /// the bytes must be valid UTF-8. The original input is never modified and
+  /// never removed.
+  ///
+  /// The resolution reads standard input exactly once, so a guided run never
+  /// consumes the same stream twice.
+  Future<InstructionDraftBody> resolveBody(
+    LifecycleOptions options,
+    AuthoringBodySelection selection,
+  ) async {
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
+    final body = await _resolveBody(selection, context);
+    final bytes = utf8.encode(body.text);
+    return InstructionDraftBody(
+      text: body.text,
+      sha256: _digestBytes(bytes),
+      byteLength: bytes.length,
+      origin: body.origin,
+      edited: false,
+      sourcePath: body.sourcePath,
     );
   }
 

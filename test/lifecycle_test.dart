@@ -353,27 +353,19 @@ void main() {
                 'name = "reviewer"\ndescription = "Reviews."\n'
                 'developer_instructions = "Review."\n',
               );
-            final request = fs.file(p.join(sandbox.path, 'bound.json'))
-              ..writeAsStringSync(
-                jsonEncode(<String, Object?>{
-                  'schemaVersion': 1,
-                  'operation': 'create',
-                  'source': <String, Object?>{
-                    'kind': 'codex-role',
-                    'configFile': p.join(project.path, '.codex', 'config.toml'),
-                    'roleKey': 'reviewer',
-                  },
-                  'ownership': 'both',
-                  'definition': <String, Object?>{'source': source.path},
-                }),
-              );
             final separator = p.separator;
             final result = _success(
               await createExecutor(fileSystem: fs).fake().execute([
                 'agent',
                 'create',
-                '--request',
-                request.path,
+                '--role-key',
+                'reviewer',
+                '--config-file',
+                p.join(project.path, '.codex', 'config.toml'),
+                '--ownership',
+                'both',
+                '--definition-source',
+                source.path,
                 '--scope',
                 'project',
                 '--cwd',

@@ -1191,17 +1191,24 @@ interface class AuthoringPlanService {
         diagnostic.message,
       );
     }
-    for (final finding in authoringReferenceDecisionFindings(
-      source?.agent?.references ?? const <Map<String, Object?>>[],
-      report.references,
-      inputs.decisions,
-      inputs.references,
-    )) {
-      error(
-        finding['code']! as String,
-        (finding['field'] as String?) ?? 'references',
-        finding['message']! as String,
-      );
+    // The reference accounting reconciles the references of a native Agent
+    // source with the references of the proposal. A creation has no source
+    // to reconcile with: an explicitly supplied native field is the intent
+    // itself and never needs a second decision token.
+    final sourceAgent = source?.agent;
+    if (sourceAgent != null) {
+      for (final finding in authoringReferenceDecisionFindings(
+        sourceAgent.references,
+        report.references,
+        inputs.decisions,
+        inputs.references,
+      )) {
+        error(
+          finding['code']! as String,
+          (finding['field'] as String?) ?? 'references',
+          finding['message']! as String,
+        );
+      }
     }
     final graph = _graph.analyzeInspection(report);
     if (!graph.ready) {
