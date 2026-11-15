@@ -413,31 +413,34 @@ void main() {
       },
     );
 
-    test('leaves an unmanaged source unadopted', () async {
-      await completeConversion(managed: false);
-      final source = '/work/project/.claude/agents/reviewer.md';
-      final target = '/work/project/.pi/prompts/reviewer.md';
+    test(
+      'leaves an unmanaged source of the conversion evidence unadopted',
+      () async {
+        await completeConversion(managed: false);
+        final source = '/work/project/.claude/agents/reviewer.md';
+        final target = '/work/project/.pi/prompts/reviewer.md';
 
-      final review = await restore.restoreReviewed(
-        approved(dryRun: true),
-        _transactionId,
-      );
-      expect(review.data['sourceManaged'], isFalse);
-      await restore.restoreReviewed(
-        approved(),
-        _transactionId,
-        planId: review.data['planId']! as String,
-      );
-      expect(fs.file(source).readAsStringSync(), 'original');
-      expect(fs.file(target).existsSync(), isFalse);
-      // The restored source is not adopted as an installation.
-      expect(
-        fs
-            .file('/work/project/.agent-resource/installations.json')
-            .existsSync(),
-        isFalse,
-      );
-    });
+        final review = await restore.restoreReviewed(
+          approved(dryRun: true),
+          _transactionId,
+        );
+        expect(review.data['sourceManaged'], isFalse);
+        await restore.restoreReviewed(
+          approved(),
+          _transactionId,
+          planId: review.data['planId']! as String,
+        );
+        expect(fs.file(source).readAsStringSync(), 'original');
+        expect(fs.file(target).existsSync(), isFalse);
+        // The restored source is not adopted as an installation.
+        expect(
+          fs
+              .file('/work/project/.agent-resource/installations.json')
+              .existsSync(),
+          isFalse,
+        );
+      },
+    );
 
     test('refuses an apply without the exact fresh plan', () async {
       await completeConversion();
