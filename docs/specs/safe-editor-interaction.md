@@ -243,12 +243,17 @@ session: a session without a desktop fails the launch clearly.
 Focused runs on the final tree:
 
 - `dart analyze lib test`: clean.
+- `dart format --output=none --set-exit-if-changed lib test`: clean.
 - `dart test test/src/authoring/editor_interaction_test.dart
   test/src/authoring/editor_process_test.dart
   test/src/authoring/editor_platform_test.dart
   test/src/services/editor_interaction_service_test.dart
-  test/src/services/editor_interaction_transport_test.dart`: 54 passing, one
+  test/src/services/editor_interaction_transport_test.dart`: 59 passing, one
   skipped (the platform launch of a default editor is not exercised).
+- `dart test test/authoring_draft_process_test.dart
+  test/authoring_draft_test.dart test/authoring_test.dart
+  test/src/authoring/authoring_inputs_test.dart
+  test/src/services/instruction_draft_service_test.dart`: 103 passing.
 
 What the evidence does and does not show:
 
@@ -263,8 +268,10 @@ What the evidence does and does not show:
   environment and the captured working directory.
 - The lifecycle was exercised with a controlled long-lived helper program: a
   parent that launched it without a documented wait ended at once instead of
-  waiting for the helper. The helper was stopped by the test, so the test
-  leaves no program behind.
+  waiting for the helper. The duration of the launch is measured inside the
+  parent, so that the measurement covers the launch and not the start-up of
+  the parent. The helper was stopped by the test, so the test leaves no
+  program behind.
 - No real editor was launched, and no resource body was executed.
 - The runs happened on Windows. The posix branches of the resolution (no
   search of the working directory, the case of a name, a linked program) are
@@ -274,6 +281,11 @@ What the evidence does and does not show:
   Windows shell launch and the desktop-session assumption are documentary.
 - The harness was not exercised: nothing here proves that a Harness loads
   or activates an authored resource.
+- This slice registers no CLI command: the module is the seam that
+  [#85](https://github.com/louiss0/agent_resource/issues/85) calls, so the
+  registered parsing and the help of the editor flow are proved there and not
+  here. The proof of this slice is the public service seam and the injected
+  process, terminal and platform adapters.
 
 ## Sources
 
