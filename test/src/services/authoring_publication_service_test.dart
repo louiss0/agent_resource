@@ -106,6 +106,18 @@ void main() {
     ];
   }
 
+  /// The installation records of the user scope.
+  List<Map<String, Object?>> userLedger() {
+    final path = '/work/state/installations.json';
+    if (!fs.file(path).existsSync()) return const <Map<String, Object?>>[];
+    final document =
+        jsonDecode(fs.file(path).readAsStringSync()) as Map<String, Object?>;
+    return [
+      for (final record in document['installations']! as List)
+        Map<String, Object?>.from(record as Map),
+    ];
+  }
+
   group('authoring publication', () {
     test(
       'publishes an author-only Skill package without an installation record',
@@ -561,6 +573,185 @@ void main() {
             .readAsStringSync(),
         contains('disable-model-invocation: true'),
       );
+    });
+
+    test(
+      'migrates a tracked source of the other scope into the target scope',
+      () async {
+        final userOptions = options.copyWith(scope: LifecycleScope.user);
+        final create = parseAuthoringInputs(
+          operation: AuthoringOperation.create,
+          kind: AuthoringKind.skill,
+          profile: AuthoringProfile.claude,
+          scope: LifecycleScope.user,
+          bodyText: 'Original instructions.',
+          manage: true,
+          fields: const <String, Object?>{
+            'name': 'demo',
+            'description': 'Demonstrates the authoring publication.',
+          },
+        );
+        final created = await plan(create, selected: userOptions);
+        expect(created.ready, isTrue, reason: '${created.diagnostics}');
+        final installed = await publish(created, selected: userOptions);
+        expect(installed.installationId, isNotNull);
+        expect(
+          fs.file('/home/user/.claude/skills/demo/SKILL.md').existsSync(),
+          isTrue,
+        );
+
+        final edit = parseAuthoringInputs(
+          operation: AuthoringOperation.edit,
+          kind: AuthoringKind.prompt,
+          profile: AuthoringProfile.claude,
+          scope: LifecycleScope.project,
+          sourceScope: LifecycleScope.user,
+          installationId: installed.installationId,
+        );
+        final reviewed = await plan(edit);
+        expect(reviewed.ready, isTrue, reason: '${reviewed.diagnostics}');
+        expect(reviewed.data['conversion'], 'skillToPrompt');
+        expect(
+          (reviewed.data['source']! as Map<String, Object?>)['scope'],
+          'user',
+        );
+        expect(
+          (reviewed.data['target']! as Map<String, Object?>)['output'],
+          '/work/project/.claude/skills/demo/SKILL.md',
+        );
+
+        final outcome = await publish(reviewed);
+
+        expect(outcome.ownership, PublicationOwnership.managed);
+        expect(outcome.sourceRetired, isTrue);
+        expect(
+          fs
+              .file('/work/project/.claude/skills/demo/SKILL.md')
+              .readAsStringSync(),
+          contains('disable-model-invocation: true'),
+        );
+        expect(
+          fs.directory('/home/user/.claude/skills/demo').existsSync(),
+          isFalse,
+        );
+        // The source scope retires its installation and the target scope
+        // owns the migrated target.
+        final userRecords = userLedger();
+        expect(userRecords, hasLength(1));
+        expect(userRecords.single['lifecycle'], 'removed');
+        final projectRecords = ledger();
+        expect(projectRecords, hasLength(1));
+        expect(projectRecords.single['lifecycle'], 'live');
+        expect(
+          projectRecords.single['location'],
+          '/work/project/.claude/skills/demo',
+        );
+        expect(
+          projectRecords.single['installationId'],
+          isNot(installed.installationId),
+        );
+      },
+    );
+
+    test('publishes a composed output without adopting the source', () async {
+      seedSkill('/work/source/demo', body: 'Original instructions.');
+      final inputs = parseAuthoringInputs(
+        operation: AuthoringOperation.compose,
+        kind: AuthoringKind.skill,
+        profile: AuthoringProfile.claude,
+        scope: LifecycleScope.project,
+        sourcePath: '/work/source/demo',
+        composition: CompositionMode.append,
+        bodyText: 'Added instructions.',
+        fields: const <String, Object?>{'name': 'composed'},
+      );
+      final reviewed = await plan(inputs);
+      expect(reviewed.ready, isTrue, reason: '${reviewed.diagnostics}');
+
+      final outcome = await publish(reviewed);
+
+      expect(outcome.ownership, PublicationOwnership.authorOnly);
+      expect(outcome.installationId, isNull);
+      final published = fs
+          .file('/work/project/.claude/skills/composed/SKILL.md')
+          .readAsStringSync();
+      expect(published, contains('Original instructions.'));
+      expect(published, contains('Added instructions.'));
+      // The source keeps its own content and stays untracked.
+      expect(
+        fs.file('/work/source/demo/SKILL.md').readAsStringSync(),
+        contains('Original instructions.'),
+      );
+      expect(ledger(), isEmpty);
+    });
+
+    test(
+      'refuses a managed publication outside an eligible native location',
+      () async {
+        final inputs = parseAuthoringInputs(
+          operation: AuthoringOperation.create,
+          kind: AuthoringKind.skill,
+          profile: AuthoringProfile.claude,
+          scope: LifecycleScope.project,
+          bodyText: 'Do the work.',
+          manage: true,
+          output: '/work/source/demo',
+          fields: const <String, Object?>{
+            'name': 'demo',
+            'description': 'Demonstrates the authoring publication.',
+          },
+        );
+        final reviewed = await plan(inputs);
+        expect(reviewed.ready, isFalse);
+        expect(
+          reviewed.diagnostics.map((diagnostic) => diagnostic['code']).toList(),
+          contains('MANAGEMENT_TARGET_UNSUPPORTED'),
+        );
+        await expectLater(
+          publish(reviewed),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.exitCode,
+              'status',
+              4,
+            ),
+          ),
+        );
+        expect(fs.directory('/work/source/demo').existsSync(), isFalse);
+        expect(ledger(), isEmpty);
+      },
+    );
+
+    test('refuses to publish a proposal with an unresolved field', () async {
+      final inputs = parseAuthoringInputs(
+        operation: AuthoringOperation.create,
+        kind: AuthoringKind.skill,
+        profile: AuthoringProfile.claude,
+        scope: LifecycleScope.project,
+        bodyText: 'Do the work.',
+        fields: const <String, Object?>{'name': 'demo'},
+      );
+      final reviewed = await plan(inputs);
+      expect(reviewed.ready, isFalse);
+      expect(
+        reviewed.diagnostics.map((diagnostic) => diagnostic['code']).toList(),
+        contains('FIELD_REQUIRED'),
+      );
+      await expectLater(
+        publish(reviewed),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'diagnostic',
+            contains('not ready'),
+          ),
+        ),
+      );
+      expect(
+        fs.file('/work/project/.claude/skills/demo/SKILL.md').existsSync(),
+        isFalse,
+      );
+      expect(ledger(), isEmpty);
     });
 
     test(

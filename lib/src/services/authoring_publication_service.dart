@@ -401,11 +401,14 @@ interface class AuthoringPublicationService {
     }
     final target = _targetOf(plan);
     _requireSourceUnchanged(source);
+    // A tracked source of the other scope is replaced in the scope that
+    // owns it: the ledger and the uniqueness authority of that scope apply.
+    final sourceContext = _sourceContext(request, context, source);
     if (plan.ownership == AuthoringOwnership.managedReplacement) {
-      return _publishManagedEdit(request, context, plan, source, target);
+      return _publishManagedEdit(request, sourceContext, plan, source, target);
     }
     await _requireNativeNameFree(
-      context,
+      sourceContext,
       plan,
       target,
       excludePath: source.path,
@@ -529,6 +532,7 @@ interface class AuthoringPublicationService {
         exitCode: 4,
       );
     }
+    final options = context.options;
     switch (plan.kind) {
       case AuthoringKind.prompt:
         throw MambaException(
@@ -538,7 +542,7 @@ interface class AuthoringPublicationService {
       case AuthoringKind.agent:
         final harness = _harness(plan.profile);
         final result = await _agents.withStagedCandidate(
-          options: request.options,
+          options: options,
           harness: harness,
           destination: AgentDestination.native,
           output: record.location,
@@ -546,7 +550,7 @@ interface class AuthoringPublicationService {
           body: (candidatePath) async {
             final replaced = await _agents.replace(
               LifecycleReplaceInput(
-                options: request.options,
+                options: options,
                 installationId: installationId,
                 source: candidatePath,
               ),
@@ -561,7 +565,7 @@ interface class AuthoringPublicationService {
         try {
           final result = await _skills.replace(
             LifecycleReplaceInput(
-              options: request.options,
+              options: options,
               installationId: installationId,
               source: staged,
             ),
@@ -619,7 +623,10 @@ interface class AuthoringPublicationService {
     _Target target,
   ) async {
     final installationId = source.installationId!;
-    final record = _state.recordById(context, installationId);
+    // A tracked source may live in the other scope: the ledger that owns it
+    // and the scope of its retirement follow the source scope.
+    final sourceContext = _sourceContext(request, context, source);
+    final record = _state.recordById(sourceContext, installationId);
     if (record.lifecycle != 'live') {
       throw MambaException(
         'The conversion source is not a live installation.',
@@ -959,6 +966,24 @@ interface class AuthoringPublicationService {
     }
   }
 
+  /// The context of the scope that owns the reviewed source.
+  ///
+  /// A tracked source may live in the other scope. The source context
+  /// selects the ledger that owns the source, while the context of the
+  /// publication stays the scope of the published output.
+  LifecycleContext _sourceContext(
+    AuthoringPublicationRequest request,
+    LifecycleContext context,
+    _Source source,
+  ) {
+    final scope = source.scope;
+    if (scope == null || scope == context.scope.name) return context;
+    return LifecycleContext.resolve(
+      request.options.copyWith(scope: LifecycleScope.values.byName(scope)),
+      fileSystem: _fileSystem,
+    );
+  }
+
   /// The reviewed source of the plan.
   _Source? _sourceOf(AuthoringPlan plan) {
     final source = plan.data['source'];
@@ -970,6 +995,7 @@ interface class AuthoringPublicationService {
       markerSha256: source['markerSha256'] as String?,
       membersDigest: source['membersDigest'] as String?,
       installationId: source['installationId'] as String?,
+      scope: source['scope'] as String?,
     );
   }
 
@@ -1779,6 +1805,7 @@ final class _Source {
     this.markerSha256,
     this.membersDigest,
     this.installationId,
+    this.scope,
   });
 
   /// The location of the reviewed source.
@@ -1792,6 +1819,12 @@ final class _Source {
 
   /// The managed installation of a tracked source.
   final String? installationId;
+
+  /// The scope that owns a tracked source.
+  ///
+  /// A tracked source may live in the other scope. The scope selects the
+  /// ledger that owns the source.
+  final String? scope;
 
   /// Whether the source is a native package.
   bool get isPackage => membersDigest != null;

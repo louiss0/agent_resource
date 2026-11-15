@@ -128,7 +128,8 @@ interface class AuthoringPlanService {
       });
     }
 
-    final source = await _resolveSource(inputs, context);
+    final sourceContext = _sourceContext(inputs, context);
+    final source = await _resolveSource(inputs, sourceContext);
     final body = await _resolveBody(inputs, context);
     if (inputs.scope != context.scope) {
       error(
@@ -142,7 +143,13 @@ interface class AuthoringPlanService {
     final fields = _mergeFields(inputs, source, assessment.preserved, error);
     final intents = _fieldIntents(inputs);
     final composed = _composeBody(inputs, source, body);
-    var placement = _resolvePlacement(inputs, context, fields, source);
+    var placement = _resolvePlacement(
+      inputs,
+      context,
+      fields,
+      source,
+      sourceContext,
+    );
     final effectiveConversion = _effectiveConversion(inputs, source, error);
     final conversion = _analyzeConversion(
       inputs,
@@ -301,6 +308,23 @@ interface class AuthoringPlanService {
       diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
       data: Map<String, Object?>.unmodifiable(data),
       identity: Map<String, Object?>.unmodifiable(identity),
+    );
+  }
+
+  /// The context of the selected source.
+  ///
+  /// A tracked source may live in the other scope. The source context
+  /// selects the ledger that owns the source; the context of the operation
+  /// stays the scope of the published output.
+  LifecycleContext _sourceContext(
+    AuthoringInputs inputs,
+    LifecycleContext context,
+  ) {
+    final scope = inputs.sourceScope;
+    if (scope == null || scope == context.scope) return context;
+    return LifecycleContext.resolve(
+      context.options.copyWith(scope: scope),
+      fileSystem: _fileSystem,
     );
   }
 
@@ -662,6 +686,7 @@ interface class AuthoringPlanService {
     LifecycleContext context,
     Map<String, Object?> fields,
     _Source? source,
+    LifecycleContext sourceContext,
   ) {
     final name = fields['name'];
     final nameText = name is String ? name.trim() : '';
@@ -672,8 +697,11 @@ interface class AuthoringPlanService {
       final marker = directory == null
           ? sourcePath
           : _fileSystem.path.join(directory, 'SKILL.md');
-      final root = nativeRoot != null && _within(sourcePath, nativeRoot)
-          ? nativeRoot
+      // An edit replaces its source in place, so the native root of the
+      // placement is the root of the scope that owns the source.
+      final sourceRoot = _nativeRoot(inputs, sourceContext);
+      final root = sourceRoot != null && _within(sourcePath, sourceRoot)
+          ? sourceRoot
           : null;
       return _Placement(
         output: marker,
@@ -863,6 +891,34 @@ interface class AuthoringPlanService {
         }
         final directory = source.path!;
         final nativeRoot = _nativeRoot(inputs, context);
+        final crossScope =
+            source.scope != null && source.scope != context.scope;
+        if (crossScope) {
+          // A tracked source of the other scope migrates into the scope of
+          // the operation: the converted target is published in the target
+          // scope and the source is retired in the scope that owns it.
+          final targetRoot = nativeRoot!;
+          final targetDirectory = _fileSystem.path.join(targetRoot, nameText);
+          return _ConversionAnalysis(
+            placement: _Placement(
+              output: _fileSystem.path.join(targetDirectory, 'SKILL.md'),
+              root: targetRoot,
+              form: 'prompt-skill',
+              name: nameText,
+              directory: targetDirectory,
+              sidecar: inputs.profile == AuthoringProfile.claude
+                  ? null
+                  : _fileSystem.path.join(
+                      targetDirectory,
+                      'agents',
+                      'openai.yaml',
+                    ),
+            ),
+            roleDelegation: const <String, Object?>{
+              'manualOnlyInvocationDeclared': true,
+            },
+          );
+        }
         return _ConversionAnalysis(
           placement: _Placement(
             output: _fileSystem.path.join(directory, 'SKILL.md'),
