@@ -206,6 +206,8 @@ void main(List<String> arguments) {
 
     test('a parent that launches a long-lived program without a wait exits at '
         'once', () async {
+      // The start-up of a parent and of a helper is a compilation on a loaded
+      // machine; the proof itself does not depend on a duration.
       final directory = Directory(
         p.join(
           Directory.current.path,
@@ -222,7 +224,10 @@ import 'dart:io';
 
 void main(List<String> arguments) {
   File(arguments[0]).writeAsStringSync('\$pid');
-  sleep(const Duration(seconds: 30));
+  sleep(const Duration(seconds: 120));
+  // The helper marks its own end, so that the test can tell whether it had
+  // finished when the parent exited.
+  File(arguments[1]).writeAsStringSync('finished');
 }
 ''');
       final parent = File(p.join(directory.path, 'parent.dart'));
@@ -233,42 +238,71 @@ import 'package:agent_resource/src/authoring/editor_interaction.dart';
 import 'package:agent_resource/src/authoring/editor_process.dart';
 
 Future<void> main(List<String> arguments) async {
+  final watch = Stopwatch()..start();
   final outcome = await const RealEditorProcessRunner().run(
     EditorProcessRequest(
       executable: arguments[0],
-      arguments: <String>[arguments[1], arguments[2]],
+      arguments: <String>[arguments[1], arguments[2], arguments[4]],
       environment: Platform.environment,
     ),
   );
-  stdout.writeln(outcome.started);
+  watch.stop();
+  // The report is a file: the launched program inherits the streams of the
+  // parent, so the stream of the parent stays open while it runs on.
+  File(arguments[3]).writeAsStringSync(
+    '\${outcome.started}\\n\${watch.elapsedMilliseconds}\\n',
+  );
 }
 ''');
       final pidFile = File(p.join(directory.path, 'helper.pid'));
+      final reportFile = File(p.join(directory.path, 'report.txt'));
+      final finishedFile = File(p.join(directory.path, 'helper.finished'));
       final process = await Process.start(Platform.resolvedExecutable, <String>[
         '--packages=${p.join(Directory.current.path, '.dart_tool', 'package_config.json')}',
         parent.path,
         Platform.resolvedExecutable,
         helper.path,
         pidFile.path,
+        reportFile.path,
+        finishedFile.path,
       ], workingDirectory: Directory.current.path);
       addTearDown(() => process.kill(ProcessSignal.sigkill));
 
-      final watch = Stopwatch()..start();
       final code = await process.exitCode.timeout(
-        const Duration(seconds: 20),
+        const Duration(seconds: 60),
         onTimeout: () => -1,
       );
-      watch.stop();
-      await _stopHelper(pidFile);
 
+      // The proof does not depend on a duration: the helper runs on for two
+      // minutes and marks its own end, so the parent that exited while the
+      // helper was still running did not wait for it.
+      final finished = finishedFile.existsSync();
+      await _stopHelper(pidFile);
       expect(
         code,
         0,
         reason:
             'The parent did not exit; it waited for the program it launched.',
       );
-      expect(watch.elapsed, lessThan(const Duration(seconds: 10)));
-    });
+      expect(
+        finished,
+        isFalse,
+        reason:
+            'The launched program had finished when the parent exited; the '
+            'parent waited for the program it launched.',
+      );
+      final lines = reportFile.readAsStringSync().trim().split('\n');
+      expect(lines.first, 'true');
+      final elapsed = int.tryParse(lines.last) ?? -1;
+      expect(
+        elapsed,
+        lessThan(30000),
+        reason:
+            'The launch waited for the program it launched; a detached launch '
+            'returns at once while the helper runs on for two minutes.',
+      );
+      await _stopHelper(pidFile);
+    }, timeout: const Timeout(Duration(minutes: 4)));
   });
 }
 
