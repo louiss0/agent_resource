@@ -47,6 +47,10 @@ table, refuses that selection with the reason instead of flattening it.
   required value must be supplied explicitly. A machine-readable output
   contains the report only. A run that misses a required native field
   reports the missing field instead of asking for it.
+- A usable terminal means that the input and the output streams are both a
+  terminal. A redirected output is not a usable terminal: the guided flow is
+  then unavailable, the run never prompts, and every value must be supplied
+  explicitly. The guided flow never prompts with a redirected output.
 - `--interactive` without a usable terminal is refused; the operator is told
   to supply every value explicitly instead.
 - `--dry-run` plans and nothing else: it never launches an editor, never
@@ -85,8 +89,10 @@ retained on cancellation, on a failed launch and on a refused proposal, and
 its location is reported. Every outcome that retains a draft names it: the
 planned, the rejected and the published reports carry `draftId` and
 `draftPath`, and every refusal after the draft was prepared names the draft
-in its message. The operator can therefore resume the draft with its
-identity.
+in its message. That includes a failure of the editor session and a failure
+while the collected fields are recorded: the exit code and the diagnostic of
+the cause are preserved, and the retained draft is appended. The operator
+can therefore resume the draft with its identity.
 
 The fields that the guided flow collects are part of the retained intent, so
 a resume rebuilds the proposal with the collected values instead of losing
@@ -109,6 +115,8 @@ review and the apply must name the same file with the same content.
 The bound-role route accepts no standalone authoring selection. Every
 standalone flag is refused before any effect, with the reason that the
 standalone Agent is published first and named with `--definition-source`.
+That includes the editor selection and the instruction disclosure: the
+bound-role route edits no body and discloses no instruction text.
 
 A standalone creation never changes a declaring config, never adopts a
 source and never registers a role.

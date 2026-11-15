@@ -632,10 +632,12 @@ body comes from exactly one of `--body-file`, `--body-stdin` and `--body-text`.
 
 On a usable terminal the guided flow is the default: it collects the missing
 required native fields and opens the configured editor for the body when no
-body was supplied. `--unattended` and `--format json` never prompt and never
-wait, so an unattended call must supply every value explicitly. `--editor`
-selects an editor executable with its arguments; it is never a shell
-expression.
+body was supplied. A usable terminal means that the input and the output
+streams are both a terminal; a redirected output is not one, and the guided
+flow then never prompts. `--unattended` and `--format json` never prompt and
+never wait, so an unattended call must supply every value explicitly.
+`--editor` selects an editor executable with its arguments; it is never a
+shell expression.
 
 `--body-stdin` reads the piped standard input of the invocation. An
 interactive terminal is never read and an invocation without a piped
