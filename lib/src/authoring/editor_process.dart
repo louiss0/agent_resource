@@ -189,8 +189,10 @@ final class EditorExecutableResolver implements EditorProgramResolver {
         .split(';')
         .map((entry) => entry.trim())
         .where((entry) => entry.isNotEmpty)
-        .where((entry) => entry.toLowerCase() == '.com' ||
-            entry.toLowerCase() == '.exe')
+        .where(
+          (entry) =>
+              entry.toLowerCase() == '.com' || entry.toLowerCase() == '.exe',
+        )
         .toList(growable: false);
   }
 
