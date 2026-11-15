@@ -174,6 +174,7 @@ final class ConversionRestoreService {
         );
       }
       _requireApproval(context, planId, plan.data['planId']);
+      _requireNoPendingAuthoringConflict(context, subject, plan);
       final result = await _applyAuthoring(context, subject, plan);
       return LifecycleResult(
         command: 'prompt conversion restore',
@@ -2145,6 +2146,26 @@ final class ConversionRestoreService {
 
   String _reviewDigest(Map<String, Object?> data) =>
       sha256.convert(utf8.encode(jsonEncode(data))).toString();
+
+  /// Refuses an ordinary inverse restore that conflicts with other pending
+  /// work.
+  void _requireNoPendingAuthoringConflict(
+    LifecycleContext context,
+    _AuthoringSubject subject,
+    ConversionRestorePlan plan,
+  ) {
+    final own = _ownEvidencePaths(context, plan.evidence);
+    _state.checkPendingConversions(
+      context,
+      locations: <String>[subject.sourceLocation, subject.targetLocation],
+      validatedRecoveryPaths: own,
+    );
+    _state.checkPendingMutations(
+      context,
+      locations: <String>[subject.sourceLocation, subject.targetLocation],
+      validatedPaths: own,
+    );
+  }
 }
 
 /// The upstream pack binding of one reviewed inverse restore.
