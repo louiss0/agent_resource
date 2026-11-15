@@ -29,8 +29,8 @@ The slice adds:
   evidence.
 
 No command adapter is registered. The public frontends arrive with their own
-slices, and the public JSON operation-request routes are removed by those
-frontend and migration tickets rather than by this module.
+slices; the public JSON operation-request route of `agent create` is removed
+by the guided creation frontend rather than by this module.
 
 ## Approval
 

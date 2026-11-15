@@ -27,8 +27,8 @@ The slice is internal. It adds:
   inspector.
 
 No command adapter is registered. Public frontends arrive with their own
-slices, and public JSON operation-request routes are removed by those
-frontend and migration tickets rather than by this module. Planning writes
+slices; the public JSON operation-request route of `agent create` is removed
+by the guided creation frontend rather than by this module. Planning writes
 nothing: no draft, no staging entry, no journal and no installation record.
 
 ## Inputs
@@ -46,7 +46,9 @@ mini-language.
 - **Body**: a body file, explicitly selected standard input or literal text,
   never more than one. Multiline bytes are preserved exactly. An unattended
   plan that selects standard input without a supplied reader fails instead of
-  waiting.
+  waiting. A guided editor-led creation may defer the body: the deferred
+  body is never a publication input, and the plan of a create without a body
+  is not ready.
 - **Fields**: named native fields of the selected kind and profile. A field
   that the profile does not support is refused with the supported names.
 - **Composition**: `append`, `replace` or `retain`, required for a compose
@@ -67,6 +69,10 @@ mini-language.
   plan identity, so a deliberate choice is distinguishable from an omission.
 - A supplied field is itself the field-specific mapping intent. No second
   opaque decision token repeats it.
+- The reference accounting reconciles the references of a native Agent source
+  with the references of the proposal. A creation has no source to reconcile
+  with, so an explicitly supplied native field never needs a second decision
+  token there.
 - A source declaration without a named input is preserved when the target
   profile accepts and validates it. A declaration the profile cannot
   represent is a blocker: it is never dropped silently. The manual-only

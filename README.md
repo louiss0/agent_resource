@@ -618,24 +618,76 @@ source-qualified capabilities, exposure notes, and missing-reference blockers
 without executing or inferring runtime dependencies. Regular-file lifecycle
 operations are documented above.
 
+### Create native Skills, Agents, and Prompts from plain text
+
+```text
+dart run bin/agent_resource.dart skill create --profile claude|codex|pi --name <name> --description <text> --body-file <file>|--body-stdin|--body-text <text>
+dart run bin/agent_resource.dart prompt create --profile claude|codex|pi|global --name <name> --description <text> --body-file <file>|--body-stdin|--body-text <text>
+dart run bin/agent_resource.dart agent create --profile claude|codex|pi --name <name> --description <text> --body-file <file>|--body-stdin|--body-text <text>
+```
+
+Creation takes named native selections and plain text; there is no JSON
+operation request. The native profile is always explicit. The instruction
+body comes from exactly one of `--body-file`, `--body-stdin` and `--body-text`.
+
+On a usable terminal the guided flow is the default: it collects the missing
+required native fields and opens the configured editor for the body when no
+body was supplied. `--unattended` and `--format json` never prompt and never
+wait, so an unattended call must supply every value explicitly. `--editor`
+selects an editor executable with its arguments; it is never a shell
+expression.
+
+The reviewed proposal names its target, its ownership and its changes before
+the publication is confirmed in the same flow. `--apply --yes` publishes
+without a question, `--dry-run` plans without an editor, without a draft and
+without a write, and `--plan-id` binds the publication to one reviewed plan
+identity. A new output is author-only: no installation record is created
+unless `--manage` selects a supported managed form, and a Prompt has no
+managed lifecycle at all.
+
+A successful publication removes the retained application-owned draft and
+never removes the original body file. A cleanup failure is reported next to
+the published output instead of hiding it. The contract is in
+`docs/specs/guided-text-creation.md`.
+
 ### Create, clone, edit, compose, and convert native Agents
 
 ```text
-agent_resource agent create <request.json>
+agent_resource agent create --profile claude|codex|pi --name <name> --description <text> --body-file <file>|--body-stdin|--body-text <text>
+agent_resource agent create --role-key <key> --config-file <config.toml> --ownership definition|both --definition-source <definition.toml> [--definition-output <path>] --ack-clients-stopped
 agent_resource agent clone <request.json>
 agent_resource agent edit <request.json>
 agent_resource agent compose <request.json>
 agent_resource agent convert <request.json>
 ```
 
-Authoring and conversion requests are bounded, versioned JSON with explicit
-native source/target/context data. Planning is read-only by default and
-creates no management artifacts. Apply requires `--apply`, the current
-`--plan-id`, and `--yes`, or explicit interactive review. Ordered instruction
-parts, base conflicts, unknown fields, model/tool/effort mappings, reference
-changes, and deliberate omissions are reported before publication. Default
-reports omit instruction bodies; `--show-instructions` is an explicit privacy
-choice.
+`agent create` takes named native selections and plain text. The native
+profile is always explicit; it is never inferred from a file name. The
+instruction body comes from exactly one of `--body-file`, `--body-stdin` and
+`--body-text`. On a usable terminal the guided flow collects the missing
+native fields and opens the configured editor for the body when no body was
+supplied; `--unattended` and `--format json` never prompt. The reviewed
+proposal names its target, its ownership and its changes before the
+publication is confirmed; `--apply --yes` publishes without a question, and
+`--dry-run` plans without an editor, without a draft and without a write. A
+new output is author-only unless `--manage` selects a supported managed form.
+
+The retired JSON operation request is refused with migration guidance: the
+positional request file and `--request` never reach a body or a proposal.
+The Codex bound-role route publishes the reviewed native Codex definition of
+`--definition-source` and registers the role in the declaring config only
+when `--ownership both` selects it; a registration requires
+`--ack-clients-stopped` and its own approval. A standalone creation never
+changes a declaring config.
+
+The remaining authoring and conversion routes still use bounded, versioned
+JSON with explicit native source/target/context data. Planning is read-only
+by default and creates no management artifacts. Apply requires `--apply`, the
+current `--plan-id`, and `--yes`, or explicit interactive review. Ordered
+instruction parts, base conflicts, unknown fields, model/tool/effort
+mappings, reference changes, and deliberate omissions are reported before
+publication. Default reports omit instruction bodies; `--show-instructions` is
+an explicit privacy choice.
 
 All six Claude/Codex/common-Pi conversion directions produce native target
 candidates with per-field represented/altered/inherited/unresolved/
@@ -656,7 +708,8 @@ enforcement.
 agent_resource agent config inspect --request <request.json> --scope project|user
 agent_resource agent config plan --request <request.json> --scope project|user
 agent_resource agent config apply --request <request.json> --scope project|user --yes --ack-clients-stopped
-agent_resource agent create --request <request.json> --scope project|user
+agent_resource agent create --profile claude|codex|pi --name <name> --description <text> --body-file <file>|--body-stdin|--body-text <text>
+agent_resource agent create --role-key <key> --config-file <config.toml> --ownership definition|both --definition-source <definition.toml> --ack-clients-stopped
 agent_resource agent adopt <native-file>|--request <request.json> --harness codex
 agent_resource agent replace <installation-id> <native-file>|--request <request.json>
 agent_resource agent remove <installation-id>|--request <request.json>

@@ -1,9 +1,11 @@
 # Explicit Codex bound-role authoring
 
 This slice prepares the explicit Codex bound-role authoring path that the
-atomic Agent-create migration will register. Nothing is registered here: the
-public `agent create` route still owns its JSON request branch, and the
-standalone and bound-role routes are switched together by the create ticket.
+atomic Agent-create migration registers. The create ticket switched the
+standalone and the bound-role routes together: the public `agent create`
+route no longer owns a JSON request branch, and the bound-role selections
+below are its public spelling. The contract is described in
+`docs/specs/guided-text-creation.md`.
 
 ## What the slice adds
 
