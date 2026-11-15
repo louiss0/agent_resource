@@ -10,6 +10,7 @@ import 'lifecycle.dart' show LifecycleOutputFormat;
 import 'src/prompt/prompt_native_view.dart';
 import 'src/prompt/prompt_validation_failure.dart';
 import 'src/services/conversion_coordinator_service.dart';
+import 'src/services/conversion_restore_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/prompt_read_service.dart';
 import 'src/services/prompt_inspection_service.dart';
@@ -18,9 +19,10 @@ final class PromptCommand extends GroupCommand {
   PromptCommand(
     ConversionCoordinator coordinator, {
     PromptReadService? read,
+    ConversionRestoreService? restore,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   }) : super([
-         ConversionCommand(coordinator),
+         ConversionCommand(coordinator, restore: restore),
          PromptInspectCommand(
            read ?? PromptReadService(fileSystem: fileSystem),
          ),

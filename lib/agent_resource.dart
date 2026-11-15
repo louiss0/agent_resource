@@ -11,6 +11,7 @@ import 'pack.dart';
 import 'skills.dart';
 import 'prompt.dart';
 import 'src/services/conversion_coordinator_service.dart';
+import 'src/services/conversion_restore_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/agent_authoring_service.dart';
 import 'src/services/agent_conversion_service.dart';
@@ -45,6 +46,7 @@ Executor createExecutor({
   AgentAuthoringService? agentAuthoring,
   AgentConversionService? agentConversion,
   ConversionCoordinator? conversionRecovery,
+  ConversionRestoreService? conversionRestore,
   AuthoringRecoveryService? authoringRecovery,
   InstructionDraftService? instructionDrafts,
   PromptReadService? promptRead,
@@ -58,6 +60,12 @@ Executor createExecutor({
     PromptCommand(
       conversionRecovery ??
           ConversionCoordinator(
+            io: LifecycleIO(fs: fileSystem),
+            state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
+          ),
+      restore:
+          conversionRestore ??
+          ConversionRestoreService(
             io: LifecycleIO(fs: fileSystem),
             state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
           ),

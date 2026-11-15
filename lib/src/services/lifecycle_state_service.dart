@@ -10,6 +10,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
+import '../conversion/conversion_restore_evidence.dart';
 import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
 import '../skill_files.dart';
@@ -24,6 +25,9 @@ const Set<String> _privateStateDirectories = <String>{
   'coordination',
   'conversions',
   'conversion-participants',
+  // The private storage of the completed conversion inverse restore. It is
+  // evidence of an inverse restore, not an installation ledger.
+  conversionRestoreDirectoryName,
   // The private storage of the ordinary authoring authority. It is evidence
   // of an authoring act, not an installation ledger.
   authoringTransactionDirectoryName,
@@ -1028,6 +1032,99 @@ interface class LifecycleStateService {
         target: null,
         retiredSource: retiredSource,
       );
+    }
+  }
+
+  /// Applies one completed-conversion inverse restore to the ledgers.
+  ///
+  /// The restore reinstates the original installation identity and history and
+  /// retires the converted target. A changed target ownership, a missing
+  /// ledger or a changed membership is refused; the restore never overwrites
+  /// a later edit. The ledgers of the participating scopes are written one
+  /// scope at a time, so a cross-scope restore can be observed half applied
+  /// and stays guarded until it is reconciled.
+  Future<void> applyConversionRestore({
+    required LifecycleContext context,
+    required Map<LifecycleScope, InstallationRecord> restored,
+    required Map<LifecycleScope, InstallationRecord> retiredTargets,
+    required String restoreId,
+  }) async {
+    final scopes = <LifecycleScope>{...restored.keys, ...retiredTargets.keys};
+    for (final scope in scopes) {
+      final state = context.stateRoot(scope);
+      final records = _readRecords(state);
+      final updated = <InstallationRecord>[...records];
+      final retired = retiredTargets[scope];
+      if (retired != null) {
+        final index = updated.indexWhere(
+          (record) => record.installationId == retired.installationId,
+        );
+        if (index < 0) {
+          throw MambaException(
+            'The converted target ownership is missing; the restore is refused.',
+            exitCode: 6,
+          );
+        }
+        if (updated[index].lifecycle != 'live') {
+          if (jsonEncode(updated[index].toJson()) !=
+              jsonEncode(retired.toJson())) {
+            throw MambaException(
+              'The converted target ownership changed; the restore is refused.',
+              exitCode: 6,
+            );
+          }
+        } else {
+          updated[index] = retired.copyWith(
+            lifecycle: 'removed',
+            origin: <String, Object?>{
+              ...retired.origin,
+              'conversionRestoredBy': restoreId,
+            },
+          );
+        }
+      }
+      final reinstate = restored[scope];
+      if (reinstate != null) {
+        final index = updated.indexWhere(
+          (record) => record.installationId == reinstate.installationId,
+        );
+        if (index >= 0) {
+          // The restored identity replaces the retired target record of the
+          // same identity; the outgoing target keeps its own evidence.
+          final replacesTarget =
+              retired != null &&
+              retired.installationId == reinstate.installationId;
+          if (!replacesTarget && updated[index].lifecycle != 'removed') {
+            throw MambaException(
+              'The original ownership changed; the restore is refused.',
+              exitCode: 6,
+            );
+          }
+          updated[index] = reinstate;
+        } else {
+          updated.add(reinstate);
+        }
+      }
+      final locations = <String>{};
+      for (final record in updated) {
+        if (record.lifecycle != 'live') continue;
+        if (!locations.add(_pathKey(record.location))) {
+          throw MambaException(
+            'The restore would overlap a live installation.',
+            exitCode: 4,
+          );
+        }
+      }
+      final path = io.fs.path.join(state, 'installations.json');
+      final existing =
+          io.type(path, followLinks: false) == FileSystemEntityType.notFound
+          ? const <String, Object?>{}
+          : _object(_readManagementJson(path), 'installation ledger');
+      _writeManagementJson(path, <String, Object?>{
+        ...existing,
+        'schemaVersion': managementSchemaVersion,
+        'installations': [for (final record in updated) record.toJson()],
+      });
     }
   }
 

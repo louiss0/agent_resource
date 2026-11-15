@@ -5,51 +5,76 @@ import 'package:mamba/mamba.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
 import 'src/services/conversion_coordinator_service.dart';
+import 'src/services/conversion_restore_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 
-enum ConversionAction { list, inspect, recover, cleanup }
+enum ConversionAction { list, inspect, recover, restore, cleanup }
 
 /// Recovery never accepts a caller-selected rollback/complete override.
 final class ConversionActionCommand extends Command {
-  ConversionActionCommand(this._coordinator, this._action)
-    : super(
-        mandatoryPositionals: [if (_action != ConversionAction.list) _id],
-        options: [
-          _scope,
-          _format,
-          _cwd,
-          _projectRoot,
-          _home,
-          _stateDir,
-          if (_action == ConversionAction.recover ||
-              _action == ConversionAction.cleanup)
-            _plan,
-        ],
-        flags: [
-          if (_action == ConversionAction.recover ||
-              _action == ConversionAction.cleanup) ...[
-            _apply,
-            _yes,
-            _dryRun,
-          ],
-        ],
-        conflicts: {
-          if (_action == ConversionAction.recover ||
-              _action == ConversionAction.cleanup)
-            'apply': const ['dry-run'],
-        },
-        longDescription:
-            'Offline transaction evidence only; no harness execution. '
-            'Inspection and default recovery/cleanup planning write nothing. '
-            'Apply requires --apply --yes --plan-id from a fresh review. '
-            'Recovery direction is fixed by the protected commit decision. '
-            'Completed inverse restore and new public conversion apply remain gated. '
-            'Cleanup removes only verified terminal private payloads, retaining '
-            'the audit receipt; it forfeits payload-based restore and is not secure erasure.',
-      );
+  ConversionActionCommand(
+    this._coordinator,
+    this._action, {
+    ConversionRestoreService? restore,
+  }) : _restore = restore,
+       super(
+         mandatoryPositionals: [if (_action != ConversionAction.list) _id],
+         options: [
+           _scope,
+           _format,
+           _cwd,
+           _projectRoot,
+           _home,
+           _stateDir,
+           if (_action == ConversionAction.recover ||
+               _action == ConversionAction.restore ||
+               _action == ConversionAction.cleanup)
+             _plan,
+         ],
+         flags: [
+           if (_action == ConversionAction.recover ||
+               _action == ConversionAction.restore ||
+               _action == ConversionAction.cleanup) ...[
+             _apply,
+             _yes,
+             _dryRun,
+           ],
+         ],
+         conflicts: {
+           if (_action == ConversionAction.recover ||
+               _action == ConversionAction.restore ||
+               _action == ConversionAction.cleanup)
+             'apply': const ['dry-run'],
+         },
+         longDescription:
+             'Offline transaction evidence only; no harness execution. '
+             'Inspection and default recovery/restore/cleanup planning write '
+             'nothing. Apply requires --apply --yes --plan-id from a fresh '
+             'review. Recovery direction is fixed by the protected commit '
+             'decision. Restore is the inverse of a completed conversion: it '
+             'reinstates the original source from the retained independent '
+             'payload, retires the converted target and preserves the outgoing '
+             'target as evidence. A cleaned payload forfeits the restore. '
+             'Cleanup removes only verified terminal private payloads, retaining '
+             'the audit receipt; it forfeits payload-based restore and is not secure erasure.',
+       );
 
   final ConversionCoordinator _coordinator;
+  final ConversionRestoreService? _restore;
   final ConversionAction _action;
+
+  /// The inverse restore service of the restore action.
+  ConversionRestoreService _restoreService() {
+    final restore = _restore;
+    if (restore == null) {
+      throw MambaException(
+        'The completed conversion restore is not available.',
+        exitCode: 4,
+      );
+    }
+    return restore;
+  }
+
   static final _id = NormalPositional('transaction-id');
   static final _scope = ChoiceOption.withDefault(
     'scope',
@@ -84,6 +109,8 @@ final class ConversionActionCommand extends Command {
       'Inspect current evidence and decision-bound recovery.',
     ConversionAction.recover =>
       'Review or apply interruption recovery, not inverse restore.',
+    ConversionAction.restore =>
+      'Review or apply the inverse restore of a completed conversion.',
     ConversionAction.cleanup =>
       'Review or delete verified terminal private payloads.',
   };
@@ -92,6 +119,7 @@ final class ConversionActionCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final mutator =
         _action == ConversionAction.recover ||
+        _action == ConversionAction.restore ||
         _action == ConversionAction.cleanup;
     final apply = mutator && valueOf(_apply);
     final options = LifecycleOptions(
@@ -112,6 +140,11 @@ final class ConversionActionCommand extends Command {
         valueOf(_id),
       ),
       ConversionAction.recover => await _coordinator.recoverReviewed(
+        options,
+        valueOf(_id),
+        planId: valueOf(_plan),
+      ),
+      ConversionAction.restore => await _restoreService().restoreReviewed(
         options,
         valueOf(_id),
         planId: valueOf(_plan),
