@@ -206,6 +206,8 @@ void main(List<String> arguments) {
 
     test('a parent that launches a long-lived program without a wait exits at '
         'once', () async {
+      // The start-up of a parent and of a helper is a compilation on a loaded
+      // machine; the proof itself does not depend on a duration.
       final directory = Directory(
         p.join(
           Directory.current.path,
@@ -222,7 +224,10 @@ import 'dart:io';
 
 void main(List<String> arguments) {
   File(arguments[0]).writeAsStringSync('\$pid');
-  sleep(const Duration(seconds: 30));
+  sleep(const Duration(seconds: 120));
+  // The helper marks its own end, so that the test can tell whether it had
+  // finished when the parent exited.
+  File(arguments[1]).writeAsStringSync('finished');
 }
 ''');
       final parent = File(p.join(directory.path, 'parent.dart'));
@@ -237,7 +242,7 @@ Future<void> main(List<String> arguments) async {
   final outcome = await const RealEditorProcessRunner().run(
     EditorProcessRequest(
       executable: arguments[0],
-      arguments: <String>[arguments[1], arguments[2]],
+      arguments: <String>[arguments[1], arguments[2], arguments[4]],
       environment: Platform.environment,
     ),
   );
@@ -251,6 +256,7 @@ Future<void> main(List<String> arguments) async {
 ''');
       final pidFile = File(p.join(directory.path, 'helper.pid'));
       final reportFile = File(p.join(directory.path, 'report.txt'));
+      final finishedFile = File(p.join(directory.path, 'helper.finished'));
       final process = await Process.start(Platform.resolvedExecutable, <String>[
         '--packages=${p.join(Directory.current.path, '.dart_tool', 'package_config.json')}',
         parent.path,
@@ -258,34 +264,45 @@ Future<void> main(List<String> arguments) async {
         helper.path,
         pidFile.path,
         reportFile.path,
+        finishedFile.path,
       ], workingDirectory: Directory.current.path);
       addTearDown(() => process.kill(ProcessSignal.sigkill));
 
       final code = await process.exitCode.timeout(
-        const Duration(seconds: 20),
+        const Duration(seconds: 60),
         onTimeout: () => -1,
       );
-      await _stopHelper(pidFile);
 
+      // The proof does not depend on a duration: the helper runs on for two
+      // minutes and marks its own end, so the parent that exited while the
+      // helper was still running did not wait for it.
+      final finished = finishedFile.existsSync();
+      await _stopHelper(pidFile);
       expect(
         code,
         0,
         reason:
             'The parent did not exit; it waited for the program it launched.',
       );
-      // The parent reports the duration of its own launch, so that the
-      // measurement covers the launch and not the start-up of the parent.
+      expect(
+        finished,
+        isFalse,
+        reason:
+            'The launched program had finished when the parent exited; the '
+            'parent waited for the program it launched.',
+      );
       final lines = reportFile.readAsStringSync().trim().split('\n');
       expect(lines.first, 'true');
       final elapsed = int.tryParse(lines.last) ?? -1;
       expect(
         elapsed,
-        lessThan(5000),
+        lessThan(30000),
         reason:
             'The launch waited for the program it launched; a detached launch '
-            'returns at once while the helper runs on for 30 seconds.',
+            'returns at once while the helper runs on for two minutes.',
       );
-    });
+      await _stopHelper(pidFile);
+    }, timeout: const Timeout(Duration(minutes: 4)));
   });
 }
 

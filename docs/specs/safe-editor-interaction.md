@@ -268,10 +268,12 @@ What the evidence does and does not show:
   environment and the captured working directory.
 - The lifecycle was exercised with a controlled long-lived helper program: a
   parent that launched it without a documented wait ended at once instead of
-  waiting for the helper. The duration of the launch is measured inside the
-  parent, so that the measurement covers the launch and not the start-up of
-  the parent. The helper was stopped by the test, so the test leaves no
-  program behind.
+  waiting for the helper. The proof does not depend on a duration: the helper
+  runs on for two minutes and marks its own end, so the parent that exited
+  while the helper was still running did not wait for it. The duration of the
+  launch is measured inside the parent, so that the measurement covers the
+  launch and not the start-up of the parent. The helper was stopped by the
+  test, so the test leaves no program behind.
 - No real editor was launched, and no resource body was executed.
 - The runs happened on Windows. The posix branches of the resolution (no
   search of the working directory, the case of a name, a linked program) are
