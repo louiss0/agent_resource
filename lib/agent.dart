@@ -13,6 +13,7 @@ import 'src/services/agent_conversion_service.dart';
 import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/agent_graph_service.dart';
 import 'src/services/agent_installation_service.dart';
+import 'src/services/guided_authoring_service.dart';
 import 'lifecycle.dart';
 import 'agent_config_commands.dart';
 import 'agent_install.dart';
@@ -52,6 +53,7 @@ final class AgentCommand extends GroupCommand {
     ParentConfigService? parentConfig,
     AgentAuthoringService? authoring,
     AgentConversionService? conversion,
+    GuidedAuthoringService? guided,
   }) : super(
          _children(
            operation,
@@ -63,6 +65,7 @@ final class AgentCommand extends GroupCommand {
            parentConfig,
            authoring,
            conversion,
+           guided,
          ),
        );
 
@@ -76,6 +79,7 @@ final class AgentCommand extends GroupCommand {
     ParentConfigService? parentConfig,
     AgentAuthoringService? authoring,
     AgentConversionService? conversion,
+    GuidedAuthoringService? guided,
   ) {
     final service =
         lifecycle ??
@@ -99,7 +103,10 @@ final class AgentCommand extends GroupCommand {
       AgentConfigCommand(
         parentConfig ?? ParentConfigService(fileSystem: service.fileSystem),
       ),
-      AgentCreateCommand(service: authoringService),
+      AgentCreateCommand(
+        guided:
+            guided ?? GuidedAuthoringService(fileSystem: service.fileSystem),
+      ),
       AgentComposeCommand(service: authoringService),
       AgentCloneCommand(service: authoringService),
       AgentEditCommand(service: authoringService),

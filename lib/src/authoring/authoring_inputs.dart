@@ -148,6 +148,32 @@ final class AuthoringInputs {
 
   /// The supported native fields for the selected kind and profile.
   NativeFieldMatrix get matrix => NativeFieldMatrix.forKind(kind, profile);
+
+  /// A copy of these inputs with a different body or field selection.
+  ///
+  /// The guided authoring flow uses the copy to replace the deferred body of
+  /// an editor-led run and to record the values the operator supplied.
+  AuthoringInputs copyWith({
+    AuthoringBodySelection? body,
+    Map<String, AuthoringFieldValue>? fields,
+    bool? manage,
+    String? output,
+  }) => AuthoringInputs(
+    operation: operation,
+    kind: kind,
+    profile: profile,
+    scope: scope,
+    source: source,
+    body: body ?? this.body,
+    fields: fields ?? this.fields,
+    manage: manage ?? this.manage,
+    composition: composition,
+    output: output ?? this.output,
+    decisions: decisions,
+    references: references,
+    conversion: conversion,
+    sourceScope: sourceScope,
+  );
 }
 
 /// Parses and validates the shared native inputs.
@@ -155,6 +181,11 @@ final class AuthoringInputs {
 /// The inputs are named values, not an operation document. Every refusal
 /// names the supported alternative so an operator can correct the input
 /// without reading the implementation.
+///
+/// [allowDeferredBody] is the guided authoring seam: an editor-led create
+/// supplies the instruction body after the inputs are parsed. The deferred
+/// body is never a publication input: the plan of a create without a body
+/// is not ready.
 AuthoringInputs parseAuthoringInputs({
   required AuthoringOperation operation,
   required AuthoringKind kind,
@@ -174,6 +205,7 @@ AuthoringInputs parseAuthoringInputs({
   Map<String, String> references = const <String, String>{},
   ConversionDirection? conversion,
   LifecycleScope? sourceScope,
+  bool allowDeferredBody = false,
 }) {
   if (profile == AuthoringProfile.global && kind != AuthoringKind.prompt) {
     throw MambaException(
@@ -205,7 +237,7 @@ AuthoringInputs parseAuthoringInputs({
           exitCode: 4,
         );
       }
-      if (selectedBody == null) {
+      if (selectedBody == null && !allowDeferredBody) {
         throw MambaException(
           'A create operation requires a body input.',
           exitCode: 4,

@@ -7,9 +7,11 @@ import 'package:mamba/mamba.dart';
 
 import 'conversion.dart';
 import 'lifecycle.dart' show LifecycleOutputFormat;
+import 'prompt_create_command.dart';
 import 'src/prompt/prompt_native_view.dart';
 import 'src/prompt/prompt_validation_failure.dart';
 import 'src/services/conversion_coordinator_service.dart';
+import 'src/services/guided_authoring_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/prompt_read_service.dart';
 import 'src/services/prompt_inspection_service.dart';
@@ -18,8 +20,12 @@ final class PromptCommand extends GroupCommand {
   PromptCommand(
     ConversionCoordinator coordinator, {
     PromptReadService? read,
+    GuidedAuthoringService? guided,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   }) : super([
+         PromptCreateCommand(
+           guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
+         ),
          ConversionCommand(coordinator),
          PromptInspectCommand(
            read ?? PromptReadService(fileSystem: fileSystem),
@@ -38,7 +44,7 @@ final class PromptCommand extends GroupCommand {
 
   @override
   String get shortDescription =>
-      'Inspect native Prompts and recover native Prompt transactions.';
+      'Create, inspect, and recover native Prompts and Prompt transactions.';
 }
 
 /// The consuming harness of a read-only Prompt report.

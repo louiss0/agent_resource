@@ -1,9 +1,11 @@
 # Explicit Codex bound-role authoring
 
 This slice prepares the explicit Codex bound-role authoring path that the
-atomic Agent-create migration will register. Nothing is registered here: the
-public `agent create` route still owns its JSON request branch, and the
-standalone and bound-role routes are switched together by the create ticket.
+atomic Agent-create migration registers. The create ticket switched the
+standalone and the bound-role routes together: the public `agent create`
+route no longer owns a JSON request branch, and the bound-role selections
+below are its public spelling. The contract is described in
+`docs/specs/guided-text-creation.md`.
 
 ## What the slice adds
 
@@ -25,7 +27,7 @@ adds no new parent authority, no implicit adoption and no implicit management.
 | `--ownership` | `definition` publishes the definition only; `both` publishes the definition and registers the role. |
 | `--definition-source` | The reviewed native Codex definition that is published. It may be the candidate the shared guided authoring flow reviewed. |
 | `--definition-output` | The explicit placement of the published definition. |
-| `--ack-clients-stopped` | The independent acknowledgement that native clients are stopped for a parent write. |
+| `--ack-clients-stopped` | The independent acknowledgement that native clients are stopped for a parent write. The lifecycle routes spell the same acknowledgement `--clients-stopped`. |
 
 No operation-document option is part of this vocabulary. The retired JSON
 request route is not reinterpreted; `boundRoleRequestMigrationGuidance` names

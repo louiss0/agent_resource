@@ -473,33 +473,23 @@ Future<void> main() async {
               ..createSync();
             final home = _fs.directory(p.join(sandbox.path, 'home'))
               ..createSync();
-            final request = _write(
-              sandbox,
-              'create.json',
-              jsonEncode({
-                'schemaVersion': 1,
-                'operation': 'create',
-                'target': {
-                  'harness': 'pi',
-                  'destination': 'shared',
-                  'output': '.agents/agents/worker.md',
-                },
-                'context': {'workingDirectory': './'},
-                'definition': {
-                  'name': 'worker',
-                  'description': 'Works.',
-                  'model': 'kimi-coding/k3',
-                  'tools': 'read',
-                },
-                'instructions': ['Work.'],
-              }),
-            );
             final result = await createExecutor(fileSystem: _fs)
                 .fake()
                 .execute([
                   'agent',
                   'create',
-                  request.path,
+                  '--profile',
+                  'pi',
+                  '--name',
+                  'worker',
+                  '--description',
+                  'Works.',
+                  '--model',
+                  'kimi-coding/k3',
+                  '--tools',
+                  'read',
+                  '--body-text',
+                  'Work.',
                   '--cwd',
                   '${project.path}/',
                   '--project-root',
@@ -511,7 +501,9 @@ Future<void> main() async {
                 ]);
             final report = _decodeObject(_expectSuccess(result).output!);
             expect(report['command'], 'agent create');
+            expect(report['outcome'], 'planned');
             expect(_dataOf(report)['ready'], isTrue);
+            expect(_dataOf(report)['published'], isFalse);
           });
         });
       });

@@ -18,6 +18,7 @@ import 'src/services/agent_graph_service.dart';
 import 'src/services/agent_installation_service.dart';
 import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/authoring_recovery_service.dart';
+import 'src/services/guided_authoring_service.dart';
 import 'src/services/instruction_draft_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 import 'src/services/parent_config_service.dart';
@@ -47,57 +48,65 @@ Executor createExecutor({
   ConversionCoordinator? conversionRecovery,
   AuthoringRecoveryService? authoringRecovery,
   InstructionDraftService? instructionDrafts,
+  GuidedAuthoringService? guided,
   PromptReadService? promptRead,
   PackLifecycleService? packLifecycle,
   void Function(String)? deprecationWarning,
-}) => Executor(
-  'agent_resource',
-  'Manage resources consumed by AI coding harnesses.',
-  applicationVersion,
-  [
-    PromptCommand(
-      conversionRecovery ??
-          ConversionCoordinator(
-            io: LifecycleIO(fs: fileSystem),
-            state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
-          ),
-      read: promptRead,
-      fileSystem: fileSystem,
-    ),
-    AuthoringCommand(
-      authoringRecovery ??
-          AuthoringRecoveryService(
-            fileSystem: fileSystem,
-            state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
-          ),
-      drafts: instructionDrafts,
-      fileSystem: fileSystem,
-    ),
-    SkillCommand(
-      installation: skillInstallation,
-      lifecycle: skillLifecycle,
-      fileSystem: fileSystem,
-    ),
-    AgentCommand(
-      fileSystem: fileSystem,
-      installation: agentInstallation,
-      lifecycle: agentLifecycle,
-      graph: agentGraph,
-      parentConfig: parentConfig,
-      authoring: agentAuthoring,
-      conversion: agentConversion,
-    ),
-    PackCommand(service: packLifecycle, fileSystem: fileSystem),
-    SkillsCommand(
-      service: packLifecycle,
-      warning: deprecationWarning,
-      fileSystem: fileSystem,
-    ),
-    AgentsCommand(
-      service: packLifecycle,
-      warning: deprecationWarning,
-      fileSystem: fileSystem,
-    ),
-    ConfigCommand(service: packLifecycle, fileSystem: fileSystem),
-  ],
-);
+}) {
+  final guidedService =
+      guided ?? GuidedAuthoringService(fileSystem: fileSystem);
+  return Executor(
+    'agent_resource',
+    'Manage resources consumed by AI coding harnesses.',
+    applicationVersion,
+    [
+      PromptCommand(
+        conversionRecovery ??
+            ConversionCoordinator(
+              io: LifecycleIO(fs: fileSystem),
+              state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
+            ),
+        read: promptRead,
+        guided: guidedService,
+        fileSystem: fileSystem,
+      ),
+      AuthoringCommand(
+        authoringRecovery ??
+            AuthoringRecoveryService(
+              fileSystem: fileSystem,
+              state: LifecycleStateService(io: LifecycleIO(fs: fileSystem)),
+            ),
+        drafts: instructionDrafts,
+        fileSystem: fileSystem,
+      ),
+      SkillCommand(
+        installation: skillInstallation,
+        lifecycle: skillLifecycle,
+        guided: guidedService,
+        fileSystem: fileSystem,
+      ),
+      AgentCommand(
+        fileSystem: fileSystem,
+        installation: agentInstallation,
+        lifecycle: agentLifecycle,
+        graph: agentGraph,
+        parentConfig: parentConfig,
+        authoring: agentAuthoring,
+        conversion: agentConversion,
+        guided: guidedService,
+      ),
+      PackCommand(service: packLifecycle, fileSystem: fileSystem),
+      SkillsCommand(
+        service: packLifecycle,
+        warning: deprecationWarning,
+        fileSystem: fileSystem,
+      ),
+      AgentsCommand(
+        service: packLifecycle,
+        warning: deprecationWarning,
+        fileSystem: fileSystem,
+      ),
+      ConfigCommand(service: packLifecycle, fileSystem: fileSystem),
+    ],
+  );
+}

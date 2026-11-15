@@ -29,6 +29,9 @@ const Set<String> _privateStateDirectories = <String>{
   authoringTransactionDirectoryName,
   authoringRecoveryDirectoryName,
   authoringStagingDirectoryName,
+  // The protected storage of the retained instruction drafts. It holds
+  // private instruction text, not an installation ledger.
+  'instruction-drafts',
   'authoring-receipts',
 };
 const maxManagementDocumentBytes = 8 * 1024 * 1024;

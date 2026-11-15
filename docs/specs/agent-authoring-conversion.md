@@ -3,7 +3,7 @@
 ## Commands
 
 ```text
-agent_resource agent create <request.json>
+agent_resource agent create --profile claude|codex|pi --name <name> --description <text> --body-file <file>|--body-stdin|--body-text <text>
 agent_resource agent clone <request.json>
 agent_resource agent edit <request.json>
 agent_resource agent compose <request.json>
@@ -11,13 +11,15 @@ agent_resource agent convert <request.json>
 agent_resource agent inspect <native-file> --harness claude|codex|pi
 ```
 
-All operation requests are bounded UTF-8 JSON with `schemaVersion: 1`, an
-operation matching the selected command, explicit native source/target data,
-and `context.workingDirectory`. The request positional is canonical.
-`--request` is an exclusive compatibility alias on authoring/conversion
-commands. Existing Codex bound-role creation requests remain accepted through
-`agent create --request`; they are not reinterpreted as general native
-creation.
+`agent create` is the guided plain-text creation route and is documented in
+`docs/specs/guided-text-creation.md`. The retired JSON operation request and
+the `--request` alias are refused on that route with migration guidance.
+
+The remaining operation requests are bounded UTF-8 JSON with
+`schemaVersion: 1`, an operation matching the selected command, explicit
+native source/target data, and `context.workingDirectory`. The request
+positional is canonical. `--request` is an exclusive compatibility alias on
+the authoring/conversion commands that still use a request.
 
 Planning is the default. `--dry-run` is also read-only. Planning creates no
 stored plans, locks, journals, staging, backups, logs, or management records.
