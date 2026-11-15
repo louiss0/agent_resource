@@ -54,8 +54,11 @@ final class AgentCreateCommand extends GuidedCreateCommand {
              '--profile; it is never inferred from a file name. The '
              'instruction body comes from --body-file, --body-stdin or '
              '--body-text; on a usable terminal the guided flow opens the '
-             'configured editor for the body when no body was supplied. A '
-             'new output is author-only: no installation record is created '
+             'configured editor for the body when no body was supplied. The '
+             'route buffers a piped standard input, and the buffer is used '
+             'only when --body-stdin selects it; an interactive terminal is '
+             'never read. A new output is author-only: no installation '
+             'record is created '
              'unless --manage selects a supported managed form. The '
              'reviewed proposal names its target, its ownership and its '
              'changes before the publication is confirmed. --dry-run plans '
@@ -174,6 +177,15 @@ final class AgentCreateCommand extends GuidedCreateCommand {
     if (valueOf(GuidedCreateFields.profile) != null ||
         valueOf(GuidedCreateFields.name) != null ||
         valueOf(GuidedCreateFields.description) != null ||
+        valueOf(GuidedCreateFields.model) != null ||
+        valueOf(GuidedCreateFields.tools) != null ||
+        valueOf(GuidedCreateFields.skills) != null ||
+        valueOf(GuidedCreateFields.allowedTools) != null ||
+        valueOf(GuidedCreateFields.disallowedTools) != null ||
+        valueOf(GuidedCreateFields.metadata) != null ||
+        valueOf(GuidedCreateFields.argumentHint) != null ||
+        valueOf(GuidedCreateFields.license) != null ||
+        valueOf(GuidedCreateFields.compatibility) != null ||
         valueOf(GuidedCreateFields.bodyFile) != null ||
         valueOf(GuidedCreateFields.bodyStdin) ||
         valueOf(GuidedCreateFields.bodyText) != null ||

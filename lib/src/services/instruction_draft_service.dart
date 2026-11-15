@@ -246,6 +246,58 @@ interface class InstructionDraftService {
     );
   }
 
+  /// Records the current intent of one retained draft.
+  ///
+  /// The guided flow collects the missing native fields after the draft was
+  /// prepared. The update rewrites the bound metadata document with the
+  /// collected intent, so a resume rebuilds the proposal with the collected
+  /// values instead of losing them.
+  ///
+  /// The update never changes the draft identity, never changes the prepared
+  /// snapshot, never carries an approval and never removes anything.
+  Future<InstructionDraft> updateIntent(
+    LifecycleOptions options,
+    String draftId,
+    AuthoringInputs inputs,
+  ) async {
+    final context = LifecycleContext.resolve(options, fileSystem: _fileSystem);
+    final draft = await _load(context, draftId);
+    _confirmContainerPrivacy(draft);
+    final document = await _readDocument(context, draftId);
+    final updated = InstructionDraftDocument(
+      draftId: document.draftId,
+      createdAt: document.createdAt,
+      intent: InstructionDraftIntent.from(inputs, context: context),
+      bodyOrigin: document.bodyOrigin,
+      bodySha256: document.bodySha256,
+      bodyByteLength: document.bodyByteLength,
+      bodySourcePath: document.bodySourcePath,
+    );
+    final encoded = utf8.encode(updated.encode());
+    if (encoded.length > maxInstructionDraftDocumentBytes) {
+      throw MambaException(
+        'The instruction draft metadata exceeds its byte limit.',
+        exitCode: 3,
+      );
+    }
+    _state.writeProtectedDocument(
+      _fileSystem.path.join(draft.path, instructionDraftMetadataFileName),
+      encoded,
+    );
+    return InstructionDraft(
+      draftId: draft.draftId,
+      intent: updated.intent,
+      bodyOrigin: updated.bodyOrigin,
+      bodySha256: updated.bodySha256,
+      bodyByteLength: updated.bodyByteLength,
+      bodySourcePath: updated.bodySourcePath,
+      path: draft.path,
+      metadataSha256: updated.digest,
+      createdAt: updated.createdAt,
+      hasWorkingCopy: draft.hasWorkingCopy,
+    );
+  }
+
   /// Lists the retained drafts of the selected scope.
   ///
   /// The listing is metadata only: it never reports the instruction body. An

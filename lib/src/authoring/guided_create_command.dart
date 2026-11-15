@@ -14,7 +14,7 @@ import 'guided_create_fields.dart';
 /// The base owns the named native vocabulary, the interaction boundary and
 /// the rendering of the reviewed proposal. A concrete command owns its
 /// resource kind, its supported profiles and its own long description.
-abstract class GuidedCreateCommand extends Command {
+abstract class GuidedCreateCommand extends Command with HookRunner {
   GuidedCreateCommand({
     required this.kind,
     required this.guided,
@@ -47,6 +47,9 @@ abstract class GuidedCreateCommand extends Command {
   /// session instead of depending on the terminal of the test runner.
   final bool Function()? terminal;
 
+  /// The buffered standard input of the current invocation.
+  String? _standardInput;
+
   /// The file system of the run.
   fslib.FileSystem get fileSystem => guided.fileSystem;
 
@@ -68,6 +71,9 @@ abstract class GuidedCreateCommand extends Command {
     GuidedCreateFields.description,
     GuidedCreateFields.model,
     GuidedCreateFields.tools,
+    GuidedCreateFields.allowedTools,
+    GuidedCreateFields.disallowedTools,
+    GuidedCreateFields.metadata,
     GuidedCreateFields.skills,
     GuidedCreateFields.argumentHint,
     GuidedCreateFields.license,
@@ -121,6 +127,7 @@ abstract class GuidedCreateCommand extends Command {
         interactive: interactive,
         editorChoice: valueOf(GuidedCreateFields.editor),
         showInstructions: valueOf(GuidedCreateFields.showInstructions),
+        standardInput: _standardInput,
       ),
       options,
     );
@@ -129,6 +136,17 @@ abstract class GuidedCreateCommand extends Command {
       throw MambaException(rendered, exitCode: 4);
     }
     return rendered;
+  }
+
+  @override
+  Future<void> preRun(
+    ValueOf valueOf,
+    MambaReadContext context,
+    ProcessedStandardInput? input,
+  ) async {
+    // The buffered standard input of this invocation. It is used only when
+    // the body selection is the explicitly selected standard input.
+    _standardInput = input?.utf8Text;
   }
 
   /// Whether the run may ask the operator a question.
@@ -188,6 +206,19 @@ abstract class GuidedCreateCommand extends Command {
         exitCode: 4,
       );
     }
+    final matrix = NativeFieldMatrix.forKind(kind, profile);
+    final skills = valueOf(GuidedCreateFields.skills);
+    final skillsSpec = matrix.specFor('skills');
+    if (skills != null &&
+        skillsSpec != null &&
+        skillsSpec.valueKind == NativeFieldValueKind.map) {
+      throw MambaException(
+        'The ${profile.name} ${kind.name} profile declares skills as a '
+        'native table; the authoring input accepts a list of skill names '
+        'only where the native form is a list.',
+        exitCode: 4,
+      );
+    }
     return parseAuthoringInputs(
       operation: AuthoringOperation.create,
       kind: kind,
@@ -201,7 +232,10 @@ abstract class GuidedCreateCommand extends Command {
         description: valueOf(GuidedCreateFields.description),
         model: valueOf(GuidedCreateFields.model),
         tools: valueOf(GuidedCreateFields.tools),
-        skills: valueOf(GuidedCreateFields.skills),
+        skills: skills,
+        allowedTools: valueOf(GuidedCreateFields.allowedTools),
+        disallowedTools: valueOf(GuidedCreateFields.disallowedTools),
+        metadata: valueOf(GuidedCreateFields.metadata),
         argumentHint: valueOf(GuidedCreateFields.argumentHint),
         license: valueOf(GuidedCreateFields.license),
         compatibility: valueOf(GuidedCreateFields.compatibility),

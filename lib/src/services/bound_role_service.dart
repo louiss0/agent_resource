@@ -244,7 +244,9 @@ final class BoundRoleService {
     if (request.ownership != BoundOwnership.definition &&
         !request.clientsStopped) {
       throw MambaException(
-        'Parent-writing bound-role mutations require --clients-stopped acknowledgement.',
+        'Parent-writing bound-role mutations require the --clients-stopped '
+        'acknowledgement: --ack-clients-stopped on the create route, '
+        '--clients-stopped on the lifecycle routes.',
         exitCode: 4,
       );
     }

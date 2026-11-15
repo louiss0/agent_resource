@@ -88,12 +88,33 @@ final class GuidedCreateFields {
   static final tools = RepeatableStringOption(
     'tools',
     description:
-        'The complete tool list of the created resource. A supplied list '
+        'The complete tool list of the created Agent. A supplied list '
         'replaces the field; an omitted list preserves the source value.',
+  );
+  static final allowedTools = RepeatableStringOption(
+    'allowed-tools',
+    description:
+        'The complete allowed tool list of the created Skill. A supplied '
+        'list replaces the field.',
+  );
+  static final disallowedTools = RepeatableStringOption(
+    'disallowed-tools',
+    description:
+        'The complete denied tool list of the created Skill. A supplied '
+        'list replaces the field.',
+  );
+  static final metadata = RepeatableStringOption(
+    'metadata',
+    description:
+        'One metadata entry of the created Skill as name=value. The whole '
+        'metadata table is replaced by the supplied entries.',
   );
   static final skills = RepeatableStringOption(
     'skills',
-    description: 'The complete referenced skill list of the created resource.',
+    description:
+        'The complete referenced skill list of the created resource. The '
+        'codex Agent profile declares skills as a native table and refuses '
+        'this selection.',
   );
   static final argumentHint = StringOption(
     'argument-hint',
@@ -178,12 +199,20 @@ final class GuidedCreateFields {
   ///
   /// An omitted flag declares nothing: the field keeps its source value or
   /// stays absent. The map carries only the fields the operator supplied.
+  ///
+  /// The mapping is native-profile aware: a native table is declared by its
+  /// named entries and a native list by its repeated values. A selection
+  /// whose native shape is a structured table is refused by the caller
+  /// instead of being flattened.
   static Map<String, Object?> nativeFields({
     String? name,
     String? description,
     String? model,
     List<String>? tools,
     List<String>? skills,
+    List<String>? allowedTools,
+    List<String>? disallowedTools,
+    List<String>? metadata,
     String? argumentHint,
     String? license,
     String? compatibility,
@@ -193,10 +222,36 @@ final class GuidedCreateFields {
     'model': ?model,
     'tools': ?tools == null ? null : List<String>.of(tools),
     'skills': ?skills == null ? null : List<String>.of(skills),
+    'allowed-tools': ?allowedTools == null
+        ? null
+        : List<String>.of(allowedTools),
+    'disallowed-tools': ?disallowedTools == null
+        ? null
+        : List<String>.of(disallowedTools),
+    'metadata': ?metadata == null ? null : nativeEntries(metadata),
     'argument-hint': ?argumentHint,
     'license': ?license,
     'compatibility': ?compatibility,
   };
+
+  /// The native table of the supplied named entries.
+  ///
+  /// Every entry is one `name=value` pair. The name must not be blank, and
+  /// the value keeps every character after the first separator.
+  static Map<String, Object?> nativeEntries(List<String> entries) {
+    final values = <String, Object?>{};
+    for (final entry in entries) {
+      final separator = entry.indexOf('=');
+      if (separator <= 0) {
+        throw MambaException(
+          'The metadata entry must be one name=value pair: $entry',
+          exitCode: 4,
+        );
+      }
+      values[entry.substring(0, separator)] = entry.substring(separator + 1);
+    }
+    return values;
+  }
 
   /// The body selection of the selected flags.
   ///

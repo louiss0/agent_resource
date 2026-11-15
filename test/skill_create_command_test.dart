@@ -6,6 +6,7 @@ import 'package:agent_resource/src/services/guided_authoring_service.dart';
 import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
+import 'package:mamba/mamba.dart' show ProcessedStandardInput;
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -363,6 +364,154 @@ Future<void> main() async {
       },
     );
 
+    test('publishes the body supplied on standard input', () async {
+      final executor =
+          createExecutor(
+            fileSystem: fs,
+            guided: GuidedAuthoringService(
+              fileSystem: fs,
+              terminal: () => false,
+              ask: (label) async => null,
+              confirm: (summary) async => true,
+            ),
+          ).fake(
+            standardInput: ProcessedStandardInput(
+              utf8.encode('Body from stdin.\n'),
+            ),
+          );
+
+      final result = await executor.execute([
+        'skill',
+        'create',
+        '--profile',
+        'claude',
+        '--name',
+        'demo',
+        '--description',
+        'Demo resource.',
+        '--body-stdin',
+        '--apply',
+        '--yes',
+        '--format',
+        'json',
+        ...contextArguments(withState: true),
+      ]);
+
+      expect(
+        result,
+        isA<MambaSuccessResult>(),
+        reason: result is MambaFailureResult ? result.message : null,
+      );
+      final report = jsonDecode(
+        (result as MambaSuccessResult).output!,
+      ) as Map<String, Object?>;
+      expect(report['outcome'], 'published');
+      final marker = fs.file(
+        fs.path.join(project.path, '.claude', 'skills', 'demo', 'SKILL.md'),
+      );
+      expect(marker.readAsStringSync(), contains('Body from stdin.'));
+    });
+
+    test(
+      'refuses the standard input when the invocation supplied none',
+      () async {
+        final result = await executor.execute([
+          'skill',
+          'create',
+          '--profile',
+          'claude',
+          '--name',
+          'demo',
+          '--description',
+          'Demo resource.',
+          '--body-stdin',
+          '--unattended',
+          ...contextArguments(),
+        ]);
+
+        expect(
+          result,
+          isA<MambaFailureResult>().having(
+            (value) => value.exitCode,
+            'exit code',
+            4,
+          ),
+        );
+        expect(
+          (result as MambaFailureResult).message,
+          contains('Standard input was not supplied'),
+        );
+      },
+    );
+
+    test('publishes the native Skill declarations', () async {
+      final result = await executor.execute([
+        'skill',
+        'create',
+        '--profile',
+        'claude',
+        '--name',
+        'demo',
+        '--description',
+        'Demo resource.',
+        '--allowed-tools',
+        'Read',
+        '--allowed-tools',
+        'Write',
+        '--metadata',
+        'owner=platform',
+        '--body-text',
+        'Follow the selected task.',
+        '--apply',
+        '--yes',
+        '--format',
+        'json',
+        ...contextArguments(withState: true),
+      ]);
+
+      expect(
+        result,
+        isA<MambaSuccessResult>(),
+        reason: result is MambaFailureResult ? result.message : null,
+      );
+      final marker = fs.file(
+        fs.path.join(project.path, '.claude', 'skills', 'demo', 'SKILL.md'),
+      );
+      final content = marker.readAsStringSync();
+      expect(content, contains('allowed-tools'));
+      expect(content, contains('Read, Write'));
+      expect(content, contains('owner'));
+      expect(content, contains('platform'));
+    });
+
+    test('refuses a metadata entry that is not one name=value pair', () async {
+      final result = await executor.execute([
+        'skill',
+        'create',
+        '--profile',
+        'claude',
+        '--name',
+        'demo',
+        '--description',
+        'Demo resource.',
+        '--metadata',
+        'owner',
+        '--body-text',
+        'Body.',
+        ...contextArguments(),
+      ]);
+
+      expect(
+        result,
+        isA<MambaFailureResult>().having(
+          (value) => value.exitCode,
+          'exit code',
+          4,
+        ),
+      );
+      expect((result as MambaFailureResult).message, contains('name=value'));
+    });
+
     test('refuses a publication without an approval', () async {
       final result = await executor.execute([
         'skill',
@@ -444,6 +593,53 @@ Future<void> main() async {
           marker.readAsStringSync(),
           contains('Follow the selected task.'),
         );
+      } finally {
+        await sandbox.delete(recursive: true);
+      }
+    });
+    test('reads the body from the piped standard input', () async {
+      final sandbox = io.Directory.systemTemp.createTempSync('skill-stdin-');
+      try {
+        final project = io.Directory(p.join(sandbox.path, 'project'))
+          ..createSync();
+        final home = io.Directory(p.join(sandbox.path, 'home'))..createSync();
+        final result = await runDartScript(
+          script: entrypoint,
+          packageConfig: packageConfig,
+          workingDirectory: project,
+          environment: io.Platform.environment,
+          standardInput: 'Body from the pipe.\n',
+          arguments: [
+            'skill',
+            'create',
+            '--profile',
+            'claude',
+            '--name',
+            'demo',
+            '--description',
+            'Demo resource.',
+            '--body-stdin',
+            '--apply',
+            '--yes',
+            '--unattended',
+            '--format',
+            'json',
+            '--cwd',
+            '${project.path}${io.Platform.pathSeparator}',
+            '--project-root',
+            '${project.path}${io.Platform.pathSeparator}',
+            '--home',
+            '${home.path}${io.Platform.pathSeparator}',
+          ],
+        );
+
+        expect(result.exitCode, 0, reason: result.stderr);
+        final report = jsonDecode(result.stdout) as Map<String, Object?>;
+        expect(report['outcome'], 'published');
+        final marker = io.File(
+          p.join(project.path, '.claude', 'skills', 'demo', 'SKILL.md'),
+        );
+        expect(marker.readAsStringSync(), contains('Body from the pipe.'));
       } finally {
         await sandbox.delete(recursive: true);
       }

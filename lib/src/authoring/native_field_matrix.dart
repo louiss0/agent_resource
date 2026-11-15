@@ -269,10 +269,10 @@ final class NativeFieldMatrix {
           required: true,
           description: 'Native agent name.',
         ),
-        NativeFieldSpec(
+        const NativeFieldSpec(
           name: 'description',
           valueKind: NativeFieldValueKind.text,
-          required: profile != AuthoringProfile.codex,
+          required: true,
           description: 'When the harness should delegate to this agent.',
         ),
         NativeFieldSpec(

@@ -1,7 +1,11 @@
 import 'dart:convert';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/authoring/editor_process.dart';
+import 'package:agent_resource/src/services/editor_interaction_service.dart';
 import 'package:agent_resource/src/services/guided_authoring_service.dart';
+import 'package:agent_resource/src/services/instruction_draft_service.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
@@ -397,6 +401,168 @@ void main() {
       },
     );
 
+    test(
+      'refuses every standalone selection on the bound-role route',
+      () async {
+        final definition = _definition(fixture);
+        final config = _config(fixture);
+        final selections = <List<String>>[
+          ['--model', 'provider/model'],
+          ['--tools', 'read'],
+          ['--skills', 'alpha'],
+          ['--argument-hint', '<file>'],
+          ['--license', 'MIT'],
+          ['--compatibility', 'claude'],
+        ];
+
+        for (final selection in selections) {
+          final result = await executor.execute([
+            'agent',
+            'create',
+            '--role-key',
+            'reviewer',
+            '--config-file',
+            config.path,
+            '--ownership',
+            'both',
+            '--definition-source',
+            definition.path,
+            ...selection,
+            ..._context(fixture),
+          ]);
+
+          expect(
+            result,
+            isA<MambaFailureResult>().having(
+              (value) => value.exitCode,
+              'exit code',
+              4,
+            ),
+            reason: 'The selection ${selection.first} must not be ignored.',
+          );
+          expect(
+            (result as MambaFailureResult).message,
+            contains('does not accept the standalone authoring selections'),
+          );
+          expect(config.readAsStringSync(), isNot(contains('agents.reviewer')));
+        }
+      },
+    );
+
+    test('the lifecycle request route cannot create a bound role', () async {
+      final config = _config(fixture);
+      final request =
+          fixture.fs.file(
+            fixture.fs.path.join(fixture.root.path, 'create.json'),
+          )..writeAsStringSync(
+            jsonEncode(<String, Object?>{
+              'schemaVersion': 1,
+              'operation': 'create',
+              'source': <String, Object?>{
+                'kind': 'codex-role',
+                'configFile': config.path,
+                'roleKey': 'reviewer',
+              },
+              'ownership': 'both',
+            }),
+          );
+
+      final result = await executor.execute([
+        'agent',
+        'adopt',
+        '--request',
+        request.path,
+        '--harness',
+        'codex',
+        ..._context(fixture),
+      ]);
+
+      expect(result, isA<MambaFailureResult>());
+      expect(
+        (result as MambaFailureResult).message,
+        contains('must match the selected command'),
+      );
+      expect(config.readAsStringSync(), isNot(contains('agents.reviewer')));
+    });
+
+    test(
+      'the guided Codex creation collects the required description',
+      () async {
+        final answers = <String>[];
+        final guided = GuidedAuthoringService(
+          fileSystem: fixture.fs,
+          terminal: () => true,
+          editor: EditorInteractionService(
+            drafts: InstructionDraftService(
+              fileSystem: fixture.fs,
+              state: LifecycleStateService(io: LifecycleIO(fs: fixture.fs)),
+              privacy: (_) {},
+              verifier: (_) {},
+            ),
+            processRunner: (request) async {
+              fixture.fs
+                  .file(request.arguments.last)
+                  .writeAsStringSync('Review the selected change.\n');
+              return const EditorProcessOutcome(started: true, exitCode: 0);
+            },
+            environment: const EditorSessionEnvironment(
+              hasTerminal: true,
+              hasDisplay: true,
+            ),
+            acknowledge: (request) async => true,
+            recover: (request) async => const EditorRecoveryCancel(),
+            executables: const _FakeResolver(),
+            fileSystem: fixture.fs,
+          ),
+          ask: (label) async {
+            answers.add(label);
+            return 'Reviews the selected change.';
+          },
+          confirm: (summary) async => true,
+        );
+        final interactive = createExecutor(
+          fileSystem: fixture.fs,
+          guided: guided,
+        ).fake();
+
+        final result = await interactive.execute([
+          'agent',
+          'create',
+          '--profile',
+          'codex',
+          '--name',
+          'reviewer',
+          '--body-text',
+          'Review the selected change.',
+          '--apply',
+          '--yes',
+          ..._context(fixture),
+        ]);
+
+        expect(
+          result,
+          isA<MambaSuccessResult>(),
+          reason: result is MambaFailureResult ? result.message : null,
+        );
+        expect(answers, hasLength(1));
+        expect(answers.single, contains('description'));
+        expect((result as MambaSuccessResult).output, contains('published'));
+        final definition = fixture.fs.file(
+          fixture.fs.path.join(
+            fixture.project.path,
+            '.codex',
+            'agents',
+            'reviewer.toml',
+          ),
+        );
+        expect(definition.existsSync(), isTrue);
+        expect(
+          definition.readAsStringSync(),
+          contains('Reviews the selected change.'),
+        );
+      },
+    );
+
     test('refuses a registration-only bound-role ownership', () async {
       final definition = _definition(fixture);
       final config = _config(fixture);
@@ -429,4 +595,20 @@ void main() {
       );
     });
   });
+}
+
+/// A resolver that finds every editor program.
+final class _FakeResolver implements EditorProgramResolver {
+  const _FakeResolver();
+
+  @override
+  EditorExecutableResolution resolve(
+    String executable, {
+    required String workingDirectory,
+    required Map<String, String> environment,
+  }) => EditorExecutableResolution(
+    requested: executable,
+    resolvedPath: '/programs/$executable',
+    isBatchLauncher: false,
+  );
 }

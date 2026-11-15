@@ -49,6 +49,7 @@ final class GuidedAuthoringRequest {
     this.interactive = false,
     this.editorChoice,
     this.showInstructions = false,
+    this.standardInput,
   });
 
   /// The canonical name of the command that owns the run.
@@ -75,6 +76,14 @@ final class GuidedAuthoringRequest {
 
   /// Whether the private instruction text is disclosed.
   final bool showInstructions;
+
+  /// The standard input of this invocation.
+  ///
+  /// The value is the buffered standard input of the invocation. It is used
+  /// only when the body selection is the explicitly selected standard input.
+  /// A null value means that the invocation supplied none: the run refuses
+  /// instead of waiting for an input that never comes.
+  final String? standardInput;
 }
 
 /// The result of one guided create run.
@@ -194,8 +203,7 @@ interface class GuidedAuthoringService {
     LifecycleOptions options,
   ) async {
     var inputs = request.inputs;
-    String? draftId;
-    String? draftPath;
+    _DraftReference? draft;
 
     if (options.dryRun) {
       if (inputs.body == null) {
@@ -205,11 +213,10 @@ interface class GuidedAuthoringService {
           exitCode: 4,
         );
       }
-      final body = await _drafts.resolveBody(options, inputs.body!);
       inputs = inputs.copyWith(
         body: AuthoringBodySelection(
           kind: BodyInputKind.literal,
-          text: body.text,
+          text: await _resolveBody(request, options, inputs.body!),
         ),
       );
       final plan = await _plans.plan(
@@ -223,11 +230,10 @@ interface class GuidedAuthoringService {
     if (inputs.body != null) {
       // An explicit body is used as it was supplied. The guided flow never
       // opens an editor for it, so an unattended run stays unattended.
-      final body = await _drafts.resolveBody(options, inputs.body!);
       inputs = inputs.copyWith(
         body: AuthoringBodySelection(
           kind: BodyInputKind.literal,
-          text: body.text,
+          text: await _resolveBody(request, options, inputs.body!),
         ),
       );
     } else {
@@ -238,7 +244,7 @@ interface class GuidedAuthoringService {
           exitCode: 4,
         );
       }
-      final draft = await _drafts.prepare(
+      final prepared = await _drafts.prepare(
         options,
         inputs,
         body: const AuthoringBodySelection(
@@ -246,11 +252,10 @@ interface class GuidedAuthoringService {
           text: '',
         ),
       );
-      draftId = draft.draftId;
-      draftPath = draft.path;
+      draft = _DraftReference(prepared.draftId, prepared.path);
       final outcome = await _editor.edit(
         options,
-        draft.draftId,
+        prepared.draftId,
         editorChoice: request.editorChoice,
       );
       switch (outcome) {
@@ -270,14 +275,14 @@ interface class GuidedAuthoringService {
           );
         case EditorEditCancelled(:final reason):
           throw MambaException(
-            'The authoring session was cancelled; the retained draft is at '
-            '$draftPath. $reason',
+            'The authoring session was cancelled; the retained draft '
+            '${draft.id} is at ${draft.path}. $reason',
             exitCode: 7,
           );
         case EditorEditNotFinished(:final reason):
           throw MambaException(
-            'The editing did not finish; the retained draft is at $draftPath. '
-            '$reason',
+            'The editing did not finish; the retained draft ${draft.id} is at '
+            '${draft.path}. $reason',
             exitCode: 7,
           );
       }
@@ -287,7 +292,7 @@ interface class GuidedAuthoringService {
       request,
       options,
       inputs,
-      draftPath: draftPath,
+      draft: draft,
     );
     final reviewed = collected.plan;
     if (reviewed == null) {
@@ -297,12 +302,12 @@ interface class GuidedAuthoringService {
     if (requested != null && requested != reviewed.planId) {
       throw MambaException(
         'The supplied plan ID is stale; the current proposal is '
-        '${reviewed.planId}.',
+        '${reviewed.planId}.${_draftSuffix(draft)}',
         exitCode: 4,
       );
     }
     if (!request.apply) {
-      return _outcome(request, reviewed, published: false);
+      return _outcome(request, reviewed, published: false, draft: draft);
     }
 
     var publicationOptions = options;
@@ -311,30 +316,24 @@ interface class GuidedAuthoringService {
       if (!confirmed) {
         throw MambaException(
           'The publication was cancelled; no output was written.'
-          '${draftPath == null ? '' : ' The retained draft is at $draftPath.'}',
+          '${_draftSuffix(draft)}',
           exitCode: 7,
         );
       }
       publicationOptions = options.copyWith(approved: true);
     } else if (!options.approved) {
       throw MambaException(
-        'Publication requires --yes in an unattended session.',
+        'Publication requires --yes in an unattended session.'
+        '${_draftSuffix(draft)}',
         exitCode: 4,
       );
     }
 
-    final published = await _publication.publish(
-      AuthoringPublicationRequest(
-        plan: reviewed,
-        options: publicationOptions,
-        planId: reviewed.planId,
-        approved: true,
-      ),
-    );
+    final published = await _publish(reviewed, publicationOptions, draft);
     var cleaned = false;
     String? cleanupFailure;
-    if (draftId != null) {
-      final cleanup = await _drafts.cleanupOwned(publicationOptions, draftId);
+    if (draft != null) {
+      final cleanup = await _drafts.cleanupOwned(publicationOptions, draft.id);
       cleaned = cleanup.cleaned;
       cleanupFailure = cleanup.reason;
     }
@@ -345,9 +344,11 @@ interface class GuidedAuthoringService {
         ...reviewed.data,
         ...published.data,
         'published': true,
-        'draftRetained': draftId != null && !cleaned,
+        'draftRetained': draft != null && !cleaned,
         'draftCleaned': cleaned,
         'draftCleanupFailure': ?cleanupFailure,
+        if (draft != null) 'draftId': draft.id,
+        if (draft != null) 'draftPath': draft.path,
       },
       diagnostics: <Map<String, Object?>>[
         ...reviewed.diagnostics,
@@ -356,15 +357,75 @@ interface class GuidedAuthoringService {
     );
   }
 
+  /// Publishes the reviewed plan and names the retained draft on a failure.
+  ///
+  /// A publication failure never hides the retained draft: the operator can
+  /// resume it with its identity.
+  Future<AuthoringPublicationOutcome> _publish(
+    AuthoringPlan plan,
+    LifecycleOptions options,
+    _DraftReference? draft,
+  ) async {
+    try {
+      return await _publication.publish(
+        AuthoringPublicationRequest(
+          plan: plan,
+          options: options,
+          planId: plan.planId,
+          approved: true,
+        ),
+      );
+    } on MambaException catch (error) {
+      throw MambaException(
+        '${error.message}${_draftSuffix(draft)}',
+        exitCode: error.exitCode,
+      );
+    }
+  }
+
+  /// Resolves the instruction body of the selected input.
+  ///
+  /// The explicitly selected standard input is the buffered standard input
+  /// of this invocation. It is read once and never waited for: an
+  /// invocation without one is refused instead of hanging.
+  Future<String> _resolveBody(
+    GuidedAuthoringRequest request,
+    LifecycleOptions options,
+    AuthoringBodySelection selection,
+  ) async {
+    if (selection.kind == BodyInputKind.standardInput) {
+      final text = request.standardInput;
+      if (text == null) {
+        throw MambaException(
+          'Standard input was not supplied; select a body file or literal '
+          'text.',
+          exitCode: 4,
+        );
+      }
+      return text;
+    }
+    final body = await _drafts.resolveBody(options, selection);
+    return body.text;
+  }
+
+  /// The sentence that identifies a retained draft.
+  ///
+  /// Every refusal and every retained outcome names the draft, so the
+  /// operator can resume it.
+  String _draftSuffix(_DraftReference? draft) => draft == null
+      ? ''
+      : ' The retained draft ${draft.id} is at ${draft.path}.';
+
   /// Plans the proposal and collects the missing native fields.
   ///
   /// The correction loop is bounded. A cancelled session and an exhausted
-  /// loop both retain the draft and report its location.
+  /// loop both retain the draft and report its location. The collected
+  /// fields are recorded in the retained draft, so a resume rebuilds them.
   Future<_CollectedPlan> _collectAndPlan(
     GuidedAuthoringRequest request,
     LifecycleOptions options,
     AuthoringInputs inputs, {
-    required String? draftPath,
+    required _DraftReference? draft,
   }) async {
     var working = inputs;
     var attempts = 0;
@@ -380,26 +441,30 @@ interface class GuidedAuthoringService {
       final missing = _missingFields(plan);
       if (!request.interactive || missing.isEmpty) {
         return _CollectedPlan(
-          rejection: _outcome(request, plan, published: false),
+          rejection: _outcome(request, plan, published: false, draft: draft),
         );
       }
       if (attempts >= maxGuidedCorrectionAttempts) {
         throw MambaException(
           'The proposal did not become ready after $attempts correction '
-          'attempts.${draftPath == null ? '' : ' The retained draft is at $draftPath.'}',
+          'attempts.${_draftSuffix(draft)}',
           exitCode: 4,
         );
       }
       final corrected = await _collectFields(working, missing);
       if (corrected == null) {
         throw MambaException(
-          'The authoring session was cancelled.'
-          '${draftPath == null ? '' : ' The retained draft is at $draftPath.'}',
+          'The authoring session was cancelled.${_draftSuffix(draft)}',
           exitCode: 7,
         );
       }
       working = corrected;
       attempts++;
+      if (draft != null) {
+        // The collected fields are part of the retained intent, so a resume
+        // rebuilds the proposal with them instead of losing them.
+        await _drafts.updateIntent(options, draft.id, working);
+      }
     }
   }
 
@@ -460,8 +525,10 @@ interface class GuidedAuthoringService {
 
   /// The review that the operator confirms.
   ///
-  /// The review names the target, the ownership and the declared changes. It
-  /// never carries the instruction text unless the caller disclosed it.
+  /// The review names the target, the ownership and the declared native
+  /// values, so the operator confirms the actual declarations. It never
+  /// carries the instruction text: only its length and its digest are
+  /// reported, and the text itself needs the explicit disclosure.
   String _reviewSummary(AuthoringPlan plan) {
     final target = plan.data['target'] as Map<String, Object?>?;
     final fields = plan.data['fields'] as Map<String, Object?>?;
@@ -470,16 +537,40 @@ interface class GuidedAuthoringService {
       'Publish the reviewed ${plan.kind.name} proposal?',
       '  target: ${target?['output']}',
       '  ownership: ${plan.ownership.name}',
-      '  fields: ${fields == null || fields.isEmpty ? 'none' : (fields.keys.toList()..sort()).join(', ')}',
-      '  instructions: ${body?['byteLength'] ?? 0} bytes',
     ];
+    final names = fields == null
+        ? const <String>[]
+        : (fields.keys.toList()..sort());
+    if (names.isEmpty) {
+      lines.add('  declarations: none');
+    } else {
+      lines.add('  declarations:');
+      for (final name in names) {
+        lines.add('    $name: ${_declarationValue(fields?[name])}');
+      }
+    }
+    lines.add('  instructions: ${body?['byteLength'] ?? 0} bytes');
     return lines.join('\n');
+  }
+
+  /// The reviewable value of one native declaration.
+  String _declarationValue(Object? value) {
+    if (value is List) {
+      return value.map((entry) => '$entry').join(', ');
+    }
+    if (value is Map) {
+      return value.entries
+          .map((entry) => '${entry.key}=${entry.value}')
+          .join(', ');
+    }
+    return '$value';
   }
 
   GuidedAuthoringOutcome _outcome(
     GuidedAuthoringRequest request,
     AuthoringPlan plan, {
     required bool published,
+    _DraftReference? draft,
   }) => GuidedAuthoringOutcome(
     command: request.command,
     outcome: plan.ready ? 'planned' : 'rejected',
@@ -487,6 +578,12 @@ interface class GuidedAuthoringService {
       ...plan.data,
       'published': published,
       'review': _reviewSummary(plan),
+      if (draft != null) ...<String, Object?>{
+        'draftId': draft.id,
+        'draftPath': draft.path,
+        'draftRetained': true,
+        'draftCleaned': false,
+      },
     },
     diagnostics: plan.diagnostics,
   );
@@ -510,6 +607,17 @@ String encodeGuidedOutcome(GuidedAuthoringOutcome outcome) =>
       'data': outcome.data,
       'diagnostics': outcome.diagnostics,
     });
+
+/// The identity of one retained instruction draft.
+///
+/// The reference names the draft, so every outcome and every refusal can
+/// point the operator at the draft that a resume continues.
+final class _DraftReference {
+  const _DraftReference(this.id, this.path);
+
+  final String id;
+  final String path;
+}
 
 /// The result of the planning round of a guided run.
 ///

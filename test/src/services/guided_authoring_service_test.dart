@@ -66,6 +66,7 @@ void main() {
     GuidedAuthoringService buildService({
       EditorInteractionService? editor,
       String? answer,
+      bool confirmed = true,
     }) => GuidedAuthoringService(
       fileSystem: fs,
       drafts: buildDrafts(),
@@ -77,7 +78,7 @@ void main() {
       },
       confirm: (summary) async {
         confirmations.add(summary);
-        return true;
+        return confirmed;
       },
     );
 
@@ -214,7 +215,7 @@ void main() {
                 .having(
                   (error) => error.message,
                   'message',
-                  contains('retained draft is at'),
+                  contains('retained draft drf_'),
                 ),
           ),
         );
@@ -299,6 +300,200 @@ void main() {
         contains('Collected description.'),
       );
     });
+
+    test('a resume keeps the collected native fields', () async {
+      final service = buildService(
+        answer: 'Collected description.',
+        editor: buildEditor(
+          processRunner: (request) async {
+            requests.add(request);
+            fs
+                .file(request.arguments.last)
+                .writeAsStringSync('Edited instructions.\n');
+            // The verified cleanup refuses, so the retained draft stays and
+            // its intent is observable.
+            fs
+                .file(
+                  fs.path.join(fs.path.dirname(request.arguments.last), 'x'),
+                )
+                .writeAsStringSync('unexpected');
+            return const EditorProcessOutcome(started: true, exitCode: 0);
+          },
+        ),
+      );
+
+      final outcome = await service.run(
+        GuidedAuthoringRequest(
+          command: 'skill create',
+          inputs: createInputs(description: null),
+          apply: true,
+          interactive: true,
+          editorChoice: 'code --wait',
+        ),
+        options.copyWith(approved: true),
+      );
+
+      expect(outcome.outcome, 'published');
+      final draftId = outcome.data['draftId']! as String;
+      final resumed = await buildDrafts().resume(options, draftId);
+      expect(resumed.inputs.fields['description'], isA<TextFieldValue>());
+      expect(
+        (resumed.inputs.fields['description']! as TextFieldValue).text,
+        'Collected description.',
+      );
+    });
+
+    test('a planned outcome identifies the retained draft', () async {
+      final service = buildService();
+
+      final outcome = await service.run(
+        GuidedAuthoringRequest(
+          command: 'skill create',
+          inputs: createInputs(),
+          interactive: true,
+          editorChoice: 'code --wait',
+        ),
+        options,
+      );
+
+      expect(outcome.outcome, 'planned');
+      expect(outcome.data['published'], isFalse);
+      final draftId = outcome.data['draftId']! as String;
+      expect(draftId, matches(RegExp(r'^drf_[a-f0-9]{32}$')));
+      expect(outcome.data['draftPath'], isA<String>());
+      expect(outcome.data['draftRetained'], isTrue);
+      final drafts = fs.directory(
+        fs.path.join('/work/project', '.agent-resource', 'instruction-drafts'),
+      );
+      expect(drafts.existsSync(), isTrue);
+    });
+
+    test('a rejected outcome identifies the retained draft', () async {
+      // The occupied native target leaves the proposal unready without a
+      // missing field, so the run rejects it and keeps the draft.
+      fs
+          .directory(fs.path.join('/work/project', '.claude', 'skills', 'demo'))
+          .createSync(recursive: true);
+      final service = buildService();
+
+      final outcome = await service.run(
+        GuidedAuthoringRequest(
+          command: 'skill create',
+          inputs: createInputs(),
+          interactive: true,
+          editorChoice: 'code --wait',
+        ),
+        options,
+      );
+
+      expect(outcome.outcome, 'rejected');
+      expect(outcome.data['draftId'], isA<String>());
+      expect(outcome.data['draftPath'], isA<String>());
+      expect(outcome.data['draftRetained'], isTrue);
+    });
+
+    test('a publication failure identifies the retained draft', () async {
+      // An unexpected entry in the state root refuses the publication after
+      // the draft was prepared.
+      fs
+          .directory(fs.path.join('/work/project', '.agent-resource'))
+          .createSync(recursive: true);
+      fs
+          .file(fs.path.join('/work/project', '.agent-resource', 'stray.txt'))
+          .writeAsStringSync('unexpected');
+      final service = buildService();
+
+      await expectLater(
+        service.run(
+          GuidedAuthoringRequest(
+            command: 'skill create',
+            inputs: createInputs(),
+            apply: true,
+            interactive: true,
+            editorChoice: 'code --wait',
+          ),
+          options.copyWith(approved: true),
+        ),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('retained draft drf_'),
+          ),
+        ),
+      );
+    });
+
+    test(
+      'the publication consent is asked and the native values reviewed',
+      () async {
+        final service = buildService();
+
+        final outcome = await service.run(
+          GuidedAuthoringRequest(
+            command: 'skill create',
+            inputs: createInputs(),
+            apply: true,
+            interactive: true,
+            editorChoice: 'code --wait',
+          ),
+          options,
+        );
+
+        expect(outcome.outcome, 'published');
+        expect(confirmations, hasLength(1));
+        final summary = confirmations.single;
+        expect(summary, contains('demo'));
+        expect(summary, contains('Demo resource.'));
+        expect(summary, contains('.claude/skills/demo'));
+        expect(summary, isNot(contains('Edited instructions.')));
+      },
+    );
+
+    test(
+      'a refused consent cancels the publication and retains the draft',
+      () async {
+        final service = buildService(confirmed: false);
+
+        await expectLater(
+          service.run(
+            GuidedAuthoringRequest(
+              command: 'skill create',
+              inputs: createInputs(),
+              apply: true,
+              interactive: true,
+              editorChoice: 'code --wait',
+            ),
+            options,
+          ),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'exit code', 7)
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('retained draft drf_'),
+                ),
+          ),
+        );
+        expect(confirmations, hasLength(1));
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  '/work/project',
+                  '.claude',
+                  'skills',
+                  'demo',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isFalse,
+          reason: 'A refused consent publishes nothing.',
+        );
+      },
+    );
 
     test('an unattended run never asks a question', () async {
       final service = buildService();
