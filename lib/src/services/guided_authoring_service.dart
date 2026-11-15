@@ -253,10 +253,13 @@ interface class GuidedAuthoringService {
         ),
       );
       draft = _DraftReference(prepared.draftId, prepared.path);
-      final outcome = await _editor.edit(
-        options,
-        prepared.draftId,
-        editorChoice: request.editorChoice,
+      final outcome = await _withDraft(
+        draft,
+        () => _editor.edit(
+          options,
+          prepared.draftId,
+          editorChoice: request.editorChoice,
+        ),
       );
       switch (outcome) {
         case EditorEditCompleted(:final body):
@@ -408,6 +411,27 @@ interface class GuidedAuthoringService {
     return body.text;
   }
 
+  /// Runs one action of a run that already prepared a draft.
+  ///
+  /// An exception of the action is rethrown with the retained draft named,
+  /// so the operator can resume what the tool would otherwise leave
+  /// unnamed. The exit code and the diagnostic of the cause are preserved.
+  Future<T> _withDraft<T>(
+    _DraftReference draft,
+    Future<T> Function() action,
+  ) async {
+    try {
+      return await action();
+    } on MambaException catch (error) {
+      throw MambaException(
+        '${error.message}${_draftSuffix(draft)}',
+        exitCode: error.exitCode,
+      );
+    } on Exception catch (error) {
+      throw MambaException('$error${_draftSuffix(draft)}', exitCode: 1);
+    }
+  }
+
   /// The sentence that identifies a retained draft.
   ///
   /// Every refusal and every retained outcome names the draft, so the
@@ -463,12 +487,19 @@ interface class GuidedAuthoringService {
       if (draft != null) {
         // The collected fields are part of the retained intent, so a resume
         // rebuilds the proposal with them instead of losing them.
-        await _drafts.updateIntent(options, draft.id, working);
+        await _withDraft(
+          draft,
+          () => _drafts.updateIntent(options, draft.id, working),
+        );
       }
     }
   }
 
   /// The required native fields that the proposal is missing.
+  ///
+  /// A native table is not collectable: the guided flow never turns an
+  /// answer into a native table, so such a field stays missing and the
+  /// proposal is refused with its own diagnostic.
   List<String> _missingFields(AuthoringPlan plan) {
     final names = <String>{};
     for (final diagnostic in plan.diagnostics) {
@@ -476,7 +507,13 @@ interface class GuidedAuthoringService {
       final field = diagnostic['field'];
       if (field is String) names.add(field);
     }
-    return names.toList()..sort();
+    final matrix = NativeFieldMatrix.forKind(plan.kind, plan.profile);
+    return names
+        .where(
+          (name) => matrix.specFor(name)?.valueKind != NativeFieldValueKind.map,
+        )
+        .toList()
+      ..sort();
   }
 
   /// Asks the operator for the missing native fields.

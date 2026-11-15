@@ -186,6 +186,8 @@ final class AgentCreateCommand extends GuidedCreateCommand {
         valueOf(GuidedCreateFields.argumentHint) != null ||
         valueOf(GuidedCreateFields.license) != null ||
         valueOf(GuidedCreateFields.compatibility) != null ||
+        valueOf(GuidedCreateFields.editor) != null ||
+        valueOf(GuidedCreateFields.showInstructions) ||
         valueOf(GuidedCreateFields.bodyFile) != null ||
         valueOf(GuidedCreateFields.bodyStdin) ||
         valueOf(GuidedCreateFields.bodyText) != null ||

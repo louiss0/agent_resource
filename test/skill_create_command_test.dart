@@ -211,6 +211,37 @@ Future<void> main() async {
       );
     });
 
+    test('a session without a usable terminal never prompts', () async {
+      // A usable terminal means that the input and the output streams are
+      // both a terminal. Without that capability the guided flow is not
+      // available: every value is supplied explicitly and nothing is asked.
+      final result = await executor.execute([
+        'skill',
+        'create',
+        '--profile',
+        'claude',
+        '--name',
+        'demo',
+        '--description',
+        'Demo resource.',
+        '--body-text',
+        'Follow the selected task.',
+        '--apply',
+        '--yes',
+        '--format',
+        'json',
+        ...contextArguments(withState: true),
+      ]);
+
+      expect(
+        result,
+        isA<MambaSuccessResult>(),
+        reason: result is MambaFailureResult ? result.message : null,
+      );
+      expect(questions, isEmpty);
+      expect(confirmations, isEmpty);
+    });
+
     test('refuses an unattended run without an instruction body', () async {
       final result = await executor.execute([
         'skill',

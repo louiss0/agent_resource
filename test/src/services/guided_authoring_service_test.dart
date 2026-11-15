@@ -495,6 +495,101 @@ void main() {
       },
     );
 
+    test('a failure of the editor session names the retained draft', () async {
+      // The privacy verification of the draft fails when the editor session
+      // reads it, so the failure happens after the draft was prepared.
+      var verifications = 0;
+      final drafts = InstructionDraftService(
+        fileSystem: fs,
+        state: LifecycleStateService(io: LifecycleIO(fs: fs)),
+        privacy: (_) {},
+        verifier: (path) {
+          verifications++;
+          if (verifications == 3) {
+            throw MambaException(
+              'The private draft storage is not private.',
+              exitCode: 6,
+            );
+          }
+        },
+      );
+      final service = GuidedAuthoringService(
+        fileSystem: fs,
+        drafts: drafts,
+        editor: EditorInteractionService(
+          drafts: drafts,
+          processRunner: (request) async {
+            requests.add(request);
+            return const EditorProcessOutcome(started: true, exitCode: 0);
+          },
+          environment: const EditorSessionEnvironment(
+            hasTerminal: true,
+            hasDisplay: true,
+          ),
+          acknowledge: (request) async => true,
+          recover: (request) async => const EditorRecoveryCancel(),
+          executables: const _FakeResolver(),
+          fileSystem: fs,
+        ),
+        terminal: () => true,
+        ask: (label) async => null,
+        confirm: (summary) async => true,
+      );
+
+      await expectLater(
+        service.run(
+          GuidedAuthoringRequest(
+            command: 'skill create',
+            inputs: createInputs(),
+            apply: true,
+            interactive: true,
+            editorChoice: 'code --wait',
+          ),
+          options.copyWith(approved: true),
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having((error) => error.exitCode, 'exit code', 6)
+              .having(
+                (error) => error.message,
+                'message',
+                contains('retained draft drf_'),
+              ),
+        ),
+      );
+    });
+
+    test(
+      'a failure while recording the collected fields names the draft',
+      () async {
+        // The collected answer is larger than the metadata limit, so the
+        // recorded intent fails after the draft was prepared.
+        final service = buildService(answer: 'x' * 300000);
+
+        await expectLater(
+          service.run(
+            GuidedAuthoringRequest(
+              command: 'skill create',
+              inputs: createInputs(description: null),
+              apply: true,
+              interactive: true,
+              editorChoice: 'code --wait',
+            ),
+            options.copyWith(approved: true),
+          ),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'exit code', 3)
+                .having(
+                  (error) => error.message,
+                  'message',
+                  contains('retained draft drf_'),
+                ),
+          ),
+        );
+      },
+    );
+
     test('an unattended run never asks a question', () async {
       final service = buildService();
 

@@ -413,6 +413,8 @@ void main() {
           ['--argument-hint', '<file>'],
           ['--license', 'MIT'],
           ['--compatibility', 'claude'],
+          ['--editor', 'code --wait'],
+          ['--show-instructions'],
         ];
 
         for (final selection in selections) {
