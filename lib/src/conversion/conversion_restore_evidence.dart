@@ -59,6 +59,7 @@ final class ConversionRestoreEvidence {
     this.sourceRecord,
     this.targetRecord,
     this.approvals = const <String, bool>{},
+    this.participantMarker = false,
   });
 
   factory ConversionRestoreEvidence.fromJson(Object? value) {
@@ -85,6 +86,7 @@ final class ConversionRestoreEvidence {
       'sourceRecord',
       'targetRecord',
       'approvals',
+      'participantMarker',
       'digest',
     }, 'conversion restore evidence');
     if (_integer(map, 'schemaVersion') !=
@@ -147,6 +149,9 @@ final class ConversionRestoreEvidence {
           ? null
           : _object(map['targetRecord'], 'target record'),
       approvals: approvals,
+      participantMarker: map.containsKey('participantMarker')
+          ? _bool(map, 'participantMarker')
+          : false,
     );
     final digest = _string(map, 'digest');
     if (digest != evidence.digest) {
@@ -199,6 +204,13 @@ final class ConversionRestoreEvidence {
   final Map<String, Object?>? targetRecord;
   final Map<String, bool> approvals;
 
+  /// Whether this document is the participant marker of another scope.
+  ///
+  /// The marker reserves the inverse restore in the scope that does not
+  /// coordinate it, so an old mutator of that scope cannot change the
+  /// source, the target or the identities of the pending inverse restore.
+  final bool participantMarker;
+
   /// Whether the restore already retired the converted target.
   bool get completed =>
       phase == ConversionRestorePhase.completed ||
@@ -238,6 +250,7 @@ final class ConversionRestoreEvidence {
   ConversionRestoreEvidence copyWith({
     ConversionRestorePhase? phase,
     Map<String, Object?>? observations,
+    bool? participantMarker,
   }) => ConversionRestoreEvidence(
     restoreId: restoreId,
     transactionId: transactionId,
@@ -259,6 +272,7 @@ final class ConversionRestoreEvidence {
     sourceRecord: sourceRecord,
     targetRecord: targetRecord,
     approvals: approvals,
+    participantMarker: participantMarker ?? this.participantMarker,
   );
 
   /// The serialized evidence document.
@@ -284,6 +298,7 @@ final class ConversionRestoreEvidence {
     'sourceRecord': sourceRecord,
     'targetRecord': targetRecord,
     'approvals': approvals,
+    'participantMarker': participantMarker,
     'digest': digest,
   };
 

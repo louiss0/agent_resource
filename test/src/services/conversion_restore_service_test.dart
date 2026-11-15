@@ -7,6 +7,7 @@ import 'package:agent_resource/src/services/conversion_coordinator_service.dart'
 import 'package:agent_resource/src/services/conversion_evidence_service.dart';
 import 'package:agent_resource/src/services/conversion_restore_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
 import 'package:mamba/executor.dart';
@@ -95,12 +96,14 @@ void main() {
     ArtifactKind kind = ArtifactKind.agentFile,
     String nativeForm = 'claude-agent-file',
     String scope = 'project',
+    String nativeDestination = 'claude',
+    Map<String, Object?> origin = const <String, Object?>{'status': 'unknown'},
   }) {
     final record = InstallationRecord(
       installationId: _sourceInstallationId,
       kind: kind,
       scope: LifecycleScope.values.byName(scope),
-      nativeDestination: 'claude',
+      nativeDestination: nativeDestination,
       nativeForm: nativeForm,
       location: location,
       nativeRoot: nativeRoot,
@@ -110,7 +113,7 @@ void main() {
       knownConsumers: const <String>['claude'],
       baseline: const ArtifactBaseline(<BaselineEntry>[]),
       lifecycle: 'live',
-      origin: const <String, Object?>{'status': 'unknown'},
+      origin: origin,
       backupIds: const <String>[],
       transactionId: null,
     );
@@ -178,6 +181,7 @@ void main() {
     required String nativeForm,
     String scope = 'project',
     bool managed = true,
+    String? nativeDestination,
   }) => ConversionParticipant(
     role: ConversionParticipantRole.target,
     intent: ConversionParticipantIntent.created,
@@ -193,6 +197,7 @@ void main() {
       receiptId: managed ? null : 'rcp_0123456789abcdef0123456789abcdef',
       nativeForm: nativeForm,
       nativeProfile: 'claude',
+      nativeDestination: nativeDestination,
       location: location,
       nativeRoot: nativeRoot,
       scope: scope,
@@ -244,6 +249,48 @@ void main() {
 
   LifecycleOptions approved({bool dryRun = false}) =>
       options.copyWith(approved: true, dryRun: dryRun);
+
+  /// Writes a synthetic pending inverse restore evidence document.
+  void writePendingInverseEvidence({
+    required String restoreId,
+    required String sourceLocation,
+    required String targetLocation,
+    String transactionId = _transactionId,
+    String scope = 'project',
+  }) {
+    final root = scope == 'project'
+        ? '/work/project/.agent-resource/conversion-restores'
+        : '/work/state/conversion-restores';
+    final evidence = ConversionRestoreEvidence(
+      restoreId: restoreId,
+      transactionId: transactionId,
+      phase: ConversionRestorePhase.prepared,
+      createdScope: scope,
+      sourceLocation: sourceLocation,
+      targetLocation: targetLocation,
+      artifactKind: 'agent-file',
+      sourceScope: scope,
+      targetScope: scope,
+      inPlace: false,
+      payloadPath: '/work/project/.agent-resource/conversions/source-payload/reviewer.md',
+      payloadDigest: 'a' * 64,
+      outgoingDigest: 'b' * 64,
+      observations: const <String, Object?>{},
+    );
+    fs.file('$root/$restoreId.json')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(evidence.encode());
+  }
+
+  /// The installation records of the project ledger.
+  List<Map<String, Object?>> ledgerRecords() {
+    final document = jsonDecode(
+      fs
+          .file('/work/project/.agent-resource/installations.json')
+          .readAsStringSync(),
+    ) as Map<String, Object?>;
+    return (document['installations'] as List).cast<Map<String, Object?>>();
+  }
 
   group('ConversionRestoreService', () {
     test(
@@ -866,6 +913,110 @@ void main() {
       },
     );
 
+    test(
+      'cleans the retained inverse evidence through the registered command',
+      () async {
+        await completeConversion();
+        final executor = createExecutor(fileSystem: fs).fake();
+        final review = await executor.execute(<String>[
+          'prompt',
+          'conversion',
+          'restore',
+          _transactionId,
+          '--scope',
+          'project',
+          '--cwd',
+          '/work/project/',
+          '--project-root',
+          '/work/project/',
+          '--home',
+          '/home/user/',
+          '--state-dir',
+          '/work/state/',
+          '--format',
+          'json',
+        ]);
+        final planId =
+            ((jsonDecode((review as MambaSuccessResult).output!) as Map)['data']
+                    as Map)['planId']!
+                as String;
+        await executor.execute(<String>[
+          'prompt',
+          'conversion',
+          'restore',
+          _transactionId,
+          '--scope',
+          'project',
+          '--cwd',
+          '/work/project/',
+          '--project-root',
+          '/work/project/',
+          '--home',
+          '/home/user/',
+          '--state-dir',
+          '/work/state/',
+          '--plan-id',
+          planId,
+          '--apply',
+          '--yes',
+          '--format',
+          'json',
+        ]);
+        final cleanup = await executor.execute(<String>[
+          'prompt',
+          'conversion',
+          'restore',
+          _transactionId,
+          '--scope',
+          'project',
+          '--cwd',
+          '/work/project/',
+          '--project-root',
+          '/work/project/',
+          '--home',
+          '/home/user/',
+          '--state-dir',
+          '/work/state/',
+          '--cleanup',
+          '--format',
+          'json',
+        ]);
+        expect(cleanup, isA<MambaSuccessResult>());
+        final data = jsonDecode((cleanup as MambaSuccessResult).output!) as Map;
+        expect(data['outcome'], 'planned');
+        final cleanupPlanId = (data['data'] as Map)['planId']! as String;
+        final cleaned = await executor.execute(<String>[
+          'prompt',
+          'conversion',
+          'restore',
+          _transactionId,
+          '--scope',
+          'project',
+          '--cwd',
+          '/work/project/',
+          '--project-root',
+          '/work/project/',
+          '--home',
+          '/home/user/',
+          '--state-dir',
+          '/work/state/',
+          '--cleanup',
+          '--plan-id',
+          cleanupPlanId,
+          '--apply',
+          '--yes',
+          '--format',
+          'json',
+        ]);
+        expect(cleaned, isA<MambaSuccessResult>());
+        expect(
+          (jsonDecode((cleaned as MambaSuccessResult).output!)
+              as Map)['outcome'],
+          'cleaned',
+        );
+      },
+    );
+
     test('refuses an apply without the reviewed plan identity', () async {
       await completeConversion();
       final result = await createExecutor(fileSystem: fs)
@@ -892,6 +1043,493 @@ void main() {
       expect(
         (result as MambaFailureResult).message,
         contains('exact fresh --plan-id'),
+      );
+    });
+  });
+
+  group('pending inverse restore authority', () {
+    test('refuses an old mutator of the reserved source and target', () async {
+      const source = '/work/project/.claude/agents/reviewer.md';
+      const target = '/work/project/.claude/agents/converted.md';
+      fs.file(source)
+        ..createSync(recursive: true)
+        ..writeAsStringSync('original');
+      seedLedger(
+        location: source,
+        nativeRoot: '/work/project/.claude/agents',
+        nativeDestination: 'native',
+      );
+      await coordinator.execute(
+        ConversionTransitionRequest(
+          transactionId: _transactionId,
+          options: options,
+          source: sourceParticipant(
+            location: source,
+            nativeRoot: '/work/project/.claude/agents',
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+          ),
+          target: targetParticipant(
+            location: target,
+            nativeRoot: '/work/project/.claude/agents',
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+            nativeDestination: 'native',
+          ),
+          targetFiles: {'converted.md': utf8.encode('converted')},
+        ),
+      );
+      final targetId =
+          ledgerRecords().singleWhere(
+                (record) => record['lifecycle'] == 'live',
+              )['installationId']!
+              as String;
+      // The inverse restore is interrupted before its decision and stays
+      // pending with its reservation.
+      final review = await restore.restoreReviewed(
+        approved(dryRun: true),
+        _transactionId,
+      );
+      io.failBeforeWrite = (path) => path.endsWith('commit.json');
+      await expectLater(
+        restore.restoreReviewed(
+          approved(),
+          _transactionId,
+          planId: review.data['planId']! as String,
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      io.failBeforeWrite = null;
+
+      // The old removal path of the converted target is refused.
+      final removed = await createExecutor(fileSystem: fs)
+          .fake()
+          .execute(<String>[
+            'agent',
+            'remove',
+            targetId,
+            '--scope',
+            'project',
+            '--cwd',
+            '/work/project/',
+            '--project-root',
+            '/work/project/',
+            '--home',
+            '/home/user/',
+            '--state-dir',
+            '/work/state/',
+            '--yes',
+          ]);
+      expect(removed, isA<MambaFailureResult>());
+      expect(
+        (removed as MambaFailureResult).message,
+        contains('pending inverse restore'),
+      );
+      expect(fs.file(target).readAsStringSync(), 'converted');
+    });
+
+    test(
+      'refuses a restore while another inverse restore is pending',
+      () async {
+        await completeConversion();
+        writePendingInverseEvidence(
+          restoreId: 'rsv_0123456789abcdef0123456789abcdef',
+          transactionId: 'cvx_fedcba9876543210fedcba9876543210',
+          sourceLocation: '/work/project/.claude/agents/reviewer.md',
+          targetLocation: '/work/project/.pi/prompts/reviewer.md',
+        );
+        final review = await restore.restoreReviewed(
+          approved(dryRun: true),
+          _transactionId,
+        );
+        await expectLater(
+          restore.restoreReviewed(
+            approved(),
+            _transactionId,
+            planId: review.data['planId']! as String,
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('pending inverse restore'),
+            ),
+          ),
+        );
+        expect(
+          fs.file('/work/project/.pi/prompts/reviewer.md').readAsStringSync(),
+          'converted',
+        );
+      },
+    );
+
+    test(
+      'refuses an old mutator when the inverse evidence is corrupt',
+      () async {
+        await completeConversion();
+        writePendingInverseEvidence(
+          restoreId: 'rsv_0123456789abcdef0123456789abcdef',
+          sourceLocation: '/work/project/.claude/agents/reviewer.md',
+          targetLocation: '/work/project/.pi/prompts/reviewer.md',
+        );
+        fs
+            .file(
+              '/work/project/.agent-resource/conversion-restores/'
+              'rsv_0123456789abcdef0123456789abcdef.json',
+            )
+            .writeAsStringSync('{corrupt');
+        expect(
+          () => state.checkPendingConversions(
+            LifecycleContext.resolve(options, fileSystem: fs),
+            locations: const <String>['/work/project/.pi/prompts/reviewer.md'],
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('authority is unavailable'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('refuses an unknown schema version of the inverse evidence', () async {
+      await completeConversion();
+      writePendingInverseEvidence(
+        restoreId: 'rsv_0123456789abcdef0123456789abcdef',
+        sourceLocation: '/work/project/.claude/agents/reviewer.md',
+        targetLocation: '/work/project/.pi/prompts/reviewer.md',
+      );
+      final path =
+          '/work/project/.agent-resource/conversion-restores/'
+          'rsv_0123456789abcdef0123456789abcdef.json';
+      final document = jsonDecode(fs.file(path).readAsStringSync()) as Map;
+      document['schemaVersion'] = 999;
+      fs.file(path).writeAsStringSync(jsonEncode(document));
+      await expectLater(
+        restore.restoreReviewed(approved(dryRun: true), _transactionId),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('corrupt'),
+          ),
+        ),
+      );
+    });
+
+    test('refuses a damaged retained payload', () async {
+      await completeConversion();
+      final payload =
+          '/work/project/.agent-resource/conversions/$_transactionId/'
+          'source-payload/reviewer.md';
+      fs.file(payload).writeAsStringSync('damaged');
+      await expectLater(
+        restore.restoreReviewed(approved(dryRun: true), _transactionId),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('payload is missing or changed'),
+          ),
+        ),
+      );
+    });
+
+    test(
+      'refuses a missing participant authority of the other scope',
+      () async {
+        const source = '/work/project/.claude/agents/reviewer.md';
+        const target = '/home/user/.pi/prompts/reviewer.md';
+        fs.file(source)
+          ..createSync(recursive: true)
+          ..writeAsStringSync('original');
+        seedLedger(
+          location: source,
+          nativeRoot: '/work/project/.claude/agents',
+        );
+        final userOptions = options.copyWith(scope: LifecycleScope.user);
+        await coordinator.execute(
+          ConversionTransitionRequest(
+            transactionId: _transactionId,
+            options: userOptions,
+            source: sourceParticipant(
+              location: source,
+              nativeRoot: '/work/project/.claude/agents',
+              artifactKind: 'agent-file',
+              nativeForm: 'claude-agent-file',
+            ),
+            target: targetParticipant(
+              location: target,
+              nativeRoot: '/home/user/.pi/prompts',
+              artifactKind: 'prompt-template',
+              nativeForm: 'pi-prompt-template',
+              scope: 'user',
+            ),
+            targetFiles: {'reviewer.md': utf8.encode('converted')},
+          ),
+        );
+        final review = await restore.restoreReviewed(
+          userOptions.copyWith(approved: true, dryRun: true),
+          _transactionId,
+        );
+        io.failBeforeWrite = (path) => path.contains('installations.json');
+        await expectLater(
+          restore.restoreReviewed(
+            userOptions.copyWith(approved: true),
+            _transactionId,
+            planId: review.data['planId']! as String,
+          ),
+          throwsA(isA<MambaException>()),
+        );
+        io.failBeforeWrite = null;
+        // The participant marker of the other scope reserves the inverse
+        // restore there.
+        final markers = fs.directory(
+          '/work/project/.agent-resource/conversion-restores',
+        );
+        expect(markers.listSync().whereType<fslib.File>(), isNotEmpty);
+        markers.listSync().whereType<fslib.File>().forEach((file) {
+          file.deleteSync();
+        });
+        final resumed = restore.restoreReviewed(
+          userOptions.copyWith(approved: true, dryRun: true),
+          _transactionId,
+        );
+        await expectLater(
+          resumed,
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('participant authority is missing'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('refuses to complete when the outgoing evidence is lost', () async {
+      await completeConversion();
+      final source = '/work/project/.claude/agents/reviewer.md';
+      final review = await restore.restoreReviewed(
+        approved(dryRun: true),
+        _transactionId,
+      );
+      io.failBeforeWrite = (path) => path.contains('installations.json');
+      await expectLater(
+        restore.restoreReviewed(
+          approved(),
+          _transactionId,
+          planId: review.data['planId']! as String,
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      io.failBeforeWrite = null;
+      // The outgoing target evidence of the decided inverse restore is
+      // removed. The restore stops safely instead of recreating it.
+      final restoreId = review.data['restoreId']! as String;
+      final outgoing =
+          '/work/project/.agent-resource/conversion-restores/$restoreId/'
+          'outgoing-target';
+      fs.directory(outgoing).deleteSync(recursive: true);
+      final resumed = await restore.restoreReviewed(
+        approved(dryRun: true),
+        _transactionId,
+      );
+      expect(resumed.data['resume'], isTrue);
+      await expectLater(
+        restore.restoreReviewed(
+          approved(),
+          _transactionId,
+          planId: resumed.data['planId']! as String,
+        ),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('outgoing target evidence is missing'),
+          ),
+        ),
+      );
+      expect(fs.file(source).readAsStringSync(), 'original');
+    });
+
+    test(
+      'cleans the retained private copies of a terminal inverse restore',
+      () async {
+        await completeConversion();
+        final review = await restore.restoreReviewed(
+          approved(dryRun: true),
+          _transactionId,
+        );
+        await restore.restoreReviewed(
+          approved(),
+          _transactionId,
+          planId: review.data['planId']! as String,
+        );
+        final restoreId = review.data['restoreId']! as String;
+        final staging =
+            '/work/project/.agent-resource/conversion-restores/$restoreId';
+        expect(fs.directory('$staging/outgoing-target').existsSync(), isTrue);
+
+        final cleanup = await restore.cleanupReviewed(
+          approved(dryRun: true),
+          _transactionId,
+        );
+        expect(cleanup.data['action'], 'cleanup');
+        final cleaned = await restore.cleanupReviewed(
+          approved(),
+          _transactionId,
+          planId: cleanup.data['planId']! as String,
+        );
+        expect(cleaned.outcome, 'cleaned');
+        expect(fs.directory('$staging/outgoing-target').existsSync(), isFalse);
+        expect(fs.directory('$staging/restored-source').existsSync(), isFalse);
+        // The inverse evidence document is retained as an audit tombstone.
+        expect(
+          fs
+              .file(
+                '/work/project/.agent-resource/conversion-restores/'
+                '$restoreId.json',
+              )
+              .existsSync(),
+          isTrue,
+        );
+      },
+    );
+
+    test('refuses the cleanup of an unfinished inverse restore', () async {
+      await completeConversion();
+      final review = await restore.restoreReviewed(
+        approved(dryRun: true),
+        _transactionId,
+      );
+      io.failBeforeWrite = (path) => path.endsWith('commit.json');
+      await expectLater(
+        restore.restoreReviewed(
+          approved(),
+          _transactionId,
+          planId: review.data['planId']! as String,
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      io.failBeforeWrite = null;
+      await expectLater(
+        restore.cleanupReviewed(approved(dryRun: true), _transactionId),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('No terminal inverse restore evidence'),
+          ),
+        ),
+      );
+    });
+
+    test(
+      'refuses a restore when the upstream membership of the source changed',
+      () async {
+        const source = '/work/project/.claude/agents/reviewer.md';
+        fs.file(source)
+          ..createSync(recursive: true)
+          ..writeAsStringSync('original');
+        seedLedger(
+          location: source,
+          nativeRoot: '/work/project/.claude/agents',
+          origin: const <String, Object?>{
+            'status': 'unknown',
+            'packKey': 'pack-one',
+            'resourceType': 'skill',
+          },
+        );
+        await coordinator.execute(
+          ConversionTransitionRequest(
+            transactionId: _transactionId,
+            options: options,
+            source: sourceParticipant(
+              location: source,
+              nativeRoot: '/work/project/.claude/agents',
+              artifactKind: 'agent-file',
+              nativeForm: 'claude-agent-file',
+            ),
+            target: targetParticipant(
+              location: '/work/project/.pi/prompts/reviewer.md',
+              nativeRoot: '/work/project/.pi/prompts',
+              artifactKind: 'prompt-template',
+              nativeForm: 'pi-prompt-template',
+            ),
+            targetFiles: {'reviewer.md': utf8.encode('converted')},
+          ),
+        );
+        // The upstream membership of the retired source changed.
+        final ledger = fs.file(
+          '/work/project/.agent-resource/installations.json',
+        );
+        final document = jsonDecode(ledger.readAsStringSync()) as Map;
+        for (final record in (document['installations'] as List).cast<Map>()) {
+          if (record['lifecycle'] != 'removed') continue;
+          (record['origin'] as Map)['packKey'] = 'pack-two';
+        }
+        ledger.writeAsStringSync(jsonEncode(document));
+        await expectLater(
+          restore.restoreReviewed(approved(dryRun: true), _transactionId),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('upstream membership'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('refuses a restore when the membership binding is missing', () async {
+      const source = '/work/project/.claude/agents/reviewer.md';
+      fs.file(source)
+        ..createSync(recursive: true)
+        ..writeAsStringSync('original');
+      seedLedger(location: source, nativeRoot: '/work/project/.claude/agents');
+      await coordinator.execute(
+        ConversionTransitionRequest(
+          transactionId: _transactionId,
+          options: options,
+          source: sourceParticipant(
+            location: source,
+            nativeRoot: '/work/project/.claude/agents',
+            artifactKind: 'agent-file',
+            nativeForm: 'claude-agent-file',
+            membership: true,
+          ),
+          target: targetParticipant(
+            location: '/work/project/.pi/prompts/reviewer.md',
+            nativeRoot: '/work/project/.pi/prompts',
+            artifactKind: 'prompt-template',
+            nativeForm: 'pi-prompt-template',
+          ),
+          targetFiles: {'reviewer.md': utf8.encode('converted')},
+        ),
+      );
+      final ledger = fs.file(
+        '/work/project/.agent-resource/installations.json',
+      );
+      final document = jsonDecode(ledger.readAsStringSync()) as Map;
+      for (final record in (document['installations'] as List).cast<Map>()) {
+        if (record['lifecycle'] != 'live') continue;
+        (record['origin'] as Map).remove('conversionMembership');
+      }
+      ledger.writeAsStringSync(jsonEncode(document));
+      await expectLater(
+        restore.restoreReviewed(approved(dryRun: true), _transactionId),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('membership binding'),
+          ),
+        ),
       );
     });
   });

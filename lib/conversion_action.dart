@@ -39,6 +39,7 @@ final class ConversionActionCommand extends Command {
              _yes,
              _dryRun,
            ],
+           if (_action == ConversionAction.restore) _cleanup,
          ],
          conflicts: {
            if (_action == ConversionAction.recover ||
@@ -55,6 +56,9 @@ final class ConversionActionCommand extends Command {
              'reinstates the original source from the retained independent '
              'payload, retires the converted target and preserves the outgoing '
              'target as evidence. A cleaned payload forfeits the restore. '
+             '--cleanup removes the retained private copies of a terminal '
+             'inverse restore and keeps its evidence document as an audit '
+             'tombstone. '
              'Cleanup removes only verified terminal private payloads, retaining '
              'the audit receipt; it forfeits payload-based restore and is not secure erasure.',
        );
@@ -97,6 +101,12 @@ final class ConversionActionCommand extends Command {
   static const _apply = BooleanFlag('apply');
   static const _yes = BooleanFlag('yes');
   static const _dryRun = BooleanFlag('dry-run');
+  static const _cleanup = BooleanFlag(
+    'cleanup',
+    description:
+        'Clean the retained private copies of a terminal inverse restore '
+        'instead of restoring the conversion.',
+  );
 
   @override
   String get name => _action.name;
@@ -144,11 +154,18 @@ final class ConversionActionCommand extends Command {
         valueOf(_id),
         planId: valueOf(_plan),
       ),
-      ConversionAction.restore => await _restoreService().restoreReviewed(
-        options,
-        valueOf(_id),
-        planId: valueOf(_plan),
-      ),
+      ConversionAction.restore =>
+        valueOf(_cleanup)
+            ? await _restoreService().cleanupReviewed(
+                options,
+                valueOf(_id),
+                planId: valueOf(_plan),
+              )
+            : await _restoreService().restoreReviewed(
+                options,
+                valueOf(_id),
+                planId: valueOf(_plan),
+              ),
       ConversionAction.cleanup => await _coordinator.cleanupReviewed(
         options,
         valueOf(_id),

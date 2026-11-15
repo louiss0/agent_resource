@@ -68,6 +68,7 @@ final class ConversionRestoreService {
         );
       }
       _requireApproval(context, planId, plan.data['planId']);
+      _requireNoPendingConflict(context, original, plan);
       final result = await _apply(context, original, plan);
       return LifecycleResult(
         command: 'prompt conversion restore',
@@ -96,6 +97,54 @@ final class ConversionRestoreService {
       );
     }
   }
+
+  /// Refuses an inverse restore that conflicts with other pending work.
+  ///
+  /// The inverse restore owns its source, its target and the identities of
+  /// both participants. A pending conversion, participant reference, ordinary
+  /// transaction, authoring transaction or inverse restore of any scope keeps
+  /// those reservations; the restore never overwrites other pending work.
+  void _requireNoPendingConflict(
+    LifecycleContext context,
+    ConversionEvidence original,
+    ConversionRestorePlan plan,
+  ) {
+    final evidence = plan.evidence;
+    final locations = <String>[
+      evidence.sourceLocation,
+      evidence.targetLocation,
+    ];
+    final own = _ownEvidencePaths(context, evidence);
+    _state.checkPendingConversions(
+      context,
+      locations: locations,
+      installationIds: <String>{
+        if (evidence.sourceInstallationId != null)
+          evidence.sourceInstallationId!,
+        if (evidence.targetInstallationId != null)
+          evidence.targetInstallationId!,
+      },
+      validatedRecoveryPaths: own,
+    );
+    _state.checkPendingMutations(
+      context,
+      locations: locations,
+      validatedPaths: own,
+    );
+  }
+
+  /// The inverse restore evidence documents of this restore.
+  Set<String> _ownEvidencePaths(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+  ) => <String>{
+    _io.fs.path.join(_restoreRoot(context), '${evidence.restoreId}.json'),
+    if (_peerScope(context, evidence) case final peer?)
+      _io.fs.path.join(
+        _restoreRootOf(context.stateRoot(peer)),
+        '${evidence.restoreId}.json',
+      ),
+  };
 
   /// Reads the completed conversion that is restored.
   Future<ConversionEvidence> _readOriginal(
@@ -209,6 +258,104 @@ final class ConversionRestoreService {
     }
   }
 
+  /// Reviews and, with explicit approval, deletes the retained private copies
+  /// of a terminal inverse restore.
+  ///
+  /// The cleanup is bounded and integrity checked: it removes the staged
+  /// payload copy and the outgoing target evidence of a completed or rolled
+  /// back inverse restore and retains the inverse evidence document as an
+  /// audit tombstone. It refuses unfinished evidence, it never touches the
+  /// retained payload of the original conversion and it does not promise
+  /// secure erasure.
+  Future<LifecycleResult> cleanupReviewed(
+    LifecycleOptions options,
+    String transactionId, {
+    String? planId,
+  }) async {
+    final context = LifecycleContext.resolve(options, fileSystem: _io.fs);
+    Future<LifecycleResult> run() async {
+      final retained = _readRetainedRestores(
+        _restoreRoot(context),
+        transactionId,
+      );
+      final terminal = retained
+          .where((evidence) => evidence.completed)
+          .toList(growable: false);
+      if (terminal.isEmpty) {
+        throw MambaException(
+          'No terminal inverse restore evidence exists for $transactionId.',
+          exitCode: 4,
+        );
+      }
+      if (terminal.length > 1) {
+        throw MambaException(
+          'More than one terminal inverse restore evidence exists for this '
+          'conversion.',
+          exitCode: 6,
+        );
+      }
+      final evidence = terminal.single;
+      final staging = _stagingPath(context, evidence.restoreId);
+      final roots = _privateRoots(staging);
+      final observations = <String, Object?>{};
+      for (final path in roots) {
+        _requireUnlinked(path);
+        observations[path] =
+            _io.type(path, followLinks: false) == FileSystemEntityType.notFound
+            ? null
+            : _manifestDigest(path);
+      }
+      final data = <String, Object?>{
+        'transactionId': transactionId,
+        'restoreId': evidence.restoreId,
+        'action': 'cleanup',
+        'scope': context.scope.name,
+        'restorePhase': evidence.phase.name,
+        'observations': observations,
+        'retainsInverseEvidence': true,
+      };
+      data['planId'] = _reviewDigest(data);
+      if (context.dryRun) {
+        return LifecycleResult(
+          command: 'prompt conversion restore',
+          outcome: 'planned',
+          data: data,
+        );
+      }
+      _requireApproval(context, planId, data['planId']);
+      for (final path in roots) {
+        final type = _io.type(path, followLinks: false);
+        if (type == FileSystemEntityType.notFound) continue;
+        if (_manifestDigest(path) != observations[path]) {
+          throw MambaException(
+            'The retained inverse restore evidence changed; the cleanup is '
+            'refused.',
+            exitCode: 6,
+          );
+        }
+        _io.delete(path);
+      }
+      return LifecycleResult(
+        command: 'prompt conversion restore',
+        outcome: 'cleaned',
+        data: <String, Object?>{...data, 'cleanupStatus': 'cleaned'},
+      );
+    }
+
+    if (context.dryRun) return run();
+    return _state.runCoordinated(
+      context: context,
+      location: context.stateRoot(),
+      body: run,
+    );
+  }
+
+  /// The private staging roots of one inverse restore.
+  List<String> _privateRoots(String staging) => <String>[
+    _io.fs.path.join(staging, 'restored-source'),
+    _io.fs.path.join(staging, 'outgoing-target'),
+  ];
+
   /// Reviews the exact current observations of the inverse restore.
   Future<ConversionRestorePlan> _plan(
     LifecycleContext context,
@@ -246,6 +393,7 @@ final class ConversionRestoreService {
     ConversionEvidence original,
     ConversionRestoreEvidence evidence,
   ) async {
+    _verifyParticipantMarker(context, evidence);
     final staging = _stagingPath(context, evidence.restoreId);
     final restored = _restoredPath(evidence, staging);
     final payload = original.source.payload!;
@@ -479,8 +627,8 @@ final class ConversionRestoreService {
       }
     }
     if (sourceId != null && sourceId != targetId) {
-      // The retired source record must still be retired. A later edit or a
-      // new installation of the same identity is refused.
+      // The retired source record must still be retired by this conversion.
+      // A later edit or a new installation of the same identity is refused.
       final retired = records.values
           .expand((scope) => scope)
           .where((record) => record.installationId == sourceId)
@@ -490,6 +638,13 @@ final class ConversionRestoreService {
         throw MambaException(
           'The original ownership changed; the restore is refused.',
           exitCode: 6,
+        );
+      }
+      if (sourceRecord != null) {
+        _verifySourceRetirement(
+          original,
+          retired.single,
+          InstallationRecord.fromJson(sourceRecord),
         );
       }
     }
@@ -534,6 +689,10 @@ final class ConversionRestoreService {
   }
 
   /// Verifies that the membership of the converted target did not change.
+  ///
+  /// The membership binding is required evidence. A record without the
+  /// recorded binding is missing evidence, not a free state: the restore is
+  /// refused.
   void _verifyMembership(
     ConversionEvidence original,
     InstallationRecord record,
@@ -541,11 +700,80 @@ final class ConversionRestoreService {
     final expected = original.target.membershipAfter;
     if (expected == null) return;
     final observed = record.origin['conversionMembership'];
-    if (observed == null) return;
+    if (observed == null) {
+      throw MambaException(
+        'The membership binding of the converted target is missing; the '
+        'restore is refused.',
+        exitCode: 6,
+      );
+    }
     if (jsonEncode(observed) != jsonEncode(expected.toJson())) {
       throw MambaException(
         'The membership of the converted target changed; the restore is '
         'refused.',
+        exitCode: 6,
+      );
+    }
+  }
+
+  /// Verifies the retirement of the original source.
+  ///
+  /// The restore reinstates the original identity only when the current
+  /// record is still the record that this conversion retired. A later edit, a
+  /// new installation of the same identity or a changed upstream membership
+  /// is refused; the restore never resurrects a retired membership.
+  void _verifySourceRetirement(
+    ConversionEvidence original,
+    InstallationRecord retired,
+    InstallationRecord snapshot,
+  ) {
+    if (retired.lifecycle != 'removed' ||
+        retired.origin['conversionTransactionId'] != original.transactionId) {
+      throw MambaException(
+        'The original ownership changed; the restore is refused.',
+        exitCode: 6,
+      );
+    }
+    final expected = original.source.membershipAfter;
+    if (expected != null) {
+      final observed = retired.origin['conversionMembership'];
+      if (observed == null ||
+          jsonEncode(observed) != jsonEncode(expected.toJson())) {
+        throw MambaException(
+          'The membership of the original source changed; the restore is '
+          'refused.',
+          exitCode: 6,
+        );
+      }
+    }
+    // The upstream pack membership of the original source must not have
+    // changed. A restored record never reinstates a membership that the
+    // current observations do not permit.
+    final packKey = snapshot.origin['packKey'];
+    if (packKey is String && retired.origin['packKey'] != packKey) {
+      throw MambaException(
+        'The upstream membership of the original source changed; the restore '
+        'is refused.',
+        exitCode: 6,
+      );
+    }
+    final resourceType = snapshot.origin['resourceType'];
+    if (resourceType is String &&
+        retired.origin['resourceType'] != resourceType) {
+      throw MambaException(
+        'The upstream membership of the original source changed; the restore '
+        'is refused.',
+        exitCode: 6,
+      );
+    }
+    // A later edit of the retired record is not silently dropped by the
+    // restore. Only the recorded conversion markers may differ.
+    const markers = <String>{'conversionTransactionId', 'conversionMembership'};
+    for (final key in retired.origin.keys) {
+      if (snapshot.origin.containsKey(key)) continue;
+      if (markers.contains(key)) continue;
+      throw MambaException(
+        'The original ownership changed; the restore is refused.',
         exitCode: 6,
       );
     }
@@ -643,8 +871,29 @@ final class ConversionRestoreService {
       }
 
       // Preserve the outgoing target as evidence before it is retired.
+      //
+      // The evidence is captured once, before the inverse decision. After
+      // the decision a missing evidence is missing recovery data: the restore
+      // stops safely instead of recreating it from a retired target.
+      final decided =
+          _io.type(decision, followLinks: false) == FileSystemEntityType.file;
       if (_io.type(outgoing, followLinks: false) ==
           FileSystemEntityType.notFound) {
+        if (decided) {
+          throw MambaException(
+            'The retained outgoing target evidence is missing; the inverse '
+            'restore cannot be completed.',
+            exitCode: 6,
+          );
+        }
+        if (_io.type(evidence.targetLocation, followLinks: false) ==
+            FileSystemEntityType.notFound) {
+          throw MambaException(
+            'The converted target is missing; the outgoing target evidence '
+            'cannot be preserved.',
+            exitCode: 6,
+          );
+        }
         _copyTree(evidence.targetLocation, outgoing);
       }
       if (_manifestDigest(outgoing) != evidence.outgoingDigest) {
@@ -776,6 +1025,12 @@ final class ConversionRestoreService {
         _io.delete(evidence.sourceLocation);
       }
       _copyTree(outgoing, evidence.sourceLocation);
+    } else if (evidence.inPlace) {
+      throw MambaException(
+        'The retained outgoing target evidence is missing; the inverse '
+        'restore cannot be rolled back safely.',
+        exitCode: 6,
+      );
     } else if (_io.type(evidence.sourceLocation, followLinks: false) !=
             FileSystemEntityType.notFound &&
         original.source.baseline != null &&
@@ -839,7 +1094,10 @@ final class ConversionRestoreService {
   }
 
   String _restoreRoot(LifecycleContext context) =>
-      _io.fs.path.join(context.stateRoot(), conversionRestoreDirectoryName);
+      _restoreRootOf(context.stateRoot());
+
+  String _restoreRootOf(String stateRoot) =>
+      _io.fs.path.join(stateRoot, conversionRestoreDirectoryName);
 
   String _stagingPath(LifecycleContext context, String restoreId) =>
       _io.fs.path.join(_restoreRoot(context), restoreId);
@@ -870,6 +1128,96 @@ final class ConversionRestoreService {
       _io.fs.path.join(_restoreRoot(context), '${evidence.restoreId}.json'),
       utf8.encode(evidence.encode()),
     );
+    _writeParticipantMarker(context, evidence);
+  }
+
+  /// Writes the protected participant marker of the other scope.
+  ///
+  /// The marker reserves the inverse restore in the scope that does not
+  /// coordinate it, so an old mutator of that scope cannot change the
+  /// source, the target or the identities while the inverse restore is
+  /// pending. The marker is written before any live effect.
+  void _writeParticipantMarker(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+  ) {
+    final peer = _peerScope(context, evidence);
+    if (peer == null) return;
+    _state.writeProtectedDocument(
+      _io.fs.path.join(
+        _restoreRootOf(context.stateRoot(peer)),
+        '${evidence.restoreId}.json',
+      ),
+      utf8.encode(evidence.copyWith(participantMarker: true).encode()),
+    );
+  }
+
+  /// The scope that does not coordinate the inverse restore.
+  LifecycleScope? _peerScope(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+  ) {
+    for (final scope in <LifecycleScope>{
+      LifecycleScope.values.byName(evidence.sourceScope),
+      LifecycleScope.values.byName(evidence.targetScope),
+    }) {
+      if (scope != context.scope) return scope;
+    }
+    return null;
+  }
+
+  /// Verifies the participant marker of the other scope.
+  ///
+  /// A missing or changed marker is missing authority: the inverse restore is
+  /// refused instead of continuing with a half reserved participant.
+  void _verifyParticipantMarker(
+    LifecycleContext context,
+    ConversionRestoreEvidence evidence,
+  ) {
+    final peer = _peerScope(context, evidence);
+    if (peer == null) return;
+    final path = _io.fs.path.join(
+      _restoreRootOf(context.stateRoot(peer)),
+      '${evidence.restoreId}.json',
+    );
+    final type = _io.type(path, followLinks: false);
+    if (type == FileSystemEntityType.notFound) {
+      throw MambaException(
+        'The inverse restore participant authority is missing.',
+        exitCode: 6,
+      );
+    }
+    if (type != FileSystemEntityType.file) {
+      throw MambaException(
+        'The inverse restore participant authority is not a file.',
+        exitCode: 6,
+      );
+    }
+    final ConversionRestoreEvidence marker;
+    try {
+      marker = ConversionRestoreEvidence.decode(
+        utf8.decode(_io.read(path, maxConversionRestoreEvidenceBytes)),
+      );
+    } on FormatException catch (error) {
+      throw MambaException(
+        'The inverse restore participant authority is invalid: '
+        '${error.message}',
+        exitCode: 6,
+      );
+    }
+    final expected = evidence.copyWith(participantMarker: true);
+    if (marker.restoreId != expected.restoreId ||
+        marker.transactionId != expected.transactionId ||
+        marker.sourceLocation != expected.sourceLocation ||
+        marker.targetLocation != expected.targetLocation ||
+        marker.payloadDigest != expected.payloadDigest ||
+        marker.outgoingDigest != expected.outgoingDigest ||
+        marker.phase != expected.phase) {
+      throw MambaException(
+        'The inverse restore participant authority changed.',
+        exitCode: 6,
+      );
+    }
   }
 
   void _markRecoveryRequired(
