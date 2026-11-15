@@ -309,6 +309,7 @@ final class PackConfiguration {
     String? workingDirectory,
     Map<String, String>? environment,
     String? operatingSystem,
+    String? home,
     FileSystem? fileSystem,
   }) {
     final fs = fileSystem ?? LocalFileSystem();
@@ -323,6 +324,7 @@ final class PackConfiguration {
             PackConfigurationScope.user => userConfigPath(
               environment: environment,
               operatingSystem: operatingSystem,
+              home: home,
             ),
           }
         : _resolvePath(explicitPath, cwd, path);
@@ -332,6 +334,7 @@ final class PackConfiguration {
       final userPath = userConfigPath(
         environment: environment,
         operatingSystem: operatingSystem,
+        home: home,
       );
       if (path.equals(userPath, configPath)) {
         throw PackConfigurationException(const [
@@ -361,16 +364,25 @@ final class PackConfiguration {
     );
   }
 
+  /// The user configuration path of the current user.
+  ///
+  /// The explicit home directory wins over the environment: the environment
+  /// never overrides an explicit home. Without an explicit home the
+  /// environment of the process discovers the user configuration.
   static String userConfigPath({
     Map<String, String>? environment,
     String? operatingSystem,
+    String? home,
   }) {
     final env = environment ?? Platform.environment;
     final platform = operatingSystem ?? Platform.operatingSystem;
     final pathContext = platform == 'windows' ? p.windows : p.posix;
+    final explicitHome = _explicitHome(home, pathContext);
     final String path;
     if (platform == 'windows') {
-      final appData = env['APPDATA'];
+      final appData = explicitHome != null
+          ? pathContext.join(explicitHome, 'AppData', 'Roaming')
+          : env['APPDATA'];
       if (appData == null || !pathContext.isAbsolute(appData)) {
         throw PackConfigurationException(const [
           PackConfigurationIssue(
@@ -386,17 +398,20 @@ final class PackConfiguration {
       );
     } else if (platform == 'macos') {
       path = pathContext.join(
-        _absoluteHome(env, pathContext),
+        explicitHome ?? _absoluteHome(env, pathContext),
         'Library',
         'Application Support',
         'AgentResource',
         packConfigurationFileName,
       );
     } else {
-      final xdg = env['XDG_CONFIG_HOME'];
+      final xdg = explicitHome == null ? env['XDG_CONFIG_HOME'] : null;
       final base = xdg != null && pathContext.isAbsolute(xdg)
           ? xdg
-          : pathContext.join(_absoluteHome(env, pathContext), '.config');
+          : pathContext.join(
+              explicitHome ?? _absoluteHome(env, pathContext),
+              '.config',
+            );
       path = pathContext.join(
         base,
         'agent-resource',
@@ -404,6 +419,23 @@ final class PackConfiguration {
       );
     }
     return pathContext.normalize(path);
+  }
+
+  /// The validated explicit home directory.
+  ///
+  /// A blank home is no home. A relative home is refused: the discovery
+  /// never guesses a home directory.
+  static String? _explicitHome(String? home, p.Context pathContext) {
+    if (home == null || home.trim().isEmpty) return null;
+    if (!pathContext.isAbsolute(home)) {
+      throw PackConfigurationException(const [
+        PackConfigurationIssue(
+          'home',
+          'must be an absolute path to discover user configuration',
+        ),
+      ]);
+    }
+    return home;
   }
 
   final int schemaVersion;

@@ -4032,6 +4032,9 @@ interface class PackLifecycleService {
   );
 
   /// The configuration of one pack scope.
+  ///
+  /// The explicit home directory of the request discovers the user
+  /// configuration: the environment never overrides it.
   PackConfiguration _loadPackConfiguration({
     required LifecycleContext context,
     required Map<String, String> environment,
@@ -4048,6 +4051,7 @@ interface class PackLifecycleService {
         explicitPath: configPath,
         workingDirectory: context.cwd,
         environment: environment,
+        home: context.home,
         fileSystem: _fileSystem,
       );
     } on PackConfigurationException catch (error) {
