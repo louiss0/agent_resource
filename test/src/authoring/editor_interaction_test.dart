@@ -154,6 +154,26 @@ void main() {
       );
     });
 
+    test(
+      'a documented wait is recognized for the binary spelling of the editor',
+      () {
+        expect(
+          editorWaitContract(
+            EditorCommandGrammar.parse(
+              '"C:\\Program Files\\Microsoft VS Code\\Code.exe" --wait',
+            ),
+          ),
+          EditorWaitContract.documented,
+        );
+        expect(
+          editorWaitContract(
+            EditorCommandGrammar.parse('code-insiders.exe --wait'),
+          ),
+          EditorWaitContract.documented,
+        );
+      },
+    );
+
     test('a disabled wait is not a documented wait', () {
       expect(
         editorWaitContract(EditorCommandGrammar.parse('emacsclient --no-wait')),

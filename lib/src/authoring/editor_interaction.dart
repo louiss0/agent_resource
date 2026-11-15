@@ -248,6 +248,12 @@ const Set<String> knownTerminalEditors = <String>{
 /// `emacsclient` normally waits for the editing to finish. Every other
 /// command waits for nothing: its exit is not evidence that the document was
 /// saved.
+///
+/// The name of the program decides, not the spelling of its path: the
+/// documented wait of an editor is the same contract when the program is
+/// named by its absolute path. The Windows binary of Visual Studio Code is
+/// `Code.exe`, and that spelling is the only one that this module may
+/// launch, because the `code.cmd` launcher of the search path is refused.
 EditorWaitContract editorWaitContract(EditorCommand command) {
   final name = command.executableName.toLowerCase();
   if (name == 'emacsclient' || name == 'emacsclient.exe') {
@@ -256,7 +262,10 @@ EditorWaitContract editorWaitContract(EditorCommand command) {
         : EditorWaitContract.none;
   }
   const waitCapable = <String>{'code', 'code-insiders'};
-  if (waitCapable.contains(name) && command.arguments.contains('--wait')) {
+  final binary = name.endsWith('.exe')
+      ? name.substring(0, name.length - '.exe'.length)
+      : name;
+  if (waitCapable.contains(binary) && command.arguments.contains('--wait')) {
     return EditorWaitContract.documented;
   }
   return EditorWaitContract.none;

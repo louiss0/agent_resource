@@ -130,7 +130,10 @@ This is a consequence for the documented wait on Windows. The Visual Studio
 Code installer puts the `code` command on the search path as a `code.cmd`
 batch launcher, so `code --wait` resolves to a refused program and cannot be
 used by its bare name. The real executable is reached by its absolute path
-(`Code.exe`) or by an explicit configuration that names it. This limitation
+(`Code.exe`) or by an explicit configuration that names it. The documented wait
+of the editor is recognized for that binary spelling as well, so the program
+that this module may launch is also the program whose completion contract it
+knows. This limitation
 is stated here, not hidden: the documented wait remains available for an
 editor whose Windows entry is a binary executable.
 
@@ -159,7 +162,7 @@ different kinds of evidence and never confuses them:
 
 | Evidence | When it is used |
 | --- | --- |
-| A documented wait | `code --wait` and `emacsclient` (without `-n` or `--no-wait`) document that they wait for the editing to finish. The session waits for that exit. |
+| A documented wait | `code --wait` and `emacsclient` (without `-n` or `--no-wait`) document that they wait for the editing to finish. The session waits for that exit. The contract follows the name of the program, not the spelling of its path: the Windows binary of Visual Studio Code (`Code.exe`) carries the same documented wait as the `code` command. |
 | A terminal editor exit | A known terminal editor inherits the terminal of the session and is waited for. Its exit is **not** acceptance: the operator may have discarded the changes. |
 | A saved-and-finished acknowledgement | Every other editor, and the platform default, needs the explicit confirmation that the file was saved and the editing was finished. |
 
