@@ -115,6 +115,13 @@ discovered Skill packages.
 Every refusal happens before the installation effect: the source, the state,
 the ledger and the pack membership are unchanged.
 
+## Configuration discovery
+
+- The explicit home directory of a pack request discovers the user
+  configuration. The environment of the process never overrides an explicit
+  home: the environment only discovers the user configuration when the request
+  declares no home.
+
 ## Evidence and limits
 
 The focused suite covers the installation of a supported skill-backed Prompt
