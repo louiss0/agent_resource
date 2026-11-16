@@ -6,6 +6,7 @@ import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
+import 'support/trusted_temp.dart';
 
 Future<void> main() async {
   final packageRoot = Directory.current.path;
@@ -21,7 +22,7 @@ Future<void> main() async {
   test(
     'production prompt inventory succeeds and fails without body or state',
     () async {
-      final root = await Directory.systemTemp.createTemp('prompt-process-');
+      final root = Directory(await createTrustedTempPath('prompt-process-'));
       try {
         final project = Directory(p.join(root.path, 'project'))..createSync();
         final home = Directory(p.join(root.path, 'home'))..createSync();

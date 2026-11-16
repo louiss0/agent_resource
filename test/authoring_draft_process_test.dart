@@ -10,6 +10,7 @@ import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
+import 'support/trusted_temp.dart';
 
 Future<void> main() async {
   final packageRoot = Directory.current.path;
@@ -26,8 +27,8 @@ Future<void> main() async {
   test(
     'native protected draft survives restart and has narrow explicit discard',
     () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'instruction-draft-process-',
+      final sandbox = Directory(
+        await createTrustedTempPath('instruction-draft-process-'),
       );
       try {
         final project = Directory(p.join(sandbox.path, 'project'))

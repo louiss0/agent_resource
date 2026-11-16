@@ -7,6 +7,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 final class _SkillUnitResource implements LifecycleResource {
   const _SkillUnitResource();
 
@@ -175,7 +177,7 @@ void main() {
     late LifecycleContext context;
 
     setUp(() async {
-      sandbox = await Directory.systemTemp.createTemp('resource-unit-');
+      sandbox = Directory(await createTrustedTempPath('resource-unit-'));
       project = Directory(p.join(sandbox.path, 'project'))..createSync();
       home = Directory(p.join(sandbox.path, 'home'))..createSync();
       source = Directory(p.join(sandbox.path, 'source'))..createSync();

@@ -15,6 +15,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 void main() {
   group('PackLifecycleService', () {
     late fslib.FileSystem fs;
@@ -1632,7 +1634,7 @@ description: Writes docs.
     late Directory source;
 
     setUp(() {
-      sandbox = Directory.systemTemp.createTempSync('pack-host-link-');
+      sandbox = Directory(createTrustedTempPathSync('pack-host-link-'));
       project = Directory(p.join(sandbox.path, 'project'))..createSync();
       home = Directory(p.join(sandbox.path, 'home'))..createSync();
       source = Directory(p.join(sandbox.path, 'source'))..createSync();

@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import 'https_git_gate.dart';
 import 'process_test_support.dart';
+import 'trusted_temp.dart';
 
 /// Executes release evidence against the actual compiled production artifact.
 /// The report is sanitized: raw native documents, instructions, stdout, and
@@ -27,8 +28,12 @@ Future<void> main(List<String> args) async {
       'Production executable does not exist: ${executable.path}',
     );
   }
-  final sandbox = await Directory.systemTemp.createTemp(
-    'agent-resource-release-',
+  // The production artifact runs on a real native path: a host reaches its
+  // temporary root through an OS-level alias on macOS (/var is a link to
+  // /private/var), and the managed-storage guards refuse that alias before the
+  // gate exercises any behavior.
+  final sandbox = Directory(
+    await createTrustedTempPath('agent-resource-release-'),
   );
   final results = <Map<String, Object?>>[];
   final blockers = <Map<String, Object?>>[];

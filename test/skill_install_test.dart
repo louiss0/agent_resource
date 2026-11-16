@@ -15,6 +15,7 @@ import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
 
 import 'support/installation_test_support.dart';
+import 'support/trusted_temp.dart';
 
 final class _CountingAcquisition implements AcquisitionService {
   var calls = 0;
@@ -55,8 +56,8 @@ void main() {
 
         void useLocalFileSystem() {
           fs = const LocalFileSystem();
-          sandbox = fs.systemTempDirectory.createTempSync(
-            'skill-install-local-',
+          sandbox = fs.directory(
+            createTrustedTempPathSync('skill-install-local-'),
           );
           project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
