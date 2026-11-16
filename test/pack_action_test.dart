@@ -49,7 +49,7 @@ final class RecordingPackService implements PackLifecycleService {
 
 void main() {
   group('agent_resource', () {
-    group('skills', () {
+    group('pack', () {
       group('install', () {
         test(
           'passes repeated native names and context to the lifecycle',
@@ -58,9 +58,11 @@ void main() {
             final result = await createExecutor(packLifecycle: service)
                 .fake()
                 .execute([
-                  'skills',
+                  'pack',
                   'install',
                   'owner/repository',
+                  '--type',
+                  'skill',
                   '--scope',
                   'project',
                   '--only',
@@ -95,9 +97,11 @@ void main() {
           final result = await createExecutor(packLifecycle: service)
               .fake()
               .execute([
-                'skills',
+                'pack',
                 'install',
                 'owner/repository',
+                '--type',
+                'skill',
                 '--attachment-accept',
               ]);
 
@@ -118,7 +122,7 @@ void main() {
                 )
                 .having((value) => value.error.commandPath, 'command path', [
                   'agent_resource',
-                  'skills',
+                  'pack',
                   'install',
                 ]),
           );
@@ -132,9 +136,11 @@ void main() {
           final result = await createExecutor(packLifecycle: service)
               .fake()
               .execute([
-                'skills',
+                'pack',
                 'update',
                 'owner/repository',
+                '--type',
+                'skill',
                 '--format',
                 'json',
                 '--dry-run',
@@ -164,10 +170,12 @@ void main() {
             final result = await createExecutor(packLifecycle: service)
                 .fake()
                 .execute([
-                  'skills',
+                  'pack',
                   'source',
                   'associate',
                   'owner/repository',
+                  '--type',
+                  'skill',
                   '--only',
                   'reviewer',
                 ]);

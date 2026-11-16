@@ -531,37 +531,5 @@ Review changes.
         });
       });
     });
-    for (final entry in {
-      'skills': PackResourceType.skill,
-      'agents': PackResourceType.agent,
-    }.entries) {
-      group(entry.key, () {
-        test('pins type and sends deprecation separately from JSON', () async {
-          final service = RecordingPackService();
-          final warnings = <String>[];
-          final result =
-              await createExecutor(
-                packLifecycle: service,
-                deprecationWarning: warnings.add,
-              ).fake().execute([
-                entry.key,
-                'install',
-                'owner/repo',
-                '--format',
-                'json',
-              ]);
-          expect(service.requests.single.resourceTypes, [entry.value]);
-          expect(warnings.single, contains('deprecated'));
-          expect(
-            result,
-            isA<MambaSuccessResult>().having(
-              (v) => v.output,
-              'output',
-              isNot(contains('deprecated')),
-            ),
-          );
-        });
-      });
-    }
   });
 }

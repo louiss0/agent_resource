@@ -15,7 +15,6 @@ List<Command> packLifecycleCommands(
   PackResourceType resourceType,
   PackLifecycleService service, {
   bool canonical = false,
-  void Function(String)? warning,
   fslib.FileSystem fileSystem = const local.LocalFileSystem(),
 }) => [
   for (final operation in [
@@ -31,7 +30,6 @@ List<Command> packLifecycleCommands(
       operation,
       service,
       canonical: canonical,
-      warning: warning,
       fileSystem: fileSystem,
     ),
 ];
@@ -60,10 +58,8 @@ final class PackActionCommand extends Command {
     this._operation,
     this._service, {
     bool canonical = false,
-    void Function(String)? warning,
     this._fileSystem = const local.LocalFileSystem(),
   }) : _canonical = canonical,
-       _warning = warning ?? stderr.writeln,
        super(
          mandatoryPositionals: [_PackContextOptions.pack],
          options: [
@@ -119,7 +115,6 @@ final class PackActionCommand extends Command {
 
   final fslib.FileSystem _fileSystem;
   final bool _canonical;
-  final void Function(String) _warning;
   final PackResourceType _resourceType;
   final PackOperation _operation;
   final PackLifecycleService _service;
@@ -226,11 +221,6 @@ final class PackActionCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    if (!_canonical) {
-      _warning(
-        'Warning: ${_resourceType.name}s commands are deprecated; use pack with --type ${_resourceType.name}.',
-      );
-    }
     final format = valueOf(_format);
     final mutating = _operation != PackOperation.validate;
     final yes = mutating && valueOf(_yes);

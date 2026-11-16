@@ -115,16 +115,15 @@ Preserve installation IDs, native paths, ownership, baselines, retained snapshot
 backups, and recovery records. Do not reinstall resources merely to rename commands.
 Filtered updates must not advance version evidence for untouched installations.
 
-Introduce canonical `pack` entry points before retiring existing paths. During a
-compatibility window, plural paths map to their corresponding fixed resource type:
+Introduce canonical `pack` entry points before retiring existing paths. The
+compatibility window is closed: the plural `skills` and `agents` groups, and the
+deprecation notices they printed, have been removed. Resource kinds are selected
+on `pack` with `--type skill|agent|prompt`; a removed invocation fails with a
+nonzero exit status rather than being rewritten silently.
 
-- `skills update <pack>` → `pack update <pack> --type skill`.
-- `agents update <pack>` → `pack update <pack> --type agent`.
-
-Apply the same principle to other existing plural lifecycle operations. Singular
-lifecycle paths have different source/input contracts and need dedicated adapters;
-a blind token substitution is not a safe migration. Keep their behavior until such
-adapters exist. Deprecation notices belong on stderr, never in JSON stdout.
+Singular lifecycle paths have different source/input contracts and need dedicated
+adapters; a blind token substitution is not a safe migration. Keep their behavior
+until such adapters exist.
 
 ## Acceptance scenarios
 

@@ -53,9 +53,9 @@ dart run bin/agent_resource.dart --version
 
 The no-argument and `--help` invocations show root help. Root help lists the
 singular `skill` and `agent` groups for native resource operations, `pack` for
-source-aware lifecycle operations, `config` for configuration validation, and
-the deprecated plural compatibility groups. Each singular group provides
-`list`, `inspect`, `validate`, `install`, `adopt`, `replace`, `remove`,
+source-aware lifecycle operations, `prompt` and `authoring` for Prompt and
+draft surfaces, and `config` for configuration validation. Each singular group
+provides `list`, `inspect`, `validate`, `install`, `adopt`, `replace`, `remove`,
 `backup`, and `recover` paths. There are no root-level aliases, and
 `skill discover` is not retained as a second inventory verb. Unsupported commands
 and options fail with a nonzero exit status.
@@ -330,8 +330,8 @@ target. Ordinary noncurrent snapshots are eligible for retention cleanup after
 
 Text output is deterministic by default. `--format json` emits one versioned
 success envelope; failures and partial failures emit no success JSON and use
-stderr with a nonzero status. The plural `skills` and `agents` forms remain
-fixed-type compatibility commands and print deprecation guidance on stderr.
+stderr with a nonzero status. Resource kinds are selected on `pack` with
+`--type skill|agent|prompt`; there are no plural compatibility groups.
 
 ### Adopt, replace, remove, back up, and recover
 

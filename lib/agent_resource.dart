@@ -3,12 +3,10 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'agent.dart';
-import 'agents.dart';
 import 'authoring.dart';
 import 'config.dart';
 import 'skill.dart';
 import 'pack.dart';
-import 'skills.dart';
 import 'prompt.dart';
 import 'src/services/conversion_coordinator_service.dart';
 import 'src/services/conversion_restore_service.dart';
@@ -53,7 +51,6 @@ Executor createExecutor({
   GuidedAuthoringService? guided,
   PromptReadService? promptRead,
   PackLifecycleService? packLifecycle,
-  void Function(String)? deprecationWarning,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -104,16 +101,6 @@ Executor createExecutor({
         guided: guidedService,
       ),
       PackCommand(service: packLifecycle, fileSystem: fileSystem),
-      SkillsCommand(
-        service: packLifecycle,
-        warning: deprecationWarning,
-        fileSystem: fileSystem,
-      ),
-      AgentsCommand(
-        service: packLifecycle,
-        warning: deprecationWarning,
-        fileSystem: fileSystem,
-      ),
       ConfigCommand(service: packLifecycle, fileSystem: fileSystem),
     ],
   );

@@ -10,7 +10,6 @@ final class PackSourceCommand extends GroupCommand {
     PackResourceType resourceType,
     PackLifecycleService service, {
     bool canonical = false,
-    void Function(String)? warning,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   }) : super([
          PackActionCommand(
@@ -18,7 +17,6 @@ final class PackSourceCommand extends GroupCommand {
            PackOperation.sourceAssociate,
            service,
            canonical: canonical,
-           warning: warning,
            fileSystem: fileSystem,
          ),
          PackActionCommand(
@@ -26,7 +24,6 @@ final class PackSourceCommand extends GroupCommand {
            PackOperation.sourceChange,
            service,
            canonical: canonical,
-           warning: warning,
            fileSystem: fileSystem,
          ),
        ]);
