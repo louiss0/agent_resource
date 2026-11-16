@@ -4553,8 +4553,9 @@ interface class PackLifecycleService {
         record.kind == ArtifactKind.skillCanonical) {
       return body(record.location);
     }
-    final temporary = _fileSystem.systemTempDirectory.createTempSync(
+    final temporary = createStagingDirectorySync(
       'agent-resource-snapshot-',
+      fs: _fileSystem,
     );
     try {
       if (record.kind == ArtifactKind.agentFile) {

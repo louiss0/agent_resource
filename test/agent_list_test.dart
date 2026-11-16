@@ -12,6 +12,7 @@ import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
+import 'support/trusted_temp.dart';
 
 late final String _entrypoint;
 late final String _packageConfig;
@@ -32,13 +33,9 @@ Future<T> _withMemorySandbox<T>(Future<T> Function(_Sandbox) body) async {
 // Real links, permissions, handles, and child processes need a host filesystem.
 Future<T> _withLocalSandbox<T>(Future<T> Function(_Sandbox) body) async {
   const fileSystem = LocalFileSystem();
-  final created = await fileSystem.systemTempDirectory.createTemp(
-    'agent-resource-list-',
+  final root = fileSystem.directory(
+    await createTrustedTempPath('agent-resource-list-'),
   );
-  // macOS may report /var/... while the child process resolves the same path
-  // as /private/var/...; canonicalize before passing explicit containment
-  // context to the production process.
-  final root = fileSystem.directory(created.resolveSymbolicLinksSync());
   return _withSandbox(root, body);
 }
 

@@ -9,6 +9,7 @@ import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
+import 'support/trusted_temp.dart';
 
 Future<void> main() async {
   final project = const LocalFileSystem().currentDirectory.path;
@@ -149,8 +150,8 @@ Future<void> main() async {
     group('production process', () {
       test('valid stdout and invalid stderr carry body-free native reports', () async {
         const local = LocalFileSystem();
-        final root = await local.systemTempDirectory.createTemp(
-          'agent-resource-native-validate-',
+        final root = local.directory(
+          createTrustedTempPathSync('agent-resource-native-validate-'),
         );
         try {
           final dir = local.directory(path.join(root.path, 'valid-skill'))

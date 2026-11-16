@@ -5,6 +5,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../skill_files.dart';
+
 /// The inert staged form of a Skill and its safe migration diagnostics.
 final class StagedSkill {
   StagedSkill._(
@@ -65,8 +67,9 @@ final class SkillRootMarkdownMigration {
   /// source: the native name rules of the source and of the staged output
   /// agree.
   Future<StagedSkill> stage(String sourcePath, {String? directoryName}) async {
-    final temporaryRoot = await fileSystem.systemTempDirectory.createTemp(
+    final temporaryRoot = await createStagingDirectory(
       'agent-resource-skill-root-files-',
+      fs: fileSystem,
     );
     final stagedPath = fileSystem.path.join(
       temporaryRoot.path,

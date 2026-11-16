@@ -12,6 +12,7 @@ import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
+import 'support/trusted_temp.dart';
 
 Future<void> main() async {
   final root = _findProjectRoot();
@@ -574,7 +575,7 @@ Future<void> main() async {
 
   group('skill create in the production CLI', () {
     test('publishes the reviewed output and reports it', () async {
-      final sandbox = io.Directory.systemTemp.createTempSync('skill-create-');
+      final sandbox = io.Directory(createTrustedTempPathSync('skill-create-'));
       try {
         final project = io.Directory(p.join(sandbox.path, 'project'))
           ..createSync();
@@ -629,7 +630,7 @@ Future<void> main() async {
       }
     });
     test('reads the body from the piped standard input', () async {
-      final sandbox = io.Directory.systemTemp.createTempSync('skill-stdin-');
+      final sandbox = io.Directory(createTrustedTempPathSync('skill-stdin-'));
       try {
         final project = io.Directory(p.join(sandbox.path, 'project'))
           ..createSync();

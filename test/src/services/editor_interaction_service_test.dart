@@ -643,7 +643,13 @@ void main() {
             'agent resource editor path ',
           );
           addTearDown(() => directory.deleteSync(recursive: true));
-          File(p.join(directory.path, 'code.exe')).writeAsBytesSync(<int>[1]);
+          // A posix search path completes no executable extension, so only
+          // the platform's own program name is a candidate here.
+          final program = p.join(
+            directory.path,
+            Platform.isWindows ? 'code.exe' : 'code',
+          );
+          File(program).writeAsBytesSync(<int>[1]);
           final searched = LifecycleOptions(
             processWorkingDirectory: '/work/project',
             environment: <String, String>{'PATH': directory.path},
@@ -656,10 +662,7 @@ void main() {
 
           await service.edit(searched, draftId, editorChoice: 'code --wait');
 
-          expect(
-            requests.single.executable,
-            p.join(directory.path, 'code.exe'),
-          );
+          expect(requests.single.executable, program);
           expect(requests.single.environment['PATH'], directory.path);
           expect(
             requests.single.workingDirectory,

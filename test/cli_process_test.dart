@@ -8,6 +8,7 @@ import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
+import 'support/trusted_temp.dart';
 
 late final String _entrypoint;
 late final String _packageConfig;
@@ -64,7 +65,7 @@ final class _Sandbox {
 }
 
 Future<T> _withSandbox<T>(Future<T> Function(_Sandbox) body) async {
-  final root = await Directory.systemTemp.createTemp('agent-resource-cli-');
+  final root = Directory(await createTrustedTempPath('agent-resource-cli-'));
   final sandbox = _Sandbox(root);
   try {
     return await body(sandbox);

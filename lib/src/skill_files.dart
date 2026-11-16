@@ -234,3 +234,32 @@ Future<FileSystemEntityType> skillEntityTypeAsync(
     );
   }
 }
+
+/// Creates a disposable staging directory and reports its real native path.
+///
+/// A host reaches its temporary root through an OS-level alias: macOS resolves
+/// `/var` to `/private/var`, and a container or runner may mount `/tmp` the
+/// same way. The link-aware guards that protect managed storage walk a path
+/// from the filesystem root, so content staged under the alias is refused
+/// before any guard reaches the managed area, and the refusal describes the
+/// host's own alias instead of the staged content.
+///
+/// The directory this call just created is trusted: no caller supplied any
+/// component of it. Canonicalizing it keeps every downstream refusal about the
+/// paths a caller did supply. A path from a caller, the environment, or an
+/// unknown root is never canonicalized here.
+Future<fslib.Directory> createStagingDirectory(
+  String prefix, {
+  fslib.FileSystem fs = const local.LocalFileSystem(),
+}) async {
+  final created = await fs.systemTempDirectory.createTemp(prefix);
+  return fs.directory(created.resolveSymbolicLinksSync());
+}
+
+/// The synchronous form of [createStagingDirectory].
+fslib.Directory createStagingDirectorySync(
+  String prefix, {
+  fslib.FileSystem fs = const local.LocalFileSystem(),
+}) => fs.directory(
+  fs.systemTempDirectory.createTempSync(prefix).resolveSymbolicLinksSync(),
+);

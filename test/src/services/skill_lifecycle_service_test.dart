@@ -9,6 +9,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 bool _tryDirectoryLink(String path, String target) {
   try {
     Link(path).createSync(target);
@@ -870,7 +872,7 @@ void main() {
     test(
       'linked install preserves entry ownership through drift and conversion',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp('skill-link-');
+        final sandbox = Directory(await createTrustedTempPath('skill-link-'));
         try {
           final project = Directory(p.join(sandbox.path, 'project'))
             ..createSync();
@@ -980,8 +982,8 @@ void main() {
     test(
       'relative link adoption restores entry evidence after validation',
       () async {
-        final sandbox = await Directory.systemTemp.createTemp(
-          'skill-relative-',
+        final sandbox = Directory(
+          await createTrustedTempPath('skill-relative-'),
         );
         try {
           final project = Directory(p.join(sandbox.path, 'project'))

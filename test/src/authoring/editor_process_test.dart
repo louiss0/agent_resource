@@ -108,9 +108,18 @@ void main() {
       }
     });
 
-    test('a program of another spelling is not selected on a posix system', () {
+    test('a program of another spelling is selected only by a storage that '
+        'ignores case', () {
       final other = Platform.isWindows ? 'Editor.exe' : 'Editor';
       File(p.join(directory.path, other)).writeAsBytesSync(<int>[1]);
+      // The storage, not the platform label, decides whether another spelling
+      // of the same name denotes the created file: a macOS volume is usually
+      // case-insensitive while a Linux one is not.
+      final storageIgnoresCase =
+          FileSystemEntity.typeSync(
+            p.join(directory.path, other.toLowerCase()),
+          ) ==
+          FileSystemEntityType.file;
       final resolver = EditorExecutableResolver(const LocalFileSystem());
 
       final resolution = resolver.resolve(
@@ -119,10 +128,13 @@ void main() {
         environment: <String, String>{'PATH': directory.path},
       );
 
-      if (Platform.isWindows) {
+      if (!storageIgnoresCase) {
+        expect(resolution.resolvedPath, isNull);
+      } else if (Platform.isWindows) {
         expect(resolution.resolvedPath, p.join(directory.path, other));
       } else {
-        expect(resolution.resolvedPath, isNull);
+        // A posix storage keeps the spelling that was asked for.
+        expect(resolution.resolvedPath, p.join(directory.path, 'editor'));
       }
     });
 

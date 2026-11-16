@@ -8,13 +8,15 @@ import 'package:file/local.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 void main() {
   group('the editor session over protected storage', () {
     test(
       'the edited draft is read back through a real program launch',
       () async {
-        final root = Directory.systemTemp.createTempSync(
-          'agent resource editor session ',
+        final root = Directory(
+          createTrustedTempPathSync('agent resource editor session '),
         );
         addTearDown(() => root.deleteSync(recursive: true));
         final project = Directory(p.join(root.path, 'project'))
