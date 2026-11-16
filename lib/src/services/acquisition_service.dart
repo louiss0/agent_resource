@@ -10,6 +10,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../installation/resource_catalog.dart';
+import '../skill_files.dart';
 
 const acquisitionDeadline = Duration(seconds: 120);
 
@@ -232,9 +233,7 @@ interface class AcquisitionService {
     Stopwatch clock,
   ) async {
     _remaining(clock, request.deadline);
-    final temporary = await Directory.systemTemp.createTemp(
-      'agent-resource-git-',
-    );
+    final temporary = await createStagingDirectory('agent-resource-git-');
     try {
       final repository = p.join(temporary.path, 'repository');
       final checkout = p.join(temporary.path, 'source');
@@ -340,9 +339,7 @@ interface class AcquisitionService {
         exitCode: 4,
       );
     }
-    final temporary = await Directory.systemTemp.createTemp(
-      'agent-resource-download-',
-    );
+    final temporary = await createStagingDirectory('agent-resource-download-');
     try {
       final name = uri.pathSegments.isEmpty || uri.pathSegments.last.isEmpty
           ? 'download'
@@ -456,8 +453,9 @@ interface class AcquisitionService {
           exitCode: 3,
         );
       }
-      final temporary = _fileSystem.systemTempDirectory.createTempSync(
+      final temporary = createStagingDirectorySync(
         'agent-resource-direct-file-',
+        fs: _fileSystem,
       );
       try {
         final stagedFile = _fileSystem.path.join(
