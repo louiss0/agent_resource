@@ -160,11 +160,11 @@ $privateInstruction
     );
 
     Future<({Map<String, Object?> report, CliProcessResult process})>
-    planAndApply(String operation, File request, File target) async {
+    planAndApply(String operation, List<String> selection, File target) async {
       final plan = await run('built-$operation-plan', work, [
         'agent',
         operation,
-        request.path,
+        ...selection,
         ...context,
       ]);
       _expect(plan.exitCode == 0, 'Built $operation planning failed.', plan);
@@ -179,7 +179,7 @@ $privateInstruction
       final applied = await run('built-$operation-apply', work, [
         'agent',
         operation,
-        request.path,
+        ...selection,
         '--apply',
         '--plan-id',
         planId,
@@ -200,26 +200,25 @@ $privateInstruction
       return (report: _json(applied), process: applied);
     }
 
-    final createRequest = File(p.join(sandbox.path, 'create.json'))
-      ..writeAsStringSync(
-        jsonEncode(<String, Object?>{
-          'schemaVersion': 1,
-          'operation': 'create',
-          'target': <String, Object?>{
-            'harness': 'claude',
-            'output': '.claude/agents/author.md',
-          },
-          'context': <String, Object?>{'workingDirectory': './'},
-          'definition': <String, Object?>{
-            'name': 'author',
-            'description': 'Authors changes.',
-            'tools': <Object?>['Read'],
-          },
-          'instructions': <Object?>[privateInstruction],
-        }),
-      );
+    // The instruction body travels as a file so the private text never
+    // reaches the process arguments, and with them the evidence bundle.
+    final createBody = File(p.join(sandbox.path, 'create-body.md'))
+      ..writeAsStringSync(privateInstruction);
     final created = File(p.join(work.path, '.claude', 'agents', 'author.md'));
-    final createApply = await planAndApply('create', createRequest, created);
+    final createApply = await planAndApply('create', <String>[
+      '--profile',
+      'claude',
+      '--name',
+      'author',
+      '--description',
+      'Authors changes.',
+      '--tools',
+      'Read',
+      '--body-file',
+      createBody.path,
+      '--output',
+      '.claude/agents/author.md',
+    ], created);
     _expect(
       createApply.report['command'] == 'agent create',
       'Create apply leaked the lifecycle command identity.',
@@ -246,11 +245,9 @@ $privateInstruction
     final composed = File(
       p.join(work.path, '.codex', 'agents', 'composed.toml'),
     );
-    final composeApply = await planAndApply(
-      'compose',
-      composeRequest,
-      composed,
-    );
+    final composeApply = await planAndApply('compose', <String>[
+      composeRequest.path,
+    ], composed);
     _expect(
       composed.readAsStringSync().contains(
         'developer_instructions = "First correctness.\\nThen tests."',
@@ -286,7 +283,9 @@ $cloneInstruction
         }),
       );
     final cloned = File(p.join(work.path, cloneOutput));
-    final cloneApply = await planAndApply('clone', cloneRequest, cloned);
+    final cloneApply = await planAndApply('clone', <String>[
+      cloneRequest.path,
+    ], cloned);
     _expect(
       cloneApply.report['command'] == 'agent clone',
       'Clone apply leaked another command identity.',
