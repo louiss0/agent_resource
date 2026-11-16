@@ -199,6 +199,15 @@ The stable identifier of a Mutation plan, bound to its request and relevant sour
 **Conversion field account**:
 The per-field evidence for Agent portability, recording represented, altered, inherited, unresolved, unrepresentable, or deliberately omitted declarations and their native provenance.
 
+**MCP server registration**:
+A named native configuration entry declaring one Model Context Protocol server for a consuming harness. It is configuration, not content: it lives inside a shared native file, can name a local executable or a remote endpoint, and can carry credential references. Managing it never implies launching or connecting to the server.
+
+**MCP server entry**:
+The managed unit of MCP support: one named server registration at one harness, one scope, one native configuration location, and one server name. A location without an ownership record is unmanaged and inspect-only until explicitly adopted.
+
+**MCP transport**:
+The declared way a server is reached: stdio through a command, or streamable HTTP through a URL. A registration selects exactly one transport, and validation rejects fields that do not belong to the selected transport.
+
 **Exposure note**:
 A deterministic, source-qualified observation about a declared execution surface and its conditions; not a security score, effective-tool enumeration, or enforcement certification.
 
