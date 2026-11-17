@@ -6,6 +6,7 @@ import 'package:agent_resource/src/mcp/mcp_native.dart';
 import 'package:agent_resource/src/mcp/mcp_ownership_ledger.dart';
 import 'package:agent_resource/src/mcp/mcp_types.dart';
 import 'package:agent_resource/src/services/mcp_inspection_service.dart';
+import 'package:agent_resource/src/services/mcp_validation_service.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
@@ -196,6 +197,7 @@ void main() {
       Future<MambaExecutionResult> exec(List<String> tokens) => createExecutor(
         fileSystem: fs,
         mcpInspection: McpInspectionService(fileSystem: fs),
+        mcpValidation: McpValidationService(fileSystem: fs),
       ).fake().execute(tokens);
 
       List<String> listArgs([List<String> extra = const <String>[]]) =>
@@ -204,6 +206,24 @@ void main() {
       List<String> inspectArgs(List<String> extra) => <String>[
         'mcp',
         'inspect',
+        ...extra,
+        ...context(),
+      ];
+
+      List<String> validateArgs(
+        List<String> extra, {
+        String name = 'claude-project-svc',
+        String harness = 'claude',
+        String scope = 'project',
+      }) => <String>[
+        'mcp',
+        'validate',
+        '--name',
+        name,
+        '--harness',
+        harness,
+        '--scope',
+        scope,
         ...extra,
         ...context(),
       ];
@@ -274,12 +294,13 @@ void main() {
       }
 
       group('help', () {
-        test('shows the list and inspect children', () async {
+        test('shows the discovery and validation children', () async {
           final result = await exec(<String>['mcp', '--help']);
           expect(result, isA<MambaSuccessResult>());
           final output = (result as MambaSuccessResult).output!;
           expect(output, contains('list'));
           expect(output, contains('inspect'));
+          expect(output, contains('validate'));
         });
 
         test('list declares its typed inputs', () async {
@@ -303,6 +324,20 @@ void main() {
           expect(result, isA<MambaSuccessResult>());
           final output = (result as MambaSuccessResult).output!;
           for (final flag in <String>['--name', '--harness', '--scope']) {
+            expect(output, contains(flag), reason: flag);
+          }
+        });
+
+        test('validate declares its selection and format inputs', () async {
+          final result = await exec(<String>['mcp', 'validate', '--help']);
+          expect(result, isA<MambaSuccessResult>());
+          final output = (result as MambaSuccessResult).output!;
+          for (final flag in <String>[
+            '--name',
+            '--harness',
+            '--scope',
+            '--format',
+          ]) {
             expect(output, contains(flag), reason: flag);
           }
         });
@@ -581,6 +616,261 @@ void main() {
               token: 'link',
               phase: MambaExecutionPhase.run,
             );
+          },
+        );
+      });
+
+      group('validate', () {
+        void writeInvalidEntry() {
+          writeJson('/sandbox/project/.mcp.json', <String, Object?>{
+            'mcpServers': <String, Object?>{
+              'claude-project-svc': <String, Object?>{
+                'type': 'stdio',
+                'command': 'node',
+                'url': 'https://example.test/mcp',
+                'env': <String, Object?>{'API_KEY': 'VALIDATE_SECRET_VALUE'},
+              },
+            },
+            'unrelatedTopLevel': 'keep-me',
+          });
+        }
+
+        Map<String, dynamic> validationReport(
+          MambaExecutionResult result, {
+          required String code,
+        }) {
+          expectFailure(
+            result,
+            exitCode: 2,
+            token: code,
+            phase: MambaExecutionPhase.run,
+          );
+          final failure = result as MambaFailureResult;
+          expect(failure.message, isNot(contains('schemaVersion')));
+          expect(failure.message, isNot(contains('mcp.validate')));
+          return jsonDecode(failure.message) as Map<String, dynamic>;
+        }
+
+        void expectOperational(MambaExecutionResult result, String token) {
+          expectFailure(
+            result,
+            exitCode: 1,
+            token: token,
+            phase: MambaExecutionPhase.run,
+          );
+          final failure = result as MambaFailureResult;
+          expect(failure.message, isNot(contains('schemaVersion')));
+          expect(failure.message, isNot(contains('"valid"')));
+          expect(failure.message, isNot(contains('mcp.validate')));
+        }
+
+        void expectStaticOnly(String output) {
+          final lower = output.toLowerCase();
+          for (final forbidden in <String>[
+            'activation',
+            'connectivity',
+            'enforcement',
+            'acceptance',
+          ]) {
+            expect(lower, isNot(contains(forbidden)), reason: forbidden);
+          }
+        }
+
+        test(
+          'requires explicit selectors and rejects path selectors',
+          () async {
+            for (final tokens in <List<String>>[
+              <String>['mcp', 'validate', '--name', 'svc', ...context()],
+              <String>[
+                'mcp',
+                'validate',
+                '--harness',
+                'claude',
+                '--scope',
+                'project',
+                ...context(),
+              ],
+              validateArgs(<String>['--occurrence', '1']),
+              validateArgs(<String>['--path', '/sandbox/project/.mcp.json']),
+            ]) {
+              final result = await exec(tokens);
+              expect(
+                result,
+                isA<MambaFailureResult>()
+                    .having(
+                      (value) => value.error.phase,
+                      'phase',
+                      MambaExecutionPhase.parse,
+                    )
+                    .having((value) => value.output, 'output', isNull),
+                reason: tokens.join(' '),
+              );
+            }
+          },
+        );
+
+        test('returns a versioned JSON success envelope on stdout', () async {
+          final result = await exec(validateArgs(<String>['--format', 'json']));
+          final envelope = successEnvelope(result);
+          final output = (result as MambaSuccessResult).output!;
+          expect(envelope['schemaVersion'], 1);
+          expect(envelope['command'], 'mcp.validate');
+          expect(envelope['outcome'], 'validated');
+          final data = envelope['data'] as Map<String, dynamic>;
+          expect(data['valid'], isTrue);
+          expect(data['harness'], 'claude');
+          expect(data['scope'], 'project');
+          expect(data['name'], 'claude-project-svc');
+          final report = data['report'] as Map<String, dynamic>;
+          expect(report['valid'], isTrue);
+          expect(report['diagnostics'], isEmpty);
+          expect(report['claim'], contains('not runtime-verified'));
+          expectNoSecrets(output);
+          expectStaticOnly(output);
+        });
+
+        test('renders deterministic redacted text', () async {
+          final first = (await exec(
+            validateArgs(<String>[]),
+          ) as MambaSuccessResult).output!;
+          final second = (await exec(
+            validateArgs(<String>[]),
+          ) as MambaSuccessResult).output!;
+          expect(first, equals(second));
+          expect(first, contains('valid: true'));
+          expect(first, contains('not runtime-verified'));
+          expectNoSecrets(first);
+          expectStaticOnly(first);
+        });
+
+        test('puts an invalid JSON report on stderr with status 2', () async {
+          writeInvalidEntry();
+          final result = await exec(validateArgs(<String>['--format', 'json']));
+          final report = validationReport(
+            result,
+            code: 'MCP_TRANSPORT_CONFLICT',
+          );
+          expect(report['valid'], isFalse);
+          final diagnostics = (report['diagnostics'] as List)
+              .cast<Map<String, dynamic>>();
+          expect(
+            diagnostics.map((diagnostic) => diagnostic['code']),
+            contains('MCP_FIELD_TRANSPORT_INAPPLICABLE'),
+          );
+          final message = (result as MambaFailureResult).message;
+          expect(message, isNot(contains('VALIDATE_SECRET_VALUE')));
+          expectNoSecrets(message);
+          expectStaticOnly(message);
+        });
+
+        test('puts an invalid text report on stderr with status 2', () async {
+          writeInvalidEntry();
+          final result = await exec(validateArgs(<String>[]));
+          expectFailure(
+            result,
+            exitCode: 2,
+            token: 'valid: false',
+            phase: MambaExecutionPhase.run,
+          );
+          final failure = result as MambaFailureResult;
+          expect(failure.output, isNull);
+          expect(failure.message, isNot(contains('schemaVersion')));
+          expect(failure.message, isNot(contains('mcp.validate')));
+          expect(failure.message, isNot(contains('VALIDATE_SECRET_VALUE')));
+        });
+
+        test(
+          'distinguishes operational failures from completed reports',
+          () async {
+            fs.file('/sandbox/project/.mcp.json').deleteSync();
+            expectOperational(
+              await exec(validateArgs(<String>['--format', 'json'])),
+              'MCP configuration file',
+            );
+
+            fs
+                .file('/sandbox/project/.mcp.json')
+                .writeAsStringSync('{"mcpServers":{},"mcpServers":{}}');
+            expectOperational(
+              await exec(validateArgs(<String>['--format', 'json'])),
+              'MCP configuration',
+            );
+
+            writeJson('/sandbox/project/.mcp.json', <String, Object?>{
+              'mcpServers': <String, Object?>{},
+            });
+            expectOperational(
+              await exec(validateArgs(<String>[], name: 'does-not-exist')),
+              'No MCP registration',
+            );
+
+            fs.file('/sandbox/pi/mcp.json').deleteSync();
+            fs.directory('/sandbox/pi/target').createSync();
+            fs.link('/sandbox/pi/mcp.json').createSync('/sandbox/pi/target');
+            expectOperational(
+              await exec(
+                validateArgs(<String>[], harness: 'pi', scope: 'user'),
+              ),
+              'link',
+            );
+          },
+        );
+
+        test(
+          'reuses the adapter without stale diagnostics or writes',
+          () async {
+            final adapter = createExecutor(
+              fileSystem: fs,
+              mcpInspection: McpInspectionService(fileSystem: fs),
+              mcpValidation: McpValidationService(fileSystem: fs),
+            ).fake();
+            final before = snapshot();
+            final file = fs.file('/sandbox/project/.mcp.json');
+            final validText = file.readAsStringSync();
+
+            final valid = await adapter.execute(
+              validateArgs(<String>['--format', 'json']),
+            );
+            expect(
+              valid,
+              isA<MambaSuccessResult>().having(
+                (value) => value.exitCode,
+                'exit code',
+                0,
+              ),
+            );
+            expect(file.readAsStringSync(), validText);
+
+            writeInvalidEntry();
+            final invalidText = file.readAsStringSync();
+            final invalid = await adapter.execute(
+              validateArgs(<String>['--format', 'json']),
+            );
+            expect(
+              invalid,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'exit code', 2)
+                  .having((value) => value.output, 'output', isNull)
+                  .having(
+                    (value) => value.message,
+                    'stderr',
+                    contains('MCP_TRANSPORT_CONFLICT'),
+                  ),
+            );
+            expect(file.readAsStringSync(), invalidText);
+
+            file.writeAsStringSync(validText);
+            final restored = await adapter.execute(
+              validateArgs(<String>['--format', 'json']),
+            );
+            final envelope = successEnvelope(restored);
+            final report =
+                (envelope['data'] as Map<String, dynamic>)['report']
+                    as Map<String, dynamic>;
+            expect(report['valid'], isTrue);
+            expect(report['diagnostics'], isEmpty);
+            expect(file.readAsStringSync(), validText);
+            expect(snapshot(), equals(before));
           },
         );
       });
