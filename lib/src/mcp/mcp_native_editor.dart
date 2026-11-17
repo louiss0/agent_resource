@@ -508,23 +508,150 @@ List<_TomlLine> _tomlLines(String source) {
   return lines;
 }
 
+final class _TomlHeader {
+  const _TomlHeader(this.segments, this.canonicalKey, this.hasQuotedSegment);
+
+  /// Decoded dotted-key segments, e.g. `['mcp_servers', 'foo.bar']`.
+  final List<String> segments;
+
+  /// Canonical key text; quoted segments are re-encoded with the same encoder
+  /// used to generate managed table headers.
+  final String canonicalKey;
+  final bool hasQuotedSegment;
+}
+
+final RegExp _bareTomlKey = RegExp(r'^[A-Za-z0-9_-]+$');
+
+/// TOML basic-string encoding of one key segment (escapes `"` and `\`).
+String _tomlQuoteKey(String value) => jsonEncode(value);
+
+bool _isBareTomlKey(String value) => _bareTomlKey.hasMatch(value);
+
+String _tomlServerHeader(String name) =>
+    '[mcp_servers.${_isBareTomlKey(name) ? name : _tomlQuoteKey(name)}]';
+
+bool _tomlSpace(int char) => char == 0x20 || char == 0x09;
+
+({String value, int end})? _tomlQuotedSegment(String text, int start) {
+  final quote = text[start];
+  var escaped = false;
+  for (var i = start + 1; i < text.length; i++) {
+    final char = text[i];
+    if (char == '\n' || char == '\r') return null;
+    if (quote == r"'") {
+      if (char == quote) {
+        return (value: text.substring(start + 1, i), end: i + 1);
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char == r'\') {
+      escaped = true;
+      continue;
+    }
+    if (char == quote) {
+      try {
+        final value = jsonDecode(text.substring(start, i + 1));
+        return (value: value as String, end: i + 1);
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/// Parses a bracketed table header independently of any trailing comment.
+///
+/// Returns `null` for arrays of tables and for syntax this bounded editor does
+/// not understand; those shapes are refused before any write.
+_TomlHeader? _tomlHeader(String raw) {
+  final text = raw.trimLeft();
+  if (!text.startsWith('[') || text.startsWith('[[')) return null;
+  var index = 1;
+  final segments = <String>[];
+  final quoted = <bool>[];
+  while (true) {
+    while (index < text.length && _tomlSpace(text.codeUnitAt(index))) {
+      index++;
+    }
+    if (index >= text.length) return null;
+    final char = text[index];
+    final String segment;
+    final bool isQuoted;
+    if (char == '"' || char == r"'") {
+      final parsed = _tomlQuotedSegment(text, index);
+      if (parsed == null) return null;
+      segment = parsed.value;
+      index = parsed.end;
+      isQuoted = true;
+    } else {
+      final start = index;
+      while (index < text.length && _isBareTomlKey(text[index])) {
+        index++;
+      }
+      if (start == index) return null;
+      segment = text.substring(start, index);
+      isQuoted = false;
+    }
+    segments.add(segment);
+    quoted.add(isQuoted);
+    while (index < text.length && _tomlSpace(text.codeUnitAt(index))) {
+      index++;
+    }
+    if (index >= text.length) return null;
+    if (text[index] == ']') {
+      index++;
+      break;
+    }
+    if (text[index] != '.') return null;
+    index++;
+  }
+  while (index < text.length && _tomlSpace(text.codeUnitAt(index))) {
+    index++;
+  }
+  if (index < text.length && text[index] != '#') return null;
+  return _TomlHeader(
+    List<String>.unmodifiable(segments),
+    <String>[
+      for (var i = 0; i < segments.length; i++)
+        quoted[i] ? _tomlQuoteKey(segments[i]) : segments[i],
+    ].join('.'),
+    quoted.contains(true),
+  );
+}
+
+bool _isMcpServerEntry(_TomlHeader header, String name) {
+  if (header.segments.length != 2 || header.segments.first != 'mcp_servers') {
+    return false;
+  }
+  final wanted = 'mcp_servers.$name';
+  final wantedQuoted = 'mcp_servers.${_tomlQuoteKey(name)}';
+  return header.canonicalKey == wanted || header.canonicalKey == wantedQuoted;
+}
+
+bool _isMcpServerDescendant(_TomlHeader header, String name) =>
+    header.segments.length > 2 &&
+    header.segments.first == 'mcp_servers' &&
+    header.segments[1] == name;
+
 /// (regionStart, regionEnd, headerEnd, hasTable).
 ({int start, int end, int headerEnd, bool found}) _tomlTable(
   String source,
   String name,
 ) {
   final lines = _tomlLines(source);
-  final wanted = '[mcp_servers.$name]';
-  final wantedQuoted = '[mcp_servers."$name"]';
   var headerIndex = -1;
   for (var i = 0; i < lines.length; i++) {
-    final t = lines[i].raw.trim();
-    if (t == wanted || t == wantedQuoted) {
-      if (headerIndex >= 0) {
-        throw _invalid('duplicate [mcp_servers.$name] table.');
-      }
-      headerIndex = i;
+    final header = _tomlHeader(lines[i].raw);
+    if (header == null || !_isMcpServerEntry(header, name)) continue;
+    if (headerIndex >= 0) {
+      throw _invalid('duplicate [mcp_servers.$name] table.');
     }
+    headerIndex = i;
   }
   if (headerIndex < 0) {
     return (
@@ -536,10 +663,11 @@ List<_TomlLine> _tomlLines(String source) {
   }
   var regionEnd = source.length;
   for (var i = headerIndex + 1; i < lines.length; i++) {
-    if (lines[i].isHeader) {
-      regionEnd = lines[i].start;
-      break;
-    }
+    if (!lines[i].isHeader) continue;
+    final header = _tomlHeader(lines[i].raw);
+    if (header != null && _isMcpServerDescendant(header, name)) continue;
+    regionEnd = lines[i].start;
+    break;
   }
   return (
     start: lines[headerIndex].start,
@@ -560,10 +688,18 @@ List<_TomlLine> _tomlLines(String source) {
     return null;
   }
   ({int valueStart, int valueEnd, int lineStart, int lineEnd})? result;
+  var pastDescendantHeader = false;
   for (final line in _tomlLines(source)) {
     if (line.start < table.headerEnd || line.start >= table.end) {
       continue;
     }
+    if (line.isHeader) {
+      // The removal region includes descendant tables; their keys belong to
+      // the descendant, not to the selected server entry.
+      pastDescendantHeader = true;
+      continue;
+    }
+    if (pastDescendantHeader) continue;
     if (line.key == null || line.key != key || line.equalsIndex <= 0) {
       continue;
     }
@@ -640,10 +776,9 @@ void _rejectAmbiguousToml(String source) {
     if (trimmed.startsWith('[[')) {
       throw _invalid('TOML arrays of tables are not eligible.');
     }
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      final header = trimmed.substring(1, trimmed.length - 1);
-      if ((header.contains('"') || header.contains("'")) &&
-          !header.startsWith('mcp_servers.')) {
+    final header = _tomlHeader(line.raw);
+    if (header != null) {
+      if (header.hasQuotedSegment && header.segments.first != 'mcp_servers') {
         throw _invalid('quoted TOML section keys are not eligible.');
       }
       continue;
@@ -694,7 +829,7 @@ final class _TomlEntryEditor {
     if (result.isNotEmpty && !result.endsWith('\n')) {
       buffer.write(newline);
     }
-    buffer.write('[mcp_servers.$name]$newline');
+    buffer.write('${_tomlServerHeader(name)}$newline');
     for (final entry in fields.entries) {
       buffer.write('${entry.key} = ${_tomlEncode(entry.value)}$newline');
     }

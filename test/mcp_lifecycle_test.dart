@@ -11,6 +11,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
+import 'package:toml/toml.dart';
 
 /// Builds a whole-value `${NAME}` reference without Dart interpolation.
 String ref(String name) => [String.fromCharCode(36), '{', name, '}'].join();
@@ -69,6 +70,19 @@ void main() {
 
       Map<String, Object?>? entryAt(McpNativeLocation location, String name) =>
           McpNativeReader(fs).read(location)[name];
+
+      Map<String, Object?> parsedTomlServers(String text) {
+        final document = TomlDocument.parse(text).toMap();
+        final servers = document['mcp_servers'];
+        if (servers is! Map) return <String, Object?>{};
+        return <String, Object?>{
+          for (final entry in servers.entries)
+            entry.key.toString(): entry.value,
+        };
+      }
+
+      int headerCount(String text, String header) =>
+          RegExp(RegExp.escape(header)).allMatches(text).length;
 
       void writeLedger(List<McpRegistrationRecord> records) =>
           writeJson(ledgerPath, <String, Object?>{
@@ -717,6 +731,40 @@ void main() {
             expect(after, contains(codexRef));
           },
         );
+
+        test('TOML replace keeps a header with a trailing comment', () async {
+          const header = '[mcp_servers.svc] # server configuration';
+          final before =
+              '# keep this comment\n'
+              '[other]\n'
+              'value = "unchanged"\n'
+              '\n'
+              '$header\n'
+              'command = "old"\n'
+              'args = ["serve"]\n';
+          writeText(codexUserPath, before);
+          seedManaged(codexUser(), 'svc');
+
+          success(
+            await exec(
+              cmd('replace', <String>[
+                ...sel('svc', harness: 'codex', scope: 'user'),
+                '--command',
+                'new',
+                '--format',
+                'json',
+              ]),
+            ),
+          );
+
+          final after = readText(codexUserPath);
+          expect(after, contains(header));
+          expect(headerCount(after, '[mcp_servers.svc]'), 1);
+          expect(after, contains('command = "new"'));
+          expect(after, isNot(contains('command = "old"')));
+          expect(after, contains('value = "unchanged"'));
+          expect((parsedTomlServers(after)['svc']! as Map)['command'], 'new');
+        });
       });
 
       group('adopt', () {
@@ -978,6 +1026,94 @@ void main() {
             expect(ledgerRecords(), isEmpty);
           },
         );
+
+        test(
+          'TOML unregister removes descendant tables of the selected entry',
+          () async {
+            const before =
+                '# keep this comment\n'
+                'model = "o3"\n'
+                '\n'
+                '[mcp_servers.svc]\n'
+                'command = "gh-mcp"\n'
+                '\n'
+                '[mcp_servers.svc.env]\n'
+                'TOKEN = "\${TOKEN}"\n'
+                '\n'
+                '[other]\n'
+                'value = "unchanged"\n';
+            writeText(codexUserPath, before);
+            seedManaged(codexUser(), 'svc');
+
+            success(
+              await exec(
+                cmd('unregister', <String>[
+                  ...sel('svc', harness: 'codex', scope: 'user'),
+                  '--format',
+                  'json',
+                ]),
+              ),
+            );
+
+            final after = readText(codexUserPath);
+            expect(after, isNot(contains('[mcp_servers.svc]')));
+            expect(after, isNot(contains('[mcp_servers.svc.env]')));
+            expect(after, isNot(contains('TOKEN')));
+            expect(after, contains('# keep this comment'));
+            expect(after, contains('model = "o3"'));
+            expect(after, contains('[other]'));
+            expect(after, contains('value = "unchanged"'));
+            final document = TomlDocument.parse(after).toMap();
+            expect(document.containsKey('mcp_servers'), isFalse);
+            expect(entryAt(codexUser(), 'svc'), isNull);
+            expect(ledgerRecords(), isEmpty);
+          },
+        );
+      });
+
+      group('replace', () {
+        test(
+          'TOML replace patches entry keys when descendants exist',
+          () async {
+            const before =
+                '[mcp_servers.svc]\n'
+                'command = "old"\n'
+                '\n'
+                '[mcp_servers.svc.env]\n'
+                'command = "descendant-command"\n'
+                'TOKEN = "\${TOKEN}"\n'
+                '\n'
+                '[other]\n'
+                'value = "unchanged"\n';
+            writeText(codexUserPath, before);
+            seedManaged(codexUser(), 'svc');
+
+            success(
+              await exec(
+                cmd('replace', <String>[
+                  ...sel('svc', harness: 'codex', scope: 'user'),
+                  '--command',
+                  'new',
+                  '--format',
+                  'json',
+                ]),
+              ),
+            );
+
+            final after = readText(codexUserPath);
+            expect(
+              after,
+              before.replaceFirst('command = "old"', 'command = "new"'),
+            );
+            expect(after, contains('command = "descendant-command"'));
+            final servers = parsedTomlServers(after);
+            expect((servers['svc']! as Map)['command'], 'new');
+            expect(
+              (((servers['svc']! as Map)['env']! as Map)['command']),
+              'descendant-command',
+            );
+          },
+        );
       });
 
       group('register', () {
@@ -1060,6 +1196,86 @@ void main() {
             );
           },
         );
+
+        test(
+          'TOML register quotes dotted and spaced names as one key',
+          () async {
+            writeText(
+              codexUserPath,
+              '# keep this comment\n'
+              'model = "o3"\n'
+              '\n'
+              '[mcp_servers.keep]\n'
+              'command = "stay"\n',
+            );
+            for (final name in <String>['foo.bar', 'foo bar']) {
+              success(
+                await exec(
+                  cmd('register', <String>[
+                    ...sel(name, harness: 'codex', scope: 'user'),
+                    '--command',
+                    'node',
+                    '--format',
+                    'json',
+                  ]),
+                ),
+              );
+            }
+
+            final text = readText(codexUserPath);
+            final servers = parsedTomlServers(text);
+            expect(
+              servers.keys,
+              unorderedEquals(<String>['keep', 'foo.bar', 'foo bar']),
+            );
+            for (final name in <String>['foo.bar', 'foo bar']) {
+              expect(servers[name], isA<Map<Object?, Object?>>(), reason: name);
+              expect((servers[name]! as Map)['command'], 'node', reason: name);
+              expect(
+                entryAt(codexUser(), name)!['command'],
+                'node',
+                reason: name,
+              );
+            }
+            expect(servers.containsKey('foo'), isFalse);
+            expect(text, contains('[mcp_servers."foo.bar"]'));
+            expect(text, contains('[mcp_servers."foo bar"]'));
+            expect(text, contains('# keep this comment'));
+            expect(text, contains('command = "stay"'));
+          },
+        );
+
+        test('TOML replace patches an existing quoted server name', () async {
+          const before =
+              'model = "o3"\n'
+              '[mcp_servers."foo.bar"]\n'
+              'command = "old"\n'
+              'args = ["serve"]\n';
+          writeText(codexUserPath, before);
+          seedManaged(codexUser(), 'foo.bar');
+
+          success(
+            await exec(
+              cmd('replace', <String>[
+                ...sel('foo.bar', harness: 'codex', scope: 'user'),
+                '--command',
+                'new',
+                '--format',
+                'json',
+              ]),
+            ),
+          );
+
+          final after = readText(codexUserPath);
+          expect(after, contains('[mcp_servers."foo.bar"]'));
+          expect(headerCount(after, '[mcp_servers."foo.bar"]'), 1);
+          expect(after, contains('command = "new"'));
+          expect(after, isNot(contains('command = "old"')));
+          expect(
+            (parsedTomlServers(after)['foo.bar']! as Map)['command'],
+            'new',
+          );
+        });
 
         test(
           'TOML replace preserves CRLF newline style byte-for-byte',
