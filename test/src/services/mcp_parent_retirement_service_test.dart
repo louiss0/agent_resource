@@ -451,12 +451,22 @@ void main() {
             phase: 'published',
           );
           final result = await run(fixture, [...fixture.context(), '--yes']);
-          expect(result, isA<MambaFailureResult>());
-          final failure = result as MambaFailureResult;
-          expect(failure.exitCode, 4);
-          expect(failure.message, contains('ptr_published'));
-          expect(failure.message, contains('restore'));
-          expect(failure.output, isNull);
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', 4)
+                .having(
+                  (value) => value.message,
+                  'message',
+                  allOf(contains('ptr_published'), contains('restore')),
+                )
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.commandPath,
+                  'command path',
+                  <String>['agent_resource', 'agent', 'config', 'drain-mcp'],
+                ),
+          );
           expect(fixture.exists('parent-backups/pbk_mcp/backup.json'), isTrue);
           expect(fixture.native.readAsBytesSync(), fixture.nativeBytes);
         });

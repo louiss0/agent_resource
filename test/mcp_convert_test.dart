@@ -216,11 +216,19 @@ void main() {
         required int exitCode,
         required String token,
       }) {
-        expect(result, isA<MambaFailureResult>());
-        final value = result as MambaFailureResult;
-        expect(value.exitCode, exitCode, reason: value.message);
-        expect(value.message, contains(token), reason: value.message);
-        expect(value.output, isNull); // story 43: no success envelope
+        expect(
+          result,
+          isA<MambaFailureResult>()
+              .having((value) => value.exitCode, 'exit code', exitCode)
+              .having((value) => value.message, 'message', contains(token))
+              // story 43: no success envelope
+              .having((value) => value.output, 'output', isNull)
+              .having(
+                (value) => value.error.commandPath,
+                'command path',
+                <String>['agent_resource', 'mcp', 'convert'],
+              ),
+        );
       }
 
       void expectNoSecrets(String output) {
@@ -299,10 +307,22 @@ void main() {
               ],
             ]) {
               final result = await exec(tokens);
-              expect(result, isA<MambaFailureResult>(), reason: '$tokens');
               expect(
-                (result as MambaFailureResult).error.phase,
-                MambaExecutionPhase.parse,
+                result,
+                isA<MambaFailureResult>()
+                    .having((value) => value.message, 'message', isNotEmpty)
+                    .having(
+                      (value) => value.error.phase,
+                      'phase',
+                      MambaExecutionPhase.parse,
+                    )
+                    .having((value) => value.output, 'output', isNull)
+                    .having(
+                      (value) => value.error.commandPath,
+                      'command path',
+                      <String>['agent_resource', 'mcp', 'convert'],
+                    ),
+                reason: '$tokens',
               );
             }
           },

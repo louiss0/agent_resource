@@ -158,15 +158,25 @@ void main() {
         MambaExecutionResult result, {
         required int exitCode,
         required String token,
+        String command = 'register',
         MambaExecutionPhase? phase,
       }) {
-        expect(result, isA<MambaFailureResult>());
-        final value = result as MambaFailureResult;
-        expect(value.exitCode, exitCode);
-        expect(value.message, contains(token));
-        // Story 43: a failure never emits success JSON on stdout.
-        expect(value.output, isNull);
-        if (phase != null) expect(value.error.phase, phase);
+        expect(
+          result,
+          isA<MambaFailureResult>()
+              .having((value) => value.exitCode, 'exit code', exitCode)
+              .having((value) => value.message, 'message', contains(token))
+              // Story 43: a failure never emits success JSON on stdout.
+              .having((value) => value.output, 'output', isNull)
+              .having(
+                (value) => value.error.commandPath,
+                'command path',
+                <String>['agent_resource', 'mcp', ...command.split(' ')],
+              ),
+        );
+        if (phase != null) {
+          expect((result as MambaFailureResult).error.phase, phase);
+        }
       }
 
       void expectNoSecrets(String output) {
@@ -242,12 +252,22 @@ void main() {
             ]),
           ]) {
             final result = await exec(tokens);
-            expect(result, isA<MambaFailureResult>());
             expect(
-              (result as MambaFailureResult).error.phase,
-              MambaExecutionPhase.parse,
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.message, 'message', isNotEmpty)
+                  .having(
+                    (value) => value.error.phase,
+                    'phase',
+                    MambaExecutionPhase.parse,
+                  )
+                  .having((value) => value.output, 'output', isNull)
+                  .having(
+                    (value) => value.error.commandPath,
+                    'command path',
+                    <String>['agent_resource', 'mcp', 'register'],
+                  ),
             );
-            expect(result.output, isNull);
           }
         });
 
@@ -273,12 +293,22 @@ void main() {
             ],
           ]) {
             final result = await exec(cmd('register', extra));
-            expect(result, isA<MambaFailureResult>());
             expect(
-              (result as MambaFailureResult).error.phase,
-              MambaExecutionPhase.parse,
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.message, 'message', isNotEmpty)
+                  .having(
+                    (value) => value.error.phase,
+                    'phase',
+                    MambaExecutionPhase.parse,
+                  )
+                  .having((value) => value.output, 'output', isNull)
+                  .having(
+                    (value) => value.error.commandPath,
+                    'command path',
+                    <String>['agent_resource', 'mcp', 'register'],
+                  ),
             );
-            expect(result.output, isNull);
           }
         });
       });
@@ -769,6 +799,7 @@ void main() {
               ),
               exitCode: 4,
               token: 'drifted externally',
+              command: 'replace',
             );
             expect(readText(claudeProjectPath), before);
           },
@@ -844,6 +875,7 @@ void main() {
               await exec(cmd('unregister', <String>[...sel('svc')])),
               exitCode: 4,
               token: 'drifted externally',
+              command: 'unregister',
             );
             expect(readText(claudeProjectPath), before);
 
@@ -897,7 +929,12 @@ void main() {
                     'node',
                   ]),
                 );
-                failure(result, exitCode: 2, token: 'inspect-only');
+                failure(
+                  result,
+                  exitCode: 2,
+                  token: 'inspect-only',
+                  command: verb,
+                );
               }
             }
             // No native home file or ledger was ever written.

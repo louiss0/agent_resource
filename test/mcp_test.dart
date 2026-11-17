@@ -283,14 +283,24 @@ void main() {
         MambaExecutionResult result, {
         required int exitCode,
         required String token,
+        String command = 'list',
         MambaExecutionPhase? phase,
       }) {
-        expect(result, isA<MambaFailureResult>());
-        final failure = result as MambaFailureResult;
-        expect(failure.exitCode, exitCode);
-        expect(failure.message, contains(token));
-        expect(failure.output, isNull);
-        if (phase != null) expect(failure.error.phase, phase);
+        expect(
+          result,
+          isA<MambaFailureResult>()
+              .having((value) => value.exitCode, 'exit code', exitCode)
+              .having((value) => value.message, 'message', contains(token))
+              .having((value) => value.output, 'output', isNull)
+              .having(
+                (value) => value.error.commandPath,
+                'command path',
+                <String>['agent_resource', 'mcp', ...command.split(' ')],
+              ),
+        );
+        if (phase != null) {
+          expect((result as MambaFailureResult).error.phase, phase);
+        }
       }
 
       group('help', () {
@@ -506,11 +516,23 @@ void main() {
             <String>['mcp', 'list', '--format', 'bogus'],
           ]) {
             final result = await exec(tokens);
-            expect(result, isA<MambaFailureResult>(), reason: '$tokens');
-            final failure = result as MambaFailureResult;
-            expect(failure.output, isNull);
-            expect(failure.error.phase, MambaExecutionPhase.parse);
-            expect(failure.exitCode, isNonZero);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.message, 'message', isNotEmpty)
+                  .having((value) => value.output, 'output', isNull)
+                  .having(
+                    (value) => value.error.phase,
+                    'phase',
+                    MambaExecutionPhase.parse,
+                  )
+                  .having(
+                    (value) => value.error.commandPath,
+                    'command path',
+                    <String>['agent_resource', 'mcp', 'list'],
+                  ),
+            );
+            expect((result as MambaFailureResult).exitCode, isNonZero);
           }
         });
       });
@@ -572,7 +594,12 @@ void main() {
             <String>['--harness', 'claude', '--scope', 'project'],
           ]) {
             final result = await exec(inspectArgs(extra));
-            expectFailure(result, exitCode: 2, token: 'requires');
+            expectFailure(
+              result,
+              exitCode: 2,
+              token: 'requires',
+              command: 'inspect',
+            );
           }
         });
 
@@ -587,7 +614,12 @@ void main() {
               'project',
             ]),
           );
-          expectFailure(result, exitCode: 2, token: 'No MCP registration');
+          expectFailure(
+            result,
+            exitCode: 2,
+            token: 'No MCP registration',
+            command: 'inspect',
+          );
         });
       });
 
@@ -652,6 +684,7 @@ void main() {
             result,
             exitCode: 2,
             token: code,
+            command: 'validate',
             phase: MambaExecutionPhase.run,
           );
           final failure = result as MambaFailureResult;
@@ -665,6 +698,7 @@ void main() {
             result,
             exitCode: 1,
             token: token,
+            command: 'validate',
             phase: MambaExecutionPhase.run,
           );
           final failure = result as MambaFailureResult;
@@ -706,12 +740,18 @@ void main() {
               expect(
                 result,
                 isA<MambaFailureResult>()
+                    .having((value) => value.message, 'message', isNotEmpty)
                     .having(
                       (value) => value.error.phase,
                       'phase',
                       MambaExecutionPhase.parse,
                     )
-                    .having((value) => value.output, 'output', isNull),
+                    .having((value) => value.output, 'output', isNull)
+                    .having(
+                      (value) => value.error.commandPath,
+                      'command path',
+                      <String>['agent_resource', 'mcp', 'validate'],
+                    ),
                 reason: tokens.join(' '),
               );
             }
@@ -779,6 +819,7 @@ void main() {
             result,
             exitCode: 2,
             token: 'valid: false',
+            command: 'validate',
             phase: MambaExecutionPhase.run,
           );
           final failure = result as MambaFailureResult;
@@ -864,6 +905,11 @@ void main() {
                     (value) => value.message,
                     'stderr',
                     contains('MCP_TRANSPORT_CONFLICT'),
+                  )
+                  .having(
+                    (value) => value.error.commandPath,
+                    'command path',
+                    <String>['agent_resource', 'mcp', 'validate'],
                   ),
             );
             expect(file.readAsStringSync(), invalidText);

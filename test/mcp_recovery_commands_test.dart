@@ -116,12 +116,20 @@ void main() {
       MambaExecutionResult result, {
       required int exitCode,
       required String token,
+      String command = 'recover',
     }) {
-      expect(result, isA<MambaFailureResult>());
-      final value = result as MambaFailureResult;
-      expect(value.exitCode, exitCode, reason: value.message);
-      expect(value.message, contains(token));
-      expect(value.output, isNull);
+      expect(
+        result,
+        isA<MambaFailureResult>()
+            .having((value) => value.exitCode, 'exit code', exitCode)
+            .having((value) => value.message, 'message', contains(token))
+            .having((value) => value.output, 'output', isNull)
+            .having(
+              (value) => value.error.commandPath,
+              'command path',
+              <String>['agent_resource', 'mcp', ...command.split(' ')],
+            ),
+      );
     }
 
     void writeText(String path, String text) {
@@ -239,10 +247,21 @@ void main() {
           'cleanup',
           '--not-an-input',
         ]);
-        expect(result, isA<MambaFailureResult>());
         expect(
-          (result as MambaFailureResult).error.phase,
-          MambaExecutionPhase.parse,
+          result,
+          isA<MambaFailureResult>()
+              .having((value) => value.message, 'message', isNotEmpty)
+              .having(
+                (value) => value.error.phase,
+                'phase',
+                MambaExecutionPhase.parse,
+              )
+              .having((value) => value.output, 'output', isNull)
+              .having(
+                (value) => value.error.commandPath,
+                'command path',
+                <String>['agent_resource', 'mcp', 'backup', 'cleanup'],
+              ),
         );
         expect(stateFiles(mcpBackupDirectoryName), isEmpty);
       });
@@ -347,6 +366,7 @@ void main() {
           ),
           exitCode: 4,
           token: 'Stale or mismatched --plan-id',
+          command: 'backup restore',
         );
         expect(readText(codexPath), contains('# second unrelated edit'));
 
@@ -454,6 +474,7 @@ void main() {
           ),
           exitCode: 4,
           token: 'No retained MCP backup evidence',
+          command: 'backup cleanup',
         );
       });
     });
@@ -488,7 +509,12 @@ void main() {
             ]),
             recovery: await interruptedService(2),
           ).then((result) {
-            failure(result, exitCode: 6, token: 'recovery is required');
+            failure(
+              result,
+              exitCode: 6,
+              token: 'recovery is required',
+              command: 'replace',
+            );
             expect((result as MambaFailureResult).output, isNull);
           });
 
@@ -527,6 +553,7 @@ void main() {
             ),
             exitCode: 4,
             token: 'not provable from phase',
+            command: 'recover',
           );
 
           final plan =
@@ -600,7 +627,12 @@ void main() {
             ]),
             recovery: await interruptedService(3),
           ).then((result) {
-            failure(result, exitCode: 6, token: 'recovery is required');
+            failure(
+              result,
+              exitCode: 6,
+              token: 'recovery is required',
+              command: 'replace',
+            );
           });
 
           final transactionId = onlyId(mcpTransactionDirectoryName, 'mtx_');
@@ -624,6 +656,7 @@ void main() {
             ),
             exitCode: 4,
             token: 'still referenced by recoverable transaction',
+            command: 'backup cleanup',
           );
           final nativeBefore = readText(codexPath);
 
@@ -686,7 +719,12 @@ void main() {
             ]),
             recovery: await interruptedService(3),
           ).then((result) {
-            failure(result, exitCode: 6, token: 'recovery is required');
+            failure(
+              result,
+              exitCode: 6,
+              token: 'recovery is required',
+              command: 'replace',
+            );
           });
           final backupId = onlyId(mcpBackupDirectoryName, 'mbk_');
 
@@ -703,6 +741,7 @@ void main() {
             ),
             exitCode: 4,
             token: 'still referenced by recoverable transaction',
+            command: 'backup restore',
           );
           expect(readText(codexPath), contains('command = "github-mcp-v2"'));
         },
@@ -723,7 +762,12 @@ void main() {
           ]),
           recovery: await interruptedService(3),
         ).then((result) {
-          failure(result, exitCode: 6, token: 'recovery is required');
+          failure(
+            result,
+            exitCode: 6,
+            token: 'recovery is required',
+            command: 'replace',
+          );
         });
         final transactionId = onlyId(mcpTransactionDirectoryName, 'mtx_');
         final transactionPath =
@@ -747,6 +791,7 @@ void main() {
           ),
           exitCode: 4,
           token: 'inconsistent or substituted',
+          command: 'recover',
         );
 
         final backupId = onlyId(mcpBackupDirectoryName, 'mbk_');
@@ -781,6 +826,7 @@ void main() {
           ),
           exitCode: 4,
           token: 'substituted',
+          command: 'recover',
         );
       });
     });
