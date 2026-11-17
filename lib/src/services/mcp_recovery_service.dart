@@ -553,21 +553,7 @@ interface class McpRecoveryService implements McpMutationService {
     }
 
     final identity = transaction.identity;
-    final observation = _observe(
-      McpRecoveryRequest(
-        environment: request.environment,
-        harness: identity.harness,
-        scope: identity.scope,
-        name: identity.name,
-        cwd: request.cwd,
-        projectRoot: request.projectRoot,
-        home: request.home,
-        claudeConfigDir: request.claudeConfigDir,
-        codexHome: request.codexHome,
-        piAgentDir: request.piAgentDir,
-        stateDir: request.stateDir,
-      ),
-    );
+    final observation = _observe(_entryRequest(request, identity));
     _requireIdentity(observation, identity);
     _requireRecoveryGuards(transaction, evidence, observation, action);
 
@@ -593,21 +579,7 @@ interface class McpRecoveryService implements McpMutationService {
     );
     if (request.dryRun) return plan;
     await _approveRecovery(request, plan, planId, () {
-      final again = _observe(
-        McpRecoveryRequest(
-          environment: request.environment,
-          harness: identity.harness,
-          scope: identity.scope,
-          name: identity.name,
-          cwd: request.cwd,
-          projectRoot: request.projectRoot,
-          home: request.home,
-          claudeConfigDir: request.claudeConfigDir,
-          codexHome: request.codexHome,
-          piAgentDir: request.piAgentDir,
-          stateDir: request.stateDir,
-        ),
-      );
+      final again = _observe(_entryRequest(request, identity));
       return _recoveryPlanId(
         operation: 'recover-${action.wireName}',
         evidenceDigest: evidence.artifactDigest,
@@ -619,21 +591,7 @@ interface class McpRecoveryService implements McpMutationService {
       );
     });
 
-    final current = _observe(
-      McpRecoveryRequest(
-        environment: request.environment,
-        harness: identity.harness,
-        scope: identity.scope,
-        name: identity.name,
-        cwd: request.cwd,
-        projectRoot: request.projectRoot,
-        home: request.home,
-        claudeConfigDir: request.claudeConfigDir,
-        codexHome: request.codexHome,
-        piAgentDir: request.piAgentDir,
-        stateDir: request.stateDir,
-      ),
-    );
+    final current = _observe(_entryRequest(request, identity));
     if (action == McpRecoveryAction.complete) {
       final updated = transaction.withPhase(McpRecoveryPhase.committed);
       _writeTransaction(stateRoot, updated);
@@ -993,6 +951,25 @@ interface class McpRecoveryService implements McpMutationService {
         piAgentDir: request.piAgentDir,
         stateDir: request.stateDir,
       );
+
+  /// Rebuilds the selection context for an entry carried by evidence, so a
+  /// recovery never trusts a caller-supplied occurrence or path.
+  McpRecoveryRequest _entryRequest(
+    McpRecoveryRequest request,
+    McpRegistrationIdentity identity,
+  ) => McpRecoveryRequest(
+    environment: request.environment,
+    harness: identity.harness,
+    scope: identity.scope,
+    name: identity.name,
+    cwd: request.cwd,
+    projectRoot: request.projectRoot,
+    home: request.home,
+    claudeConfigDir: request.claudeConfigDir,
+    codexHome: request.codexHome,
+    piAgentDir: request.piAgentDir,
+    stateDir: request.stateDir,
+  );
 
   McpMutationRequest _asDryRun(McpMutationRequest request) =>
       McpMutationRequest(
