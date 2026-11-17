@@ -158,6 +158,7 @@ final class McpValidationContract {
     required this.httpFields,
     required this.stdioTypes,
     required this.httpTypes,
+    required this.requiresHttpType,
     required this.schema,
   });
 
@@ -168,10 +169,12 @@ final class McpValidationContract {
   final Set<String> httpFields;
   final Set<String> stdioTypes;
   final Set<String> httpTypes;
+  final bool requiresHttpType;
   final ZemaSchema<dynamic, Map<String, dynamic>> schema;
 
   Map<String, Object?> get baseline => <String, Object?>{
     'sources': _sorted(sources),
+    'httpTypeRequired': requiresHttpType,
     'recognizedFields': <String, Object?>{
       'common': _sorted(commonFields),
       'stdio': _sorted(stdioFields),
@@ -193,13 +196,15 @@ final class const McpValidation() {
     McpScope? scope,
   }) {
     final contract = _contracts[harness]!;
-    final result = contract.schema.safeParse(fields);
-    final diagnostics = <McpValidationDiagnostic>[];
-    if (result.isFailure) {
-      for (final issue in _flattenIssues(result.errors)) {
-        diagnostics.add(_diagnosticForIssue(issue));
-      }
-    }
+    final selection = _selectTransport(fields, contract);
+    final diagnostics = <McpValidationDiagnostic>[
+      ..._semanticDiagnostics(
+        contract: contract,
+        fields: fields,
+        selection: selection,
+      ),
+      ..._shapeDiagnostics(contract.schema.safeParse(fields), selection),
+    ];
     return McpValidationReport(
       profile: contract.profile,
       baseline: contract.baseline,
@@ -209,22 +214,64 @@ final class const McpValidation() {
 }
 
 const Set<String> _claudeCommonFields = <String>{'type'};
-const Set<String> _claudeStdioFields = <String>{'command'};
-const Set<String> _claudeHttpFields = <String>{'url'};
+const Set<String> _claudeStdioFields = <String>{'command', 'args', 'env'};
+const Set<String> _claudeHttpFields = <String>{
+  'url',
+  'headers',
+  'headersHelper',
+  'oauth',
+};
 const Set<String> _claudeStdioTypes = <String>{'stdio'};
-const Set<String> _claudeHttpTypes = <String>{'http'};
+const Set<String> _claudeHttpTypes = <String>{'http', 'streamable-http', 'ws'};
 
-const Set<String> _codexCommonFields = <String>{'type'};
-const Set<String> _codexStdioFields = <String>{'command'};
-const Set<String> _codexHttpFields = <String>{'url'};
+const Set<String> _codexCommonFields = <String>{
+  'type',
+  'enabled',
+  'required',
+  'startup_readiness',
+  'startup_timeout_sec',
+  'startup_timeout_ms',
+  'tool_timeout_sec',
+  'enabled_tools',
+  'disabled_tools',
+  'default_tools_approval_mode',
+  'tools',
+  'mcp_oauth_credentials_store',
+};
+const Set<String> _codexStdioFields = <String>{
+  'command',
+  'args',
+  'cwd',
+  'env',
+  'env_vars',
+};
+const Set<String> _codexHttpFields = <String>{
+  'url',
+  'auth',
+  'bearer_token_env_var',
+  'http_headers',
+  'env_http_headers',
+  'http_headers_helper',
+  'environment_id',
+  'oauth',
+  'oauth_resource',
+  'scopes',
+};
 const Set<String> _codexStdioTypes = <String>{'stdio'};
-const Set<String> _codexHttpTypes = <String>{'http'};
+const Set<String> _codexHttpTypes = <String>{'http', 'streamable-http'};
 
-const Set<String> _piCommonFields = <String>{'type'};
-const Set<String> _piStdioFields = <String>{'command'};
-const Set<String> _piHttpFields = <String>{'url'};
+const Set<String> _piCommonFields = <String>{
+  'type',
+  'enabled',
+  'timeout',
+  'description',
+  'exposure',
+  'toolExposure',
+};
+const Set<String> _piStdioFields = <String>{'command', 'args', 'env', 'cwd'};
+const Set<String> _piHttpFields = <String>{'url', 'headers', 'oauth', 'auth'};
 const Set<String> _piStdioTypes = <String>{'stdio'};
-const Set<String> _piHttpTypes = <String>{'http'};
+const Set<String> _piHttpTypes = <String>{'http', 'streamable-http'};
 
 final ZemaSchema<dynamic, Map<String, dynamic>> _claudeSchema = _schemaFor(
   commonFields: _claudeCommonFields,
@@ -258,6 +305,7 @@ final Map<McpHarness, McpValidationContract> _contracts =
         httpFields: _claudeHttpFields,
         stdioTypes: _claudeStdioTypes,
         httpTypes: _claudeHttpTypes,
+        requiresHttpType: true,
         schema: _claudeSchema,
       ),
       McpHarness.codex: McpValidationContract(
@@ -268,6 +316,7 @@ final Map<McpHarness, McpValidationContract> _contracts =
         httpFields: _codexHttpFields,
         stdioTypes: _codexStdioTypes,
         httpTypes: _codexHttpTypes,
+        requiresHttpType: false,
         schema: _codexSchema,
       ),
       McpHarness.pi: McpValidationContract(
@@ -278,6 +327,7 @@ final Map<McpHarness, McpValidationContract> _contracts =
         httpFields: _piHttpFields,
         stdioTypes: _piStdioTypes,
         httpTypes: _piHttpTypes,
+        requiresHttpType: false,
         schema: _piSchema,
       ),
     };
@@ -355,6 +405,178 @@ ZemaSchema<dynamic, dynamic> _literalTypes(Set<String> values) =>
 List<String> _sorted(Set<String> values) =>
     List<String>.unmodifiable(values.toList()..sort());
 
+final class _TransportSelection {
+  const _TransportSelection({
+    required this.transport,
+    required this.conflict,
+    required this.missing,
+  });
+
+  final McpTransport? transport;
+  final bool conflict;
+  final bool missing;
+}
+
+_TransportSelection _selectTransport(
+  Map<String, Object?> fields,
+  McpValidationContract contract,
+) {
+  final commandKey = fields.containsKey('command');
+  final urlKey = fields.containsKey('url');
+  final Object? rawType = fields['type'];
+  final String? type = rawType is String ? rawType : null;
+  McpTransport? typeTransport;
+  if (type != null) {
+    if (contract.stdioTypes.contains(type)) {
+      typeTransport = McpTransport.stdio;
+    } else if (contract.httpTypes.contains(type)) {
+      typeTransport = McpTransport.http;
+    }
+  }
+  final conflict = commandKey && urlKey;
+  final missing = !commandKey && !urlKey;
+  McpTransport? transport;
+  if (conflict) {
+    transport =
+        typeTransport ?? (commandKey ? McpTransport.stdio : McpTransport.http);
+  } else if (commandKey) {
+    transport = McpTransport.stdio;
+  } else if (urlKey) {
+    transport = McpTransport.http;
+  } else {
+    transport = typeTransport;
+  }
+  return _TransportSelection(
+    transport: transport,
+    conflict: conflict,
+    missing: missing,
+  );
+}
+
+List<McpValidationDiagnostic> _semanticDiagnostics({
+  required McpValidationContract contract,
+  required Map<String, Object?> fields,
+  required _TransportSelection selection,
+}) {
+  final diagnostics = <McpValidationDiagnostic>[];
+  void add(String code, String field) =>
+      diagnostics.add(McpValidationDiagnostic(code: code, field: field));
+
+  if (selection.missing) {
+    add(
+      'MCP_TRANSPORT_MISSING',
+      ValidationDiagnostics.path(<Object?>['transport']),
+    );
+  }
+  if (selection.conflict) {
+    add(
+      'MCP_TRANSPORT_CONFLICT',
+      ValidationDiagnostics.path(<Object?>['transport']),
+    );
+  }
+
+  final typeField = ValidationDiagnostics.key('type');
+  final Object? rawType = fields['type'];
+  if (fields.containsKey('type') && rawType is! String) {
+    add('FIELD_TYPE', typeField);
+  } else if (rawType is String) {
+    final supported = <String>{...contract.stdioTypes, ...contract.httpTypes};
+    if (!supported.contains(rawType)) {
+      add('MCP_TYPE_UNSUPPORTED', typeField);
+    } else if (selection.transport == McpTransport.stdio &&
+        !contract.stdioTypes.contains(rawType)) {
+      add('MCP_TYPE_TRANSPORT_MISMATCH', typeField);
+    } else if (selection.transport == McpTransport.http &&
+        !contract.httpTypes.contains(rawType)) {
+      add('MCP_TYPE_TRANSPORT_MISMATCH', typeField);
+    }
+  } else if (selection.transport == McpTransport.http &&
+      contract.requiresHttpType) {
+    add('MCP_TYPE_REQUIRED', typeField);
+  }
+
+  final current = <String>{...contract.commonFields};
+  final Set<String> other;
+  if (selection.transport == McpTransport.stdio) {
+    current.addAll(contract.stdioFields);
+    other = contract.httpFields;
+  } else if (selection.transport == McpTransport.http) {
+    current.addAll(contract.httpFields);
+    other = contract.stdioFields;
+  } else {
+    other = const <String>{};
+  }
+  final all = <String>{
+    ...contract.commonFields,
+    ...contract.stdioFields,
+    ...contract.httpFields,
+  };
+  for (final key in _sorted(Set<String>.from(fields.keys))) {
+    if (current.contains(key)) continue;
+    final field = ValidationDiagnostics.key(key);
+    if (other.contains(key)) {
+      add('MCP_FIELD_TRANSPORT_INAPPLICABLE', field);
+    } else if (!all.contains(key)) {
+      add('UNKNOWN_FIELD', field);
+    }
+  }
+  return diagnostics;
+}
+
+List<McpValidationDiagnostic> _shapeDiagnostics(
+  ZemaResult<Map<String, dynamic>> result,
+  _TransportSelection selection,
+) {
+  if (result.isSuccess) return const <McpValidationDiagnostic>[];
+  final diagnostics = <McpValidationDiagnostic>[];
+  for (final issue in _selectedIssues(result.errors, selection.transport)) {
+    if (_skipShapeIssue(issue, selection)) continue;
+    diagnostics.add(_diagnosticForIssue(issue));
+  }
+  return diagnostics;
+}
+
+List<ZemaIssue> _selectedIssues(
+  Iterable<ZemaIssue> errors,
+  McpTransport? transport,
+) {
+  if (transport == null) return const <ZemaIssue>[];
+  for (final error in errors) {
+    final Object? unionErrors = error.meta?['unionErrors'];
+    if (error.code == 'invalid_union' &&
+        unionErrors is List<Object?> &&
+        unionErrors.length >= 2) {
+      final Object? branch =
+          unionErrors[transport == McpTransport.stdio ? 0 : 1];
+      if (branch is List<Object?>) {
+        final branchIssues = <ZemaIssue>[];
+        for (final Object? item in branch) {
+          if (item is ZemaIssue) branchIssues.add(item);
+        }
+        return _flattenIssues(branchIssues);
+      }
+    }
+  }
+  return _flattenIssues(errors);
+}
+
+bool _skipShapeIssue(ZemaIssue issue, _TransportSelection selection) {
+  if (issue.path.isEmpty) return true;
+  final Object first = issue.path.first;
+  if (first is String && first == 'type') return true;
+  if (issue.code == 'unknown_key' && issue.path.length == 1) return true;
+  if (issue.code == 'invalid_union' ||
+      issue.code == 'MCP_TRANSPORT_REFINEMENT') {
+    return true;
+  }
+  if (selection.missing &&
+      issue.code == 'invalid_type' &&
+      (first == 'command' || first == 'url')) {
+    return true;
+  }
+  return false;
+}
+
 List<McpValidationDiagnostic> _sortedDiagnostics(
   Iterable<McpValidationDiagnostic> diagnostics,
 ) {
@@ -383,7 +605,9 @@ List<ZemaIssue> _flattenIssues(Iterable<ZemaIssue> issues) {
       for (final Object? branch in unionErrors) {
         if (branch is List<Object?>) {
           for (final Object? nested in branch) {
-            if (nested is ZemaIssue) visit(nested);
+            if (nested is ZemaIssue) {
+              visit(nested.prependPath(issue.path));
+            }
           }
         }
       }
