@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:mamba/mamba.dart';
@@ -10,122 +9,116 @@ import 'src/services/mcp_mutation_service.dart';
 /// All typed inputs shared by the four MCP lifecycle commands. A fresh bundle
 /// is created per command so every declaration handle is registered once.
 final class McpMutationInputs {
-  final name = StringOption.required(
+  final _name = StringOption.required(
     'name',
     regex: RegExp(r'.+'),
     description: 'The MCP server name to select.',
   );
-  final harness = ChoiceOption.required(
+  final _harness = ChoiceOption.required(
     'harness',
     choices: McpHarness.values,
     description: 'The explicit harness that owns the registration.',
   );
-  final scope = ChoiceOption.required(
+  final _scope = ChoiceOption.required(
     'scope',
     choices: McpScope.values,
     description: 'The explicit native scope of the registration.',
   );
-  final command = StringOption(
+  final _command = StringOption(
     'command',
     regex: RegExp(r'.+'),
     description: 'The stdio executable (exactly one of --command/--url).',
   );
-  final args = RepeatableStringOption(
+  final _args = RepeatableStringOption(
     'args',
     description: 'A stdio argument; repeat for each argument.',
   );
-  final env = RepeatableStringOption(
+  final _env = RepeatableStringOption(
     'env',
     description: 'A stdio env KEY=reference (VAR-in-braces or !command).',
   );
-  final url = StringOption(
+  final _url = StringOption(
     'url',
     regex: RegExp(r'.+'),
     description: 'The HTTP endpoint (exactly one of --command/--url).',
   );
-  final header = RepeatableStringOption(
+  final _header = RepeatableStringOption(
     'header',
     description: 'An HTTP header KEY=reference (VAR-in-braces or !command).',
   );
-  final type = StringOption(
+  final _type = StringOption(
     'type',
     regex: RegExp(r'^[a-z][a-z0-9-]*$'),
     description:
         'The native transport type (stdio, http, streamable-http, ws).',
   );
-  final format = ChoiceOption.withDefault(
+  final _format = ChoiceOption.withDefault(
     'format',
     choices: McpOutputFormat.values,
     defaultValue: McpOutputFormat.text,
   );
-  final cwd = FolderPathOption('cwd');
-  final projectRoot = FolderPathOption('project-root');
-  final home = FolderPathOption('home');
-  final claudeConfigDir = FolderPathOption('claude-config-dir');
-  final codexHome = FolderPathOption('codex-home');
-  final piAgentDir = FolderPathOption('pi-agent-dir');
-  final stateDir = FolderPathOption('state-dir');
-  final planId = StringOption(
+  final _cwd = FolderPathOption('cwd');
+  final _projectRoot = FolderPathOption('project-root');
+  final _home = FolderPathOption('home');
+  final _claudeConfigDir = FolderPathOption('claude-config-dir');
+  final _codexHome = FolderPathOption('codex-home');
+  final _piAgentDir = FolderPathOption('pi-agent-dir');
+  final _stateDir = FolderPathOption('state-dir');
+  final _planId = StringOption(
     'plan-id',
     regex: RegExp(r'.+'),
     description: 'A reviewed plan identity from --dry-run.',
   );
-  final dryRun = BooleanFlag(
+  final _dryRun = BooleanFlag(
     'dry-run',
     description: 'Preview the complete reviewed plan without writing.',
   );
-  final yes = BooleanFlag(
+  final _yes = BooleanFlag(
     'yes',
     description: 'Unattended apply (requires --ack-mcp-risk).',
   );
-  final interactive = BooleanFlag(
+  final _interactive = BooleanFlag(
     'interactive',
     description: 'Force interactive review and approval.',
   );
-  final ackMcpRisk = BooleanFlag(
+  final _ackMcpRisk = BooleanFlag(
     'ack-mcp-risk',
     description: 'Acknowledge the risk of registering an executable/endpoint.',
   );
-  final allowDrift = BooleanFlag(
+  final _allowDrift = BooleanFlag(
     'allow-drift',
     description: 'Allow a reviewed resolution of externally drifted state.',
   );
 
-  List<Option<Object?>> get options => <Option<Object?>>[
-    name,
-    harness,
-    scope,
-    command,
-    args,
-    env,
-    url,
-    header,
-    type,
-    format,
-    cwd,
-    projectRoot,
-    home,
-    claudeConfigDir,
-    codexHome,
-    piAgentDir,
-    stateDir,
-    planId,
+  List<Option<Object?>> get _options => <Option<Object?>>[
+    _name,
+    _harness,
+    _scope,
+    _command,
+    _args,
+    _env,
+    _url,
+    _header,
+    _type,
+    _format,
+    _cwd,
+    _projectRoot,
+    _home,
+    _claudeConfigDir,
+    _codexHome,
+    _piAgentDir,
+    _stateDir,
+    _planId,
   ];
 
-  List<Flag<Object?>> get flags => <Flag<Object?>>[
-    dryRun,
-    yes,
-    interactive,
-    ackMcpRisk,
-    allowDrift,
+  List<Flag<Object?>> get _flags => <Flag<Object?>>[
+    _dryRun,
+    _yes,
+    _interactive,
+    _ackMcpRisk,
+    _allowDrift,
   ];
 }
-
-String _render(McpEnvelope envelope, McpOutputFormat format) =>
-    switch (format) {
-      McpOutputFormat.json => jsonEncode(envelope.envelope()),
-      McpOutputFormat.text => envelope.renderText(),
-    };
 
 /// Shared argv marshalling for one reviewed MCP lifecycle mutation. Selection
 /// is by --name plus explicit --harness and --scope; occurrences and paths are
@@ -138,8 +131,8 @@ abstract class McpMutationCommand extends Command {
     String longDescription,
   ) : _inputs = inputs,
       super(
-        options: inputs.options,
-        flags: inputs.flags,
+        options: inputs._options,
+        flags: inputs._flags,
         longDescription: longDescription,
       );
 
@@ -149,35 +142,54 @@ abstract class McpMutationCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final i = _inputs;
+    final inputs = _inputs;
+    final serverName = valueOf(inputs._name);
+    final harness = valueOf(inputs._harness);
+    final scope = valueOf(inputs._scope);
+    final executable = valueOf(inputs._command);
+    final arguments = valueOf(inputs._args) ?? const <String>[];
+    final environmentValues = valueOf(inputs._env) ?? const <String>[];
+    final endpoint = valueOf(inputs._url);
+    final headerValues = valueOf(inputs._header) ?? const <String>[];
+    final transportType = valueOf(inputs._type);
+    final outputFormat = valueOf(inputs._format);
+    final workingDirectory = valueOf(inputs._cwd);
+    final projectRoot = valueOf(inputs._projectRoot);
+    final home = valueOf(inputs._home);
+    final claudeConfigDir = valueOf(inputs._claudeConfigDir);
+    final codexHome = valueOf(inputs._codexHome);
+    final piAgentDir = valueOf(inputs._piAgentDir);
+    final stateDir = valueOf(inputs._stateDir);
+    final reviewedPlanId = valueOf(inputs._planId);
+
     final request = McpMutationRequest(
       operation: _operation,
       environment: Map<String, String>.unmodifiable(Platform.environment),
-      harness: valueOf(i.harness),
-      scope: valueOf(i.scope),
-      name: valueOf(i.name),
-      command: valueOf(i.command),
-      args: valueOf(i.args) ?? const <String>[],
-      envValues: valueOf(i.env) ?? const <String>[],
-      url: valueOf(i.url),
-      headerValues: valueOf(i.header) ?? const <String>[],
-      type: valueOf(i.type),
-      dryRun: valueOf(i.dryRun),
-      yes: valueOf(i.yes),
-      interactive: valueOf(i.interactive),
-      planId: valueOf(i.planId),
-      ackMcpRisk: valueOf(i.ackMcpRisk),
-      allowDrift: valueOf(i.allowDrift),
-      cwd: valueOf(i.cwd),
-      projectRoot: valueOf(i.projectRoot),
-      home: valueOf(i.home),
-      claudeConfigDir: valueOf(i.claudeConfigDir),
-      codexHome: valueOf(i.codexHome),
-      piAgentDir: valueOf(i.piAgentDir),
-      stateDir: valueOf(i.stateDir),
+      harness: harness,
+      scope: scope,
+      name: serverName,
+      command: executable,
+      args: arguments,
+      envValues: environmentValues,
+      url: endpoint,
+      headerValues: headerValues,
+      type: transportType,
+      dryRun: valueOf(inputs._dryRun),
+      yes: valueOf(inputs._yes),
+      interactive: valueOf(inputs._interactive),
+      planId: reviewedPlanId,
+      ackMcpRisk: valueOf(inputs._ackMcpRisk),
+      allowDrift: valueOf(inputs._allowDrift),
+      cwd: workingDirectory,
+      projectRoot: projectRoot,
+      home: home,
+      claudeConfigDir: claudeConfigDir,
+      codexHome: codexHome,
+      piAgentDir: piAgentDir,
+      stateDir: stateDir,
     );
     final envelope = await _service.execute(request);
-    return _render(envelope, valueOf(i.format));
+    return renderMcpEnvelope(envelope, outputFormat);
   }
 }
 

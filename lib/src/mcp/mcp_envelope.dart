@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'mcp_redaction.dart';
+import 'mcp_types.dart';
 
 /// A versioned MCP success envelope (stories 42, 43), mirroring
 /// `LifecycleResult.envelope()`/`renderText()` with a `schemaVersion: 1`
@@ -74,6 +77,13 @@ final class McpEnvelope {
     return buffer.toString();
   }
 }
+
+/// Renders one MCP success envelope for the selected command output format.
+String renderMcpEnvelope(McpEnvelope envelope, McpOutputFormat format) =>
+    switch (format) {
+      McpOutputFormat.json => jsonEncode(envelope.envelope()),
+      McpOutputFormat.text => envelope.renderText(),
+    };
 
 Object? _terminalSafe(Object? value) {
   if (value is! String) return value;

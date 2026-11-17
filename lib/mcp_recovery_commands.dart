@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:mamba/mamba.dart';
@@ -11,68 +10,62 @@ import 'src/services/mcp_recovery_service.dart';
 /// The typed inputs shared by the MCP backup and recovery commands. A fresh
 /// bundle is created per command so every handle is registered exactly once.
 final class McpRecoveryInputs {
-  final name = StringOption('name', regex: RegExp(r'.+'));
-  final harness = ChoiceOption('harness', choices: McpHarness.values);
-  final scope = ChoiceOption('scope', choices: McpScope.values);
-  final backupId = StringOption('backup-id', regex: RegExp(r'.+'));
-  final transactionId = StringOption('transaction-id', regex: RegExp(r'.+'));
-  final action = ChoiceOption('action', choices: McpRecoveryAction.values);
-  final planId = StringOption('plan-id', regex: RegExp(r'.+'));
-  final format = ChoiceOption.withDefault(
+  final _name = StringOption('name', regex: RegExp(r'.+'));
+  final _harness = ChoiceOption('harness', choices: McpHarness.values);
+  final _scope = ChoiceOption('scope', choices: McpScope.values);
+  final _backupId = StringOption('backup-id', regex: RegExp(r'.+'));
+  final _transactionId = StringOption('transaction-id', regex: RegExp(r'.+'));
+  final _action = ChoiceOption('action', choices: McpRecoveryAction.values);
+  final _planId = StringOption('plan-id', regex: RegExp(r'.+'));
+  final _format = ChoiceOption.withDefault(
     'format',
     choices: McpOutputFormat.values,
     defaultValue: McpOutputFormat.text,
   );
-  final cwd = FolderPathOption('cwd');
-  final projectRoot = FolderPathOption('project-root');
-  final home = FolderPathOption('home');
-  final claudeConfigDir = FolderPathOption('claude-config-dir');
-  final codexHome = FolderPathOption('codex-home');
-  final piAgentDir = FolderPathOption('pi-agent-dir');
-  final stateDir = FolderPathOption('state-dir');
-  final dryRun = BooleanFlag(
+  final _cwd = FolderPathOption('cwd');
+  final _projectRoot = FolderPathOption('project-root');
+  final _home = FolderPathOption('home');
+  final _claudeConfigDir = FolderPathOption('claude-config-dir');
+  final _codexHome = FolderPathOption('codex-home');
+  final _piAgentDir = FolderPathOption('pi-agent-dir');
+  final _stateDir = FolderPathOption('state-dir');
+  final _dryRun = BooleanFlag(
     'dry-run',
     description: 'Preview a fresh reviewed plan without writing.',
   );
-  final yes = BooleanFlag('yes', description: 'Unattended reviewed apply.');
-  final interactive = BooleanFlag(
+  final _yes = BooleanFlag('yes', description: 'Unattended reviewed apply.');
+  final _interactive = BooleanFlag(
     'interactive',
     description: 'Force interactive review and approval.',
   );
-  final ackMcpRisk = BooleanFlag(
+  final _ackMcpRisk = BooleanFlag(
     'ack-mcp-risk',
     description: 'Acknowledge the risk of restoring an executable or endpoint.',
   );
 
-  List<Option<Object?>> get contextOptions => <Option<Object?>>[
-    format,
-    cwd,
-    projectRoot,
-    home,
-    claudeConfigDir,
-    codexHome,
-    piAgentDir,
-    stateDir,
+  List<Option<Object?>> get _contextOptions => <Option<Object?>>[
+    _format,
+    _cwd,
+    _projectRoot,
+    _home,
+    _claudeConfigDir,
+    _codexHome,
+    _piAgentDir,
+    _stateDir,
   ];
 
-  List<Option<Object?>> get selectionOptions => <Option<Object?>>[
-    name,
-    harness,
-    scope,
+  List<Option<Object?>> get _selectionOptions => <Option<Object?>>[
+    _name,
+    _harness,
+    _scope,
   ];
 
-  List<Flag<Object?>> get reviewFlags => <Flag<Object?>>[
-    dryRun,
-    yes,
-    interactive,
+  List<Flag<Object?>> get _reviewFlags => <Flag<Object?>>[
+    _dryRun,
+    _yes,
+    _interactive,
   ];
 }
-
-String _render(McpEnvelope envelope, McpOutputFormat format) =>
-    switch (format) {
-      McpOutputFormat.json => jsonEncode(envelope.envelope()),
-      McpOutputFormat.text => envelope.renderText(),
-    };
 
 /// Appended to `McpCommand._children`: the `backup` group and `recover` leaf.
 List<Command> mcpRecoveryCommands(McpRecoveryService service) => <Command>[
@@ -106,9 +99,9 @@ final class McpBackupListCommand extends Command {
     : _inputs = inputs,
       super(
         options: <Option<Object?>>[
-          ...inputs.contextOptions,
-          inputs.harness,
-          inputs.scope,
+          ...inputs._contextOptions,
+          inputs._harness,
+          inputs._scope,
         ],
         longDescription:
             'Lists protected MCP entry backups under the Agent Resource state '
@@ -129,21 +122,23 @@ final class McpBackupListCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    final inputs = _inputs;
+    final outputFormat = valueOf(inputs._format);
     final envelope = await _service.listBackups(
       McpRecoveryRequest(
         environment: Map<String, String>.unmodifiable(Platform.environment),
-        harness: valueOf(_inputs.harness),
-        scope: valueOf(_inputs.scope),
-        cwd: valueOf(_inputs.cwd),
-        projectRoot: valueOf(_inputs.projectRoot),
-        home: valueOf(_inputs.home),
-        claudeConfigDir: valueOf(_inputs.claudeConfigDir),
-        codexHome: valueOf(_inputs.codexHome),
-        piAgentDir: valueOf(_inputs.piAgentDir),
-        stateDir: valueOf(_inputs.stateDir),
+        harness: valueOf(inputs._harness),
+        scope: valueOf(inputs._scope),
+        cwd: valueOf(inputs._cwd),
+        projectRoot: valueOf(inputs._projectRoot),
+        home: valueOf(inputs._home),
+        claudeConfigDir: valueOf(inputs._claudeConfigDir),
+        codexHome: valueOf(inputs._codexHome),
+        piAgentDir: valueOf(inputs._piAgentDir),
+        stateDir: valueOf(inputs._stateDir),
       ),
     );
-    return _render(envelope, valueOf(_inputs.format));
+    return renderMcpEnvelope(envelope, outputFormat);
   }
 }
 
@@ -156,42 +151,51 @@ abstract class McpEvidenceCommand extends Command {
   ) : _inputs = inputs,
       super(
         options: <Option<Object?>>[
-          ...inputs.selectionOptions,
-          inputs.backupId,
-          inputs.planId,
-          ...inputs.contextOptions,
+          ...inputs._selectionOptions,
+          inputs._backupId,
+          inputs._planId,
+          ...inputs._contextOptions,
         ],
-        flags: <Flag<Object?>>[...inputs.reviewFlags, inputs.ackMcpRisk],
+        flags: <Flag<Object?>>[...inputs._reviewFlags, inputs._ackMcpRisk],
         longDescription: longDescription,
       );
 
   final McpRecoveryService _service;
   final McpRecoveryInputs _inputs;
 
-  McpRecoveryRequest request(ValueOf valueOf) => McpRecoveryRequest(
-    environment: Map<String, String>.unmodifiable(Platform.environment),
-    harness: valueOf(_inputs.harness),
-    scope: valueOf(_inputs.scope),
-    name: valueOf(_inputs.name),
-    backupId: valueOf(_inputs.backupId),
-    planId: valueOf(_inputs.planId),
-    dryRun: valueOf(_inputs.dryRun),
-    yes: valueOf(_inputs.yes),
-    interactive: valueOf(_inputs.interactive),
-    ackMcpRisk: valueOf(_inputs.ackMcpRisk),
-    cwd: valueOf(_inputs.cwd),
-    projectRoot: valueOf(_inputs.projectRoot),
-    home: valueOf(_inputs.home),
-    claudeConfigDir: valueOf(_inputs.claudeConfigDir),
-    codexHome: valueOf(_inputs.codexHome),
-    piAgentDir: valueOf(_inputs.piAgentDir),
-    stateDir: valueOf(_inputs.stateDir),
-  );
+  McpRecoveryRequest request(ValueOf valueOf) {
+    final inputs = _inputs;
+    final serverName = valueOf(inputs._name);
+    final harness = valueOf(inputs._harness);
+    final scope = valueOf(inputs._scope);
+    final reviewedBackupId = valueOf(inputs._backupId);
+    final reviewedPlanId = valueOf(inputs._planId);
+    return McpRecoveryRequest(
+      environment: Map<String, String>.unmodifiable(Platform.environment),
+      harness: harness,
+      scope: scope,
+      name: serverName,
+      backupId: reviewedBackupId,
+      planId: reviewedPlanId,
+      dryRun: valueOf(inputs._dryRun),
+      yes: valueOf(inputs._yes),
+      interactive: valueOf(inputs._interactive),
+      ackMcpRisk: valueOf(inputs._ackMcpRisk),
+      cwd: valueOf(inputs._cwd),
+      projectRoot: valueOf(inputs._projectRoot),
+      home: valueOf(inputs._home),
+      claudeConfigDir: valueOf(inputs._claudeConfigDir),
+      codexHome: valueOf(inputs._codexHome),
+      piAgentDir: valueOf(inputs._piAgentDir),
+      stateDir: valueOf(inputs._stateDir),
+    );
+  }
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    final outputFormat = valueOf(_inputs._format);
     final envelope = await apply(request(valueOf));
-    return _render(envelope, valueOf(_inputs.format));
+    return renderMcpEnvelope(envelope, outputFormat);
   }
 
   Future<McpEnvelope> apply(McpRecoveryRequest request);
@@ -245,13 +249,13 @@ final class McpRecoverCommand extends Command {
     : _inputs = inputs,
       super(
         options: <Option<Object?>>[
-          ...inputs.selectionOptions,
-          inputs.transactionId,
-          inputs.action,
-          inputs.planId,
-          ...inputs.contextOptions,
+          ...inputs._selectionOptions,
+          inputs._transactionId,
+          inputs._action,
+          inputs._planId,
+          ...inputs._contextOptions,
         ],
-        flags: <Flag<Object?>>[...inputs.reviewFlags, inputs.ackMcpRisk],
+        flags: <Flag<Object?>>[...inputs._reviewFlags, inputs._ackMcpRisk],
         longDescription:
             'Completes or rolls back an interrupted MCP mutation using a '
             'reviewed action that must be provable from the recorded phase. '
@@ -273,28 +277,36 @@ final class McpRecoverCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    final inputs = _inputs;
+    final outputFormat = valueOf(inputs._format);
+    final serverName = valueOf(inputs._name);
+    final harness = valueOf(inputs._harness);
+    final scope = valueOf(inputs._scope);
+    final transactionId = valueOf(inputs._transactionId);
+    final reviewedAction = valueOf(inputs._action);
+    final reviewedPlanId = valueOf(inputs._planId);
     final envelope = await _service.recover(
       McpRecoveryRequest(
         environment: Map<String, String>.unmodifiable(Platform.environment),
-        harness: valueOf(_inputs.harness),
-        scope: valueOf(_inputs.scope),
-        name: valueOf(_inputs.name),
-        transactionId: valueOf(_inputs.transactionId),
-        action: valueOf(_inputs.action),
-        planId: valueOf(_inputs.planId),
-        dryRun: valueOf(_inputs.dryRun),
-        yes: valueOf(_inputs.yes),
-        interactive: valueOf(_inputs.interactive),
-        ackMcpRisk: valueOf(_inputs.ackMcpRisk),
-        cwd: valueOf(_inputs.cwd),
-        projectRoot: valueOf(_inputs.projectRoot),
-        home: valueOf(_inputs.home),
-        claudeConfigDir: valueOf(_inputs.claudeConfigDir),
-        codexHome: valueOf(_inputs.codexHome),
-        piAgentDir: valueOf(_inputs.piAgentDir),
-        stateDir: valueOf(_inputs.stateDir),
+        harness: harness,
+        scope: scope,
+        name: serverName,
+        transactionId: transactionId,
+        action: reviewedAction,
+        planId: reviewedPlanId,
+        dryRun: valueOf(inputs._dryRun),
+        yes: valueOf(inputs._yes),
+        interactive: valueOf(inputs._interactive),
+        ackMcpRisk: valueOf(inputs._ackMcpRisk),
+        cwd: valueOf(inputs._cwd),
+        projectRoot: valueOf(inputs._projectRoot),
+        home: valueOf(inputs._home),
+        claudeConfigDir: valueOf(inputs._claudeConfigDir),
+        codexHome: valueOf(inputs._codexHome),
+        piAgentDir: valueOf(inputs._piAgentDir),
+        stateDir: valueOf(inputs._stateDir),
       ),
     );
-    return _render(envelope, valueOf(_inputs.format));
+    return renderMcpEnvelope(envelope, outputFormat);
   }
 }

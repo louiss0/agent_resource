@@ -8,7 +8,7 @@ import 'package:mamba/mamba.dart';
 import 'mcp_convert.dart';
 import 'mcp_lifecycle_commands.dart';
 import 'mcp_recovery_commands.dart';
-import 'src/mcp/mcp_envelope.dart';
+import 'src/mcp/mcp_envelope.dart' show McpEnvelope, renderMcpEnvelope;
 import 'src/mcp/mcp_types.dart';
 import 'src/mcp/mcp_validation.dart';
 import 'src/services/mcp_conversion_service.dart';
@@ -155,7 +155,7 @@ final class McpListCommand extends Command {
         stateDir: valueOf(_stateDir),
       ),
     );
-    return _render(envelope, valueOf(_format));
+    return renderMcpEnvelope(envelope, valueOf(_format));
   }
 }
 
@@ -236,15 +236,9 @@ final class McpInspectCommand extends Command {
         stateDir: valueOf(_stateDir),
       ),
     );
-    return _render(envelope, valueOf(_format));
+    return renderMcpEnvelope(envelope, valueOf(_format));
   }
 }
-
-String _render(McpEnvelope envelope, McpOutputFormat format) =>
-    switch (format) {
-      McpOutputFormat.json => jsonEncode(envelope.envelope()),
-      McpOutputFormat.text => envelope.renderText(),
-    };
 
 final class McpValidateCommand extends Command {
   McpValidateCommand(this._service)
@@ -349,6 +343,6 @@ final class McpValidateCommand extends Command {
       },
       diagnostics: const <Map<String, Object?>>[],
     );
-    return _render(envelope, format);
+    return renderMcpEnvelope(envelope, format);
   }
 }

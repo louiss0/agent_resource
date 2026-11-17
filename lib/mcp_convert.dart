@@ -1,105 +1,105 @@
-import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:mamba/mamba.dart';
 
+import 'src/mcp/mcp_envelope.dart';
 import 'src/mcp/mcp_types.dart';
 import 'src/services/mcp_conversion_service.dart';
 
 /// Typed inputs for `mcp convert`. A fresh bundle is created per command so
 /// every declaration handle is registered exactly once.
 final class McpConvertInputs {
-  final name = StringOption.required(
+  final _name = StringOption.required(
     'name',
     regex: RegExp(r'.+'),
     description: 'The MCP server name to select.',
   );
-  final harness = ChoiceOption.required(
+  final _harness = ChoiceOption.required(
     'harness',
     choices: McpHarness.values,
     description: 'The explicit harness that owns the source registration.',
   );
-  final scope = ChoiceOption.required(
+  final _scope = ChoiceOption.required(
     'scope',
     choices: McpScope.values,
     description: 'The explicit native scope of the source registration.',
   );
-  final targetHarness = ChoiceOption.required(
+  final _targetHarness = ChoiceOption.required(
     'target-harness',
     choices: McpHarness.values,
     description: 'The harness to convert the registration to.',
   );
-  final targetScope = ChoiceOption(
+  final _targetScope = ChoiceOption(
     'target-scope',
     choices: McpScope.values,
     description:
         'A reviewed scope change; omitted means the source scope is preserved.',
   );
-  final omitField = RepeatableStringOption(
+  final _omitField = RepeatableStringOption(
     'omit-field',
     regex: RegExp(r'.+'),
     description:
         'A reviewed field path to omit; repeat for each explicitly omitted '
         'field. Changing this decision yields a fresh plan identity.',
   );
-  final planId = StringOption(
+  final _planId = StringOption(
     'plan-id',
     regex: RegExp(r'.+'),
     description: 'A reviewed plan identity from --dry-run.',
   );
-  final format = ChoiceOption.withDefault(
+  final _format = ChoiceOption.withDefault(
     'format',
     choices: McpOutputFormat.values,
     defaultValue: McpOutputFormat.text,
   );
-  final cwd = FolderPathOption('cwd');
-  final projectRoot = FolderPathOption('project-root');
-  final home = FolderPathOption('home');
-  final claudeConfigDir = FolderPathOption('claude-config-dir');
-  final codexHome = FolderPathOption('codex-home');
-  final piAgentDir = FolderPathOption('pi-agent-dir');
-  final stateDir = FolderPathOption('state-dir');
+  final _cwd = FolderPathOption('cwd');
+  final _projectRoot = FolderPathOption('project-root');
+  final _home = FolderPathOption('home');
+  final _claudeConfigDir = FolderPathOption('claude-config-dir');
+  final _codexHome = FolderPathOption('codex-home');
+  final _piAgentDir = FolderPathOption('pi-agent-dir');
+  final _stateDir = FolderPathOption('state-dir');
 
-  final apply = BooleanFlag(
+  final _apply = BooleanFlag(
     'apply',
     description: 'Apply the reviewed conversion plan.',
   );
-  final dryRun = BooleanFlag(
+  final _dryRun = BooleanFlag(
     'dry-run',
     description: 'Preview the complete reviewed plan without writing.',
   );
-  final yes = BooleanFlag(
+  final _yes = BooleanFlag(
     'yes',
     description: 'Unattended apply (requires a reviewed --plan-id).',
   );
-  final interactive = BooleanFlag(
+  final _interactive = BooleanFlag(
     'interactive',
     description: 'Force interactive review and approval.',
   );
 
-  List<Option<Object?>> get options => <Option<Object?>>[
-    name,
-    harness,
-    scope,
-    targetHarness,
-    targetScope,
-    omitField,
-    planId,
-    format,
-    cwd,
-    projectRoot,
-    home,
-    claudeConfigDir,
-    codexHome,
-    piAgentDir,
-    stateDir,
+  List<Option<Object?>> get _options => <Option<Object?>>[
+    _name,
+    _harness,
+    _scope,
+    _targetHarness,
+    _targetScope,
+    _omitField,
+    _planId,
+    _format,
+    _cwd,
+    _projectRoot,
+    _home,
+    _claudeConfigDir,
+    _codexHome,
+    _piAgentDir,
+    _stateDir,
   ];
 
-  List<Flag<Object?>> get flags => <Flag<Object?>>[
-    apply,
-    dryRun,
-    yes,
-    interactive,
+  List<Flag<Object?>> get _flags => <Flag<Object?>>[
+    _apply,
+    _dryRun,
+    _yes,
+    _interactive,
   ];
 }
 
@@ -113,8 +113,8 @@ final class McpConvertCommand extends Command {
 
   McpConvertCommand._(this._service, this._inputs)
     : super(
-        options: _inputs.options,
-        flags: _inputs.flags,
+        options: _inputs._options,
+        flags: _inputs._flags,
         conflicts: const <String, List<String>>{
           'apply': ['dry-run'],
         },
@@ -143,35 +143,46 @@ final class McpConvertCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final i = _inputs;
+    final inputs = _inputs;
+    final serverName = valueOf(inputs._name);
+    final sourceHarness = valueOf(inputs._harness);
+    final sourceScope = valueOf(inputs._scope);
+    final targetHarness = valueOf(inputs._targetHarness);
+    final reviewedTargetScope = valueOf(inputs._targetScope);
+    final omittedFields = valueOf(inputs._omitField) ?? const <String>[];
+    final reviewedPlanId = valueOf(inputs._planId);
+    final outputFormat = valueOf(inputs._format);
+    final workingDirectory = valueOf(inputs._cwd);
+    final projectRoot = valueOf(inputs._projectRoot);
+    final home = valueOf(inputs._home);
+    final claudeConfigDir = valueOf(inputs._claudeConfigDir);
+    final codexHome = valueOf(inputs._codexHome);
+    final piAgentDir = valueOf(inputs._piAgentDir);
+    final stateDir = valueOf(inputs._stateDir);
+
     final envelope = await _service.execute(
       McpConversionRequest(
         environment: Map<String, String>.unmodifiable(Platform.environment),
-        harness: valueOf(i.harness),
-        scope: valueOf(i.scope),
-        name: valueOf(i.name),
-        targetHarness: valueOf(i.targetHarness),
-        targetScope: valueOf(i.targetScope),
-        omitFields: valueOf(i.omitField) ?? const <String>[],
-        planId: valueOf(i.planId),
-        apply: valueOf(i.apply),
-        dryRun: valueOf(i.dryRun),
-        yes: valueOf(i.yes),
-        interactive: valueOf(i.interactive),
-        cwd: valueOf(i.cwd),
-        projectRoot: valueOf(i.projectRoot),
-        home: valueOf(i.home),
-        claudeConfigDir: valueOf(i.claudeConfigDir),
-        codexHome: valueOf(i.codexHome),
-        piAgentDir: valueOf(i.piAgentDir),
-        stateDir: valueOf(i.stateDir),
+        harness: sourceHarness,
+        scope: sourceScope,
+        name: serverName,
+        targetHarness: targetHarness,
+        targetScope: reviewedTargetScope,
+        omitFields: omittedFields,
+        planId: reviewedPlanId,
+        apply: valueOf(inputs._apply),
+        dryRun: valueOf(inputs._dryRun),
+        yes: valueOf(inputs._yes),
+        interactive: valueOf(inputs._interactive),
+        cwd: workingDirectory,
+        projectRoot: projectRoot,
+        home: home,
+        claudeConfigDir: claudeConfigDir,
+        codexHome: codexHome,
+        piAgentDir: piAgentDir,
+        stateDir: stateDir,
       ),
     );
-    return switch (valueOf(i.format)) {
-      McpOutputFormat.json => _encode(envelope.envelope()),
-      McpOutputFormat.text => envelope.renderText(),
-    };
+    return renderMcpEnvelope(envelope, outputFormat);
   }
 }
-
-String _encode(Map<String, Object?> envelope) => jsonEncode(envelope);
