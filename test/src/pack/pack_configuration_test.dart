@@ -1,4 +1,5 @@
 import 'package:agent_resource/src/pack/pack_configuration.dart';
+import 'package:agent_resource/src/pack/pack_mcp_declaration.dart';
 import 'package:file/memory.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -639,6 +640,144 @@ schema_version = 1
 
       expect(error.issues, hasLength(1));
       expect(error.issues.single.message, contains('duplicate TOML'));
+    });
+
+    group('inline MCP declarations (stories 34-35)', () {
+      List<PackMcpDeclaration> parseMcp(String body) => PackConfiguration.parse(
+        'schema_version = 1\n$body',
+        catalogScope: PackCatalogSection.mcp,
+      ).catalog.mcp;
+
+      PackConfigurationException mcpError(String body) {
+        try {
+          parseMcp(body);
+        } on PackConfigurationException catch (error) {
+          return error;
+        }
+        fail('Expected inline MCP declaration to be refused.');
+      }
+
+      test('admits environment-variable and command credential references', () {
+        final declarations = parseMcp(r'''
+[[catalog.mcp]]
+name = "github"
+command = "npx"
+args = ["-y", "server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}", OP_KEY = "!op read secret" }
+headers = { Authorization = "Bearer ${TOKEN}" }
+''');
+        expect(declarations, hasLength(1));
+        expect(declarations.single.name, 'github');
+        expect(declarations.single.fields['command'], 'npx');
+      });
+
+      test('admits reference-only native fields', () {
+        final declarations = parseMcp(r'''
+[[catalog.mcp]]
+name = "remote"
+url = "https://example.test/mcp"
+type = "http"
+bearer_token_env_var = "MCP_TOKEN"
+env_vars = ["MCP_TOKEN"]
+env_http_headers = { Authorization = "MCP_AUTH" }
+''');
+        expect(declarations.single.name, 'remote');
+        expect(declarations.single.fields['bearer_token_env_var'], 'MCP_TOKEN');
+      });
+
+      test('refuses a literal secret with a value-free diagnostic', () {
+        final error = mcpError(r'''
+[[catalog.mcp]]
+name = "github"
+command = "npx"
+env = { GITHUB_TOKEN = "ghp_supersecretvalue" }
+''');
+        final codes = error.issues.map((issue) => issue.code).toList();
+        expect(codes, contains(mcpPackLiteralSecret));
+        expect(
+          error.issues.map((issue) => issue.keyPath),
+          anyElement(contains('env')),
+        );
+        expect(error.message, isNot(contains('ghp_supersecretvalue')));
+      });
+
+      test(
+        'refuses provider-credential selection with a value-free diagnostic',
+        () {
+          final error = mcpError(r'''
+[[catalog.mcp]]
+name = "remote"
+url = "https://example.test/mcp"
+type = "http"
+auth = { provider = "anthropic-provider" }
+''');
+          expect(
+            error.issues.map((issue) => issue.code),
+            contains(mcpPackProviderAuthForbidden),
+          );
+          expect(error.message, isNot(contains('anthropic-provider')));
+        },
+      );
+
+      test('refuses an unknown native field', () {
+        final error = mcpError(r'''
+[[catalog.mcp]]
+name = "github"
+command = "npx"
+surprise_field = "value"
+''');
+        expect(
+          error.issues.map((issue) => issue.code),
+          contains(mcpPackUnknownField),
+        );
+        expect(
+          error.issues.map((issue) => issue.keyPath),
+          anyElement(contains('surprise_field')),
+        );
+      });
+
+      test('refuses a malformed declaration and an invalid name', () {
+        final error = mcpError(r'''
+[[catalog.mcp]]
+name = "bad name!"
+command = "npx"
+''');
+        expect(
+          error.issues.map((issue) => issue.code),
+          contains(mcpPackNameInvalid),
+        );
+      });
+
+      test('keeps schema_version strictness for MCP selections', () {
+        PackConfigurationException? caught;
+        try {
+          PackConfiguration.parse(
+            'schema_version = 2\n[[catalog.mcp]]\nname = "x"\ncommand = "npx"\n',
+            catalogScope: PackCatalogSection.mcp,
+          );
+        } on PackConfigurationException catch (error) {
+          caught = error;
+        }
+        expect(caught, isNotNull);
+        expect(
+          caught!.issues.map((issue) => issue.keyPath),
+          contains('schema_version'),
+        );
+      });
+
+      test('an untyped selection never parses or admits MCP declarations', () {
+        // Without an explicit mcp scope the section is ignored entirely: a
+        // literal secret in an MCP declaration cannot affect an ordinary
+        // skill/agent/prompt operation (story 33).
+        final configuration = PackConfiguration.parse(r'''
+schema_version = 1
+[[catalog.mcp]]
+name = "github"
+command = "npx"
+env = { GITHUB_TOKEN = "ghp_supersecretvalue" }
+''');
+        expect(configuration.catalog.mcp, isEmpty);
+      });
     });
   });
 }
