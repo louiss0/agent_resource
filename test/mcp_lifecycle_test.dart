@@ -29,7 +29,7 @@ final List<String> secrets = <String>[
 
 void main() {
   group('agent_resource', () {
-    group('mcp lifecycle', () {
+    group('mcp', () {
       late fslib.FileSystem fs;
       late List<String> previews;
       late Future<bool> Function(String) approval;
@@ -205,7 +205,7 @@ void main() {
         };
       });
 
-      group('help and selection', () {
+      group('register', () {
         test('register declares every typed input', () async {
           final result = await exec(<String>['mcp', 'register', '--help']);
           expect(result, isA<MambaSuccessResult>());
@@ -313,7 +313,7 @@ void main() {
         });
       });
 
-      group('interactive register (stories 12, 13, 14, 42)', () {
+      group('register', () {
         test('stdio review then approval writes only the new entry', () async {
           writeJson(claudeProjectPath, <String, Object?>{
             'mcpServers': <String, Object?>{
@@ -432,7 +432,7 @@ void main() {
         );
       });
 
-      group('credentials (stories 17, 18)', () {
+      group('register', () {
         test(
           'refuses a literal --env secret and accepts a reference',
           () async {
@@ -491,7 +491,7 @@ void main() {
         });
       });
 
-      group('plan, dry-run, unattended (stories 16, 20, 21)', () {
+      group('register', () {
         List<String> registerStdio(List<String> extra) =>
             cmd('register', <String>[
               ...sel('svc'),
@@ -627,7 +627,7 @@ void main() {
         );
       });
 
-      group('byte-preserving replace (stories 15, 18, 23)', () {
+      group('replace', () {
         test(
           'JSON: existing literal retained, only the changed field moves',
           () async {
@@ -719,7 +719,7 @@ void main() {
         );
       });
 
-      group('adoption (story 19)', () {
+      group('adopt', () {
         test(
           'records a reviewed baseline without rewriting the native file',
           () async {
@@ -766,7 +766,7 @@ void main() {
         );
       });
 
-      group('drift (stories 20, 21)', () {
+      group('replace', () {
         const String managedText =
             '{\n'
             '  "mcpServers": {\n'
@@ -911,40 +911,38 @@ void main() {
         );
       });
 
-      group('inspect-only refusal (story 22)', () {
-        test(
-          'Claude user/local mutations are refused for every operation',
-          () async {
-            for (final verb in const <String>[
-              'register',
-              'replace',
-              'adopt',
-              'unregister',
-            ]) {
-              for (final scope in const <String>['user', 'local']) {
-                final result = await exec(
-                  cmd(verb, <String>[
-                    ...sel('svc', scope: scope),
-                    '--command',
-                    'node',
-                  ]),
-                );
-                failure(
-                  result,
-                  exitCode: 2,
-                  token: 'inspect-only',
-                  command: verb,
-                );
-              }
+      test(
+        'Claude user/local mutations are refused for every operation',
+        () async {
+          for (final verb in const <String>[
+            'register',
+            'replace',
+            'adopt',
+            'unregister',
+          ]) {
+            for (final scope in const <String>['user', 'local']) {
+              final result = await exec(
+                cmd(verb, <String>[
+                  ...sel('svc', scope: scope),
+                  '--command',
+                  'node',
+                ]),
+              );
+              failure(
+                result,
+                exitCode: 2,
+                token: 'inspect-only',
+                command: verb,
+              );
             }
-            // No native home file or ledger was ever written.
-            expect(fileExists('/sandbox/home/.claude.json'), isFalse);
-            expect(ledgerRecords(), isEmpty);
-          },
-        );
-      });
+          }
+          // No native home file or ledger was ever written.
+          expect(fileExists('/sandbox/home/.claude.json'), isFalse);
+          expect(ledgerRecords(), isEmpty);
+        },
+      );
 
-      group('unregister (story 23)', () {
+      group('unregister', () {
         test(
           'removes only the selected entry and its ownership record',
           () async {
@@ -982,7 +980,7 @@ void main() {
         );
       });
 
-      group('validation and cancellation (stories 44, 43)', () {
+      group('register', () {
         test(
           'a validation failure blocks the write with no success JSON',
           () async {
@@ -1023,7 +1021,7 @@ void main() {
         );
       });
 
-      group('native format robustness', () {
+      group('register', () {
         test(
           'TOML register inserts the entry and syncs the TOML baseline',
           () async {

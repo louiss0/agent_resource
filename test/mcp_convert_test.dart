@@ -30,234 +30,240 @@ const List<String> secretLiterals = <String>[
 
 void main() {
   group('agent_resource', () {
-    group('mcp convert', () {
-      late fslib.FileSystem fs;
-      late List<String> previews;
-      late Future<bool> Function(String) approval;
+    group('mcp', () {
+      group('convert', () {
+        late fslib.FileSystem fs;
+        late List<String> previews;
+        late Future<bool> Function(String) approval;
 
-      const String sourceName = 'convert-svc';
-      const String stateRoot = '/sandbox/state';
+        const String sourceName = 'convert-svc';
+        const String stateRoot = '/sandbox/state';
 
-      McpNativeLocation location(McpHarness harness, McpScope scope) =>
-          switch (harness) {
-            McpHarness.claude => McpNativeLocation(
-              harness: harness,
-              scope: scope,
-              path: scope == McpScope.project
-                  ? '/sandbox/project/.mcp.json'
-                  : '/sandbox/home/.claude.json',
-              format: McpNativeFormat.json,
-              section: scope == McpScope.local
-                  ? McpNativeSection.claudeLocalProjects
-                  : McpNativeSection.mcpServers,
-              projectKey: scope == McpScope.local ? '/sandbox/project' : null,
-            ),
-            McpHarness.codex => McpNativeLocation(
-              harness: harness,
-              scope: scope,
-              path: scope == McpScope.project
-                  ? '/sandbox/project/.codex/config.toml'
-                  : '/sandbox/codex/config.toml',
-              format: McpNativeFormat.toml,
-              section: McpNativeSection.codexMcpServers,
-            ),
-            McpHarness.pi => McpNativeLocation(
-              harness: harness,
-              scope: scope,
-              path: scope == McpScope.project
-                  ? '/sandbox/project/.pi/mcp.json'
-                  : '/sandbox/pi/mcp.json',
-              format: McpNativeFormat.json,
-              section: McpNativeSection.mcpServers,
-            ),
-          };
+        McpNativeLocation location(McpHarness harness, McpScope scope) =>
+            switch (harness) {
+              McpHarness.claude => McpNativeLocation(
+                harness: harness,
+                scope: scope,
+                path: scope == McpScope.project
+                    ? '/sandbox/project/.mcp.json'
+                    : '/sandbox/home/.claude.json',
+                format: McpNativeFormat.json,
+                section: scope == McpScope.local
+                    ? McpNativeSection.claudeLocalProjects
+                    : McpNativeSection.mcpServers,
+                projectKey: scope == McpScope.local ? '/sandbox/project' : null,
+              ),
+              McpHarness.codex => McpNativeLocation(
+                harness: harness,
+                scope: scope,
+                path: scope == McpScope.project
+                    ? '/sandbox/project/.codex/config.toml'
+                    : '/sandbox/codex/config.toml',
+                format: McpNativeFormat.toml,
+                section: McpNativeSection.codexMcpServers,
+              ),
+              McpHarness.pi => McpNativeLocation(
+                harness: harness,
+                scope: scope,
+                path: scope == McpScope.project
+                    ? '/sandbox/project/.pi/mcp.json'
+                    : '/sandbox/pi/mcp.json',
+                format: McpNativeFormat.json,
+                section: McpNativeSection.mcpServers,
+              ),
+            };
 
-      void writeText(String path, String text) {
-        fs.file(path)
-          ..parent.createSync(recursive: true)
-          ..writeAsStringSync(text);
-      }
+        void writeText(String path, String text) {
+          fs.file(path)
+            ..parent.createSync(recursive: true)
+            ..writeAsStringSync(text);
+        }
 
-      void writeJson(String path, Map<String, Object?> document) =>
-          writeText(path, jsonEncode(document));
+        void writeJson(String path, Map<String, Object?> document) =>
+            writeText(path, jsonEncode(document));
 
-      String readText(String path) => fs.file(path).readAsStringSync();
+        String readText(String path) => fs.file(path).readAsStringSync();
 
-      Map<String, Object?>? entryAt(McpNativeLocation where, String name) =>
-          McpNativeReader(fs).read(where)[name];
+        Map<String, Object?>? entryAt(McpNativeLocation where, String name) =>
+            McpNativeReader(fs).read(where)[name];
 
-      void writeLedger(List<McpRegistrationRecord> records) =>
-          writeJson('$stateRoot/mcp-registrations.json', <String, Object?>{
+        void writeLedger(List<McpRegistrationRecord> records) => writeJson(
+          '$stateRoot/mcp-registrations.json',
+          <String, Object?>{
             'schemaVersion': mcpRegistrationLedgerSchemaVersion,
             'records': <Object?>[for (final record in records) record.toJson()],
-          });
+          },
+        );
 
-      void seedManaged(
-        McpNativeLocation where,
-        String name,
-        Map<String, Object?> entry,
-      ) => writeLedger(<McpRegistrationRecord>[
-        McpRegistrationRecord(
-          identity: McpRegistrationIdentity(
-            harness: where.harness,
-            scope: where.scope,
-            location: where.path,
-            name: name,
+        void seedManaged(
+          McpNativeLocation where,
+          String name,
+          Map<String, Object?> entry,
+        ) => writeLedger(<McpRegistrationRecord>[
+          McpRegistrationRecord(
+            identity: McpRegistrationIdentity(
+              harness: where.harness,
+              scope: where.scope,
+              location: where.path,
+              name: name,
+            ),
+            baselineDigest: mcpCanonicalDigest(entry),
           ),
-          baselineDigest: mcpCanonicalDigest(entry),
-        ),
-      ]);
+        ]);
 
-      Map<String, Object?> sourceEntry(McpHarness harness, String transport) {
-        if (transport == 'stdio') {
+        Map<String, Object?> sourceEntry(McpHarness harness, String transport) {
+          if (transport == 'stdio') {
+            return <String, Object?>{
+              'type': 'stdio',
+              'command': 'node',
+              'args': <Object?>['server.js'],
+              'env': <String, Object?>{'TOKEN': ref('SOURCE_TOKEN')},
+            };
+          }
           return <String, Object?>{
-            'type': 'stdio',
-            'command': 'node',
-            'args': <Object?>['server.js'],
-            'env': <String, Object?>{'TOKEN': ref('SOURCE_TOKEN')},
+            'type': 'http',
+            'url': 'https://source.example.test/mcp',
+            (harness == McpHarness.codex ? 'http_headers' : 'headers'):
+                <String, Object?>{'X-Token': ref('SOURCE_HEADER')},
           };
         }
-        return <String, Object?>{
-          'type': 'http',
-          'url': 'https://source.example.test/mcp',
-          (harness == McpHarness.codex ? 'http_headers' : 'headers'):
-              <String, Object?>{'X-Token': ref('SOURCE_HEADER')},
-        };
-      }
 
-      void seedSource(
-        McpNativeLocation where,
-        Map<String, Object?> entry, {
-        String? unrelatedText,
-      }) {
-        switch (where.format) {
-          case McpNativeFormat.json:
-            writeJson(where.path, <String, Object?>{
-              'mcpServers': <String, Object?>{sourceName: entry},
-              'unrelatedTopLevel': 'keep-me',
-            });
-          case McpNativeFormat.toml:
-            writeText(
-              where.path,
-              '# keep this comment\n'
-              'model = "o3"\n'
-              '\n'
-              '[mcp_servers.$sourceName]\n'
-              '${_tomlEntry(entry)}'
-              '\n'
-              '${unrelatedText ?? ''}',
-            );
+        void seedSource(
+          McpNativeLocation where,
+          Map<String, Object?> entry, {
+          String? unrelatedText,
+        }) {
+          switch (where.format) {
+            case McpNativeFormat.json:
+              writeJson(where.path, <String, Object?>{
+                'mcpServers': <String, Object?>{sourceName: entry},
+                'unrelatedTopLevel': 'keep-me',
+              });
+            case McpNativeFormat.toml:
+              writeText(
+                where.path,
+                '# keep this comment\n'
+                'model = "o3"\n'
+                '\n'
+                '[mcp_servers.$sourceName]\n'
+                '${_tomlEntry(entry)}'
+                '\n'
+                '${unrelatedText ?? ''}',
+              );
+          }
+          seedManaged(where, sourceName, entry);
         }
-        seedManaged(where, sourceName, entry);
-      }
 
-      List<String> ctx() => const <String>[
-        '--cwd',
-        '/sandbox/project/',
-        '--project-root',
-        '/sandbox/project/',
-        '--home',
-        '/sandbox/home/',
-        '--claude-config-dir',
-        '/sandbox/claude/',
-        '--codex-home',
-        '/sandbox/codex/',
-        '--pi-agent-dir',
-        '/sandbox/pi/',
-        '--state-dir',
-        '$stateRoot/',
-      ];
+        List<String> ctx() => const <String>[
+          '--cwd',
+          '/sandbox/project/',
+          '--project-root',
+          '/sandbox/project/',
+          '--home',
+          '/sandbox/home/',
+          '--claude-config-dir',
+          '/sandbox/claude/',
+          '--codex-home',
+          '/sandbox/codex/',
+          '--pi-agent-dir',
+          '/sandbox/pi/',
+          '--state-dir',
+          '$stateRoot/',
+        ];
 
-      List<String> convertArgs(
-        McpHarness source,
-        McpHarness target, {
-        McpScope scope = McpScope.project,
-        List<String> extra = const <String>[],
-      }) => <String>[
-        'mcp',
-        'convert',
-        '--name',
-        sourceName,
-        '--harness',
-        source.wireName,
-        '--scope',
-        scope.wireName,
-        '--target-harness',
-        target.wireName,
-        ...extra,
-        ...ctx(),
-      ];
+        List<String> convertArgs(
+          McpHarness source,
+          McpHarness target, {
+          McpScope scope = McpScope.project,
+          List<String> extra = const <String>[],
+        }) => <String>[
+          'mcp',
+          'convert',
+          '--name',
+          sourceName,
+          '--harness',
+          source.wireName,
+          '--scope',
+          scope.wireName,
+          '--target-harness',
+          target.wireName,
+          ...extra,
+          ...ctx(),
+        ];
 
-      Future<MambaExecutionResult> exec(List<String> tokens) => createExecutor(
-        fileSystem: fs,
-        mcpConversion: McpConversionService(fileSystem: fs, approve: approval),
-      ).fake().execute(tokens);
-
-      Map<String, dynamic> success(MambaExecutionResult result) {
-        expect(
-          result,
-          isA<MambaSuccessResult>(),
-          reason: result is MambaFailureResult ? result.message : null,
-        );
-        expect(
-          result,
-          isA<MambaSuccessResult>().having(
-            (value) => value.exitCode,
-            'exit code',
-            0,
-          ),
-        );
-        return jsonDecode((result as MambaSuccessResult).output!)
-            as Map<String, dynamic>;
-      }
-
-      void failure(
-        MambaExecutionResult result, {
-        required int exitCode,
-        required String token,
-      }) {
-        expect(
-          result,
-          isA<MambaFailureResult>()
-              .having((value) => value.exitCode, 'exit code', exitCode)
-              .having((value) => value.message, 'message', contains(token))
-              // story 43: no success envelope
-              .having((value) => value.output, 'output', isNull)
-              .having(
-                (value) => value.error.commandPath,
-                'command path',
-                <String>['agent_resource', 'mcp', 'convert'],
+        Future<MambaExecutionResult> exec(List<String> tokens) =>
+            createExecutor(
+              fileSystem: fs,
+              mcpConversion: McpConversionService(
+                fileSystem: fs,
+                approve: approval,
               ),
-        );
-      }
+            ).fake().execute(tokens);
 
-      void expectNoSecrets(String output) {
-        for (final secret in secretLiterals) {
-          expect(output, isNot(contains(secret)), reason: secret);
+        Map<String, dynamic> success(MambaExecutionResult result) {
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          expect(
+            result,
+            isA<MambaSuccessResult>().having(
+              (value) => value.exitCode,
+              'exit code',
+              0,
+            ),
+          );
+          return jsonDecode((result as MambaSuccessResult).output!)
+              as Map<String, dynamic>;
         }
-      }
 
-      setUp(() {
-        fs = MemoryFileSystem(style: FileSystemStyle.posix);
-        for (final dir in const <String>[
-          '/sandbox/project/.codex',
-          '/sandbox/project/.pi',
-          '/sandbox/home',
-          '/sandbox/claude',
-          '/sandbox/codex',
-          '/sandbox/pi',
-          stateRoot,
-        ]) {
-          fs.directory(dir).createSync(recursive: true);
+        void failure(
+          MambaExecutionResult result, {
+          required int exitCode,
+          required String token,
+        }) {
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', exitCode)
+                .having((value) => value.message, 'message', contains(token))
+                // story 43: no success envelope
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.commandPath,
+                  'command path',
+                  <String>['agent_resource', 'mcp', 'convert'],
+                ),
+          );
         }
-        previews = <String>[];
-        approval = (String preview) async {
-          previews.add(preview);
-          return true;
-        };
-      });
 
-      group('help and selection', () {
+        void expectNoSecrets(String output) {
+          for (final secret in secretLiterals) {
+            expect(output, isNot(contains(secret)), reason: secret);
+          }
+        }
+
+        setUp(() {
+          fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          for (final dir in const <String>[
+            '/sandbox/project/.codex',
+            '/sandbox/project/.pi',
+            '/sandbox/home',
+            '/sandbox/claude',
+            '/sandbox/codex',
+            '/sandbox/pi',
+            stateRoot,
+          ]) {
+            fs.directory(dir).createSync(recursive: true);
+          }
+          previews = <String>[];
+          approval = (String preview) async {
+            previews.add(preview);
+            return true;
+          };
+        });
+
         test('declares every conversion input', () async {
           final result = await exec(<String>['mcp', 'convert', '--help']);
           expect(result, isA<MambaSuccessResult>());
@@ -327,9 +333,7 @@ void main() {
             }
           },
         );
-      });
 
-      group('six directions (story 26)', () {
         final List<({McpHarness source, McpHarness target, String transport})>
         directions =
             <({McpHarness source, McpHarness target, String transport})>[
@@ -452,9 +456,7 @@ void main() {
             });
           }
         }
-      });
 
-      group('unrepresentable fields (stories 28, 29)', () {
         test('a Codex tool control refuses by default with a value-free '
             'diagnostic naming the field', () async {
           final source = location(McpHarness.codex, McpScope.project);
@@ -538,9 +540,7 @@ void main() {
             expect(written!.containsKey('tools'), isFalse);
           },
         );
-      });
 
-      group('credentials (story 31)', () {
         test('OAuth, provider credentials and literal secrets are never '
             'copied or printed', () async {
           final source = location(McpHarness.claude, McpScope.project);
@@ -608,9 +608,7 @@ void main() {
             contains('policy:credentials-not-copied'),
           );
         });
-      });
 
-      group('field account (story 30)', () {
         test('text and JSON accounts are deterministic and complete', () async {
           final source = location(McpHarness.claude, McpScope.project);
           seedSource(source, <String, Object?>{
@@ -681,9 +679,7 @@ void main() {
             expect(text, contains(token), reason: token);
           }
         });
-      });
 
-      group('review, drift and state (stories 27, 32, 44)', () {
         test('stale --plan-id is refused and writes nothing', () async {
           final source = location(McpHarness.claude, McpScope.project);
           final target = location(McpHarness.codex, McpScope.project);
@@ -896,34 +892,36 @@ void main() {
             expect(after, contains('[mcp_servers.$sourceName]'));
           },
         );
-      });
 
-      test('declining review cancels with everything unchanged', () async {
-        final source = location(McpHarness.claude, McpScope.project);
-        seedSource(source, sourceEntry(McpHarness.claude, 'stdio'));
-        final before = readText(source.path);
-        approval = (String preview) async {
-          previews.add(preview);
-          return false;
-        };
+        test('declining review cancels with everything unchanged', () async {
+          final source = location(McpHarness.claude, McpScope.project);
+          seedSource(source, sourceEntry(McpHarness.claude, 'stdio'));
+          final before = readText(source.path);
+          approval = (String preview) async {
+            previews.add(preview);
+            return false;
+          };
 
-        failure(
-          await exec(
-            convertArgs(
-              McpHarness.claude,
-              McpHarness.pi,
-              extra: const <String>['--apply'],
+          failure(
+            await exec(
+              convertArgs(
+                McpHarness.claude,
+                McpHarness.pi,
+                extra: const <String>['--apply'],
+              ),
             ),
-          ),
-          exitCode: 7,
-          token: 'cancelled',
-        );
-        expect(readText(source.path), before);
-        expect(previews, hasLength(1));
-        expect(
-          fs.file(location(McpHarness.pi, McpScope.project).path).existsSync(),
-          isFalse,
-        );
+            exitCode: 7,
+            token: 'cancelled',
+          );
+          expect(readText(source.path), before);
+          expect(previews, hasLength(1));
+          expect(
+            fs
+                .file(location(McpHarness.pi, McpScope.project).path)
+                .existsSync(),
+            isFalse,
+          );
+        });
       });
     });
   });

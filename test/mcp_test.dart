@@ -303,54 +303,52 @@ void main() {
         }
       }
 
-      group('help', () {
-        test('shows the discovery and validation children', () async {
-          final result = await exec(<String>['mcp', '--help']);
-          expect(result, isA<MambaSuccessResult>());
-          final output = (result as MambaSuccessResult).output!;
-          expect(output, contains('list'));
-          expect(output, contains('inspect'));
-          expect(output, contains('validate'));
-        });
+      test('shows the discovery and validation children', () async {
+        final result = await exec(<String>['mcp', '--help']);
+        expect(result, isA<MambaSuccessResult>());
+        final output = (result as MambaSuccessResult).output!;
+        expect(output, contains('list'));
+        expect(output, contains('inspect'));
+        expect(output, contains('validate'));
+      });
 
-        test('list declares its typed inputs', () async {
-          final result = await exec(<String>['mcp', 'list', '--help']);
-          expect(result, isA<MambaSuccessResult>());
-          final output = (result as MambaSuccessResult).output!;
-          for (final flag in <String>[
-            '--harness',
-            '--scope',
-            '--format',
-            '--verify',
-            '--cwd',
-            '--state-dir',
-          ]) {
-            expect(output, contains(flag), reason: flag);
-          }
-        });
+      test('list declares its typed inputs', () async {
+        final result = await exec(<String>['mcp', 'list', '--help']);
+        expect(result, isA<MambaSuccessResult>());
+        final output = (result as MambaSuccessResult).output!;
+        for (final flag in <String>[
+          '--harness',
+          '--scope',
+          '--format',
+          '--verify',
+          '--cwd',
+          '--state-dir',
+        ]) {
+          expect(output, contains(flag), reason: flag);
+        }
+      });
 
-        test('inspect declares its selection inputs', () async {
-          final result = await exec(<String>['mcp', 'inspect', '--help']);
-          expect(result, isA<MambaSuccessResult>());
-          final output = (result as MambaSuccessResult).output!;
-          for (final flag in <String>['--name', '--harness', '--scope']) {
-            expect(output, contains(flag), reason: flag);
-          }
-        });
+      test('inspect declares its selection inputs', () async {
+        final result = await exec(<String>['mcp', 'inspect', '--help']);
+        expect(result, isA<MambaSuccessResult>());
+        final output = (result as MambaSuccessResult).output!;
+        for (final flag in <String>['--name', '--harness', '--scope']) {
+          expect(output, contains(flag), reason: flag);
+        }
+      });
 
-        test('validate declares its selection and format inputs', () async {
-          final result = await exec(<String>['mcp', 'validate', '--help']);
-          expect(result, isA<MambaSuccessResult>());
-          final output = (result as MambaSuccessResult).output!;
-          for (final flag in <String>[
-            '--name',
-            '--harness',
-            '--scope',
-            '--format',
-          ]) {
-            expect(output, contains(flag), reason: flag);
-          }
-        });
+      test('validate declares its selection and format inputs', () async {
+        final result = await exec(<String>['mcp', 'validate', '--help']);
+        expect(result, isA<MambaSuccessResult>());
+        final output = (result as MambaSuccessResult).output!;
+        for (final flag in <String>[
+          '--name',
+          '--harness',
+          '--scope',
+          '--format',
+        ]) {
+          expect(output, contains(flag), reason: flag);
+        }
       });
 
       group('list', () {
@@ -623,43 +621,41 @@ void main() {
         });
       });
 
-      group('operational failures', () {
-        test(
-          'malformed/duplicate-key JSON yields status 1 and no success JSON',
-          () async {
-            fs
-                .file('/sandbox/project/.mcp.json')
-                .writeAsStringSync('{"mcpServers":{},"mcpServers":{}}');
-            final result = await exec(listArgs(<String>['--format', 'json']));
-            expectFailure(
-              result,
-              exitCode: 1,
-              token: 'MCP configuration',
-              phase: MambaExecutionPhase.run,
-            );
-            expect(
-              (result as MambaFailureResult).message,
-              isNot(contains('schemaVersion')),
-            );
-          },
-        );
+      test(
+        'a malformed native file yields status 1 and no success JSON',
+        () async {
+          fs
+              .file('/sandbox/project/.mcp.json')
+              .writeAsStringSync('{"mcpServers":{},"mcpServers":{}}');
+          final result = await exec(listArgs(<String>['--format', 'json']));
+          expectFailure(
+            result,
+            exitCode: 1,
+            token: 'MCP configuration',
+            phase: MambaExecutionPhase.run,
+          );
+          expect(
+            (result as MambaFailureResult).message,
+            isNot(contains('schemaVersion')),
+          );
+        },
+      );
 
-        test(
-          'a linked native file yields status 1 and no success JSON',
-          () async {
-            fs.file('/sandbox/pi/mcp.json').deleteSync();
-            fs.directory('/sandbox/pi/target').createSync();
-            fs.link('/sandbox/pi/mcp.json').createSync('/sandbox/pi/target');
-            final result = await exec(listArgs(<String>['--format', 'json']));
-            expectFailure(
-              result,
-              exitCode: 1,
-              token: 'link',
-              phase: MambaExecutionPhase.run,
-            );
-          },
-        );
-      });
+      test(
+        'a linked native file yields status 1 and no success JSON',
+        () async {
+          fs.file('/sandbox/pi/mcp.json').deleteSync();
+          fs.directory('/sandbox/pi/target').createSync();
+          fs.link('/sandbox/pi/mcp.json').createSync('/sandbox/pi/target');
+          final result = await exec(listArgs(<String>['--format', 'json']));
+          expectFailure(
+            result,
+            exitCode: 1,
+            token: 'link',
+            phase: MambaExecutionPhase.run,
+          );
+        },
+      );
 
       group('validate', () {
         void writeInvalidEntry() {
@@ -928,6 +924,93 @@ void main() {
             expect(snapshot(), equals(before));
           },
         );
+      });
+
+      for (final child in <({String token, List<String> flags})>[
+        (
+          token: 'register',
+          flags: <String>['--name', '--harness', '--scope', '--command'],
+        ),
+        (
+          token: 'replace',
+          flags: <String>['--name', '--harness', '--scope', '--plan-id'],
+        ),
+        (
+          token: 'adopt',
+          flags: <String>['--name', '--harness', '--scope', '--dry-run'],
+        ),
+        (
+          token: 'unregister',
+          flags: <String>['--name', '--harness', '--scope', '--yes'],
+        ),
+        (
+          token: 'recover',
+          flags: <String>['--transaction-id', '--action', '--plan-id'],
+        ),
+        (
+          token: 'convert',
+          flags: <String>['--name', '--target-harness', '--target-scope'],
+        ),
+      ]) {
+        group(child.token, () {
+          test('declares its typed inputs', () async {
+            final result = await exec(<String>['mcp', child.token, '--help']);
+            expect(
+              result,
+              isA<MambaSuccessResult>().having(
+                (value) => value.exitCode,
+                'exit code',
+                0,
+              ),
+            );
+            final output = (result as MambaSuccessResult).output!;
+            for (final flag in child.flags) {
+              expect(output, contains(flag), reason: flag);
+            }
+          });
+        });
+      }
+
+      group('backup', () {
+        test('shows its child commands', () async {
+          final result = await exec(<String>['mcp', 'backup', '--help']);
+          expect(
+            result,
+            isA<MambaSuccessResult>().having(
+              (value) => value.exitCode,
+              'exit code',
+              0,
+            ),
+          );
+          final output = (result as MambaSuccessResult).output!;
+          for (final child in <String>['list', 'restore', 'cleanup']) {
+            expect(output, contains(child), reason: child);
+          }
+        });
+
+        for (final child in <String>['list', 'restore', 'cleanup']) {
+          group(child, () {
+            test('declares its typed inputs', () async {
+              final result = await exec(<String>[
+                'mcp',
+                'backup',
+                child,
+                '--help',
+              ]);
+              expect(
+                result,
+                isA<MambaSuccessResult>().having(
+                  (value) => value.exitCode,
+                  'exit code',
+                  0,
+                ),
+              );
+              final output = (result as MambaSuccessResult).output!;
+              expect(output, contains('--format'));
+              expect(output, contains('--state-dir'));
+            });
+          });
+        }
       });
     });
   });
