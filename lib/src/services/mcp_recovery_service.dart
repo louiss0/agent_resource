@@ -147,7 +147,8 @@ interface class McpRecoveryService implements McpMutationService {
            mutation ??
            McpMutationService(fileSystem: fileSystem, approve: approve),
        approve = approve ?? defaultMcpPlanApproval,
-       io = io ?? McpRecoveryIO(fs: fileSystem);
+       io = io ?? McpRecoveryIO(fs: fileSystem),
+       _state = LifecycleStateService(io: LifecycleIO(fs: fileSystem));
 
   @override
   final fslib.FileSystem fs;
@@ -161,6 +162,7 @@ interface class McpRecoveryService implements McpMutationService {
   final McpPlanApproval approve;
 
   final McpRecoveryIO io;
+  final LifecycleStateService _state;
 
   static const McpNativeResolver _resolver = McpNativeResolver();
 
@@ -1079,14 +1081,17 @@ interface class McpRecoveryService implements McpMutationService {
     }
   }
 
-  void _writeBackup(String stateRoot, McpBackupEvidence evidence) =>
-      io.write(_backupPath(stateRoot, evidence.backupId), evidence.encode());
+  void _writeBackup(String stateRoot, McpBackupEvidence evidence) {
+    final path = _backupPath(stateRoot, evidence.backupId);
+    _state.protectDirectory(fs.path.dirname(path));
+    io.write(path, evidence.encode());
+  }
 
-  void _writeTransaction(String stateRoot, McpTransactionRecord transaction) =>
-      io.write(
-        _transactionPath(stateRoot, transaction.transactionId),
-        transaction.encode(),
-      );
+  void _writeTransaction(String stateRoot, McpTransactionRecord transaction) {
+    final path = _transactionPath(stateRoot, transaction.transactionId);
+    _state.protectDirectory(fs.path.dirname(path));
+    io.write(path, transaction.encode());
+  }
 
   void _discard(
     String stateRoot,
