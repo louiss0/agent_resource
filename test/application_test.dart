@@ -104,6 +104,7 @@ void main() {
       }
       expect(_containsCommandEntry(output, 'skill'), isTrue);
       expect(_containsCommandEntry(output, 'agent'), isTrue);
+      expect(_containsCommandEntry(output, 'mcp'), isTrue);
       for (final command in [
         'discover',
         'inspect',
@@ -161,6 +162,18 @@ void main() {
           isNotEmpty,
         );
         for (final command in ['list', 'inspect', 'validate']) {
+          expect(_containsCommandEntry(result.output!, command), isTrue);
+        }
+      });
+    });
+
+    group('mcp', () {
+      test('help lists the read-only discovery children', () async {
+        final result = _expectSuccess(
+          await createExecutor().fake().execute(['mcp', '--help']),
+          isNotEmpty,
+        );
+        for (final command in ['list', 'inspect']) {
           expect(_containsCommandEntry(result.output!, command), isTrue);
         }
       });
