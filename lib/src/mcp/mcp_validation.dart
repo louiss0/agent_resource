@@ -19,6 +19,9 @@ const String mcpParentConfigurationBaseline =
 
 /// Stable diagnostic codes and their fixed, value-free message templates.
 typedef McpValidationCodeDefinition = ({String category, String message});
+typedef McpFieldSchemaBuilder = ZemaSchema<dynamic, dynamic> Function(
+  String field,
+);
 
 const Map<String, McpValidationCodeDefinition> mcpValidationCodeTable =
     <String, McpValidationCodeDefinition>{
@@ -199,6 +202,8 @@ final class const McpValidation() {
     final selection = _selectTransport(fields, contract);
     final diagnostics = <McpValidationDiagnostic>[
       ..._semanticDiagnostics(
+        harness: harness,
+        scope: scope,
         contract: contract,
         fields: fields,
         selection: selection,
@@ -279,6 +284,7 @@ final ZemaSchema<dynamic, Map<String, dynamic>> _claudeSchema = _schemaFor(
   httpFields: _claudeHttpFields,
   stdioTypes: _claudeStdioTypes,
   httpTypes: _claudeHttpTypes,
+  fieldSchema: _claudeFieldSchema,
 );
 final ZemaSchema<dynamic, Map<String, dynamic>> _codexSchema = _schemaFor(
   commonFields: _codexCommonFields,
@@ -286,6 +292,7 @@ final ZemaSchema<dynamic, Map<String, dynamic>> _codexSchema = _schemaFor(
   httpFields: _codexHttpFields,
   stdioTypes: _codexStdioTypes,
   httpTypes: _codexHttpTypes,
+  fieldSchema: _codexFieldSchema,
 );
 final ZemaSchema<dynamic, Map<String, dynamic>> _piSchema = _schemaFor(
   commonFields: _piCommonFields,
@@ -293,6 +300,7 @@ final ZemaSchema<dynamic, Map<String, dynamic>> _piSchema = _schemaFor(
   httpFields: _piHttpFields,
   stdioTypes: _piStdioTypes,
   httpTypes: _piHttpTypes,
+  fieldSchema: _piFieldSchema,
 );
 
 final Map<McpHarness, McpValidationContract> _contracts =
@@ -341,6 +349,7 @@ ZemaSchema<dynamic, Map<String, dynamic>> _schemaFor({
   required Set<String> httpFields,
   required Set<String> stdioTypes,
   required Set<String> httpTypes,
+  required McpFieldSchemaBuilder fieldSchema,
 }) {
   final stdio = z
       .object(
@@ -348,6 +357,7 @@ ZemaSchema<dynamic, Map<String, dynamic>> _schemaFor({
           commonFields: commonFields,
           transportFields: stdioFields,
           typeValues: stdioTypes,
+          fieldSchema: fieldSchema,
         ),
       )
       .makeStrict();
@@ -357,6 +367,7 @@ ZemaSchema<dynamic, Map<String, dynamic>> _schemaFor({
           commonFields: commonFields,
           transportFields: httpFields,
           typeValues: httpTypes,
+          fieldSchema: fieldSchema,
         ),
       )
       .makeStrict();
@@ -380,6 +391,7 @@ Map<String, ZemaSchema<dynamic, dynamic>> _shapeFor({
   required Set<String> commonFields,
   required Set<String> transportFields,
   required Set<String> typeValues,
+  required McpFieldSchemaBuilder fieldSchema,
 }) {
   final shape = <String, ZemaSchema<dynamic, dynamic>>{};
   if (commonFields.contains('type')) {
@@ -392,7 +404,7 @@ Map<String, ZemaSchema<dynamic, dynamic>> _shapeFor({
   for (final field in _sorted(fields)) {
     shape[field] = field == 'command' || field == 'url'
         ? z.string().min(1)
-        : z.string().min(1).optional();
+        : fieldSchema(field);
   }
   return shape;
 }
@@ -401,6 +413,144 @@ ZemaSchema<dynamic, dynamic> _literalTypes(Set<String> values) =>
     z.union<String>(<ZemaSchema<dynamic, String>>[
       for (final value in _sorted(values)) z.literal(value),
     ]).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalString() => z.string().min(1).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalBoolean() => z.boolean().optional();
+
+ZemaSchema<dynamic, dynamic> _optionalPositiveInt() =>
+    z.integer().gte(1).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalChoice(List<String> values) =>
+    z.string().oneOf(values).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalStringArray() =>
+    z.array(z.string()).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalStringMap() =>
+    z.map(z.string(), z.string()).optional();
+
+ZemaSchema<dynamic, dynamic> _claudeFieldSchema(String field) =>
+    switch (field) {
+      'args' => _optionalStringArray(),
+      'env' || 'headers' => _optionalStringMap(),
+      'headersHelper' => _optionalString(),
+      'oauth' => _claudeOauthShape(),
+      _ => _optionalString(),
+    };
+
+ZemaSchema<dynamic, dynamic> _claudeOauthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'clientId': _optionalString(),
+      'callbackPort': _optionalPositiveInt(),
+      'authServerMetadataUrl': _optionalString(),
+      'scopes': _optionalStringArray(),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _codexFieldSchema(String field) => switch (field) {
+  'args' ||
+  'enabled_tools' ||
+  'disabled_tools' ||
+  'scopes' => _optionalStringArray(),
+  'env' || 'http_headers' || 'env_http_headers' => _optionalStringMap(),
+  'env_vars' => _codexEnvVars(),
+  'enabled' || 'required' => _optionalBoolean(),
+  'startup_timeout_sec' ||
+  'startup_timeout_ms' ||
+  'tool_timeout_sec' => _optionalPositiveInt(),
+  'startup_readiness' => _optionalChoice(<String>['catalog']),
+  'default_tools_approval_mode' => _optionalChoice(<String>[
+    'auto',
+    'prompt',
+    'writes',
+    'approve',
+  ]),
+  'mcp_oauth_credentials_store' => _optionalChoice(<String>[
+    'auto',
+    'file',
+    'keyring',
+  ]),
+  'auth' => _optionalChoice(<String>['oauth', 'chatgpt']),
+  'oauth' => _codexOauthShape(),
+  'tools' => _codexToolsShape(),
+  _ => _optionalString(),
+};
+
+ZemaSchema<dynamic, dynamic> _codexEnvVars() => z
+    .array(
+      z.union<dynamic>(<ZemaSchema<dynamic, dynamic>>[
+        z.string(),
+        z.object(<String, ZemaSchema<dynamic, dynamic>>{
+          'name': z.string().min(1),
+          'source': _optionalChoice(<String>['local', 'remote']),
+        }).makeStrict(),
+      ]),
+    )
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _codexOauthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'client_id': _optionalString(),
+      'client_secret': _optionalString(),
+      'callback_url': _optionalString(),
+      'callback_port': _optionalPositiveInt(),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _codexToolShape() =>
+    z.object(<String, ZemaSchema<dynamic, dynamic>>{
+      'approval_mode': _optionalChoice(<String>[
+        'auto',
+        'prompt',
+        'writes',
+        'approve',
+      ]),
+      'output_token_limit': _optionalPositiveInt(),
+    }).makeStrict();
+
+ZemaSchema<dynamic, dynamic> _codexToolsShape() =>
+    z.map(z.string(), _codexToolShape()).optional();
+
+ZemaSchema<dynamic, dynamic> _piFieldSchema(String field) => switch (field) {
+  'args' => _optionalStringArray(),
+  'env' || 'headers' => _optionalStringMap(),
+  'enabled' => _optionalBoolean(),
+  'timeout' => _optionalPositiveInt(),
+  'exposure' || 'toolExposure' => _optionalChoice(<String>[
+    'codemode',
+    'deferred',
+    'direct',
+    'hidden',
+    'codemode-deferred',
+  ]),
+  'oauth' => _piOauthShape(),
+  'auth' => _piAuthShape(),
+  _ => _optionalString(),
+};
+
+ZemaSchema<dynamic, dynamic> _piOauthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'clientId': _optionalString(),
+      'clientSecret': _optionalString(),
+      'callbackPort': _optionalPositiveInt(),
+      'callbackUrl': _optionalString(),
+      'scope': _optionalString(),
+      'clientName': _optionalString(),
+      'clientRegistration': _optionalChoice(<String>['auto', 'dcr', 'cimd']),
+      'authServerMetadataUrl': _optionalString(),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _piAuthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'provider': z.string().min(1),
+    })
+    .makeStrict()
+    .optional();
 
 List<String> _sorted(Set<String> values) =>
     List<String>.unmodifiable(values.toList()..sort());
@@ -454,6 +604,8 @@ _TransportSelection _selectTransport(
 }
 
 List<McpValidationDiagnostic> _semanticDiagnostics({
+  required McpHarness harness,
+  required McpScope? scope,
   required McpValidationContract contract,
   required Map<String, Object?> fields,
   required _TransportSelection selection,
@@ -493,6 +645,12 @@ List<McpValidationDiagnostic> _semanticDiagnostics({
   } else if (selection.transport == McpTransport.http &&
       contract.requiresHttpType) {
     add('MCP_TYPE_REQUIRED', typeField);
+  }
+
+  if (harness == McpHarness.pi &&
+      scope == McpScope.project &&
+      fields.containsKey('auth')) {
+    add('MCP_PI_PROJECT_AUTH_FORBIDDEN', ValidationDiagnostics.key('auth'));
   }
 
   final current = <String>{...contract.commonFields};
@@ -565,10 +723,7 @@ bool _skipShapeIssue(ZemaIssue issue, _TransportSelection selection) {
   final Object first = issue.path.first;
   if (first is String && first == 'type') return true;
   if (issue.code == 'unknown_key' && issue.path.length == 1) return true;
-  if (issue.code == 'invalid_union' ||
-      issue.code == 'MCP_TRANSPORT_REFINEMENT') {
-    return true;
-  }
+  if (issue.code == 'MCP_TRANSPORT_REFINEMENT') return true;
   if (selection.missing &&
       issue.code == 'invalid_type' &&
       (first == 'command' || first == 'url')) {
@@ -635,10 +790,12 @@ String _codeForIssue(ZemaIssue issue) => switch (issue.code) {
   'too_long' ||
   'invalid_literal' ||
   'invalid_enum' ||
+  'invalid_url' ||
   'too_small' ||
-  'too_big' => 'FIELD_VALUE',
-  'MCP_TRANSPORT_REFINEMENT' => 'MCP_TRANSPORT_REFINEMENT',
-  'invalid_union' => 'MCP_TRANSPORT_REFINEMENT',
+  'too_big' ||
+  'too_small_exclusive' ||
+  'too_big_exclusive' ||
+  'not_positive' => 'FIELD_VALUE',
   _ => 'FIELD_SHAPE',
 };
 

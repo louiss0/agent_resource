@@ -308,5 +308,222 @@ void main() {
         expect(piFields['common']! as List<Object?>, contains('toolExposure'));
       },
     );
+
+    test('shape-checks Codex runtime controls when present', () {
+      final valid = service.validate(
+        harness: McpHarness.codex,
+        fields: <String, Object?>{
+          'command': 'gh-mcp',
+          'enabled': true,
+          'required': false,
+          'startup_timeout_sec': 10,
+          'tool_timeout_sec': 60,
+          'enabled_tools': <Object?>['tool-a'],
+          'disabled_tools': <Object?>['tool-b'],
+          'default_tools_approval_mode': 'prompt',
+          'tools': <String, Object?>{
+            'tool-a': <String, Object?>{
+              'approval_mode': 'auto',
+              'output_token_limit': 100,
+            },
+          },
+        },
+        scope: McpScope.user,
+      );
+      expect(valid.valid, isTrue, reason: codes(valid).join(', '));
+
+      final invalid = service.validate(
+        harness: McpHarness.codex,
+        fields: <String, Object?>{
+          'command': 'gh-mcp',
+          'enabled': 'yes',
+          'startup_timeout_sec': '10',
+          'enabled_tools': 'tool-a',
+          'default_tools_approval_mode': 'unknown-mode',
+          'tools': <String, Object?>{
+            'tool-a': <String, Object?>{
+              'approval_mode': 1,
+              'mystery': 'CODEX_BAD_SECRET_VALUE',
+            },
+          },
+        },
+        scope: McpScope.user,
+      );
+      final invalidCodes = codes(invalid);
+      expect(
+        invalidCodes,
+        containsAll(<String>['FIELD_TYPE', 'FIELD_VALUE', 'UNKNOWN_FIELD']),
+      );
+      expect(
+        fieldsForCode(invalid, 'FIELD_TYPE'),
+        containsAll(<String>[
+          'enabled',
+          'enabled_tools',
+          'startup_timeout_sec',
+          'tools.tool-a.approval_mode',
+        ]),
+      );
+      expect(
+        fieldsForCode(invalid, 'UNKNOWN_FIELD'),
+        contains('tools.tool-a.mystery'),
+      );
+      expect(
+        jsonEncode(invalid.toJson()),
+        isNot(contains('CODEX_BAD_SECRET_VALUE')),
+      );
+    });
+
+    test('shape-checks Pi exposure and request controls when present', () {
+      final valid = service.validate(
+        harness: McpHarness.pi,
+        fields: <String, Object?>{
+          'command': 'pi-mcp',
+          'enabled': false,
+          'timeout': 30,
+          'description': 'Static description.',
+          'exposure': 'hidden',
+          'toolExposure': 'direct',
+        },
+        scope: McpScope.user,
+      );
+      expect(valid.valid, isTrue, reason: codes(valid).join(', '));
+
+      final invalid = service.validate(
+        harness: McpHarness.pi,
+        fields: <String, Object?>{
+          'command': 'pi-mcp',
+          'timeout': '30',
+          'exposure': 'unknown-mode',
+        },
+        scope: McpScope.user,
+      );
+      expect(
+        codes(invalid),
+        containsAll(<String>['FIELD_TYPE', 'FIELD_VALUE']),
+      );
+      expect(fieldsForCode(invalid, 'FIELD_TYPE'), contains('timeout'));
+      expect(fieldsForCode(invalid, 'FIELD_VALUE'), contains('exposure'));
+    });
+
+    test('shape-checks Claude dynamic-header and OAuth object shapes', () {
+      final valid = service.validate(
+        harness: McpHarness.claude,
+        fields: <String, Object?>{
+          'type': 'http',
+          'url': 'https://example.test/mcp',
+          'headersHelper': 'headers-helper',
+          'oauth': <String, Object?>{
+            'clientId': 'client',
+            'callbackPort': 8080,
+            'authServerMetadataUrl': 'https://example.test/metadata',
+            'scopes': <Object?>['tools'],
+          },
+        },
+        scope: McpScope.user,
+      );
+      expect(valid.valid, isTrue, reason: codes(valid).join(', '));
+
+      final invalid = service.validate(
+        harness: McpHarness.claude,
+        fields: <String, Object?>{
+          'type': 'http',
+          'url': 'https://example.test/mcp',
+          'headersHelper': 123,
+          'oauth': <String, Object?>{
+            'callbackPort': '8080',
+            'unknown': 'CLIENT_SECRET_VALUE',
+          },
+        },
+        scope: McpScope.user,
+      );
+      expect(
+        codes(invalid),
+        containsAll(<String>['FIELD_TYPE', 'UNKNOWN_FIELD']),
+      );
+      expect(fieldsForCode(invalid, 'FIELD_TYPE'), contains('headersHelper'));
+      expect(
+        fieldsForCode(invalid, 'UNKNOWN_FIELD'),
+        contains('oauth.unknown'),
+      );
+      expect(
+        jsonEncode(invalid.toJson()),
+        isNot(contains('CLIENT_SECRET_VALUE')),
+      );
+    });
+
+    test('refuses Pi project provider credentials without disclosure', () {
+      final fields = <String, Object?>{
+        'type': 'http',
+        'url': 'https://example.test/mcp',
+        'auth': <String, Object?>{'provider': 'PI_PROVIDER_SECRET'},
+      };
+      final user = service.validate(
+        harness: McpHarness.pi,
+        fields: fields,
+        scope: McpScope.user,
+      );
+      expect(user.valid, isTrue, reason: codes(user).join(', '));
+      expect(jsonEncode(user.toJson()), isNot(contains('PI_PROVIDER_SECRET')));
+
+      final project = service.validate(
+        harness: McpHarness.pi,
+        fields: fields,
+        scope: McpScope.project,
+      );
+      expect(codes(project), contains('MCP_PI_PROJECT_AUTH_FORBIDDEN'));
+      final encoded = jsonEncode(project.toJson());
+      expect(encoded, isNot(contains('PI_PROVIDER_SECRET')));
+      expectStaticOnly(encoded);
+    });
+
+    test('emits value-free diagnostics and a static-only claim', () {
+      final report = service.validate(
+        harness: McpHarness.claude,
+        fields: <String, Object?>{
+          'type': 'stdio',
+          'command': 'COMMAND_SECRET_VALUE',
+          'args': <Object?>['ARG_SECRET_VALUE'],
+          'env': <String, Object?>{'TOKEN': 'ENV_SECRET_VALUE'},
+          'headers': <String, Object?>{'X-Key': 'HEADER_SECRET_VALUE'},
+          'oauth': <String, Object?>{'clientId': 'OAUTH_SECRET_VALUE'},
+          'unknown\u202efield': 'UNKNOWN_SECRET_VALUE',
+        },
+        scope: McpScope.project,
+      );
+      final encoded = jsonEncode(report.toJson());
+      final text = report.renderText();
+      for (final secret in <String>[
+        'COMMAND_SECRET_VALUE',
+        'ARG_SECRET_VALUE',
+        'ENV_SECRET_VALUE',
+        'HEADER_SECRET_VALUE',
+        'OAUTH_SECRET_VALUE',
+        'UNKNOWN_SECRET_VALUE',
+      ]) {
+        expect(encoded, isNot(contains(secret)), reason: secret);
+        expect(text, isNot(contains(secret)), reason: secret);
+      }
+      expect(
+        report.diagnostics.any((d) => d.field.contains(r'\u202e')),
+        isTrue,
+      );
+      expect(encoded, isNot(contains('\u202e')));
+      expect(text, isNot(contains('\u202e')));
+      expectStaticOnly(encoded);
+      expectStaticOnly(text);
+
+      for (final harness in McpHarness.values) {
+        final claimReport = service.validate(
+          harness: harness,
+          fields: <String, Object?>{'type': 'stdio', 'command': 'static-check'},
+          scope: McpScope.user,
+        );
+        expect(claimReport.claim, mcpValidationClaim);
+        final claimJson = jsonEncode(claimReport.toJson());
+        expect(claimJson, contains('not runtime-verified'));
+        expectStaticOnly(claimJson);
+        expectStaticOnly(claimReport.renderText());
+      }
+    });
   });
 }

@@ -57,5 +57,40 @@ void main() {
         ),
       );
     });
+
+    test('publishes a fixed, value-free diagnostic code table', () {
+      expect(
+        mcpValidationCodeTable.keys,
+        containsAll(<String>[
+          'MCP_TRANSPORT_MISSING',
+          'MCP_TRANSPORT_CONFLICT',
+          'MCP_TYPE_UNSUPPORTED',
+          'MCP_TYPE_TRANSPORT_MISMATCH',
+          'MCP_FIELD_TRANSPORT_INAPPLICABLE',
+          'MCP_PI_PROJECT_AUTH_FORBIDDEN',
+          'UNKNOWN_FIELD',
+          'FIELD_TYPE',
+          'FIELD_SHAPE',
+          'FIELD_VALUE',
+        ]),
+      );
+      for (final entry in mcpValidationCodeTable.entries) {
+        expect(
+          entry.value.category,
+          anyOf('specification', 'product', 'security'),
+          reason: entry.key,
+        );
+        expect(entry.value.message, isNotEmpty, reason: entry.key);
+        final lower = entry.value.message.toLowerCase();
+        for (final forbidden in <String>[
+          'activation',
+          'connectivity',
+          'enforcement',
+          'acceptance',
+        ]) {
+          expect(lower, isNot(contains(forbidden)), reason: entry.key);
+        }
+      }
+    });
   });
 }
