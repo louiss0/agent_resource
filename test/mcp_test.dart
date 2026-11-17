@@ -477,10 +477,19 @@ void main() {
           final verified = successEnvelope(
             await exec(listArgs(<String>['--format', 'json', '--verify'])),
           );
-          expect((plain['data'] as Map)['verified'], isFalse);
+          expect((plain['data'] as Map)['digestDisclosed'], isFalse);
           expect(registrations(plain).first.containsKey('digest'), isFalse);
-          expect((verified['data'] as Map)['verified'], isTrue);
+          expect((verified['data'] as Map)['digestDisclosed'], isTrue);
           expect(registrations(verified).first.containsKey('digest'), isTrue);
+          expect(
+            (verified['data'] as Map)['claim'],
+            contains('runtime activation is not verified'),
+          );
+          expect(
+            verified['data'],
+            isNot(containsPair('verified', anything)),
+            reason: 'no runtime verification claim',
+          );
         });
 
         test('rejects an unsupported harness/scope combination', () async {

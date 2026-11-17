@@ -23,7 +23,7 @@ final class McpInspectionRequest {
     this.codexHome,
     this.piAgentDir,
     this.stateDir,
-    this.verify = false,
+    this.discloseDigest = false,
   });
 
   final Map<String, String> environment;
@@ -37,7 +37,10 @@ final class McpInspectionRequest {
   final String? codexHome;
   final String? piAgentDir;
   final String? stateDir;
-  final bool verify;
+
+  /// Whether the versioned list report discloses baseline digests. This is
+  /// never a runtime verification claim.
+  final bool discloseDigest;
 }
 
 /// Passive MCP discovery (stories 1-4, 42, 43, 45).
@@ -145,11 +148,11 @@ interface class McpInspectionService {
     observed.sort(_compare);
     final data = <String, Object?>{
       'claim': 'configuration-only; runtime activation is not verified',
-      'verified': request.verify,
+      'digestDisclosed': request.discloseDigest,
       'count': observed.length,
       'registrations': <Object?>[
         for (final entry in observed)
-          entry.toJson(discloseDigest: request.verify),
+          entry.toJson(discloseDigest: request.discloseDigest),
       ],
     };
     return McpEnvelope(

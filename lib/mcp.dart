@@ -101,7 +101,8 @@ final class McpListCommand extends Command {
             'as managed, unmanaged, or ownership-unverified. This is passive '
             'static discovery: it never launches, connects to, or '
             'authenticates against a server and never claims runtime '
-            'activation. --verify discloses fresh baseline digests.',
+            'activation. --verify discloses fresh baseline digests; it never '
+            'verifies runtime activation.',
       );
 
   static final _harness = ChoiceOption(
@@ -144,7 +145,7 @@ final class McpListCommand extends Command {
         environment: Map<String, String>.unmodifiable(Platform.environment),
         harness: valueOf(_harness),
         scope: valueOf(_scope),
-        verify: valueOf(_verify),
+        discloseDigest: valueOf(_verify),
         cwd: valueOf(_cwd),
         projectRoot: valueOf(_projectRoot),
         home: valueOf(_home),
