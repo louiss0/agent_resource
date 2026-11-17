@@ -168,15 +168,30 @@ void main() {
     });
 
     group('mcp', () {
-      test('help lists the discovery and validation children', () async {
-        final result = _expectSuccess(
-          await createExecutor().fake().execute(['mcp', '--help']),
-          isNotEmpty,
-        );
-        for (final command in ['list', 'inspect', 'validate']) {
-          expect(_containsCommandEntry(result.output!, command), isTrue);
-        }
-      });
+      test(
+        'help lists the discovery, validation and lifecycle children',
+        () async {
+          final result = _expectSuccess(
+            await createExecutor().fake().execute(['mcp', '--help']),
+            isNotEmpty,
+          );
+          for (final command in [
+            'list',
+            'inspect',
+            'validate',
+            'register',
+            'replace',
+            'adopt',
+            'unregister',
+          ]) {
+            expect(
+              _containsCommandEntry(result.output!, command),
+              isTrue,
+              reason: command,
+            );
+          }
+        },
+      );
     });
 
     for (final leaf in ['discover', 'inspect', 'validate']) {
