@@ -169,7 +169,7 @@ void main() {
 
     group('mcp', () {
       test(
-        'help lists the discovery, validation and lifecycle children',
+        'help lists the discovery, validation, lifecycle and recovery children',
         () async {
           final result = _expectSuccess(
             await createExecutor().fake().execute(['mcp', '--help']),
@@ -183,6 +183,8 @@ void main() {
             'replace',
             'adopt',
             'unregister',
+            'backup',
+            'recover',
           ]) {
             expect(
               _containsCommandEntry(result.output!, command),

@@ -22,6 +22,7 @@ import 'src/services/guided_authoring_service.dart';
 import 'src/services/instruction_draft_service.dart';
 import 'src/services/mcp_inspection_service.dart';
 import 'src/services/mcp_mutation_service.dart';
+import 'src/services/mcp_recovery_service.dart';
 import 'src/services/mcp_validation_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 import 'src/services/parent_config_service.dart';
@@ -58,6 +59,7 @@ Executor createExecutor({
   McpInspectionService? mcpInspection,
   McpValidationService? mcpValidation,
   McpMutationService? mcpMutation,
+  McpRecoveryService? mcpRecovery,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -114,6 +116,7 @@ Executor createExecutor({
         validation:
             mcpValidation ?? McpValidationService(fileSystem: fileSystem),
         mutation: mcpMutation,
+        recovery: mcpRecovery,
         fileSystem: fileSystem,
       ),
     ],

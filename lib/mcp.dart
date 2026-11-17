@@ -6,11 +6,13 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'mcp_lifecycle_commands.dart';
+import 'mcp_recovery_commands.dart';
 import 'src/mcp/mcp_envelope.dart';
 import 'src/mcp/mcp_types.dart';
 import 'src/mcp/mcp_validation.dart';
 import 'src/services/mcp_inspection_service.dart';
 import 'src/services/mcp_mutation_service.dart';
+import 'src/services/mcp_recovery_service.dart';
 import 'src/services/mcp_validation_service.dart';
 
 /// The singular `mcp` command group and its read-only discovery and
@@ -21,20 +23,26 @@ final class McpCommand extends GroupCommand {
     McpInspectionService? inspection,
     McpValidationService? validation,
     McpMutationService? mutation,
+    McpRecoveryService? recovery,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : super(_children(inspection, validation, mutation, fileSystem));
+  }) : super(_children(inspection, validation, mutation, recovery, fileSystem));
 
   static List<Command> _children(
     McpInspectionService? inspection,
     McpValidationService? validation,
     McpMutationService? mutation,
+    McpRecoveryService? recovery,
     fslib.FileSystem fileSystem,
   ) {
     final service = inspection ?? McpInspectionService(fileSystem: fileSystem);
     final validationService =
         validation ?? McpValidationService(fileSystem: fileSystem);
-    final mutationService =
-        mutation ?? McpMutationService(fileSystem: fileSystem);
+    final McpRecoveryService mutationService =
+        recovery ??
+        McpRecoveryService(
+          fileSystem: fileSystem,
+          mutation: mutation ?? McpMutationService(fileSystem: fileSystem),
+        );
     return <Command>[
       McpListCommand(service),
       McpInspectCommand(service),
@@ -43,6 +51,7 @@ final class McpCommand extends GroupCommand {
       McpReplaceCommand(mutationService),
       McpAdoptCommand(mutationService),
       McpUnregisterCommand(mutationService),
+      ...mcpRecoveryCommands(mutationService),
     ];
   }
 
