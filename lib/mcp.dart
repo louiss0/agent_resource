@@ -5,10 +5,12 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'mcp_lifecycle_commands.dart';
 import 'src/mcp/mcp_envelope.dart';
 import 'src/mcp/mcp_types.dart';
 import 'src/mcp/mcp_validation.dart';
 import 'src/services/mcp_inspection_service.dart';
+import 'src/services/mcp_mutation_service.dart';
 import 'src/services/mcp_validation_service.dart';
 
 /// The singular `mcp` command group and its read-only discovery and
@@ -18,21 +20,29 @@ final class McpCommand extends GroupCommand {
   McpCommand({
     McpInspectionService? inspection,
     McpValidationService? validation,
+    McpMutationService? mutation,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : super(_children(inspection, validation, fileSystem));
+  }) : super(_children(inspection, validation, mutation, fileSystem));
 
   static List<Command> _children(
     McpInspectionService? inspection,
     McpValidationService? validation,
+    McpMutationService? mutation,
     fslib.FileSystem fileSystem,
   ) {
     final service = inspection ?? McpInspectionService(fileSystem: fileSystem);
     final validationService =
         validation ?? McpValidationService(fileSystem: fileSystem);
+    final mutationService =
+        mutation ?? McpMutationService(fileSystem: fileSystem);
     return <Command>[
       McpListCommand(service),
       McpInspectCommand(service),
       McpValidateCommand(validationService),
+      McpRegisterCommand(mutationService),
+      McpReplaceCommand(mutationService),
+      McpAdoptCommand(mutationService),
+      McpUnregisterCommand(mutationService),
     ];
   }
 
@@ -41,7 +51,7 @@ final class McpCommand extends GroupCommand {
 
   @override
   String get shortDescription =>
-      'Read-only MCP server registration discovery and validation.';
+      'Discover, validate, and manage MCP server registrations.';
 }
 
 final class McpListCommand extends Command {
