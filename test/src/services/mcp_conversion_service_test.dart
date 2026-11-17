@@ -104,6 +104,50 @@ void main() {
       expect(args['decision'], 'omit:args');
     });
 
+    test('an unsanitizable endpoint is refused without copying its value', () {
+      const unusableUrl = 'not-an-endpoint';
+      fs
+          .file(sourcePath)
+          .writeAsStringSync(
+            jsonEncode(<String, Object?>{
+              'mcpServers': <String, Object?>{
+                sourceName: <String, Object?>{
+                  'type': 'http',
+                  'url': unusableUrl,
+                },
+              },
+            }),
+          );
+      final location = McpNativeLocation(
+        harness: McpHarness.claude,
+        scope: McpScope.project,
+        path: sourcePath,
+        format: McpNativeFormat.json,
+        section: McpNativeSection.mcpServers,
+      );
+      final entry = McpNativeReader(fs).read(location)[sourceName]!;
+      McpOwnershipLedger(fs: fs, stateRoot: '/sandbox/state').upsert(
+        McpRegistrationRecord(
+          identity: McpRegistrationIdentity(
+            harness: McpHarness.claude,
+            scope: McpScope.project,
+            location: sourcePath,
+            name: sourceName,
+          ),
+          baselineDigest: mcpCanonicalDigest(entry),
+        ),
+      );
+
+      try {
+        McpConversionService(fileSystem: fs).plan(request());
+        fail('an unsanitizable endpoint must be refused');
+      } on MambaException catch (error) {
+        expect(error.message, contains('MCP_CONVERSION_UNREPRESENTABLE'));
+        expect(error.message, isNot(contains(unusableUrl)));
+      }
+      expect(fs.file('/sandbox/project/.pi/mcp.json').existsSync(), isFalse);
+    });
+
     test('a drifted managed source is refused before any write', () {
       final record = McpRegistrationRecord(
         identity: McpRegistrationIdentity(

@@ -613,7 +613,9 @@ interface class McpConversionService {
         case 'url':
           if (value is String && value.isNotEmpty) {
             final safe = McpRedaction.sanitizeEndpoint(value);
-            if (safe != value && safe != McpRedaction.redactionPlaceholder) {
+            if (safe == McpRedaction.redactionPlaceholder) {
+              refuse(key, 'endpoint-cannot-be-sanitized');
+            } else if (safe != value) {
               proposed[key] = safe;
               add(
                 key,
