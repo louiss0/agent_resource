@@ -1245,6 +1245,31 @@ void main() {
           },
         );
 
+        test(
+          'TOML register escapes quotes and backslashes in server names',
+          () async {
+            const name = 'q"uote\\slash';
+            success(
+              await exec(
+                cmd('register', <String>[
+                  ...sel(name, harness: 'codex', scope: 'user'),
+                  '--command',
+                  'node',
+                  '--format',
+                  'json',
+                ]),
+              ),
+            );
+
+            final text = readText(codexUserPath);
+            expect(text, contains(r'[mcp_servers."q\"uote\\slash"]'));
+            final servers = parsedTomlServers(text);
+            expect(servers[name], isA<Map<Object?, Object?>>());
+            expect((servers[name]! as Map)['command'], 'node');
+            expect(entryAt(codexUser(), name)!['command'], 'node');
+          },
+        );
+
         test('TOML replace patches an existing quoted server name', () async {
           const before =
               'model = "o3"\n'
