@@ -14,10 +14,12 @@ import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
 import '../installation/skill_root_markdown_migration.dart';
+import '../mcp/mcp_types.dart';
 import '../pack/github_release_resolver.dart';
 import '../pack/pack_change_set.dart';
 import '../pack/pack_configuration.dart';
 import '../pack/pack_discovery.dart';
+import '../pack/pack_mcp_admission.dart';
 import '../pack/pack_models.dart';
 import '../pack/pack_state.dart';
 import '../pack/release_policy.dart' as release_policy;
@@ -34,7 +36,7 @@ import 'skill_lifecycle_service.dart';
 
 const _legacyRecoveryExitCode = 6;
 
-enum PackResourceType { skill, agent, prompt }
+enum PackResourceType { skill, agent, prompt, mcp }
 
 /// The resource types an untyped pack operation selects.
 ///
@@ -93,6 +95,7 @@ final class const PackLifecycleRequest({
   final List<String> replaceLocal = const <String>[],
   final List<String> approveRemoval = const <String>[],
   final List<String> allowFolder = const <String>[],
+  final List<String> approveMcpCollision = const <String>[],
   final String? to,
   final String? snapshot,
   final bool localEdits = false,
@@ -205,6 +208,9 @@ interface class PackLifecycleService {
     fileSystem: _fileSystem,
     prompts: _promptService,
   );
+  late final PackMcpAdmissionService _mcpAdmission = PackMcpAdmissionService(
+    fileSystem: _fileSystem,
+  );
   AcquisitionService get _acquirer =>
       _acquisition ?? AcquisitionService(fileSystem: _fileSystem);
   GithubReleaseResolver get _releases =>
@@ -212,6 +218,10 @@ interface class PackLifecycleService {
 
   Future<PackOperationResult> execute(PackLifecycleRequest request) async {
     _validateRequest(request);
+    final requestedTypes = _requestResourceTypes(request);
+    if (requestedTypes.contains(PackResourceType.mcp)) {
+      return _executeMcpPackRequest(request, requestedTypes);
+    }
     if (request.operation != PackOperation.validate &&
         request.resourceTypes.isNotEmpty) {
       return _executeTypedPackRequest(request);
@@ -300,6 +310,116 @@ interface class PackLifecycleService {
         exitCode: error.exitCode,
       );
     }
+  }
+
+  /// Runs the opt-in MCP admission gate for an isolated `--type mcp`
+  /// selection. It validates, admits, discovers and collision-checks the
+  /// inline declarations before any installation effect and returns a
+  /// redacted, statically-validated result. This wave does not publish a
+  /// native MCP registration file.
+  Future<PackOperationResult> _executeMcpPackRequest(
+    PackLifecycleRequest request,
+    List<PackResourceType> types,
+  ) async {
+    if (types.length > 1) {
+      throw MambaException(
+        'The mcp type is an isolated opt-in selection; do not combine it with '
+        'another resource type. The selection is refused before any effect.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final context = _context(request);
+    final configuration = _loadConfiguration(request, context);
+    final pack = configuration.findPack(request.pack!);
+    if (pack == null) {
+      throw MambaException(
+        'No configured pack matches ${request.pack} in '
+        '${configuration.configPath}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final acquired = await _acquire(pack, configuration, request: request);
+    try {
+      final catalog = _readSourceCatalog(
+        acquired.workspace,
+        type: PackResourceType.mcp,
+      );
+      final report = _mcpAdmission.admit(
+        PackMcpAdmissionRequest(
+          declarations: catalog?.mcp ?? const <PackMcpDeclaration>[],
+          targetHarnesses: _mcpTargetHarnesses(request, pack, configuration),
+          sourceRoot: acquired.workspace.selectedRoot,
+          stateRoot: context.stateRoot(LifecycleScope.user),
+          reviewedResolutions: request.approveMcpCollision.toSet(),
+        ),
+      );
+      return PackOperationResult(
+        operation: 'pack.${request.operation.name}',
+        outcome: request.dryRun ? 'preview' : 'validated',
+        context: _contextJson(request, context, configuration),
+        source: _sourceJson(pack, acquired.workspace.provenance),
+        resources: <PackResourceResult>[
+          for (final name in report.admittedNames)
+            PackResourceResult(
+              type: PackResourceType.mcp.name,
+              name: name,
+              disposition: PackDisposition.validated,
+            ),
+        ],
+        warnings: const <PackWarning>[
+          PackWarning(
+            id: 'mcp-static-validation',
+            message:
+                'MCP declarations are statically admitted; no native '
+                'registration file was written and no server was launched, '
+                'connected to, or authenticated.',
+          ),
+        ],
+        dryRun: request.dryRun,
+      );
+    } finally {
+      await acquired.workspace.close();
+    }
+  }
+
+  /// The requested target harnesses of an MCP selection. The request target
+  /// wins over the pack targets, which win over the configured targets; an
+  /// empty selection validates against every harness. `shared` expands to the
+  /// Claude and Codex harnesses.
+  List<McpHarness> _mcpTargetHarnesses(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    PackConfiguration configuration,
+  ) {
+    final targets = _requestedTargets(request, pack, configuration);
+    final resolved = <McpHarness>{};
+    if (targets.isEmpty) {
+      resolved.addAll(McpHarness.values);
+    } else {
+      for (final target in targets) {
+        switch (target) {
+          case 'claude':
+            resolved.add(McpHarness.claude);
+          case 'codex':
+            resolved.add(McpHarness.codex);
+          case 'pi':
+            resolved.add(McpHarness.pi);
+          case 'shared':
+            resolved.addAll(const <McpHarness>[
+              McpHarness.claude,
+              McpHarness.codex,
+            ]);
+          default:
+            throw MambaException(
+              'Unsupported MCP installation target: $target.',
+              exitCode: PackProcessStatus.invalidInput.code,
+            );
+        }
+      }
+    }
+    final ordered = resolved.toList()
+      ..sort((a, b) => a.index.compareTo(b.index));
+    return List<McpHarness>.unmodifiable(ordered);
   }
 
   Future<PackOperationResult> _executeTypedPackRequest(
@@ -1044,12 +1164,124 @@ interface class PackLifecycleService {
     );
   }
 
+  /// A read-only, bounded MCP discovery view. It reports inline MCP
+  /// declarations plus the server names found in the fixed project-level
+  /// native files inside the pack source, and never recurses, reads user
+  /// configuration, follows links, or writes any state.
+  Future<PackDiscoveryReport> _discoverMcp(PackDiscoveryRequest request) async {
+    if (request.types.length > 1) {
+      throw MambaException(
+        'The mcp type is an isolated opt-in selection; do not combine it with '
+        'another resource type. The selection is refused before any effect.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final target = request.target;
+    if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
+      throw MambaException(
+        'Unsupported MCP discovery target: $target. The supported targets '
+        'are claude, codex, and pi.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final context = _resolveContext(
+      processWorkingDirectory: request.processWorkingDirectory,
+      environment: request.environment,
+      scope: request.scope,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      stateDir: request.stateDir,
+    );
+    final configuration = _loadPackConfiguration(
+      context: context,
+      environment: request.environment,
+      configPath: request.configPath,
+      scope: request.scope,
+    );
+    final pack = configuration.findPack(request.pack);
+    if (pack == null) {
+      throw MambaException(
+        'No configured pack matches ${request.pack} in '
+        '${configuration.configPath}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final lifecycleRequest = PackLifecycleRequest(
+      operation: PackOperation.install,
+      resourceType: PackResourceType.mcp,
+      pack: request.pack,
+      processWorkingDirectory: request.processWorkingDirectory,
+      environment: request.environment,
+      scope: request.scope,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      stateDir: request.stateDir,
+      configPath: request.configPath,
+      dryRun: true,
+      yes: true,
+    );
+    final acquired = await _acquire(
+      pack,
+      configuration,
+      request: lifecycleRequest,
+    );
+    try {
+      final workspace = acquired.workspace;
+      final catalog = _readSourceCatalog(workspace, type: PackResourceType.mcp);
+      final discovered = _mcpAdmission.discoverNative(workspace.selectedRoot);
+      final candidates = <PackDiscoveryCandidate>[];
+      final seen = <String>{};
+      for (final declaration in catalog?.mcp ?? const <PackMcpDeclaration>[]) {
+        if (seen.add(declaration.name)) {
+          candidates.add(
+            PackDiscoveryCandidate(
+              id: declaration.name,
+              path: workspace.selectedRoot,
+              kind: PackDiscoveryKind.mcp,
+              form: PackDiscoveryForm.mcpRegistration,
+            ),
+          );
+        }
+      }
+      for (final entry in discovered.entries) {
+        final names = entry.value.toList()..sort();
+        for (final name in names) {
+          if (seen.add(name)) {
+            candidates.add(
+              PackDiscoveryCandidate(
+                id: name,
+                path: workspace.selectedRoot,
+                kind: PackDiscoveryKind.mcp,
+                form: PackDiscoveryForm.mcpRegistration,
+                profile: entry.key.wireName,
+              ),
+            );
+          }
+        }
+      }
+      candidates.sort((a, b) => a.id.compareTo(b.id));
+      return PackDiscoveryReport(
+        pack: pack.key,
+        source: _sourceJson(pack, workspace.provenance),
+        candidates: List<PackDiscoveryCandidate>.unmodifiable(candidates),
+        types: const <String>['mcp'],
+      );
+    } finally {
+      await acquired.workspace.close();
+    }
+  }
+
   /// Discovers the candidates of a pack source without changing any state.
   ///
   /// The discovery is a bounded read-only view. It reports every source once
   /// with its per-consumer Prompt views, and it never writes management
   /// state, enrolls a membership or advances an inventory.
   Future<PackDiscoveryReport> discover(PackDiscoveryRequest request) async {
+    if (request.types.contains(PackResourceType.mcp)) {
+      return _discoverMcp(request);
+    }
     final target = request.target;
     if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
       throw MambaException(
@@ -2816,6 +3048,9 @@ interface class PackLifecycleService {
         for (final entry in catalog?.agents ?? const <AgentCatalogEntry>[])
           (entry.path, entry.profile),
       ],
+      // MCP never reaches the native skill/agent validation pipeline; the
+      // MCP admission gate handles it before candidate discovery.
+      PackResourceType.mcp => throw StateError('MCP is handled by the gate.'),
     };
     if (catalog?.declared == true) {
       return [
@@ -3966,6 +4201,7 @@ interface class PackLifecycleService {
           PackResourceType.skill => PackCatalogSection.skills,
           PackResourceType.prompt => PackCatalogSection.prompts,
           PackResourceType.agent => PackCatalogSection.agents,
+          PackResourceType.mcp => PackCatalogSection.mcp,
           null => PackCatalogSection.all,
         },
       ).catalog;

@@ -88,6 +88,7 @@ final class PackActionCommand extends Command {
            ],
            if (_operation == PackOperation.sourceChange) _requiredTo,
            if (_operation == PackOperation.rollback) _requiredSnapshot,
+           _approveMcpCollision,
            _format,
          ],
          flags: [
@@ -164,6 +165,12 @@ final class PackActionCommand extends Command {
   static final _allowFolder = RepeatableStringOption(
     'allow-folder',
     regex: RegExp(r'^\s*\S[\s\S]*$'),
+  );
+  static final _approveMcpCollision = RepeatableStringOption(
+    'approve-mcp-collision',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+    description:
+        'Explicitly resolve a reviewed MCP name collision by server name.',
   );
   static final _requiredTo = StringOption.required(
     'to',
@@ -268,6 +275,7 @@ final class PackActionCommand extends Command {
         allowFolder: mutating
             ? valueOf(_allowFolder) ?? const <String>[]
             : const <String>[],
+        approveMcpCollision: valueOf(_approveMcpCollision) ?? const <String>[],
         to: _operation == PackOperation.sourceChange
             ? valueOf(_requiredTo)
             : null,
