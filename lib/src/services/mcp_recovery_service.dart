@@ -623,20 +623,16 @@ interface class McpRecoveryService implements McpMutationService {
   // -------------------------------------------------------------------------
 
   LifecycleContext _context(McpRecoveryRequest request) =>
-      LifecycleContext.resolve(
-        LifecycleOptions(
-          processWorkingDirectory: fs.currentDirectory.path,
-          environment: request.environment,
-          scope: LifecycleScope.user,
-          cwd: request.cwd,
-          projectRoot: request.projectRoot,
-          home: request.home,
-          claudeConfigDir: request.claudeConfigDir,
-          codexHome: request.codexHome,
-          piAgentDir: request.piAgentDir,
-          stateDir: request.stateDir,
-        ),
-        fileSystem: fs,
+      McpNativeResolver.resolveLifecycleContext(
+        fs,
+        environment: request.environment,
+        cwd: request.cwd,
+        projectRoot: request.projectRoot,
+        home: request.home,
+        claudeConfigDir: request.claudeConfigDir,
+        codexHome: request.codexHome,
+        piAgentDir: request.piAgentDir,
+        stateDir: request.stateDir,
       );
 
   _Observation _observe(McpRecoveryRequest request) {

@@ -7,7 +7,6 @@ import 'package:mamba/mamba.dart';
 import '../mcp/mcp_native.dart';
 import '../mcp/mcp_types.dart';
 import '../mcp/mcp_validation.dart';
-import 'lifecycle_state_service.dart';
 
 /// A bounded, read-only request to select one native MCP registration.
 final class McpValidationSelectionRequest {
@@ -77,20 +76,16 @@ interface class McpValidationService {
         exitCode: 2,
       );
     }
-    final context = LifecycleContext.resolve(
-      LifecycleOptions(
-        processWorkingDirectory: fileSystem.currentDirectory.path,
-        environment: request.environment,
-        scope: LifecycleScope.user,
-        cwd: request.cwd,
-        projectRoot: request.projectRoot,
-        home: request.home,
-        claudeConfigDir: request.claudeConfigDir,
-        codexHome: request.codexHome,
-        piAgentDir: request.piAgentDir,
-        stateDir: request.stateDir,
-      ),
-      fileSystem: fileSystem,
+    final context = McpNativeResolver.resolveLifecycleContext(
+      fileSystem,
+      environment: request.environment,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      claudeConfigDir: request.claudeConfigDir,
+      codexHome: request.codexHome,
+      piAgentDir: request.piAgentDir,
+      stateDir: request.stateDir,
     );
     final locations = _resolver.resolve(
       context,

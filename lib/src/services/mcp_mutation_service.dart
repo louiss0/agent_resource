@@ -266,20 +266,16 @@ interface class McpMutationService {
   }
 
   _Snapshot _snapshot(McpMutationRequest request) {
-    final context = LifecycleContext.resolve(
-      LifecycleOptions(
-        processWorkingDirectory: fs.currentDirectory.path,
-        environment: request.environment,
-        scope: LifecycleScope.user,
-        cwd: request.cwd,
-        projectRoot: request.projectRoot,
-        home: request.home,
-        claudeConfigDir: request.claudeConfigDir,
-        codexHome: request.codexHome,
-        piAgentDir: request.piAgentDir,
-        stateDir: request.stateDir,
-      ),
-      fileSystem: fs,
+    final context = McpNativeResolver.resolveLifecycleContext(
+      fs,
+      environment: request.environment,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      claudeConfigDir: request.claudeConfigDir,
+      codexHome: request.codexHome,
+      piAgentDir: request.piAgentDir,
+      stateDir: request.stateDir,
     );
     final locations = _resolver.resolve(
       context,

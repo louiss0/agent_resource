@@ -64,20 +64,16 @@ interface class McpInspectionService {
   final McpNativeReader _reader;
 
   LifecycleContext _context(McpInspectionRequest request) =>
-      LifecycleContext.resolve(
-        LifecycleOptions(
-          processWorkingDirectory: fileSystem.currentDirectory.path,
-          environment: request.environment,
-          scope: LifecycleScope.user,
-          cwd: request.cwd,
-          projectRoot: request.projectRoot,
-          home: request.home,
-          claudeConfigDir: request.claudeConfigDir,
-          codexHome: request.codexHome,
-          piAgentDir: request.piAgentDir,
-          stateDir: request.stateDir,
-        ),
-        fileSystem: fileSystem,
+      McpNativeResolver.resolveLifecycleContext(
+        fileSystem,
+        environment: request.environment,
+        cwd: request.cwd,
+        projectRoot: request.projectRoot,
+        home: request.home,
+        claudeConfigDir: request.claudeConfigDir,
+        codexHome: request.codexHome,
+        piAgentDir: request.piAgentDir,
+        stateDir: request.stateDir,
       );
 
   McpOwnershipLedger _ledger(LifecycleContext context) => McpOwnershipLedger(

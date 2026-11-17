@@ -47,6 +47,36 @@ final class McpNativeLocation {
 final class McpNativeResolver {
   const McpNativeResolver();
 
+  /// Resolves the shared lifecycle context of one static MCP request.
+  ///
+  /// Every MCP service resolves the same eight path options with user scope;
+  /// keeping that decision here prevents the services from drifting apart.
+  static LifecycleContext resolveLifecycleContext(
+    fslib.FileSystem fs, {
+    required Map<String, String> environment,
+    String? cwd,
+    String? projectRoot,
+    String? home,
+    String? claudeConfigDir,
+    String? codexHome,
+    String? piAgentDir,
+    String? stateDir,
+  }) => LifecycleContext.resolve(
+    LifecycleOptions(
+      processWorkingDirectory: fs.currentDirectory.path,
+      environment: environment,
+      scope: LifecycleScope.user,
+      cwd: cwd,
+      projectRoot: projectRoot,
+      home: home,
+      claudeConfigDir: claudeConfigDir,
+      codexHome: codexHome,
+      piAgentDir: piAgentDir,
+      stateDir: stateDir,
+    ),
+    fileSystem: fs,
+  );
+
   /// Whether a harness publishes registrations at a given scope. Claude has
   /// a local scope in the home file; Codex and Pi have only project/user.
   static bool supports(McpHarness harness, McpScope scope) {
