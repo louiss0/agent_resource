@@ -210,6 +210,8 @@ void main() {
             ..createSync();
           final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
             ..createSync();
+          // Non-MCP parent settings: comment/unrelated-line preservation is a
+          // property of the generic selected-unit machinery, not of MCP units.
           final config =
               fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
                 ..createSync(recursive: true)
@@ -217,9 +219,9 @@ void main() {
                   '# keep this comment\n'
                   'model = "gpt-5"\n'
                   'unknown = "unchanged"\n\n'
-                  '[mcp_servers.github]\n'
-                  'command = "github-mcp" # inline comment\n'
-                  'args = ["serve"]\n',
+                  '[agents.reviewer]\n'
+                  'description = "Reviews." # inline comment\n'
+                  'developer_instructions = "Original."\n',
                 );
           LifecycleOptions options({bool approved = false}) => LifecycleOptions(
             processWorkingDirectory: project.path,
@@ -246,35 +248,25 @@ void main() {
             planId: planId,
             clientsStopped: operation == ParentOperation.apply,
           );
+          const changes = [
+            ParentChange(
+              unit: 'agents.reviewer.description',
+              action: ParentAction.set,
+              value: 'Reviews changes.',
+            ),
+            ParentChange(
+              unit: 'model',
+              action: ParentAction.set,
+              value: 'gpt-6',
+            ),
+          ];
           final plan = await service.plan(
-            request: request(const [
-              ParentChange(
-                unit: 'mcp_servers.github.command',
-                action: ParentAction.set,
-                value: 'github-mcp-v2',
-              ),
-              ParentChange(
-                unit: 'agents.reviewer.description',
-                action: ParentAction.set,
-                value: 'Reviews changes.',
-              ),
-            ], ParentOperation.plan),
+            request: request(changes, ParentOperation.plan),
             options: options(),
           );
           final applied = await service.apply(
             request: request(
-              const [
-                ParentChange(
-                  unit: 'mcp_servers.github.command',
-                  action: ParentAction.set,
-                  value: 'github-mcp-v2',
-                ),
-                ParentChange(
-                  unit: 'agents.reviewer.description',
-                  action: ParentAction.set,
-                  value: 'Reviews changes.',
-                ),
-              ],
+              changes,
               ParentOperation.apply,
               planId: plan.data['planId']! as String,
             ),
@@ -284,10 +276,31 @@ void main() {
           final text = config.readAsStringSync();
           expect(text, contains('# keep this comment'));
           expect(text, contains('unknown = "unchanged"'));
-          expect(text, contains('command = "github-mcp-v2" # inline comment'));
+          expect(
+            text,
+            contains('description = "Reviews changes." # inline comment'),
+          );
           expect(text, contains('[agents.reviewer]'));
-          expect(text, contains('description = "Reviews changes."'));
-          expect(text, contains('args = ["serve"]'));
+          expect(text, contains('developer_instructions = "Original."'));
+          expect(text, contains('model = "gpt-6"'));
+          // The retired MCP unit family is refused with the mcp-group pointer.
+          try {
+            await service.plan(
+              request: request(const [
+                ParentChange(
+                  unit: 'mcp_servers.github.command',
+                  action: ParentAction.set,
+                  value: 'github-mcp-v2',
+                ),
+              ], ParentOperation.plan),
+              options: options(),
+            );
+            fail('A retired MCP unit was planned as a parent setting.');
+          } on MambaException catch (error) {
+            expect(error.exitCode, 4);
+            expect(error.message, contains('mcp'));
+            expect(error.message, contains('mcp list'));
+          }
           try {
             await service.plan(
               request: request(const [
@@ -683,8 +696,8 @@ void main() {
       final cases = <String, String>{
         'quoted': '"model" = "gpt-5"\n',
         'dotted': 'model.reasoning = "high"\n',
-        'inline': 'mcp_servers.github = { command = "github" }\n',
-        'array-tables': '[[mcp_servers.github]]\ncommand = "github"\n',
+        'inline': 'agents.reviewer = { description = "Reviews" }\n',
+        'array-tables': '[[agents.reviewer]]\ndescription = "Reviews"\n',
         'multiline-string': 'instructions = """private"""\n',
         'multiline-array': 'args = [\n  "serve",\n]\n',
         'duplicate': 'model = "one"\nmodel = "two"\n',
@@ -738,5 +751,234 @@ void main() {
         }
       }
     });
+
+    test(
+      'MCP parent units are refused across inspect, plan, and apply',
+      () async {
+        final sandbox = createSandbox('parent-retire-mcp-');
+        try {
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
+            ..createSync();
+          final codex = fs.directory(fs.path.join(sandbox.path, 'codex'))
+            ..createSync();
+          final settings =
+              fs.file(fs.path.join(project.path, '.claude', 'settings.json'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync('{"model":"sonnet"}\n');
+          final config =
+              fs.file(fs.path.join(project.path, '.codex', 'config.toml'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync('model = "gpt-5"\n');
+          final settingsBytes = settings.readAsBytesSync();
+          final configBytes = config.readAsBytesSync();
+          final service = ParentConfigService(fileSystem: fs);
+          LifecycleOptions options(
+            ParentHarness harness, {
+            bool approved = false,
+          }) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            claudeConfigDir: harness == ParentHarness.claude
+                ? claude.path
+                : null,
+            codexHome: harness == ParentHarness.codex ? codex.path : null,
+            approved: approved,
+          );
+          ParentRequest request(
+            ParentHarness harness,
+            ParentOperation operation,
+            String unit,
+          ) => ParentRequest(
+            operation: operation,
+            harness: harness,
+            scope: LifecycleScope.project,
+            layer: ParentLayer.project,
+            file: harness == ParentHarness.claude
+                ? fs.path.join('.claude', 'settings.json')
+                : fs.path.join('.codex', 'config.toml'),
+            changes: [
+              ParentChange(unit: unit, action: ParentAction.set, value: 'x'),
+            ],
+            adopt: true,
+            planId: operation == ParentOperation.apply
+                ? 'a-reviewed-plan'
+                : null,
+            clientsStopped: operation == ParentOperation.apply,
+          );
+          Future<void> expectRefused(
+            ParentRequest req,
+            LifecycleOptions opts,
+          ) async {
+            Future<ParentResult> call() => switch (req.operation) {
+              ParentOperation.inspect => service.inspect(
+                request: req,
+                options: opts,
+              ),
+              ParentOperation.plan => service.plan(request: req, options: opts),
+              ParentOperation.apply => service.apply(
+                request: req,
+                options: opts,
+              ),
+            };
+            await expectLater(
+              call(),
+              throwsA(
+                isA<MambaException>()
+                    .having((e) => e.exitCode, 'status', 4)
+                    .having(
+                      (e) => e.message,
+                      'message',
+                      allOf(
+                        contains('agent config'),
+                        contains('mcp'),
+                        contains('mcp list'),
+                        contains('mcp register'),
+                        contains('mcp replace'),
+                      ),
+                    ),
+              ),
+              reason:
+                  '${req.harness.name} ${req.operation.name} '
+                  '${req.changes.single.unit}',
+            );
+          }
+
+          const claudeUnits = [
+            'mcpServers.github',
+            'mcpServers.github.command',
+            'mcpServers.github.args',
+            'mcpServers.github.type',
+          ];
+          const codexUnits = [
+            'mcp_servers.github',
+            'mcp_servers.github.command',
+            'mcp_servers.github.args',
+            'mcp_servers.github.bearer_token_env_var',
+          ];
+          for (final unit in claudeUnits) {
+            for (final operation in ParentOperation.values) {
+              await expectRefused(
+                request(ParentHarness.claude, operation, unit),
+                options(
+                  ParentHarness.claude,
+                  approved: operation == ParentOperation.apply,
+                ),
+              );
+            }
+          }
+          for (final unit in codexUnits) {
+            for (final operation in ParentOperation.values) {
+              await expectRefused(
+                request(ParentHarness.codex, operation, unit),
+                options(
+                  ParentHarness.codex,
+                  approved: operation == ParentOperation.apply,
+                ),
+              );
+            }
+          }
+          // Refusal never rewrites a native harness file.
+          expect(settings.readAsBytesSync(), settingsBytes);
+          expect(config.readAsBytesSync(), configBytes);
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
+
+    test(
+      'MCP names mentioned as values remain ordinary parent configuration',
+      () async {
+        final sandbox = createSandbox('parent-mention-');
+        try {
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final claude = fs.directory(fs.path.join(sandbox.path, 'claude'))
+            ..createSync();
+          final settings =
+              fs.file(fs.path.join(project.path, '.claude', 'settings.json'))
+                ..createSync(recursive: true)
+                ..writeAsStringSync(
+                  '{"model":"sonnet","permissions":'
+                  '{"allow":[],"deny":[]}}\n',
+                );
+          LifecycleOptions options({bool approved = false}) => LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            claudeConfigDir: claude.path,
+            approved: approved,
+          );
+          final service = ParentConfigService(fileSystem: fs);
+          // Every MCP-looking string here is a VALUE, not a change unit.
+          const changes = [
+            ParentChange(
+              unit: 'permissions.allow',
+              action: ParentAction.add,
+              value: 'mcp__github__list_issues',
+            ),
+            ParentChange(
+              unit: 'permissions.deny',
+              action: ParentAction.add,
+              value: 'mcpServers.github',
+            ),
+            ParentChange(
+              unit: 'model',
+              action: ParentAction.set,
+              value: 'mcp__github__model',
+            ),
+          ];
+          ParentRequest request(ParentOperation operation, {String? planId}) =>
+              ParentRequest(
+                operation: operation,
+                harness: ParentHarness.claude,
+                scope: LifecycleScope.project,
+                layer: ParentLayer.project,
+                file: fs.path.join('.claude', 'settings.json'),
+                changes: changes,
+                adopt: true,
+                planId: planId,
+                clientsStopped: operation == ParentOperation.apply,
+              );
+          final inspected = await service.inspect(
+            request: request(ParentOperation.inspect),
+            options: options(),
+          );
+          expect(inspected.outcome, 'inspected');
+          final planned = await service.plan(
+            request: request(ParentOperation.plan),
+            options: options(),
+          );
+          expect(planned.outcome, 'planned');
+          final applied = await service.apply(
+            request: request(
+              ParentOperation.apply,
+              planId: planned.data['planId']! as String,
+            ),
+            options: options(approved: true),
+          );
+          expect(applied.outcome, 'applied');
+          final decoded =
+              jsonDecode(settings.readAsStringSync()) as Map<String, Object?>;
+          final permissions = decoded['permissions']! as Map<String, Object?>;
+          expect(permissions['allow'], ['mcp__github__list_issues']);
+          expect(permissions['deny'], ['mcpServers.github']);
+          expect(decoded['model'], 'mcp__github__model');
+        } finally {
+          await sandbox.delete(recursive: true);
+        }
+      },
+    );
   });
 }

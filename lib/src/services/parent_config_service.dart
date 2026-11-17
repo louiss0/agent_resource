@@ -16,6 +16,22 @@ const parentNodeLimit = 100000;
 const parentPlanFileLimit = 16;
 const parentPlanAggregateLimit = 32 * 1024 * 1024;
 
+/// A change unit targets an MCP registration when its root is a native MCP
+/// servers container. Only the unit key is classified: MCP names that appear
+/// as values inside ordinary parent settings (permission rules, free text)
+/// are not MCP units and remain ordinary parent configuration.
+bool isMcpParentUnit(String unit) {
+  final root = unit.split('.').first;
+  return root == 'mcpServers' || root == 'mcp_servers';
+}
+
+/// Deterministic refusal shown when a retired MCP unit is sent to
+/// `agent config`. Points callers at the singular `mcp` command group.
+const mcpParentRetirementMessage =
+    'MCP registrations are no longer managed by `agent config`. '
+    'Use the singular `mcp` command group instead '
+    '(for example: mcp list, mcp register, mcp replace).';
+
 enum ParentHarness { claude, codex, pi }
 
 enum ParentLayer { user, project, profile }
@@ -128,6 +144,7 @@ interface class ParentConfigService {
     required ParentRequest request,
     required LifecycleOptions options,
   }) async {
+    _rejectMcpParentUnits(request.changes);
     final context = _ParentContext.resolve(request, options, fs);
     final source = _readSource(context);
     if (context.harness == ParentHarness.pi) {
@@ -185,6 +202,7 @@ interface class ParentConfigService {
     required ParentRequest request,
     required LifecycleOptions options,
   }) async {
+    _rejectMcpParentUnits(request.changes);
     if (request.changes.isEmpty) {
       throw MambaException('A parent plan requires at least one change.');
     }
@@ -255,6 +273,7 @@ interface class ParentConfigService {
     required ParentRequest request,
     required LifecycleOptions options,
   }) async {
+    _rejectMcpParentUnits(request.changes);
     if (request.harness == ParentHarness.pi) {
       throw MambaException(
         'Common Pi parent settings are report-only; no parent writes are supported.',
@@ -1012,6 +1031,20 @@ interface class ParentConfigService {
     }
   }
 
+  // MCP registrations are retired as `agent config` write targets. Fail
+  // closed on every inspect/plan/apply request before any context resolution,
+  // ownership check, backup, or native-file read can occur.
+  void _rejectMcpParentUnits(List<ParentChange> changes) {
+    for (final change in changes) {
+      if (isMcpParentUnit(change.unit)) {
+        throw MambaException(
+          '$mcpParentRetirementMessage Refused MCP parent unit: ${change.unit}',
+          exitCode: 4,
+        );
+      }
+    }
+  }
+
   void _validateChange(ParentHarness harness, ParentChange change) {
     final unit = change.unit;
     if (unit.isEmpty ||
@@ -1090,15 +1123,7 @@ interface class ParentConfigService {
     if (scalars.contains(unit) || arrays.contains(unit)) return;
     if (harness == ParentHarness.claude) {
       if (parts.length == 2 && parts[0] == 'env') return;
-      if (unit.startsWith('mcpServers.')) {
-        _validateClaudeMcpUnit(parts);
-        return;
-      }
     } else {
-      if (unit.startsWith('mcp_servers.')) {
-        _validateCodexMcpUnit(parts);
-        return;
-      }
       if (unit.startsWith('agents.') && parts.length == 2) return;
       if (unit.startsWith('agents.') &&
           parts.length == 3 &&
@@ -1110,36 +1135,6 @@ interface class ParentConfigService {
     }
     throw MambaException(
       'Unsupported ${harness.name} parent unit: $unit',
-      exitCode: 4,
-    );
-  }
-
-  void _validateClaudeMcpUnit(List<String> parts) {
-    if (parts.length == 2) return; // whole selected server entry
-    if (parts.length == 3 &&
-        const {'command', 'url', 'type', 'args'}.contains(parts[2])) {
-      return;
-    }
-    throw MambaException(
-      'Unsupported Claude MCP unit: ${parts.join('.')}',
-      exitCode: 4,
-    );
-  }
-
-  void _validateCodexMcpUnit(List<String> parts) {
-    if (parts.length == 3 &&
-        const {
-          'command',
-          'url',
-          'args',
-          'env',
-          'env_vars',
-          'bearer_token_env_var',
-        }.contains(parts[2])) {
-      return;
-    }
-    throw MambaException(
-      'Unsupported Codex MCP unit: ${parts.join('.')}',
       exitCode: 4,
     );
   }
@@ -1160,7 +1155,9 @@ interface class ParentConfigService {
         'sandbox.network.deniedDomains',
       }.contains(unit);
     }
-    return unit == 'mcp_servers.*.args';
+    // Codex parent arrays owned by MCP registrations were retired; the
+    // remaining Codex parent units are scalar/map only.
+    return false;
   }
 
   void _validateUnitValue(ParentHarness harness, String unit, Object? value) {
@@ -1196,14 +1193,6 @@ interface class ParentConfigService {
     }
     if (unit.endsWith('.args') && value is! List) {
       throw MambaException('$unit requires an array value.', exitCode: 2);
-    }
-    if (unit.startsWith('mcpServers.') &&
-        unit.split('.').length == 2 &&
-        value is! Map) {
-      throw MambaException(
-        'A whole MCP server unit requires an object.',
-        exitCode: 2,
-      );
     }
   }
 
@@ -2173,10 +2162,9 @@ ParentLayer _inferLayer(
       return ParentLayer.user;
     }
     if (fs.path.equals(
-          normalized,
-          fs.path.join(projectRoot, '.claude', 'settings.json'),
-        ) ||
-        fs.path.equals(normalized, fs.path.join(projectRoot, '.mcp.json'))) {
+      normalized,
+      fs.path.join(projectRoot, '.claude', 'settings.json'),
+    )) {
       return ParentLayer.project;
     }
   } else {
