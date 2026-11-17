@@ -701,6 +701,59 @@ env = { GITHUB_TOKEN = "ghp_supersecretvalue" }
         expect(error.message, isNot(contains('ghp_supersecretvalue')));
       });
 
+      test('refuses literal values in arbitrary env and header keys', () {
+        final error = mcpError(r'''
+[[catalog.mcp]]
+name = "github"
+command = "npx"
+env = { FOO = "literal-env-secret" }
+headers = { X-Custom = "literal-header-secret" }
+''');
+        final codes = error.issues.map((issue) => issue.code).toList();
+        expect(codes, contains(mcpPackLiteralSecret));
+        expect(
+          error.issues.map((issue) => issue.keyPath),
+          anyElement(contains('env')),
+        );
+        expect(
+          error.issues.map((issue) => issue.keyPath),
+          anyElement(contains('headers')),
+        );
+        expect(error.message, isNot(contains('literal-env-secret')));
+        expect(error.message, isNot(contains('literal-header-secret')));
+      });
+
+      test(
+        'refuses literal OAuth secret values under arbitrary nested keys',
+        () {
+          final error = mcpError(r'''
+[[catalog.mcp]]
+name = "remote"
+url = "https://example.test/mcp"
+type = "http"
+oauth = { opaque = "literal-oauth-secret" }
+''');
+          expect(
+            error.issues.map((issue) => issue.code),
+            contains(mcpPackLiteralSecret),
+          );
+          expect(error.message, isNot(contains('literal-oauth-secret')));
+        },
+      );
+
+      test('admits credential references under arbitrary keys', () {
+        final declarations = parseMcp(r'''
+[[catalog.mcp]]
+name = "github"
+command = "npx"
+env = { FOO = "${FOO}", BAR = "!op read secret/foo" }
+headers = { X-Custom = "Bearer ${TOKEN}" }
+oauth = { opaque = "${CLIENT_SECRET}" }
+''');
+        expect(declarations, hasLength(1));
+        expect(declarations.single.fields['env'], isA<Map>());
+      });
+
       test(
         'refuses provider-credential selection with a value-free diagnostic',
         () {

@@ -80,9 +80,18 @@ final class PackMcpFields {
     'env_http_headers',
   };
 
-  /// Keys whose value is genuine credential material. A public identifier
-  /// such as an OAuth `clientId` or an enum-valued mode field is deliberately
-  /// absent: only secret-bearing keys trigger literal-secret refusal.
+  /// Fields whose values occupy credential-bearing positions: every literal
+  /// inside one is credential material whatever its nested key is called.
+  static const Set<String> sensitiveContainers = <String>{
+    'env',
+    'headers',
+    'http_headers',
+    'oauth',
+    'auth',
+  };
+
+  /// Nested keys that carry credential material even outside a sensitive
+  /// container. A public identifier such as an OAuth `clientId` is not one.
   static const Set<String> _sensitiveWords = <String>{
     'token',
     'secret',
@@ -151,38 +160,38 @@ final class PackMcpAdmission {
         result.add(PackMcpFinding(key, mcpPackProviderAuthForbidden));
         continue;
       }
-      // Only nested map values can carry credential material. Scalar fields
-      // (commands, URLs, mode names) and list fields (args, tool names) are
-      // not secrets by themselves.
-      if (value is Map) _scanMap(key, value, result);
+      // Values in a credential-bearing container are sensitive by position,
+      // regardless of the nested key. Elsewhere only explicitly sensitive
+      // nested keys (token, secret, authorization, ...) are inspected.
+      final sensitive = PackMcpFields.sensitiveContainers.contains(key);
+      if (sensitive || value is Map) {
+        if (_hasLiteral(value, sensitive)) {
+          result.add(PackMcpFinding(key, mcpPackLiteralSecret));
+        }
+      }
     }
     return List<PackMcpFinding>.unmodifiable(result);
   }
 
-  static void _scanMap(
-    String field,
-    Map<Object?, Object?> map,
-    List<PackMcpFinding> out,
-  ) {
-    for (final nested in map.entries) {
-      final key = nested.key.toString();
-      final child = nested.value;
-      if (child is String &&
-          PackMcpFields.isSensitiveKey(key) &&
-          !PackMcpFields.isReference(child)) {
-        out.add(PackMcpFinding(field, mcpPackLiteralSecret));
-      } else if (child is Map) {
-        _scanMap(field, child, out);
-      } else if (child is List) {
-        for (final item in child) {
-          if (item is String &&
-              PackMcpFields.isSensitiveKey(key) &&
-              !PackMcpFields.isReference(item)) {
-            out.add(PackMcpFinding(field, mcpPackLiteralSecret));
-          }
-        }
-      }
+  /// Whether [value] carries a literal string in a credential position.
+  /// References (`${VAR}` and `!command`) are never literal secrets; their
+  /// received text is never retained in a finding or a diagnostic.
+  static bool _hasLiteral(Object? value, bool sensitive) {
+    if (value is String) {
+      return sensitive && !PackMcpFields.isReference(value);
     }
+    if (value is Map) {
+      return value.entries.any(
+        (entry) => _hasLiteral(
+          entry.value,
+          sensitive || PackMcpFields.isSensitiveKey(entry.key.toString()),
+        ),
+      );
+    }
+    if (value is List) {
+      return value.any((item) => _hasLiteral(item, sensitive));
+    }
+    return false;
   }
 
   /// A fixed, value-free message for one admission code. Only the escaped
