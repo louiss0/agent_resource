@@ -104,7 +104,7 @@ void main() {
       expect(args['decision'], 'omit:args');
     });
 
-    test('a non-managed source is refused before any write', () {
+    test('a drifted managed source is refused before any write', () {
       final record = McpRegistrationRecord(
         identity: McpRegistrationIdentity(
           harness: McpHarness.claude,
