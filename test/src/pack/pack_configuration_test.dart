@@ -751,7 +751,7 @@ headers = { X-Custom = "Bearer ${TOKEN}" }
 oauth = { opaque = "${CLIENT_SECRET}" }
 ''');
         expect(declarations, hasLength(1));
-        expect(declarations.single.fields['env'], isA<Map>());
+        expect(declarations.single.fields['env'], isA<Map<Object?, Object?>>());
       });
 
       test(
