@@ -35,6 +35,18 @@ args = ["-y", "server-github"]
 env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
 ''';
 
+    const multipleStdioCatalog = r'''
+schema_version = 1
+[[catalog.mcp]]
+name = "alpha"
+command = "npx"
+args = ["-y", "server-alpha"]
+[[catalog.mcp]]
+name = "beta"
+command = "npx"
+args = ["-y", "server-beta"]
+''';
+
     const claudeOnlyCatalog = r'''
 schema_version = 1
 [[catalog.mcp]]
@@ -120,6 +132,23 @@ track = { kind = "local" }
     Map<String, Object?> readLedger() =>
         jsonDecode(fs.file(ledgerPath).readAsStringSync())
             as Map<String, Object?>;
+
+    Map<String, Map<String, Object?>> ledgerRecordsByName() {
+      final records = readLedger()['records']! as List<Object?>;
+      return <String, Map<String, Object?>>{
+        for (final item in records)
+          (item! as Map<String, Object?>)['name']! as String:
+              item as Map<String, Object?>,
+      };
+    }
+
+    List<String> changedPaths(Map<String, Object?> resource) {
+      final paths = resource['changedPaths'] as List<Object?>?;
+      return [
+        for (final item in paths ?? const <Object?>[])
+          (item! as Map<String, Object?>)['path']! as String,
+      ];
+    }
 
     void expectRecords(List<McpHarness> harnesses) {
       final records = readLedger()['records']! as List<Object?>;
@@ -281,6 +310,119 @@ track = { kind = "local" }
         );
         expect(fs.file(piPath).readAsStringSync(), contains('keep-svc'));
         expectRecords(McpHarness.values);
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
+
+    test(
+      'composes every declaration for one native location before writing',
+      () async {
+        writePublisherCatalog(multipleStdioCatalog);
+        seedUnrelatedNativeFiles();
+        final envelope = successEnvelope(
+          await run(<String>[
+            ...invocation('install'),
+            '--type',
+            'mcp',
+            '--target',
+            'codex',
+          ]),
+        );
+        final resources = envelope['resources']! as List<Object?>;
+        expect(resources, hasLength(2));
+        expect(
+          resources.map((r) => (r! as Map<String, Object?>)['name']).toList(),
+          <Object?>['alpha', 'beta'],
+        );
+
+        final text = fs.file(codexPath).readAsStringSync();
+        expect(text, contains('[mcp_servers.alpha]'));
+        expect(text, contains('[mcp_servers.beta]'));
+        expect(text, contains('# keep this comment'));
+        expect(text, contains('value = "unchanged"'));
+        expect(installedEntry(McpHarness.codex, 'alpha')!['command'], 'npx');
+        expect(installedEntry(McpHarness.codex, 'beta')!['args'], <Object?>[
+          '-y',
+          'server-beta',
+        ]);
+
+        final records = ledgerRecordsByName();
+        expect(records.keys, unorderedEquals(<String>['alpha', 'beta']));
+        for (final name in <String>['alpha', 'beta']) {
+          final record = records[name]!;
+          expect(record['location'], codexPath);
+          expect(
+            record['baselineDigest'],
+            mcpCanonicalDigest(installedEntry(McpHarness.codex, name)),
+          );
+        }
+        for (final resource in resources) {
+          expect(changedPaths(resource! as Map<String, Object?>), <String>[
+            codexPath,
+          ]);
+        }
+      },
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
+
+    test(
+      'composes declarations across two harness locations in one selection',
+      () async {
+        writePublisherCatalog(multipleStdioCatalog);
+        seedUnrelatedNativeFiles();
+        final envelope = successEnvelope(
+          await run(<String>[
+            ...invocation('install'),
+            '--type',
+            'mcp',
+            '--target',
+            'shared',
+          ]),
+        );
+        final resources = envelope['resources']! as List<Object?>;
+        expect(resources, hasLength(2));
+        for (final harness in <McpHarness>[
+          McpHarness.claude,
+          McpHarness.codex,
+        ]) {
+          for (final name in <String>['alpha', 'beta']) {
+            expect(
+              installedEntry(harness, name),
+              isNotNull,
+              reason: '$harness/$name',
+            );
+          }
+        }
+        expect(installedEntry(McpHarness.pi, 'alpha'), isNull);
+        expect(
+          fs.file(claudePath).readAsStringSync(),
+          contains('"unrelatedTopLevel": "keep-me"'),
+        );
+        expect(
+          fs.file(codexPath).readAsStringSync(),
+          contains('value = "unchanged"'),
+        );
+
+        final records = readLedger()['records']! as List<Object?>;
+        final identities = records.map((r) {
+          final record = r! as Map<String, Object?>;
+          return '${record['harness']}/${record['name']}';
+        }).toList();
+        expect(
+          identities,
+          unorderedEquals(<String>[
+            'claude/alpha',
+            'claude/beta',
+            'codex/alpha',
+            'codex/beta',
+          ]),
+        );
+        for (final resource in resources) {
+          expect(
+            changedPaths(resource! as Map<String, Object?>),
+            unorderedEquals(<String>[claudePath, codexPath]),
+          );
+        }
       },
       timeout: const Timeout(Duration(seconds: 30)),
     );

@@ -22,7 +22,7 @@ import '../mcp/mcp_native.dart'
         mcpCanonicalDigest,
         readMcpNativeText;
 import '../mcp/mcp_native_editor.dart'
-    show McpInsertEntry, McpNativeEditor, McpPatchEntry;
+    show McpEntryMutation, McpInsertEntry, McpNativeEditor, McpPatchEntry;
 import '../mcp/mcp_ownership_ledger.dart'
     show McpOwnershipLedger, McpRegistrationRecord;
 import '../mcp/mcp_types.dart'
@@ -5408,16 +5408,16 @@ final class _McpPackInstaller {
     );
   }
 
-  /// Re-reads every reviewed source and baseline, then computes all edits
-  /// before writing any of them. A changed byte or baseline refuses the whole
-  /// publication.
+  /// Re-reads every reviewed source and baseline, verifies every declaration,
+  /// then composes all edits per native location before writing any of them.
+  /// A changed byte or baseline refuses the whole publication.
   List<PackChangedPath> apply(_McpPackPrepared prepared) {
     final edits =
         <
           ({
             _McpPackTarget target,
             _McpPackDeclarationPlan declaration,
-            String newText,
+            McpEntryMutation mutation,
           })
         >[];
     for (final declaration in prepared.declarations) {
@@ -5450,26 +5450,39 @@ final class _McpPackInstaller {
         }
         // The same static contract is applied again after approval (story 44).
         _requireValid(target.location, declaration.name, target.proposedFields);
-        final mutation = target.currentFields == null
-            ? McpInsertEntry(target.proposedFields)
-            : McpPatchEntry(target.currentFields!, target.proposedFields);
         edits.add((
           target: target,
           declaration: declaration,
-          newText: _editor.apply(
-            format: target.location.format,
-            name: declaration.name,
-            text: target.sourceText,
-            mutation: mutation,
-          ),
+          mutation: target.currentFields == null
+              ? McpInsertEntry(target.proposedFields)
+              : McpPatchEntry(target.currentFields!, target.proposedFields),
         ));
       }
     }
 
+    // Declarations stay in reviewed order. Each mutation sees the text left by
+    // the previous declaration at the same native location, and each location
+    // is written exactly once.
+    final publications =
+        <String, ({McpNativeLocation location, String text})>{};
     for (final edit in edits) {
-      final file = _fs.file(edit.target.location.path);
+      final path = edit.target.location.path;
+      final source = publications[path]?.text ?? edit.target.sourceText;
+      publications[path] = (
+        location: edit.target.location,
+        text: _editor.apply(
+          format: edit.target.location.format,
+          name: edit.declaration.name,
+          text: source,
+          mutation: edit.mutation,
+        ),
+      );
+    }
+
+    for (final publication in publications.values) {
+      final file = _fs.file(publication.location.path);
       file.parent.createSync(recursive: true);
-      file.writeAsStringSync(edit.newText);
+      file.writeAsStringSync(publication.text);
     }
     for (final edit in edits) {
       McpOwnershipLedger(fs: _fs, stateRoot: prepared.stateRoot).upsert(
@@ -5485,8 +5498,8 @@ final class _McpPackInstaller {
       );
     }
     return <PackChangedPath>[
-      for (final edit in edits)
-        PackChangedPath(path: edit.target.location.path, change: 'modified'),
+      for (final publication in publications.values)
+        PackChangedPath(path: publication.location.path, change: 'modified'),
     ];
   }
 
