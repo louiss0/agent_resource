@@ -5,11 +5,13 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'mcp_convert.dart';
 import 'mcp_lifecycle_commands.dart';
 import 'mcp_recovery_commands.dart';
 import 'src/mcp/mcp_envelope.dart';
 import 'src/mcp/mcp_types.dart';
 import 'src/mcp/mcp_validation.dart';
+import 'src/services/mcp_conversion_service.dart';
 import 'src/services/mcp_inspection_service.dart';
 import 'src/services/mcp_mutation_service.dart';
 import 'src/services/mcp_recovery_service.dart';
@@ -24,25 +26,37 @@ final class McpCommand extends GroupCommand {
     McpValidationService? validation,
     McpMutationService? mutation,
     McpRecoveryService? recovery,
+    McpConversionService? conversion,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : super(_children(inspection, validation, mutation, recovery, fileSystem));
+  }) : super(
+         _children(
+           inspection,
+           validation,
+           mutation,
+           recovery,
+           conversion,
+           fileSystem,
+         ),
+       );
 
   static List<Command> _children(
     McpInspectionService? inspection,
     McpValidationService? validation,
     McpMutationService? mutation,
     McpRecoveryService? recovery,
+    McpConversionService? conversion,
     fslib.FileSystem fileSystem,
   ) {
     final service = inspection ?? McpInspectionService(fileSystem: fileSystem);
     final validationService =
         validation ?? McpValidationService(fileSystem: fileSystem);
-    final McpRecoveryService mutationService =
+    final mutationService =
+        mutation ?? McpMutationService(fileSystem: fileSystem);
+    final recoveryService =
         recovery ??
-        McpRecoveryService(
-          fileSystem: fileSystem,
-          mutation: mutation ?? McpMutationService(fileSystem: fileSystem),
-        );
+        McpRecoveryService(fileSystem: fileSystem, mutation: mutationService);
+    final conversionService =
+        conversion ?? McpConversionService(fileSystem: fileSystem);
     return <Command>[
       McpListCommand(service),
       McpInspectCommand(service),
@@ -51,7 +65,8 @@ final class McpCommand extends GroupCommand {
       McpReplaceCommand(mutationService),
       McpAdoptCommand(mutationService),
       McpUnregisterCommand(mutationService),
-      ...mcpRecoveryCommands(mutationService),
+      ...mcpRecoveryCommands(recoveryService),
+      McpConvertCommand(conversionService),
     ];
   }
 
