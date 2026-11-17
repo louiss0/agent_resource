@@ -669,6 +669,45 @@ void main() {
         },
       );
 
+      test(
+        'refuses restore while a recoverable transaction holds the backup',
+        () async {
+          seedManaged(<String, Object?>{
+            'command': 'github-mcp-old',
+            'env': <String, Object?>{'TOKEN': hiddenValue},
+          });
+          await exec(
+            cmd('replace', <String>[
+              ...sel(),
+              '--command',
+              'github-mcp-v2',
+              '--format',
+              'json',
+            ]),
+            recovery: await interruptedService(3),
+          ).then((result) {
+            failure(result, exitCode: 6, token: 'recovery is required');
+          });
+          final backupId = onlyId(mcpBackupDirectoryName, 'mbk_');
+
+          failure(
+            await exec(
+              cmd('backup restore', <String>[
+                ...sel(),
+                '--backup-id',
+                backupId,
+                '--format',
+                'json',
+                '--dry-run',
+              ]),
+            ),
+            exitCode: 4,
+            token: 'still referenced by recoverable transaction',
+          );
+          expect(readText(codexPath), contains('command = "github-mcp-v2"'));
+        },
+      );
+
       test('refuses substituted or corrupt recovery evidence', () async {
         seedManaged(<String, Object?>{
           'command': 'github-mcp-old',

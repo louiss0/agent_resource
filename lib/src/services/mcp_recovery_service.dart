@@ -319,6 +319,7 @@ interface class McpRecoveryService implements McpMutationService {
         exitCode: 4,
       );
     }
+    _requireBackupReleased(observation.stateRoot, backupId);
     final restoreFields = evidence.absent
         ? null
         : Map<String, Object?>.from(evidence.fields);
@@ -411,21 +412,7 @@ interface class McpRecoveryService implements McpMutationService {
     final backupId = _id(request.backupId, mcpBackupIdPattern, '--backup-id');
     final contextStateRoot = _context(request).stateRoot(LifecycleScope.user);
     final evidence = _readBackup(contextStateRoot, backupId);
-    for (final path in io.list(_transactionDirectory(contextStateRoot))) {
-      final text = io.read(path);
-      if (text == null) continue;
-      final transaction = _decodeTransaction(text);
-      if (transaction.backupId != backupId ||
-          transaction.availableActions.isEmpty) {
-        continue;
-      }
-      throw MambaException(
-        'Backup $backupId is still referenced by recoverable transaction '
-        '${transaction.transactionId}; recovery must be resolved or refused '
-        'before cleanup.',
-        exitCode: 4,
-      );
-    }
+    _requireBackupReleased(contextStateRoot, backupId);
     final planId = mcpCanonicalDigest(<String, Object?>{
       'operation': 'backup-cleanup',
       'backupId': backupId,
@@ -905,6 +892,26 @@ interface class McpRecoveryService implements McpMutationService {
       return _digest(observation.currentFields) == backup.digest;
     }
     return _digest(observation.currentFields) == transaction.proposedDigest;
+  }
+
+  /// Shared entry-evidence guard: evidence backing a transaction that can
+  /// still be recovered must not be consumed by restore or erased by cleanup.
+  void _requireBackupReleased(String stateRoot, String backupId) {
+    for (final path in io.list(_transactionDirectory(stateRoot))) {
+      final text = io.read(path);
+      if (text == null) continue;
+      final transaction = _decodeTransaction(text);
+      if (transaction.backupId != backupId ||
+          transaction.availableActions.isEmpty) {
+        continue;
+      }
+      throw MambaException(
+        'Backup $backupId is still referenced by recoverable transaction '
+        '${transaction.transactionId}; recovery must be resolved or refused '
+        'before using this evidence.',
+        exitCode: 4,
+      );
+    }
   }
 
   McpEntryMutation? _restoreMutation(
