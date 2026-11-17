@@ -5,10 +5,12 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'mcp_convert.dart';
 import 'mcp_lifecycle_commands.dart';
 import 'src/mcp/mcp_envelope.dart';
 import 'src/mcp/mcp_types.dart';
 import 'src/mcp/mcp_validation.dart';
+import 'src/services/mcp_conversion_service.dart';
 import 'src/services/mcp_inspection_service.dart';
 import 'src/services/mcp_mutation_service.dart';
 import 'src/services/mcp_validation_service.dart';
@@ -21,13 +23,17 @@ final class McpCommand extends GroupCommand {
     McpInspectionService? inspection,
     McpValidationService? validation,
     McpMutationService? mutation,
+    McpConversionService? conversion,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : super(_children(inspection, validation, mutation, fileSystem));
+  }) : super(
+         _children(inspection, validation, mutation, conversion, fileSystem),
+       );
 
   static List<Command> _children(
     McpInspectionService? inspection,
     McpValidationService? validation,
     McpMutationService? mutation,
+    McpConversionService? conversion,
     fslib.FileSystem fileSystem,
   ) {
     final service = inspection ?? McpInspectionService(fileSystem: fileSystem);
@@ -35,6 +41,8 @@ final class McpCommand extends GroupCommand {
         validation ?? McpValidationService(fileSystem: fileSystem);
     final mutationService =
         mutation ?? McpMutationService(fileSystem: fileSystem);
+    final conversionService =
+        conversion ?? McpConversionService(fileSystem: fileSystem);
     return <Command>[
       McpListCommand(service),
       McpInspectCommand(service),
@@ -43,6 +51,7 @@ final class McpCommand extends GroupCommand {
       McpReplaceCommand(mutationService),
       McpAdoptCommand(mutationService),
       McpUnregisterCommand(mutationService),
+      McpConvertCommand(conversionService),
     ];
   }
 
