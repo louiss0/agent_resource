@@ -168,12 +168,12 @@ void main() {
     });
 
     group('mcp', () {
-      test('help lists the read-only discovery children', () async {
+      test('help lists the discovery and validation children', () async {
         final result = _expectSuccess(
           await createExecutor().fake().execute(['mcp', '--help']),
           isNotEmpty,
         );
-        for (final command in ['list', 'inspect']) {
+        for (final command in ['list', 'inspect', 'validate']) {
           expect(_containsCommandEntry(result.output!, command), isTrue);
         }
       });

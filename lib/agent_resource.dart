@@ -21,6 +21,7 @@ import 'src/services/authoring_recovery_service.dart';
 import 'src/services/guided_authoring_service.dart';
 import 'src/services/instruction_draft_service.dart';
 import 'src/services/mcp_inspection_service.dart';
+import 'src/services/mcp_validation_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 import 'src/services/parent_config_service.dart';
 import 'src/services/prompt_read_service.dart';
@@ -54,6 +55,7 @@ Executor createExecutor({
   PromptReadService? promptRead,
   PackLifecycleService? packLifecycle,
   McpInspectionService? mcpInspection,
+  McpValidationService? mcpValidation,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -105,7 +107,12 @@ Executor createExecutor({
       ),
       PackCommand(service: packLifecycle, fileSystem: fileSystem),
       ConfigCommand(service: packLifecycle, fileSystem: fileSystem),
-      McpCommand(inspection: mcpInspection, fileSystem: fileSystem),
+      McpCommand(
+        inspection: mcpInspection,
+        validation:
+            mcpValidation ?? McpValidationService(fileSystem: fileSystem),
+        fileSystem: fileSystem,
+      ),
     ],
   );
 }
