@@ -92,6 +92,27 @@ void main() {
           },
         );
 
+        test('passes the MCP type and reviewed collision resolution', () async {
+          final service = RecordingPackService();
+          await createExecutor(packLifecycle: service).fake().execute([
+            'pack',
+            'install',
+            'owner/repository',
+            '--type',
+            'mcp',
+            '--approve-mcp-collision',
+            'github',
+            '--approve-mcp-collision',
+            'build',
+            '--yes',
+          ]);
+          expect(service.requests.single.resourceTypes, [PackResourceType.mcp]);
+          expect(service.requests.single.approveMcpCollision, [
+            'github',
+            'build',
+          ]);
+        });
+
         test('rejects unknown options before calling the lifecycle', () async {
           final service = RecordingPackService();
           final result = await createExecutor(packLifecycle: service)

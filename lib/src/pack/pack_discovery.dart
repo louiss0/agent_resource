@@ -7,10 +7,10 @@ import '../services/prompt_inspection_service.dart';
 /// A source is reported once. A manual-only Skill is a Skill candidate that
 /// also carries its per-harness Prompt views: the discovery never exposes a
 /// duplicated Skill/Prompt resource.
-enum PackDiscoveryKind { skill, agent, prompt }
+enum PackDiscoveryKind { skill, agent, prompt, mcp }
 
 /// The native form of a discovered candidate.
-enum PackDiscoveryForm { skill, agentFile, template }
+enum PackDiscoveryForm { skill, agentFile, template, mcpRegistration }
 
 /// One candidate of the Prompt scope of a pack source.
 ///

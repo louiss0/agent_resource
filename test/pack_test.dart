@@ -264,6 +264,71 @@ void main() {
           });
         }
       });
+      group('MCP opt-in (story 33)', () {
+        test('excludes MCP from the default resource types', () async {
+          final service = RecordingPackService();
+          await createExecutor(packLifecycle: service).fake().execute([
+            'pack',
+            'install',
+            'owner/repo',
+            '--only',
+            'reviewer',
+            '--yes',
+          ]);
+          expect(service.requests.single.resourceTypes, [
+            PackResourceType.skill,
+            PackResourceType.agent,
+          ]);
+          expect(
+            service.requests.single.resourceTypes,
+            isNot(contains(PackResourceType.mcp)),
+          );
+        });
+
+        test('selects MCP through an explicit --type mcp', () async {
+          final service = RecordingPackService();
+          final result = await createExecutor(packLifecycle: service)
+              .fake()
+              .execute([
+                'pack',
+                'install',
+                'owner/repo',
+                '--type',
+                'mcp',
+                '--yes',
+              ]);
+          expect(result, isA<MambaSuccessResult>());
+          expect(service.requests.single.resourceTypes, [PackResourceType.mcp]);
+        });
+
+        test('selects MCP for pack validate and update', () async {
+          for (final operation in ['validate', 'update']) {
+            final service = RecordingPackService();
+            await createExecutor(packLifecycle: service).fake().execute([
+              'pack',
+              operation,
+              'owner/repo',
+              '--type',
+              'mcp',
+              if (operation == 'update') '--yes',
+            ]);
+            expect(service.requests.single.resourceTypes, [
+              PackResourceType.mcp,
+            ]);
+          }
+        });
+
+        test('selects MCP for pack discover --type mcp', () async {
+          final service = RecordingPackService();
+          final result = await createExecutor(packLifecycle: service)
+              .fake()
+              .execute(['pack', 'discover', 'owner/repo', '--type', 'mcp']);
+          expect(result, isA<MambaSuccessResult>());
+          expect(service.requests, isEmpty);
+          expect(service.discoveries.single.types, [PackResourceType.mcp]);
+        });
+      });
+
       group('lifecycle', () {
         late fslib.FileSystem fs;
         late fslib.Directory sandbox;

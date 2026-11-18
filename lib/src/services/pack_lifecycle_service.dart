@@ -14,10 +14,26 @@ import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
 import '../installation/skill_root_markdown_migration.dart';
+import '../mcp/mcp_native.dart'
+    show
+        McpNativeLocation,
+        McpNativeReader,
+        McpNativeResolver,
+        mcpCanonicalDigest,
+        readMcpNativeText;
+import '../mcp/mcp_native_editor.dart'
+    show McpEntryMutation, McpInsertEntry, McpNativeEditor, McpPatchEntry;
+import '../mcp/mcp_ownership_ledger.dart'
+    show McpOwnershipLedger, McpRegistrationRecord;
+import '../mcp/mcp_types.dart'
+    show McpHarness, McpRegistrationIdentity, McpScope;
 import '../pack/github_release_resolver.dart';
 import '../pack/pack_change_set.dart';
 import '../pack/pack_configuration.dart';
 import '../pack/pack_discovery.dart';
+import '../pack/pack_mcp_admission.dart';
+import '../pack/pack_mcp_declaration.dart'
+    show mcpPackCollisionReviewRequired, mcpPackTargetUnsupported;
 import '../pack/pack_models.dart';
 import '../pack/pack_state.dart';
 import '../pack/release_policy.dart' as release_policy;
@@ -28,13 +44,14 @@ import '../validation/validation_diagnostics.dart';
 import 'acquisition_service.dart';
 import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
+import 'mcp_validation_service.dart';
 import 'pack_discovery_service.dart';
 import 'pack_prompt_service.dart';
 import 'skill_lifecycle_service.dart';
 
 const _legacyRecoveryExitCode = 6;
 
-enum PackResourceType { skill, agent, prompt }
+enum PackResourceType { skill, agent, prompt, mcp }
 
 /// The resource types an untyped pack operation selects.
 ///
@@ -93,6 +110,7 @@ final class const PackLifecycleRequest({
   final List<String> replaceLocal = const <String>[],
   final List<String> approveRemoval = const <String>[],
   final List<String> allowFolder = const <String>[],
+  final List<String> approveMcpCollision = const <String>[],
   final String? to,
   final String? snapshot,
   final bool localEdits = false,
@@ -161,6 +179,7 @@ interface class PackLifecycleService {
   PackLifecycleService({
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     this._state,
+    this._mcpValidation,
   }) : _fileSystem = fileSystem,
        _acquisition = null,
        _admission = SkillAdmission(fileSystem: fileSystem),
@@ -176,6 +195,7 @@ interface class PackLifecycleService {
     this._releaseResolver = const GithubReleaseResolver(),
     this.prompts = const PackPrompts(),
     this.operatingSystem,
+    this._mcpValidation,
   }) : _fileSystem = fileSystem,
        _acquisition = acquisition ?? AcquisitionService(fileSystem: fileSystem),
        _admission = admission ?? SkillAdmission(fileSystem: fileSystem);
@@ -187,6 +207,7 @@ interface class PackLifecycleService {
   final GithubReleaseResolver? _releaseResolver;
   final PackPrompts prompts;
   final String? operatingSystem;
+  final McpValidationService? _mcpValidation;
 
   late final LifecycleStateService _lifecycleState =
       _state ?? LifecycleStateService(io: LifecycleIO(fs: _fileSystem));
@@ -205,6 +226,12 @@ interface class PackLifecycleService {
     fileSystem: _fileSystem,
     prompts: _promptService,
   );
+  late final PackMcpAdmissionService _mcpAdmission = PackMcpAdmissionService(
+    fileSystem: _fileSystem,
+    validation: _mcpValidation,
+  );
+  late final McpValidationService _mcpValidationService =
+      _mcpValidation ?? McpValidationService(fileSystem: _fileSystem);
   AcquisitionService get _acquirer =>
       _acquisition ?? AcquisitionService(fileSystem: _fileSystem);
   GithubReleaseResolver get _releases =>
@@ -212,6 +239,10 @@ interface class PackLifecycleService {
 
   Future<PackOperationResult> execute(PackLifecycleRequest request) async {
     _validateRequest(request);
+    final requestedTypes = _requestResourceTypes(request);
+    if (requestedTypes.contains(PackResourceType.mcp)) {
+      return _executeMcpPackRequest(request, requestedTypes);
+    }
     if (request.operation != PackOperation.validate &&
         request.resourceTypes.isNotEmpty) {
       return _executeTypedPackRequest(request);
@@ -300,6 +331,249 @@ interface class PackLifecycleService {
         exitCode: error.exitCode,
       );
     }
+  }
+
+  /// Runs the opt-in MCP selection. `validate` only admits and reports;
+  /// `install` additionally builds a reviewed entry-only plan and, after
+  /// explicit approval, writes only the named native entries and records
+  /// their ownership. Every other MCP pack operation is refused before any
+  /// acquisition or native effect.
+  Future<PackOperationResult> _executeMcpPackRequest(
+    PackLifecycleRequest request,
+    List<PackResourceType> types,
+  ) async {
+    if (types.length > 1) {
+      throw MambaException(
+        'The mcp type is an isolated opt-in selection; do not combine it with '
+        'another resource type. The selection is refused before any effect.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    if (request.operation != PackOperation.install &&
+        request.operation != PackOperation.validate) {
+      throw MambaException(
+        'pack --type mcp does not support ${request.operation.name}; only '
+        'install and validate are defined for MCP selections. Nothing was '
+        'written.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final context = _context(request);
+    final configuration = _loadConfiguration(request, context);
+    final pack = configuration.findPack(request.pack!);
+    if (pack == null) {
+      throw MambaException(
+        'No configured pack matches ${request.pack} in '
+        '${configuration.configPath}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final acquired = await _acquire(pack, configuration, request: request);
+    try {
+      final catalog = _readSourceCatalog(
+        acquired.workspace,
+        type: PackResourceType.mcp,
+      );
+      final declarations = catalog?.mcp ?? const <PackMcpDeclaration>[];
+      final harnesses = _mcpTargetHarnesses(request, pack, configuration);
+      final report = _mcpAdmission.admit(
+        PackMcpAdmissionRequest(
+          declarations: declarations,
+          targetHarnesses: harnesses,
+          sourceRoot: acquired.workspace.selectedRoot,
+          stateRoot: context.stateRoot(LifecycleScope.user),
+          reviewedResolutions: request.approveMcpCollision.toSet(),
+        ),
+      );
+      final source = _sourceJson(pack, acquired.workspace.provenance);
+      if (request.operation == PackOperation.validate) {
+        return PackOperationResult(
+          operation: 'pack.validate',
+          outcome: 'validated',
+          context: _contextJson(request, context, configuration),
+          source: source,
+          resources: <PackResourceResult>[
+            for (final name in report.admittedNames)
+              PackResourceResult(
+                type: PackResourceType.mcp.name,
+                name: name,
+                disposition: PackDisposition.validated,
+              ),
+          ],
+          warnings: const <PackWarning>[
+            PackWarning(
+              id: 'mcp-static-validation',
+              message:
+                  'MCP declarations are statically admitted; no native '
+                  'registration file was written and no server was launched, '
+                  'connected to, or authenticated.',
+            ),
+          ],
+          dryRun: request.dryRun,
+        );
+      }
+
+      final installer = _McpPackInstaller(
+        fileSystem: _fileSystem,
+        validation: _mcpValidationService,
+      );
+      final prepared = installer.prepare(
+        declarations: declarations,
+        harnesses: harnesses,
+        context: context,
+        approvedNames: request.approveMcpCollision.toSet(),
+      );
+      final plan = PackPlan.create(
+        operation: 'pack.${request.operation.name}',
+        context: _contextJson(request, context, configuration),
+        source: <String, Object?>{
+          ...source,
+          'mcpPlanIdentity': prepared.planIdentity,
+          'collisionsApproved': (request.approveMcpCollision.toList()..sort())
+              .toList(),
+        },
+        resources: <PackResourcePlan>[
+          for (final entry in prepared.declarations)
+            PackResourcePlan(
+              type: PackResourceType.mcp.name,
+              name: entry.name,
+              action: 'install',
+              method: 'entry-only',
+              targets: <String>[
+                for (final target in entry.targets)
+                  target.location.harness.wireName,
+              ],
+              previousSnapshot: <String>[
+                for (final target in entry.targets) target.sourceDigest,
+              ].join(','),
+              snapshot: mcpCanonicalDigest(entry.fields),
+            ),
+        ],
+        warnings: const <PackWarning>[
+          PackWarning(
+            id: 'mcp-static-review',
+            message:
+                'Only the selected named MCP entries and ownership state are '
+                'written after review; no server is launched, connected to, '
+                'or authenticated.',
+          ),
+        ],
+      );
+      if (request.dryRun) {
+        return PackOperationResult(
+          operation: 'pack.${request.operation.name}',
+          outcome: 'preview',
+          context: _contextJson(request, context, configuration),
+          source: source,
+          resources: <PackResourceResult>[
+            for (final entry in prepared.declarations)
+              PackResourceResult(
+                type: PackResourceType.mcp.name,
+                name: entry.name,
+                disposition: PackDisposition.validated,
+              ),
+          ],
+          warnings: const <PackWarning>[
+            PackWarning(
+              id: 'mcp-dry-run',
+              message:
+                  'The reviewed MCP plan was published without any '
+                  'native, ownership, or server effect.',
+            ),
+          ],
+          dryRun: true,
+          plan: plan,
+        );
+      }
+
+      if (!request.yes && !request.dryRun) {
+        final review = request.planReview;
+        if (review != null) {
+          final approved = await review(plan);
+          if (!approved) {
+            throw MambaException(
+              'Operation cancelled; no pack or installation state was '
+              'published.',
+              exitCode: PackProcessStatus.cancelled.code,
+            );
+          }
+        } else if (!request.interactive) {
+          throw MambaException(
+            'An MCP pack install requires --yes or an interactive reviewed '
+            'plan; nothing was written.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        } else {
+          await _confirmPlan(request, plan);
+        }
+      }
+      final List<PackChangedPath> changedPaths = await _publishPackMutation(
+        request,
+        context,
+        pack,
+        () async => installer.apply(prepared),
+      );
+      return PackOperationResult(
+        operation: 'pack.${request.operation.name}',
+        outcome: 'installed',
+        context: _contextJson(request, context, configuration),
+        source: source,
+        resources: <PackResourceResult>[
+          for (final entry in prepared.declarations)
+            PackResourceResult(
+              type: PackResourceType.mcp.name,
+              name: entry.name,
+              disposition: PackDisposition.installed,
+              snapshot: mcpCanonicalDigest(entry.fields),
+              changedPaths: changedPaths,
+            ),
+        ],
+        dryRun: false,
+        plan: plan,
+      );
+    } finally {
+      await acquired.workspace.close();
+    }
+  }
+
+  /// The requested target harnesses of an MCP selection. The request target
+  /// wins over the pack targets, which win over the configured targets; an
+  /// empty selection validates against every harness. `shared` expands to the
+  /// Claude and Codex harnesses.
+  List<McpHarness> _mcpTargetHarnesses(
+    PackLifecycleRequest request,
+    PackDefinition pack,
+    PackConfiguration configuration,
+  ) {
+    final targets = _requestedTargets(request, pack, configuration);
+    final resolved = <McpHarness>{};
+    if (targets.isEmpty) {
+      resolved.addAll(McpHarness.values);
+    } else {
+      for (final target in targets) {
+        switch (target) {
+          case 'claude':
+            resolved.add(McpHarness.claude);
+          case 'codex':
+            resolved.add(McpHarness.codex);
+          case 'pi':
+            resolved.add(McpHarness.pi);
+          case 'shared':
+            resolved.addAll(const <McpHarness>[
+              McpHarness.claude,
+              McpHarness.codex,
+            ]);
+          default:
+            throw MambaException(
+              'Unsupported MCP installation target: $target.',
+              exitCode: PackProcessStatus.invalidInput.code,
+            );
+        }
+      }
+    }
+    final ordered = resolved.toList()
+      ..sort((a, b) => a.index.compareTo(b.index));
+    return List<McpHarness>.unmodifiable(ordered);
   }
 
   Future<PackOperationResult> _executeTypedPackRequest(
@@ -1044,12 +1318,124 @@ interface class PackLifecycleService {
     );
   }
 
+  /// A read-only, bounded MCP discovery view. It reports inline MCP
+  /// declarations plus the server names found in the fixed project-level
+  /// native files inside the pack source, and never recurses, reads user
+  /// configuration, follows links, or writes any state.
+  Future<PackDiscoveryReport> _discoverMcp(PackDiscoveryRequest request) async {
+    if (request.types.length > 1) {
+      throw MambaException(
+        'The mcp type is an isolated opt-in selection; do not combine it with '
+        'another resource type. The selection is refused before any effect.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final target = request.target;
+    if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
+      throw MambaException(
+        'Unsupported MCP discovery target: $target. The supported targets '
+        'are claude, codex, and pi.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final context = _resolveContext(
+      processWorkingDirectory: request.processWorkingDirectory,
+      environment: request.environment,
+      scope: request.scope,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      stateDir: request.stateDir,
+    );
+    final configuration = _loadPackConfiguration(
+      context: context,
+      environment: request.environment,
+      configPath: request.configPath,
+      scope: request.scope,
+    );
+    final pack = configuration.findPack(request.pack);
+    if (pack == null) {
+      throw MambaException(
+        'No configured pack matches ${request.pack} in '
+        '${configuration.configPath}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final lifecycleRequest = PackLifecycleRequest(
+      operation: PackOperation.install,
+      resourceType: PackResourceType.mcp,
+      pack: request.pack,
+      processWorkingDirectory: request.processWorkingDirectory,
+      environment: request.environment,
+      scope: request.scope,
+      cwd: request.cwd,
+      projectRoot: request.projectRoot,
+      home: request.home,
+      stateDir: request.stateDir,
+      configPath: request.configPath,
+      dryRun: true,
+      yes: true,
+    );
+    final acquired = await _acquire(
+      pack,
+      configuration,
+      request: lifecycleRequest,
+    );
+    try {
+      final workspace = acquired.workspace;
+      final catalog = _readSourceCatalog(workspace, type: PackResourceType.mcp);
+      final discovered = _mcpAdmission.discoverNative(workspace.selectedRoot);
+      final candidates = <PackDiscoveryCandidate>[];
+      final seen = <String>{};
+      for (final declaration in catalog?.mcp ?? const <PackMcpDeclaration>[]) {
+        if (seen.add(declaration.name)) {
+          candidates.add(
+            PackDiscoveryCandidate(
+              id: declaration.name,
+              path: workspace.selectedRoot,
+              kind: PackDiscoveryKind.mcp,
+              form: PackDiscoveryForm.mcpRegistration,
+            ),
+          );
+        }
+      }
+      for (final entry in discovered.entries) {
+        final names = entry.value.toList()..sort();
+        for (final name in names) {
+          if (seen.add(name)) {
+            candidates.add(
+              PackDiscoveryCandidate(
+                id: name,
+                path: workspace.selectedRoot,
+                kind: PackDiscoveryKind.mcp,
+                form: PackDiscoveryForm.mcpRegistration,
+                profile: entry.key.wireName,
+              ),
+            );
+          }
+        }
+      }
+      candidates.sort((a, b) => a.id.compareTo(b.id));
+      return PackDiscoveryReport(
+        pack: pack.key,
+        source: _sourceJson(pack, workspace.provenance),
+        candidates: List<PackDiscoveryCandidate>.unmodifiable(candidates),
+        types: const <String>['mcp'],
+      );
+    } finally {
+      await acquired.workspace.close();
+    }
+  }
+
   /// Discovers the candidates of a pack source without changing any state.
   ///
   /// The discovery is a bounded read-only view. It reports every source once
   /// with its per-consumer Prompt views, and it never writes management
   /// state, enrolls a membership or advances an inventory.
   Future<PackDiscoveryReport> discover(PackDiscoveryRequest request) async {
+    if (request.types.contains(PackResourceType.mcp)) {
+      return _discoverMcp(request);
+    }
     final target = request.target;
     if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
       throw MambaException(
@@ -2816,6 +3202,9 @@ interface class PackLifecycleService {
         for (final entry in catalog?.agents ?? const <AgentCatalogEntry>[])
           (entry.path, entry.profile),
       ],
+      // MCP never reaches the native skill/agent validation pipeline; the
+      // MCP admission gate handles it before candidate discovery.
+      PackResourceType.mcp => throw StateError('MCP is handled by the gate.'),
     };
     if (catalog?.declared == true) {
       return [
@@ -3966,6 +4355,7 @@ interface class PackLifecycleService {
           PackResourceType.skill => PackCatalogSection.skills,
           PackResourceType.prompt => PackCatalogSection.prompts,
           PackResourceType.agent => PackCatalogSection.agents,
+          PackResourceType.mcp => PackCatalogSection.mcp,
           null => PackCatalogSection.all,
         },
       ).catalog;
@@ -4800,6 +5190,377 @@ interface class PackLifecycleService {
       request.resourceTypes.isEmpty
       ? [request.resourceType]
       : request.resourceTypes;
+}
+
+/// One resolved native target of an admitted MCP pack declaration.
+final class _McpPackTarget {
+  const _McpPackTarget(
+    this.location,
+    this.sourceText,
+    this.currentFields,
+    this.record,
+    this.proposedFields,
+    this.sourceDigest,
+  );
+
+  final McpNativeLocation location;
+  final String sourceText;
+  final Map<String, Object?>? currentFields;
+  final McpRegistrationRecord? record;
+  final Map<String, Object?> proposedFields;
+  final String sourceDigest;
+}
+
+/// One declaration and every native target it will write after review.
+final class _McpPackDeclarationPlan {
+  const _McpPackDeclarationPlan(this.name, this.fields, this.targets);
+
+  final String name;
+  final Map<String, Object?> fields;
+  final List<_McpPackTarget> targets;
+}
+
+/// Everything needed to review and apply one MCP pack installation. The plan
+/// identity is derived from current native bytes, the declarations and the
+/// collision decisions; any change to those invalidates a reviewed plan.
+final class _McpPackPrepared {
+  const _McpPackPrepared(this.declarations, this.planIdentity, this.stateRoot);
+
+  final List<_McpPackDeclarationPlan> declarations;
+  final String planIdentity;
+  final String stateRoot;
+}
+
+enum _McpPackCollisionOrigin { native, ledger }
+
+final class _McpPackCollision {
+  const _McpPackCollision(this.name, this.harness, this.origin);
+
+  final String name;
+  final McpHarness harness;
+  final _McpPackCollisionOrigin origin;
+}
+
+/// Entry-only native publication for an admitted MCP pack selection.
+///
+/// The shared pack admission gate owns credential and bounded-discovery
+/// decisions. This installer owns the second, destination-side collision
+/// check, per-target static validation, the reviewed plan identity, and the
+/// final guard before writing only the selected named entries.
+final class _McpPackInstaller {
+  const _McpPackInstaller({
+    required fslib.FileSystem fileSystem,
+    required this._validation,
+  }) : _fs = fileSystem;
+
+  static const McpNativeResolver _resolver = McpNativeResolver();
+  static const McpNativeEditor _editor = McpNativeEditor();
+
+  final fslib.FileSystem _fs;
+  final McpValidationService _validation;
+
+  _McpPackPrepared prepare({
+    required List<PackMcpDeclaration> declarations,
+    required List<McpHarness> harnesses,
+    required LifecycleContext context,
+    required Set<String> approvedNames,
+  }) {
+    final scope = _mcpScope(context.scope);
+    final locations = <McpNativeLocation>[];
+    for (final harness in harnesses) {
+      if (harness == McpHarness.claude && scope != McpScope.project) {
+        throw MambaException(
+          'Claude user/local MCP registrations live in the shared home file '
+          'and are inspect-only; a pack cannot write them.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      if (!McpNativeResolver.supports(harness, scope)) {
+        throw MambaException(
+          'The ${harness.wireName} harness has no ${scope.wireName} MCP scope; '
+          'the pack MCP selection is refused before any write.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      final resolved = _resolver.resolve(
+        context,
+        harness: harness,
+        scope: scope,
+      );
+      if (resolved.length != 1) {
+        throw MambaException(
+          'Could not resolve exactly one native MCP location for '
+          '${harness.wireName}; nothing was written.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      locations.add(resolved.single);
+    }
+
+    final ledger = _ledger(context);
+    final records = ledger.read();
+    final reader = McpNativeReader(_fs);
+    final collisions = <_McpPackCollision>[];
+    final plans = <_McpPackDeclarationPlan>[];
+
+    for (final declaration in declarations) {
+      final targets = <_McpPackTarget>[];
+      for (final location in locations) {
+        final sourceText = readMcpNativeText(_fs, location.path) ?? '';
+        final currentFields = reader.read(location)[declaration.name];
+        final identity = McpRegistrationIdentity(
+          harness: location.harness,
+          scope: location.scope,
+          location: location.path,
+          name: declaration.name,
+        );
+        final record = records[identity.storageKey];
+        if (currentFields != null) {
+          collisions.add(
+            _McpPackCollision(
+              declaration.name,
+              location.harness,
+              _McpPackCollisionOrigin.native,
+            ),
+          );
+        }
+        if (record != null) {
+          collisions.add(
+            _McpPackCollision(
+              declaration.name,
+              location.harness,
+              _McpPackCollisionOrigin.ledger,
+            ),
+          );
+        }
+        final proposed = currentFields == null
+            ? declaration.fields
+            : <String, Object?>{...currentFields, ...declaration.fields};
+        _requireValid(location, declaration.name, proposed);
+        final sourceDigest = mcpCanonicalDigest(<String, Object?>{
+          'sourceText': sourceText,
+          'location': location.path,
+        });
+        targets.add(
+          _McpPackTarget(
+            location,
+            sourceText,
+            currentFields,
+            record,
+            proposed,
+            sourceDigest,
+          ),
+        );
+      }
+      plans.add(
+        _McpPackDeclarationPlan(
+          declaration.name,
+          declaration.fields,
+          List<_McpPackTarget>.unmodifiable(targets),
+        ),
+      );
+    }
+
+    final unreviewed =
+        collisions
+            .where((collision) => !approvedNames.contains(collision.name))
+            .toList()
+          ..sort(
+            (a, b) => a.name.compareTo(b.name) == 0
+                ? a.harness.wireName.compareTo(b.harness.wireName)
+                : a.name.compareTo(b.name),
+          );
+    if (unreviewed.isNotEmpty) {
+      throw MambaException(
+        _collisionAccount(unreviewed),
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+
+    final planIdentity = mcpCanonicalDigest(<String, Object?>{
+      'operation': 'install',
+      'scope': scope.wireName,
+      'targets': <String>[for (final h in harnesses) h.wireName],
+      'declarations': <Object?>[
+        for (final declaration in declarations)
+          <String, Object?>{
+            'name': declaration.name,
+            'fields': declaration.fields,
+          },
+      ],
+      'native': <Object?>[
+        for (final entry in plans)
+          for (final target in entry.targets)
+            <String, Object?>{
+              'location': target.location.path,
+              'sourceText': target.sourceText,
+              'baseline': target.record?.baselineDigest,
+            },
+      ],
+      'decisions': <String, Object?>{
+        'approveMcpCollision': (approvedNames.toList()..sort()).toList(),
+      },
+    });
+    return _McpPackPrepared(
+      List<_McpPackDeclarationPlan>.unmodifiable(plans),
+      planIdentity,
+      context.stateRoot(LifecycleScope.user),
+    );
+  }
+
+  /// Re-reads every reviewed source and baseline, verifies every declaration,
+  /// then composes all edits per native location before writing any of them.
+  /// A changed byte or baseline refuses the whole publication.
+  List<PackChangedPath> apply(_McpPackPrepared prepared) {
+    final edits =
+        <
+          ({
+            _McpPackTarget target,
+            _McpPackDeclarationPlan declaration,
+            McpEntryMutation mutation,
+          })
+        >[];
+    for (final declaration in prepared.declarations) {
+      for (final target in declaration.targets) {
+        final nowText = readMcpNativeText(_fs, target.location.path) ?? '';
+        if (nowText != target.sourceText) {
+          throw MambaException(
+            'The native MCP source changed before publication; re-review the '
+            'plan. Nothing was written.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        final nowRecords = McpOwnershipLedger(
+          fs: _fs,
+          stateRoot: prepared.stateRoot,
+        ).read();
+        final identity = McpRegistrationIdentity(
+          harness: target.location.harness,
+          scope: target.location.scope,
+          location: target.location.path,
+          name: declaration.name,
+        );
+        if (nowRecords[identity.storageKey]?.baselineDigest !=
+            target.record?.baselineDigest) {
+          throw MambaException(
+            'The MCP ownership baseline changed before publication; '
+            're-review the plan. Nothing was written.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+        // The same static contract is applied again after approval (story 44).
+        _requireValid(target.location, declaration.name, target.proposedFields);
+        edits.add((
+          target: target,
+          declaration: declaration,
+          mutation: target.currentFields == null
+              ? McpInsertEntry(target.proposedFields)
+              : McpPatchEntry(target.currentFields!, target.proposedFields),
+        ));
+      }
+    }
+
+    // Declarations stay in reviewed order. Each mutation sees the text left by
+    // the previous declaration at the same native location, and each location
+    // is written exactly once.
+    final publications =
+        <String, ({McpNativeLocation location, String text})>{};
+    for (final edit in edits) {
+      final path = edit.target.location.path;
+      final source = publications[path]?.text ?? edit.target.sourceText;
+      publications[path] = (
+        location: edit.target.location,
+        text: _editor.apply(
+          format: edit.target.location.format,
+          name: edit.declaration.name,
+          text: source,
+          mutation: edit.mutation,
+        ),
+      );
+    }
+
+    for (final publication in publications.values) {
+      final file = _fs.file(publication.location.path);
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync(publication.text);
+    }
+    for (final edit in edits) {
+      McpOwnershipLedger(fs: _fs, stateRoot: prepared.stateRoot).upsert(
+        McpRegistrationRecord(
+          identity: McpRegistrationIdentity(
+            harness: edit.target.location.harness,
+            scope: edit.target.location.scope,
+            location: edit.target.location.path,
+            name: edit.declaration.name,
+          ),
+          baselineDigest: mcpCanonicalDigest(edit.target.proposedFields),
+        ),
+      );
+    }
+    return <PackChangedPath>[
+      for (final publication in publications.values)
+        PackChangedPath(path: publication.location.path, change: 'modified'),
+    ];
+  }
+
+  void _requireValid(
+    McpNativeLocation location,
+    String name,
+    Map<String, Object?> fields,
+  ) {
+    final report = _validation.validate(
+      harness: location.harness,
+      fields: fields,
+      scope: location.scope,
+    );
+    if (report.valid) return;
+    final codes =
+        ((report.diagnostics.map((d) => d.code).toSet().toList()..sort()).join(
+          ', ',
+        ));
+    throw MambaException(
+      '[$mcpPackTargetUnsupported] The MCP declaration '
+      '${ValidationDiagnostics.escape(name)} is not supported by the '
+      '${location.harness.wireName} target ($codes). The whole MCP selection '
+      'is refused before any write.',
+      exitCode: PackProcessStatus.invalidInput.code,
+    );
+  }
+
+  McpOwnershipLedger _ledger(LifecycleContext context) => McpOwnershipLedger(
+    fs: _fs,
+    stateRoot: context.stateRoot(LifecycleScope.user),
+  );
+
+  McpScope _mcpScope(LifecycleScope scope) => switch (scope) {
+    LifecycleScope.project => McpScope.project,
+    LifecycleScope.user => McpScope.user,
+    LifecycleScope.all => throw MambaException(
+      'An MCP pack installation requires exactly one scope.',
+      exitCode: PackProcessStatus.invalidInput.code,
+    ),
+  };
+
+  String _collisionAccount(List<_McpPackCollision> collisions) {
+    final buffer = StringBuffer()
+      ..writeln(
+        '[$mcpPackCollisionReviewRequired] Pack MCP names collide with '
+        'existing registrations; the selection is refused before any '
+        'installation effect.',
+      )
+      ..writeln('redaction: credential-and-value-data-omitted');
+    for (final collision in collisions) {
+      buffer.writeln(
+        '- ${ValidationDiagnostics.escape(collision.name)} '
+        '(${collision.harness.wireName}, ${collision.origin.name})',
+      );
+    }
+    buffer.writeln(
+      'Explicit reviewed resolution is required for each colliding name; '
+      'nothing is silently replaced.',
+    );
+    return buffer.toString();
+  }
 }
 
 String _groupKey(_PackCandidate candidate) =>

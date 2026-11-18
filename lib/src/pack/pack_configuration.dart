@@ -8,8 +8,10 @@ import 'package:zema/zema.dart';
 
 import '../installation/resource_catalog.dart' show NativeAgentProfile;
 import '../validation/validation_diagnostics.dart';
+import 'pack_mcp_declaration.dart';
 
 export '../installation/resource_catalog.dart' show NativeAgentProfile;
+export 'pack_mcp_declaration.dart' show PackMcpDeclaration;
 
 /// The native profiles of a declared Prompt source.
 ///
@@ -255,13 +257,14 @@ final class PromptCatalogEntry {
 /// The prompt section also exposes the declared Skill entries: a declared
 /// Skill with native manual-only controls is a per-harness Prompt view of that
 /// source.
-enum PackCatalogSection { skills, agents, prompts, all }
+enum PackCatalogSection { skills, agents, prompts, mcp, all }
 
 final class SourceCatalog {
   const SourceCatalog({
     required this.skills,
     required this.agents,
     required this.prompts,
+    this.mcp = const <PackMcpDeclaration>[],
     this.declared = false,
   });
 
@@ -269,11 +272,16 @@ final class SourceCatalog {
     skills: <SkillCatalogEntry>[],
     agents: <AgentCatalogEntry>[],
     prompts: <PromptCatalogEntry>[],
+    mcp: <PackMcpDeclaration>[],
   );
 
   final List<SkillCatalogEntry> skills;
   final List<AgentCatalogEntry> agents;
   final List<PromptCatalogEntry> prompts;
+
+  /// Inline MCP server declarations. Opt-in: only read for an explicit
+  /// `--type mcp` selection (`PackCatalogSection.mcp`).
+  final List<PackMcpDeclaration> mcp;
   final bool declared;
 }
 
@@ -646,7 +654,13 @@ final _catalogSchema = z.object({
       )
       .min(1)
       .optional(),
+  // Inline MCP declarations carry a name plus open native fields. The shape
+  // gate only asserts the array and the name; the semantic pass owns the
+  // closed native field set, credential references and provider refusal so
+  // diagnostics stay value-free and actionable.
+  'mcp': z.array(_mcpEntrySchema).min(1).optional(),
 }).makeStrict();
+final _mcpEntrySchema = z.object({'name': z.string().min(1)});
 final _packConfigurationSchema = z.object({
   'schema_version': z.literal(1),
   'cli': z
@@ -707,14 +721,27 @@ List<PackConfigurationIssue> _shapeIssues(
   }
 
   findNulls(document, const []);
-  bool excluded(String path) => switch (catalogScope) {
-    PackCatalogSection.skills =>
-      path.startsWith('catalog.agents') || path.startsWith('catalog.prompts'),
-    PackCatalogSection.agents =>
-      path.startsWith('catalog.skills') || path.startsWith('catalog.prompts'),
-    PackCatalogSection.prompts => path.startsWith('catalog.agents'),
-    PackCatalogSection.all || null => false,
-  };
+  bool excluded(String path) {
+    // An explicit MCP selection reads only the MCP catalog section.
+    if (catalogScope == PackCatalogSection.mcp) {
+      return path.startsWith('catalog.skills') ||
+          path.startsWith('catalog.agents') ||
+          path.startsWith('catalog.prompts');
+    }
+    // MCP declarations are opt-in: an untyped or non-MCP selection never
+    // shape-checks them, so a pack that declares MCP servers cannot affect
+    // an ordinary Skill/Agent/Prompt operation.
+    if (path.startsWith('catalog.mcp')) return true;
+    return switch (catalogScope) {
+      PackCatalogSection.skills =>
+        path.startsWith('catalog.agents') || path.startsWith('catalog.prompts'),
+      PackCatalogSection.agents =>
+        path.startsWith('catalog.skills') || path.startsWith('catalog.prompts'),
+      PackCatalogSection.prompts => path.startsWith('catalog.agents'),
+      PackCatalogSection.all || null || PackCatalogSection.mcp => false,
+    };
+  }
+
   final retained = issues.where((issue) => !excluded(issue.keyPath)).toList();
   final result = _packConfigurationSchema.safeParse(document);
   if (result.isSuccess) return retained;
@@ -1378,7 +1405,21 @@ final class _Parser {
     if (!present) return SourceCatalog.empty;
     final catalog = _map(value, 'catalog');
     if (catalog == null) return SourceCatalog.empty;
-    _unknown(catalog, 'catalog', const {'skills', 'agents', 'prompts'});
+    _unknown(catalog, 'catalog', const {'skills', 'agents', 'prompts', 'mcp'});
+    // MCP is opt-in: its inline declarations are parsed and admitted only for
+    // an explicit `--type mcp` selection. Other selections leave the section
+    // untouched so skill/agent/prompt operations never include MCP.
+    if (catalogScope == PackCatalogSection.mcp) {
+      return SourceCatalog(
+        declared: true,
+        skills: const <SkillCatalogEntry>[],
+        agents: const <AgentCatalogEntry>[],
+        prompts: const <PromptCatalogEntry>[],
+        mcp: List<PackMcpDeclaration>.unmodifiable(
+          _parseMcpCatalog(catalog['mcp']),
+        ),
+      );
+    }
     final skills = catalogScope == PackCatalogSection.agents
         ? const <SkillCatalogEntry>[]
         : List<SkillCatalogEntry>.unmodifiable(
@@ -1413,7 +1454,53 @@ final class _Parser {
       skills: skills,
       agents: agents,
       prompts: prompts,
+      mcp: const <PackMcpDeclaration>[],
     );
+  }
+
+  /// Parses and admits inline MCP declarations. Admission diagnostics are
+  /// value-free: only field names and stable codes are reported, never a
+  /// received credential value.
+  List<PackMcpDeclaration> _parseMcpCatalog(Object? value) {
+    if (value == null) return [];
+    if (value is! List) {
+      _error('catalog.mcp', 'must be an array of entry tables');
+      return [];
+    }
+    final result = <PackMcpDeclaration>[];
+    final names = <String>{};
+    for (var index = 0; index < value.length; index++) {
+      final path = 'catalog.mcp[$index]';
+      final entry = _map(value[index], path);
+      if (entry == null) continue;
+      final name = _string(entry['name'], '$path.name', required: true);
+      if (name == null) continue;
+      if (!PackMcpFields.validName(name)) {
+        _error(
+          '$path.name',
+          PackMcpAdmission.message(mcpPackNameInvalid, name),
+          mcpPackNameInvalid,
+        );
+        continue;
+      }
+      if (!names.add(name)) {
+        _error('$path.name', 'duplicates an MCP server name');
+        continue;
+      }
+      final fields = <String, Object?>{
+        for (final field in entry.entries)
+          if (field.key != 'name') field.key: field.value,
+      };
+      for (final finding in PackMcpAdmission.findings(fields)) {
+        _error(
+          '$path.${_schemaPath([finding.field])}',
+          PackMcpAdmission.message(finding.code, finding.field),
+          finding.code,
+        );
+      }
+      result.add(PackMcpDeclaration(name: name, fields: fields));
+    }
+    return result;
   }
 
   List<SkillCatalogEntry> _parseSkillCatalog(Object? value) {

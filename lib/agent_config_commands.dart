@@ -5,6 +5,7 @@ import 'package:mamba/mamba.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
 import 'src/services/lifecycle_state_service.dart';
+import 'src/services/mcp_parent_retirement_service.dart';
 import 'src/services/parent_config_service.dart';
 
 LifecycleOptions _options(
@@ -306,6 +307,9 @@ final class AgentConfigCommand extends GroupCommand {
         AgentConfigInspectCommand(service),
         AgentConfigPlanCommand(service),
         AgentConfigApplyCommand(service),
+        AgentConfigDrainMcpCommand(
+          McpParentRetirementService(fileSystem: service.fs),
+        ),
       ]);
 
   @override
@@ -313,4 +317,84 @@ final class AgentConfigCommand extends GroupCommand {
 
   @override
   String get shortDescription => 'Inspect, plan, and apply parent settings.';
+}
+
+final class AgentConfigDrainMcpCommand extends Command {
+  AgentConfigDrainMcpCommand(this._service)
+    : super(
+        options: [
+          _format,
+          _cwd,
+          _projectRoot,
+          _home,
+          _claude,
+          _codex,
+          _state,
+          _scope,
+        ],
+        flags: const [_yes],
+        longDescription:
+            'Reviewed retirement of in-flight MCP parent-unit plans and '
+            'evidence. With no flags this only inventories the legacy '
+            'MCP-owned records, backups, and transactions and reports a '
+            'redacted account (no writes). Add --yes to apply the reviewed '
+            'drain. The drain refuses while any MCP parent transaction is '
+            'in a non-terminal/recoverable phase, naming the pending IDs '
+            'and pointing to the parent-config recovery/restore/cleanup '
+            'path. It never deletes unrelated parent evidence, never '
+            'rewrites a native harness file, and never prints credential '
+            'values. MCP operations now live under the singular `mcp` '
+            'command group (for example: mcp list, mcp register, mcp replace).',
+      );
+
+  final McpParentRetirementService _service;
+
+  static final _format = ChoiceOption.withDefault(
+    'format',
+    choices: LifecycleOutputFormat.values,
+    defaultValue: LifecycleOutputFormat.text,
+  );
+  static final _cwd = FolderPathOption('cwd');
+  static final _projectRoot = FolderPathOption('project-root');
+  static final _home = FolderPathOption('home');
+  static final _claude = FolderPathOption('claude-config-dir');
+  static final _codex = FolderPathOption('codex-home');
+  static final _state = FolderPathOption('state-dir');
+  static final _scope = ChoiceOption.required(
+    'scope',
+    choices: const [LifecycleScope.user, LifecycleScope.project],
+  );
+  static const _yes = BooleanFlag(
+    'yes',
+    description:
+        'Apply the reviewed drain; otherwise report the inventory only.',
+  );
+
+  @override
+  String get name => 'drain-mcp';
+
+  @override
+  String get shortDescription =>
+      'Drain retired MCP parent-unit plans and evidence.';
+
+  @override
+  Future<String> run(ValueOf valueOf, List<String> args) async {
+    final bool apply = valueOf(_yes);
+    final format = valueOf(_format);
+    final scope = valueOf(_scope);
+    final options = _options(
+      _service.fs.currentDirectory.path,
+      valueOf,
+      _cwd,
+      _projectRoot,
+      _home,
+      _claude,
+      _codex,
+      _state,
+      scope,
+      approved: apply,
+    );
+    final result = await _service.drain(options: options, apply: apply);
+    return _render(result, format);
+  }
 }

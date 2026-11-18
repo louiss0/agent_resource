@@ -8,6 +8,7 @@ import 'config.dart';
 import 'skill.dart';
 import 'pack.dart';
 import 'prompt.dart';
+import 'mcp.dart';
 import 'src/services/conversion_coordinator_service.dart';
 import 'src/services/conversion_restore_service.dart';
 import 'src/services/lifecycle_state_service.dart';
@@ -19,6 +20,11 @@ import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/authoring_recovery_service.dart';
 import 'src/services/guided_authoring_service.dart';
 import 'src/services/instruction_draft_service.dart';
+import 'src/services/mcp_conversion_service.dart';
+import 'src/services/mcp_inspection_service.dart';
+import 'src/services/mcp_mutation_service.dart';
+import 'src/services/mcp_recovery_service.dart';
+import 'src/services/mcp_validation_service.dart';
 import 'src/services/pack_lifecycle_service.dart';
 import 'src/services/parent_config_service.dart';
 import 'src/services/prompt_read_service.dart';
@@ -51,6 +57,11 @@ Executor createExecutor({
   GuidedAuthoringService? guided,
   PromptReadService? promptRead,
   PackLifecycleService? packLifecycle,
+  McpInspectionService? mcpInspection,
+  McpValidationService? mcpValidation,
+  McpMutationService? mcpMutation,
+  McpRecoveryService? mcpRecovery,
+  McpConversionService? mcpConversion,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -102,6 +113,15 @@ Executor createExecutor({
       ),
       PackCommand(service: packLifecycle, fileSystem: fileSystem),
       ConfigCommand(service: packLifecycle, fileSystem: fileSystem),
+      McpCommand(
+        inspection: mcpInspection,
+        validation:
+            mcpValidation ?? McpValidationService(fileSystem: fileSystem),
+        mutation: mcpMutation,
+        recovery: mcpRecovery,
+        conversion: mcpConversion,
+        fileSystem: fileSystem,
+      ),
     ],
   );
 }

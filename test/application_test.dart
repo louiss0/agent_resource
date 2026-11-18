@@ -104,6 +104,7 @@ void main() {
       }
       expect(_containsCommandEntry(output, 'skill'), isTrue);
       expect(_containsCommandEntry(output, 'agent'), isTrue);
+      expect(_containsCommandEntry(output, 'mcp'), isTrue);
       for (final command in [
         'discover',
         'inspect',
@@ -164,6 +165,37 @@ void main() {
           expect(_containsCommandEntry(result.output!, command), isTrue);
         }
       });
+    });
+
+    group('mcp', () {
+      test(
+        'help lists discovery, validation, lifecycle, recovery and conversion '
+        'children',
+        () async {
+          final result = _expectSuccess(
+            await createExecutor().fake().execute(['mcp', '--help']),
+            isNotEmpty,
+          );
+          for (final command in [
+            'list',
+            'inspect',
+            'validate',
+            'register',
+            'replace',
+            'adopt',
+            'unregister',
+            'backup',
+            'recover',
+            'convert',
+          ]) {
+            expect(
+              _containsCommandEntry(result.output!, command),
+              isTrue,
+              reason: command,
+            );
+          }
+        },
+      );
     });
 
     for (final leaf in ['discover', 'inspect', 'validate']) {
