@@ -35,6 +35,8 @@ import 'context.dart';
 import 'context_inject.dart';
 import 'src/services/context_injection_service.dart';
 import 'src/services/context_template_service.dart';
+import 'src/services/context_template_authoring_service.dart';
+import 'components/installation_approval.dart';
 
 const applicationVersion = String.fromEnvironment(
   'AGENT_RESOURCE_VERSION',
@@ -70,6 +72,8 @@ Executor createExecutor({
   ContextTemplateService? contextTemplates,
   ContextInjectionService? contextInjection,
   ContextInjectCommand? contextInject,
+  ContextTemplateAuthoringService? contextAuthoring,
+  InstallationApprovalComponent? contextDeleteApproval,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -134,7 +138,9 @@ Executor createExecutor({
         contextTemplates: contextTemplates,
         contextInjection: contextInjection,
         inject: contextInject,
+        contextAuthoring: contextAuthoring,
         fileSystem: fileSystem,
+        deleteApproval: contextDeleteApproval,
       ),
     ],
   );
