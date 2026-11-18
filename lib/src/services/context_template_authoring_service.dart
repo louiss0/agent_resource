@@ -64,9 +64,10 @@ interface class ContextTemplateAuthoringService {
     ContextTemplateSelect? select,
     ContextTemplateConfirm? confirm,
     bool Function()? terminal,
+    LifecycleIO? io,
   }) {
-    final io = LifecycleIO(fs: fileSystem);
-    final state = LifecycleStateService(io: io);
+    final lifecycleIO = io ?? LifecycleIO(fs: fileSystem);
+    final state = LifecycleStateService(io: lifecycleIO);
     final draftService =
         drafts ??
         InstructionDraftService(
@@ -77,7 +78,7 @@ interface class ContextTemplateAuthoringService {
         );
     return ContextTemplateAuthoringService._(
       fileSystem,
-      io,
+      lifecycleIO,
       state,
       templates ?? ContextTemplateService(fileSystem: fileSystem),
       draftService,
@@ -212,6 +213,7 @@ interface class ContextTemplateAuthoringService {
       recoveryPath = await _retainRecovery(
         plan,
         existing!,
+        draftRef,
         _fileSystem.path.join(
           LifecycleContext.resolve(
             options,
@@ -572,12 +574,14 @@ interface class ContextTemplateAuthoringService {
   Future<String?> _retainRecovery(
     ContextAuthoringPlan plan,
     ContextTemplateRead existing,
+    _DraftReference draft,
     String path,
   ) async {
     if (_io.type(path, followLinks: false) != FileSystemEntityType.notFound) {
-      throw MambaException(
-        'RECOVERY_OCCUPIED: The recovery copy of ${plan.planId} already exists.',
-        exitCode: 6,
+      throw _publicationFailure(
+        'RECOVERY_OCCUPIED',
+        'The recovery copy of ${plan.planId} already exists.',
+        draft,
       );
     }
     _state.writeProtectedDocument(path, utf8.encode(existing.content));
@@ -605,18 +609,20 @@ interface class ContextTemplateAuthoringService {
     _io.createDirectory(_fileSystem.path.dirname(staged));
     _state.protectDirectory(_fileSystem.path.dirname(staged));
     if (_io.type(staged, followLinks: false) != FileSystemEntityType.notFound) {
-      throw MambaException(
-        'STAGING_OCCUPIED: The staged candidate already exists.',
-        exitCode: 6,
+      throw _publicationFailure(
+        'STAGING_OCCUPIED',
+        'The staged candidate already exists.',
+        draftRef,
       );
     }
     _io.write(staged, bytes);
     final observed = _io.read(staged, maxInstructionDraftBodyBytes);
     if (sha256.convert(observed).toString() !=
         sha256.convert(bytes).toString()) {
-      throw MambaException(
-        'STAGING_DRIFT: The staged candidate changed before publication.',
-        exitCode: 6,
+      throw _publicationFailure(
+        'STAGING_DRIFT',
+        'The staged candidate changed before publication.',
+        draftRef,
       );
     }
   }
@@ -632,9 +638,10 @@ interface class ContextTemplateAuthoringService {
     final published = _io.read(target, maxInstructionDraftBodyBytes);
     if (sha256.convert(published).toString() !=
         sha256.convert(bytes).toString()) {
-      throw MambaException(
-        'PUBLICATION_DRIFT: The published template does not match the plan.',
-        exitCode: 6,
+      throw _publicationFailure(
+        'PUBLICATION_DRIFT',
+        'The published template does not match the plan.',
+        draftRef,
       );
     }
   }
@@ -678,6 +685,12 @@ interface class ContextTemplateAuthoringService {
     '$code: $message${_withDraftSuffix('', draft)}',
     exitCode: 7,
   );
+
+  MambaException _publicationFailure(
+    String code,
+    String message,
+    _DraftReference draft,
+  ) => MambaException(_withDraftSuffix('$code: $message', draft), exitCode: 6);
 
   String _withDraftSuffix(String message, _DraftReference? draft) {
     if (draft?.id == null || message.contains('draftId ')) return message;

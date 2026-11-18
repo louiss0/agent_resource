@@ -34,6 +34,12 @@ LifecycleOptions contextLifecycleOptions({
   String? cwd,
   String? home,
   String? stateDir,
+  String? projectRoot,
+  String? claudeConfigDir,
+  String? codexHome,
+  String? piAgentDir,
+  bool dryRun = false,
+  bool approved = false,
 }) => LifecycleOptions(
   processWorkingDirectory: fileSystem.currentDirectory.path,
   environment: environment,
@@ -41,4 +47,10 @@ LifecycleOptions contextLifecycleOptions({
   cwd: cwd,
   home: home,
   stateDir: stateDir,
+  projectRoot: projectRoot,
+  claudeConfigDir: claudeConfigDir,
+  codexHome: codexHome,
+  piAgentDir: piAgentDir,
+  dryRun: dryRun,
+  approved: approved,
 );

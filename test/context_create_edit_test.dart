@@ -5,11 +5,14 @@ import 'package:agent_resource/src/authoring/editor_process.dart';
 import 'package:agent_resource/src/services/context_template_authoring_service.dart';
 import 'package:agent_resource/src/services/editor_interaction_service.dart';
 import 'package:agent_resource/src/services/instruction_draft_service.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:mamba/mamba.dart';
 import 'package:test/test.dart';
+
+import 'support/context_test_support.dart';
 
 void main() {
   group('agent_resource', () {
@@ -20,21 +23,8 @@ void main() {
       const draftsDir = '/sandbox/state/instruction-drafts';
       final planIdPattern = RegExp(r'^pln_[a-f0-9]{64}$');
 
-      List<String> ctx() => const <String>[
-        '--cwd',
-        '/sandbox/project/',
-        '--home',
-        '/sandbox/home/',
-        '--state-dir',
-        '/sandbox/state/',
-      ];
-
-      List<String> command(String verb, List<String> extra) => <String>[
-        'context',
-        verb,
-        ...extra,
-        ...ctx(),
-      ];
+      List<String> command(String verb, List<String> extra) =>
+          contextCommandArgs(verb, extra);
 
       Future<MambaExecutionResult> exec(
         List<String> tokens, {
@@ -48,41 +38,64 @@ void main() {
           )
           .execute(tokens);
 
-      Map<String, dynamic> successJson(MambaExecutionResult result) {
-        expect(
-          result,
-          isA<MambaSuccessResult>()
-              .having((value) => value.exitCode, 'exit code', 0)
-              .having((value) => value.output, 'output', isNotNull),
-        );
-        return jsonDecode((result as MambaSuccessResult).output!)
-            as Map<String, dynamic>;
-      }
+      Map<String, dynamic> successJson(
+        MambaExecutionResult result, {
+        required String command,
+        required String outcome,
+        required Map<String, Object?> data,
+      }) => expectContextJsonSuccess(
+        result,
+        command: command,
+        outcome: outcome,
+        data: data,
+      );
 
       void expectFailure(
         MambaExecutionResult result, {
         required String code,
         required String verb,
         int exitCode = 4,
-      }) {
-        expect(
-          result,
-          isA<MambaFailureResult>()
-              .having((value) => value.exitCode, 'exit code', exitCode)
-              .having((value) => value.message, 'message', contains(code))
-              .having((value) => value.output, 'output', isNull)
-              .having(
-                (value) => value.error.phase,
-                'phase',
-                MambaExecutionPhase.run,
-              )
-              .having(
-                (value) => value.error.commandPath,
-                'command path',
-                <String>['agent_resource', 'context', verb],
-              ),
-        );
-      }
+      }) => expectContextFailure(
+        result,
+        verb: verb,
+        code: code,
+        exitCode: exitCode,
+      );
+
+      Map<String, Object?> authoringData(
+        String operation, {
+        required String name,
+        required Object? byteLength,
+        required Object? sha256,
+        bool empty = false,
+        String? content,
+        Object? existingSha256,
+        Object? existingByteLength,
+        bool published = false,
+        Object? recoveryPath,
+        bool draft = false,
+      }) => <String, Object?>{
+        'planId': matches(contextPlanIdPattern),
+        'operation': operation,
+        'name': name,
+        'path': '$templateDir/$name.md',
+        'byteLength': byteLength,
+        'isEmpty': byteLength == 0,
+        'sha256': sha256,
+        'empty': empty,
+        'existingSha256': ?existingSha256,
+        'existingByteLength': ?existingByteLength,
+        'content': ?content,
+        if (published) ...<String, Object?>{
+          'recoveryPath': recoveryPath,
+          'receiptId': startsWith('rcp_'),
+          if (draft) ...<String, Object?>{
+            'draftCleaned': isTrue,
+            'draftId': startsWith('drf_'),
+            'draftPath': startsWith('$draftsDir/'),
+          },
+        },
+      };
 
       void writeTemplate(String name, String content) {
         final file = fs.file('$templateDir/$name.md')
@@ -97,8 +110,10 @@ void main() {
         Future<bool> Function(String summary)? confirm,
         EditorProcessRunner? processRunner,
         EditorRecoveryPrompt? recover,
+        LifecycleIO? io,
       }) => ContextTemplateAuthoringService(
         fileSystem: fs,
+        io: io,
         terminal: () => terminal,
         ask: ask,
         select: select,
@@ -139,23 +154,20 @@ void main() {
 
       group('create', () {
         test('plans an empty template without writing it', () async {
-          final envelope = successJson(
+          successJson(
             await exec(
               command('create', ['alpha', '--empty', '--format', 'json']),
             ),
+            command: 'context create',
+            outcome: 'planned',
+            data: authoringData(
+              'create',
+              name: 'alpha',
+              byteLength: 0,
+              sha256: isA<String>(),
+              empty: true,
+            ),
           );
-          final data = envelope['data'] as Map<String, dynamic>;
-
-          expect(envelope['schemaVersion'], equals(1));
-          expect(envelope['command'], equals('context create'));
-          expect(envelope['outcome'], equals('planned'));
-          expect(data['planId'], matches(planIdPattern));
-          expect(data['name'], equals('alpha'));
-          expect(data['path'], equals('$templateDir/alpha.md'));
-          expect(data['byteLength'], equals(0));
-          expect(data['isEmpty'], isTrue);
-          expect(data['sha256'], isA<String>());
-          expect(envelope['diagnostics'], isEmpty);
           expect(fs.file('$templateDir/alpha.md').existsSync(), isFalse);
           expect(fs.directory(draftsDir).existsSync(), isFalse);
         });
@@ -172,9 +184,19 @@ void main() {
                 'json',
               ]),
             ),
+            command: 'context create',
+            outcome: 'published',
+            data: authoringData(
+              'create',
+              name: 'alpha',
+              byteLength: 0,
+              sha256: isA<String>(),
+              empty: true,
+              published: true,
+              recoveryPath: isNull,
+            ),
           );
 
-          expect(envelope['command'], equals('context create'));
           expect(envelope['outcome'], equals('published'));
           final template = fs.file('$templateDir/alpha.md');
           expect(template.existsSync(), isTrue);
@@ -348,6 +370,16 @@ void main() {
                 'json',
               ]),
             ),
+            command: 'context create',
+            outcome: 'published',
+            data: authoringData(
+              'create',
+              name: 'alpha',
+              byteLength: 10,
+              sha256: isA<String>(),
+              published: true,
+              recoveryPath: isNull,
+            ),
           );
 
           expect(envelope['outcome'], equals('published'));
@@ -371,6 +403,16 @@ void main() {
                 'json',
               ]),
             ),
+            command: 'context create',
+            outcome: 'published',
+            data: authoringData(
+              'create',
+              name: 'alpha',
+              byteLength: 13,
+              sha256: isA<String>(),
+              published: true,
+              recoveryPath: isNull,
+            ),
           );
           expect(literal['outcome'], equals('published'));
           expect(
@@ -389,6 +431,16 @@ void main() {
                 'json',
               ]),
               standardInput: utf8.encode('piped body\n'),
+            ),
+            command: 'context create',
+            outcome: 'published',
+            data: authoringData(
+              'create',
+              name: 'beta',
+              byteLength: 11,
+              sha256: isA<String>(),
+              published: true,
+              recoveryPath: isNull,
             ),
           );
           expect(piped['outcome'], equals('published'));
@@ -431,6 +483,14 @@ void main() {
                 'json',
               ]),
             ),
+            command: 'context create',
+            outcome: 'planned',
+            data: authoringData(
+              'create',
+              name: 'alpha',
+              byteLength: 12,
+              sha256: isA<String>(),
+            ),
           );
           expect(
             (hidden['data'] as Map<String, dynamic>).containsKey('content'),
@@ -446,6 +506,15 @@ void main() {
                 '--format',
                 'json',
               ]),
+            ),
+            command: 'context create',
+            outcome: 'planned',
+            data: authoringData(
+              'create',
+              name: 'alpha',
+              byteLength: 12,
+              sha256: isA<String>(),
+              content: 'secret rules',
             ),
           );
           expect(
@@ -466,6 +535,15 @@ void main() {
           final plan = successJson(
             await exec(
               command('create', ['beta', '--empty', '--format', 'json']),
+            ),
+            command: 'context create',
+            outcome: 'planned',
+            data: authoringData(
+              'create',
+              name: 'beta',
+              byteLength: 0,
+              sha256: isA<String>(),
+              empty: true,
             ),
           );
           writeTemplate('beta', 'raced');
@@ -497,6 +575,14 @@ void main() {
                 '--format',
                 'json',
               ]),
+            ),
+            command: 'context create',
+            outcome: 'planned',
+            data: authoringData(
+              'create',
+              name: 'alpha',
+              byteLength: 5,
+              sha256: isA<String>(),
             ),
           );
           expectFailure(
@@ -686,6 +772,22 @@ void main() {
                 'json',
               ]),
             ),
+            command: 'context edit',
+            outcome: 'published',
+            data: authoringData(
+              'edit',
+              name: 'alpha',
+              byteLength: 9,
+              sha256: isA<String>(),
+              existingSha256: isA<String>(),
+              existingByteLength: 9,
+              published: true,
+              recoveryPath: matches(
+                RegExp(
+                  r'^/sandbox/state/authoring-recovery/pln_[a-f0-9]{64}/source\.md$',
+                ),
+              ),
+            ),
           );
           final data = envelope['data'] as Map<String, dynamic>;
           final planId = data['planId'] as String;
@@ -750,6 +852,16 @@ void main() {
                 '--format',
                 'json',
               ]),
+            ),
+            command: 'context edit',
+            outcome: 'planned',
+            data: authoringData(
+              'edit',
+              name: 'alpha',
+              byteLength: 6,
+              sha256: isA<String>(),
+              existingSha256: isA<String>(),
+              existingByteLength: 7,
             ),
           );
           writeTemplate('alpha', 'raced\n');
@@ -841,6 +953,16 @@ void main() {
                 'json',
               ]),
             ),
+            command: 'context edit',
+            outcome: 'planned',
+            data: authoringData(
+              'edit',
+              name: 'alpha',
+              byteLength: 6,
+              sha256: isA<String>(),
+              existingSha256: isA<String>(),
+              existingByteLength: 7,
+            ),
           );
           expect(envelope['outcome'], equals('planned'));
           expect(
@@ -854,8 +976,140 @@ void main() {
           );
         });
       });
+
+      group('publication failures', () {
+        final planIdPattern = RegExp(r'pln_[a-f0-9]{64}');
+
+        Future<String> editorLedPlanId(String verb, List<String> extra) async {
+          final result = await exec(
+            command(verb, <String>[...extra, '--interactive']),
+            authoring: authoring(terminal: true, confirm: (_) async => true),
+          );
+          final output = (result as MambaSuccessResult).output!;
+          return planIdPattern.firstMatch(output)!.group(0)!;
+        }
+
+        void expectRetainedDraftFailure(
+          MambaExecutionResult result,
+          String code, {
+          String verb = 'edit',
+        }) {
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', 6)
+                .having(
+                  (value) => value.message,
+                  'message',
+                  allOf(
+                    contains(code),
+                    contains('draftId drf_'),
+                    contains('draftPath $draftsDir/'),
+                  ),
+                )
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.phase,
+                  'phase',
+                  MambaExecutionPhase.run,
+                )
+                .having(
+                  (value) => value.error.commandPath,
+                  'command path',
+                  <String>['agent_resource', 'context', verb],
+                ),
+          );
+        }
+
+        test('reports the retained draft when recovery is occupied', () async {
+          writeTemplate('alpha', 'before\n');
+          final planId = await editorLedPlanId('edit', <String>['alpha']);
+          final occupied =
+              '/sandbox/state/authoring-recovery/$planId/source.md';
+          fs.file(occupied)
+            ..parent.createSync(recursive: true)
+            ..writeAsStringSync('already here');
+
+          expectRetainedDraftFailure(
+            await exec(
+              command('edit', <String>[
+                'alpha',
+                '--interactive',
+                '--apply',
+                '--yes',
+              ]),
+              authoring: authoring(terminal: true, confirm: (_) async => true),
+            ),
+            'RECOVERY_OCCUPIED',
+          );
+          expect(fs.directory(draftsDir).listSync(), isNotEmpty);
+        });
+
+        test('reports the retained draft when staging is occupied', () async {
+          final planId = await editorLedPlanId('create', <String>['alpha']);
+          final occupied = '/sandbox/state/authoring-staging/$planId/candidate';
+          fs.file(occupied)
+            ..parent.createSync(recursive: true)
+            ..writeAsStringSync('already here');
+
+          expectRetainedDraftFailure(
+            await exec(
+              command('create', <String>[
+                'alpha',
+                '--interactive',
+                '--apply',
+                '--yes',
+              ]),
+              authoring: authoring(terminal: true, confirm: (_) async => true),
+            ),
+            'STAGING_OCCUPIED',
+            verb: 'create',
+          );
+          expect(fs.directory(draftsDir).listSync(), isNotEmpty);
+        });
+
+        for (final tamper in <String>['read', 'rename']) {
+          test(
+            'reports the retained draft when staged bytes drift on $tamper',
+            () async {
+              expectRetainedDraftFailure(
+                await exec(
+                  command('create', <String>[
+                    'alpha',
+                    '--interactive',
+                    '--apply',
+                    '--yes',
+                  ]),
+                  authoring: authoring(
+                    terminal: true,
+                    confirm: (_) async => true,
+                    io: _TamperingIO(fs: fs, operation: tamper),
+                  ),
+                ),
+                tamper == 'read' ? 'STAGING_DRIFT' : 'PUBLICATION_DRIFT',
+                verb: 'create',
+              );
+              expect(fs.directory(draftsDir).listSync(), isNotEmpty);
+            },
+          );
+        }
+      });
     });
   });
+}
+
+/// Mutates the staged candidate at a chosen publication boundary.
+final class _TamperingIO extends LifecycleIO {
+  _TamperingIO({required super.fs, required this.operation});
+
+  final String operation;
+
+  @override
+  void before(String operation, String path) {
+    if (operation == this.operation && path.endsWith('/candidate')) {
+      fs.file(path).writeAsStringSync('tampered');
+    }
+  }
 }
 
 /// A resolver that finds every editor program.

@@ -20,6 +20,9 @@ final class ContextCommand extends GroupCommand {
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     InstallationApprovalComponent? deleteApproval,
+    InstallationApprovalComponent? injectApproval,
+    ContextTemplateSelection? templateSelection,
+    bool Function()? hasTerminal,
   }) : super(
          _children(
            contextTemplates,
@@ -28,6 +31,9 @@ final class ContextCommand extends GroupCommand {
            contextAuthoring,
            fileSystem,
            deleteApproval,
+           injectApproval,
+           templateSelection,
+           hasTerminal,
          ),
        );
 
@@ -38,6 +44,9 @@ final class ContextCommand extends GroupCommand {
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem,
     InstallationApprovalComponent? deleteApproval,
+    InstallationApprovalComponent? injectApproval,
+    ContextTemplateSelection? templateSelection,
+    bool Function()? hasTerminal,
   ) {
     final service =
         contextTemplates ?? ContextTemplateService(fileSystem: fileSystem);
@@ -49,14 +58,26 @@ final class ContextCommand extends GroupCommand {
         );
     return <Command>[
       ContextListCommand(service),
-      ContextInspectCommand(service),
+      ContextInspectCommand(
+        service,
+        selectTemplate: templateSelection,
+        hasTerminal: hasTerminal,
+      ),
       ContextCreateCommand(authoring),
       ContextEditCommand(authoring),
-      ContextDeleteCommand(service, approval: deleteApproval),
+      ContextDeleteCommand(
+        service,
+        approval: deleteApproval,
+        selectTemplate: templateSelection,
+        hasTerminal: hasTerminal,
+      ),
       inject ??
           ContextInjectCommand(
             contextInjection ?? ContextInjectionService(fileSystem: fileSystem),
             service,
+            selectTemplate: templateSelection,
+            hasTerminal: hasTerminal,
+            approval: injectApproval,
           ),
     ];
   }

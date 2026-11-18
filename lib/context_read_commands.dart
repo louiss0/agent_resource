@@ -1,25 +1,116 @@
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, stdin, stdout;
 
 import 'package:mamba/mamba.dart';
 
+import 'components/context_template_selector.dart';
 import 'src/context/context_types.dart';
 import 'src/services/context_template_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 
-final _format = ChoiceOption.withDefault(
+/// The shared declaration set for context command location and output.
+final contextFormatOption = ChoiceOption.withDefault(
   'format',
   choices: ContextOutputFormat.values,
   defaultValue: ContextOutputFormat.text,
 );
-final _cwd = FolderPathOption('cwd');
-final _home = FolderPathOption('home');
-final _stateDir = FolderPathOption('state-dir');
+final contextCwdOption = FolderPathOption('cwd');
+final contextHomeOption = FolderPathOption('home');
+final contextStateDirOption = FolderPathOption('state-dir');
+
+List<Option<Object?>> get contextCommonOptions => <Option<Object?>>[
+  contextFormatOption,
+  contextCwdOption,
+  contextHomeOption,
+  contextStateDirOption,
+];
+
+/// Selects one stored template name. A null answer cancels the selection.
+typedef ContextTemplateSelection = Future<String?> Function(List<String> names);
+
+/// Offers the stored names through the numbered selector component.
+Future<String?> selectStoredContextTemplate(List<String> names) =>
+    ContextTemplateSelectorComponent(options: names).render();
+
+/// Refuses an explicit interactive session that requests JSON output.
+void requireContextInteractiveFormat(
+  bool interactive,
+  ContextOutputFormat format,
+) {
+  if (interactive && format == ContextOutputFormat.json) {
+    throw MambaException(
+      'INTERACTIVE_JSON_REFUSED: Interactive selection cannot be used with '
+      '--format json; supply a template name.',
+      exitCode: 4,
+    );
+  }
+}
+
+/// Resolves the supplied name or offers the stored names through [select].
+Future<String> resolveContextTemplateName({
+  required String? positionalName,
+  required String? optionName,
+  required bool interactive,
+  required LifecycleOptions options,
+  required ContextTemplateService templates,
+  ContextTemplateSelection? select,
+}) async {
+  if (positionalName != null && optionName != null) {
+    throw MambaException(
+      'AMBIGUOUS_TEMPLATE_NAME: Supply either <name> or --name, not both.',
+      exitCode: 4,
+    );
+  }
+  final supplied = (positionalName ?? optionName)?.trim();
+  if (supplied != null) {
+    if (supplied.isEmpty) {
+      throw MambaException(
+        'MISSING_TEMPLATE_NAME: The template name must not be blank.',
+        exitCode: 4,
+      );
+    }
+    return supplied;
+  }
+  if (!interactive) {
+    throw MambaException(
+      'MISSING_TEMPLATE_NAME: Supply a context template name as <name> '
+      'or --name.',
+      exitCode: 4,
+    );
+  }
+  final names = templates
+      .list(options)
+      .map((template) => template.name)
+      .toList(growable: false);
+  if (names.isEmpty) {
+    throw MambaException(
+      'NO_CONTEXT_TEMPLATES: No stored context templates are available '
+      'to select.',
+      exitCode: 4,
+    );
+  }
+  final chosen = await (select ?? selectStoredContextTemplate)(names);
+  if (chosen == null || chosen.trim().isEmpty) {
+    throw MambaException(
+      'TEMPLATE_SELECTION_CANCELLED: No context template was selected.',
+      exitCode: 7,
+    );
+  }
+  return chosen.trim();
+}
+
+/// Whether the process owns a usable terminal for line prompts.
+bool contextHasInteractiveTerminal() {
+  try {
+    return stdin.hasTerminal && stdout.hasTerminal;
+  } on Object {
+    return false;
+  }
+}
 
 /// Lists the stored context templates in deterministic order.
 final class ContextListCommand extends Command {
-  ContextListCommand(this._service)
-    : super(options: [_format, _cwd, _home, _stateDir]);
+  ContextListCommand(this._service) : super(options: contextCommonOptions);
 
   final ContextTemplateService _service;
 
@@ -41,21 +132,26 @@ final class ContextListCommand extends Command {
         ],
       },
     );
-    return renderContextResult(result, valueOf(_format));
+    return renderContextResult(result, valueOf(contextFormatOption));
   }
 }
 
 /// Reads one stored context template's metadata and complete Markdown body.
 final class ContextInspectCommand extends Command {
-  ContextInspectCommand(this._service)
-    : super(
-        discretionaryPositionals: [_nameArgument],
-        options: [_nameOption, _format, _cwd, _home, _stateDir],
-        flags: [_interactive, _unattended],
-        conflicts: {
-          'interactive': ['unattended'],
-        },
-      );
+  ContextInspectCommand(
+    this._service, {
+    ContextTemplateSelection? selectTemplate,
+    bool Function()? hasTerminal,
+  }) : _selectTemplate = selectTemplate ?? selectStoredContextTemplate,
+       _hasTerminal = hasTerminal ?? contextHasInteractiveTerminal,
+       super(
+         discretionaryPositionals: [_nameArgument],
+         options: <Option<Object?>>[_nameOption, ...contextCommonOptions],
+         flags: [_interactive, _unattended],
+         conflicts: {
+           'interactive': ['unattended'],
+         },
+       );
 
   static final _nameArgument = NormalPositional.optional(
     'name',
@@ -75,6 +171,8 @@ final class ContextInspectCommand extends Command {
   );
 
   final ContextTemplateService _service;
+  final ContextTemplateSelection _selectTemplate;
+  final bool Function() _hasTerminal;
 
   @override
   String get name => 'inspect';
@@ -85,33 +183,30 @@ final class ContextInspectCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final format = valueOf(_format);
-    if (valueOf(_interactive) && format == ContextOutputFormat.json) {
+    final format = valueOf(contextFormatOption);
+    requireContextInteractiveFormat(valueOf(_interactive), format);
+    final terminal = _hasTerminal();
+    if (valueOf(_interactive) && !terminal) {
       throw MambaException(
-        'INTERACTIVE_JSON_REFUSED: Interactive selection cannot be used '
-        'with --format json; supply a template name.',
+        'INTERACTIVE_TERMINAL_REFUSED: No usable terminal for interactive '
+        'template selection.',
         exitCode: 4,
       );
     }
+    final options = _options(valueOf, _service);
+    final name = await resolveContextTemplateName(
+      positionalName: valueOf(_nameArgument),
+      optionName: valueOf(_nameOption),
+      interactive:
+          !valueOf(_unattended) &&
+          format == ContextOutputFormat.text &&
+          (valueOf(_interactive) || terminal),
+      options: options,
+      templates: _service,
+      select: _selectTemplate,
+    );
 
-    final positionalName = valueOf(_nameArgument);
-    final optionName = valueOf(_nameOption);
-    if (positionalName != null && optionName != null) {
-      throw MambaException(
-        'AMBIGUOUS_TEMPLATE_NAME: Supply either <name> or --name, not both.',
-        exitCode: 4,
-      );
-    }
-    final name = positionalName ?? optionName;
-    if (name == null) {
-      throw MambaException(
-        'MISSING_TEMPLATE_NAME: Supply a context template name as <name> '
-        'or --name.',
-        exitCode: 4,
-      );
-    }
-
-    final template = _service.inspect(_options(valueOf, _service), name);
+    final template = _service.inspect(options, name);
     final result = LifecycleResult(
       command: 'context inspect',
       outcome: 'inspected',
@@ -125,9 +220,9 @@ LifecycleOptions _options(ValueOf valueOf, ContextTemplateService service) =>
     contextLifecycleOptions(
       fileSystem: service.fileSystem,
       environment: Map<String, String>.unmodifiable(Platform.environment),
-      cwd: valueOf(_cwd),
-      home: valueOf(_home),
-      stateDir: valueOf(_stateDir),
+      cwd: valueOf(contextCwdOption),
+      home: valueOf(contextHomeOption),
+      stateDir: valueOf(contextStateDirOption),
     );
 
 /// Renders the house [LifecycleResult] envelope in the selected format.
