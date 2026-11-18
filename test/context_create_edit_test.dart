@@ -5,6 +5,7 @@ import 'package:agent_resource/src/authoring/editor_process.dart';
 import 'package:agent_resource/src/services/context_template_authoring_service.dart';
 import 'package:agent_resource/src/services/editor_interaction_service.dart';
 import 'package:agent_resource/src/services/instruction_draft_service.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
@@ -97,8 +98,10 @@ void main() {
         Future<bool> Function(String summary)? confirm,
         EditorProcessRunner? processRunner,
         EditorRecoveryPrompt? recover,
+        LifecycleIO? io,
       }) => ContextTemplateAuthoringService(
         fileSystem: fs,
+        io: io,
         terminal: () => terminal,
         ask: ask,
         select: select,
@@ -854,8 +857,140 @@ void main() {
           );
         });
       });
+
+      group('publication failures', () {
+        final planIdPattern = RegExp(r'pln_[a-f0-9]{64}');
+
+        Future<String> editorLedPlanId(String verb, List<String> extra) async {
+          final result = await exec(
+            command(verb, <String>[...extra, '--interactive']),
+            authoring: authoring(terminal: true, confirm: (_) async => true),
+          );
+          final output = (result as MambaSuccessResult).output!;
+          return planIdPattern.firstMatch(output)!.group(0)!;
+        }
+
+        void expectRetainedDraftFailure(
+          MambaExecutionResult result,
+          String code, {
+          String verb = 'edit',
+        }) {
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', 6)
+                .having(
+                  (value) => value.message,
+                  'message',
+                  allOf(
+                    contains(code),
+                    contains('draftId drf_'),
+                    contains('draftPath $draftsDir/'),
+                  ),
+                )
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.phase,
+                  'phase',
+                  MambaExecutionPhase.run,
+                )
+                .having(
+                  (value) => value.error.commandPath,
+                  'command path',
+                  <String>['agent_resource', 'context', verb],
+                ),
+          );
+        }
+
+        test('reports the retained draft when recovery is occupied', () async {
+          writeTemplate('alpha', 'before\n');
+          final planId = await editorLedPlanId('edit', <String>['alpha']);
+          final occupied =
+              '/sandbox/state/authoring-recovery/$planId/source.md';
+          fs.file(occupied)
+            ..parent.createSync(recursive: true)
+            ..writeAsStringSync('already here');
+
+          expectRetainedDraftFailure(
+            await exec(
+              command('edit', <String>[
+                'alpha',
+                '--interactive',
+                '--apply',
+                '--yes',
+              ]),
+              authoring: authoring(terminal: true, confirm: (_) async => true),
+            ),
+            'RECOVERY_OCCUPIED',
+          );
+          expect(fs.directory(draftsDir).listSync(), isNotEmpty);
+        });
+
+        test('reports the retained draft when staging is occupied', () async {
+          final planId = await editorLedPlanId('create', <String>['alpha']);
+          final occupied = '/sandbox/state/authoring-staging/$planId/candidate';
+          fs.file(occupied)
+            ..parent.createSync(recursive: true)
+            ..writeAsStringSync('already here');
+
+          expectRetainedDraftFailure(
+            await exec(
+              command('create', <String>[
+                'alpha',
+                '--interactive',
+                '--apply',
+                '--yes',
+              ]),
+              authoring: authoring(terminal: true, confirm: (_) async => true),
+            ),
+            'STAGING_OCCUPIED',
+            verb: 'create',
+          );
+          expect(fs.directory(draftsDir).listSync(), isNotEmpty);
+        });
+
+        for (final tamper in <String>['read', 'rename']) {
+          test(
+            'reports the retained draft when staged bytes drift on $tamper',
+            () async {
+              expectRetainedDraftFailure(
+                await exec(
+                  command('create', <String>[
+                    'alpha',
+                    '--interactive',
+                    '--apply',
+                    '--yes',
+                  ]),
+                  authoring: authoring(
+                    terminal: true,
+                    confirm: (_) async => true,
+                    io: _TamperingIO(fs: fs, operation: tamper),
+                  ),
+                ),
+                tamper == 'read' ? 'STAGING_DRIFT' : 'PUBLICATION_DRIFT',
+                verb: 'create',
+              );
+              expect(fs.directory(draftsDir).listSync(), isNotEmpty);
+            },
+          );
+        }
+      });
     });
   });
+}
+
+/// Mutates the staged candidate at a chosen publication boundary.
+final class _TamperingIO extends LifecycleIO {
+  _TamperingIO({required super.fs, required this.operation});
+
+  final String operation;
+
+  @override
+  void before(String operation, String path) {
+    if (operation == this.operation && path.endsWith('/candidate')) {
+      fs.file(path).writeAsStringSync('tampered');
+    }
+  }
 }
 
 /// A resolver that finds every editor program.
