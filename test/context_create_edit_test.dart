@@ -111,35 +111,57 @@ void main() {
         EditorProcessRunner? processRunner,
         EditorRecoveryPrompt? recover,
         LifecycleIO? io,
-      }) => ContextTemplateAuthoringService(
-        fileSystem: fs,
-        io: io,
-        terminal: () => terminal,
-        ask: ask,
-        select: select,
-        confirm: confirm,
-        editor: EditorInteractionService(
-          drafts: InstructionDraftService(
-            fileSystem: fs,
-            privacy: (_) {},
-            verifier: (_) {},
-          ),
-          processRunner:
-              processRunner ??
-              (request) async {
-                fs.file(request.arguments.last).writeAsStringSync('Edited.\n');
-                return const EditorProcessOutcome(started: true, exitCode: 0);
-              },
-          environment: const EditorSessionEnvironment(
-            hasTerminal: true,
-            hasDisplay: true,
-          ),
-          acknowledge: (request) async => true,
-          recover: recover ?? (request) async => const EditorRecoveryCancel(),
-          executables: const _FakeResolver(),
+      }) {
+        // Both editor seams are scripted. Editor selection reads the live
+        // process environment, so a runner scripted only for an explicit
+        // editor leaves the platform-default path host-dependent: CI has no
+        // EDITOR/VISUAL and no usable desktop edit action. Delegating the
+        // platform launcher to the same runner keeps every editor-led test
+        // deterministic on Windows, macOS and Linux.
+        final runner =
+            processRunner ??
+            (request) async {
+              fs.file(request.arguments.last).writeAsStringSync('Edited.\n');
+              return const EditorProcessOutcome(started: true, exitCode: 0);
+            };
+        return ContextTemplateAuthoringService(
           fileSystem: fs,
-        ),
-      );
+          io: io,
+          terminal: () => terminal,
+          ask: ask,
+          select: select,
+          confirm: confirm,
+          editor: EditorInteractionService(
+            drafts: InstructionDraftService(
+              fileSystem: fs,
+              privacy: (_) {},
+              verifier: (_) {},
+            ),
+            processRunner: runner,
+            platformLauncher: (request) async {
+              final outcome = await runner(
+                EditorProcessRequest(
+                  executable: '/programs/editor',
+                  arguments: <String>[request.path],
+                ),
+              );
+              return outcome.started
+                  ? const EditorPlatformOutcome(launched: true)
+                  : EditorPlatformOutcome.failed(
+                      outcome.reason ?? 'The editor did not open the file.',
+                    );
+            },
+            environment: const EditorSessionEnvironment(
+              hasTerminal: true,
+              hasDisplay: true,
+            ),
+            acknowledge: (request) async => true,
+            recover: recover ?? (request) async => const EditorRecoveryCancel(),
+            executables: const _FakeResolver(),
+            fileSystem: fs,
+          ),
+        );
+      }
 
       setUp(() {
         fs = MemoryFileSystem(style: FileSystemStyle.posix);
@@ -693,6 +715,11 @@ void main() {
           );
           final message = (failure as MambaFailureResult).message;
           expect(message, contains('draftPath $draftsDir/'));
+          expect(
+            'draftId '.allMatches(message).length,
+            1,
+            reason: 'the retained draft is reported once, not appended twice',
+          );
           expect(fs.directory(draftsDir).listSync(), isNotEmpty);
         });
 
