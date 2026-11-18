@@ -360,6 +360,37 @@ void main() {
             ]),
           );
 
+          test('--dry-run plans without writing even with --apply', () async {
+            writeTemplate('styles', 'rules\n');
+
+            final envelope = successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--yes',
+                '--dry-run',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+            );
+
+            expect(envelope['outcome'], equals('planned'));
+            final data = envelope['data'] as Map<String, dynamic>;
+            expect(data['planId'], matches(RegExp(r'^pln_[a-f0-9]{64}$')));
+            expect(
+              (data['targets'] as List<dynamic>).single,
+              containsPair('path', '/sandbox/project/CLAUDE.md'),
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+            expect(
+              fs.directory('/sandbox/state/authoring-receipts').existsSync(),
+              isFalse,
+            );
+          });
+
           test('creates a raw markdown target with a receipt', () async {
             writeTemplate('styles', 'rules\n');
             final planId = await plannedId(const <String>[

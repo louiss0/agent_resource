@@ -87,7 +87,6 @@ final class ContextInjectCommand extends Command {
          ],
          conflicts: <String, List<String>>{
            'interactive': <String>['unattended'],
-           'apply': <String>['dry-run'],
          },
        );
 
@@ -148,8 +147,9 @@ final class ContextInjectCommand extends Command {
       replace: valueOf(_replaceFlag),
       showInstructions: valueOf(_showInstructionsFlag),
     );
-    final outcome = valueOf(_applyFlag) ? 'published' : 'planned';
-    final reported = valueOf(_applyFlag)
+    final publish = valueOf(_applyFlag) && !valueOf(_dryRunFlag);
+    final outcome = publish ? 'published' : 'planned';
+    final reported = publish
         ? await _publish(
             options,
             plan,
