@@ -326,6 +326,179 @@ void main() {
           );
         });
 
+        group('combine', () {
+          const normalizedAppendDigest =
+              '8bc1a592ae290cab2854458e4d42d1f9f850637c2b2a89be4571f56c4386b775';
+          const freshDigest =
+              '3f84e8942f9245cba2bd7ae643ec53f933b16f07c0c74a4737eba47e2c49584d';
+          const emptyDigest =
+              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+          List<dynamic> plannedTargets(Map<String, dynamic> envelope) =>
+              (envelope['data'] as Map<String, dynamic>)['targets']
+                  as List<dynamic>;
+
+          test('normalizes a single blank line when appending', () async {
+            writeTemplate('styles', '\nnew rules');
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('old rules\n\n\n');
+
+            final targets = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+              ),
+            );
+            expect(targets.single, containsPair('action', 'append'));
+            expect(targets.single, containsPair('proposedByteLength', 21));
+            expect(
+              targets.single,
+              containsPair('proposedSha256', normalizedAppendDigest),
+            );
+          });
+
+          test('adds one trailing newline when creating', () async {
+            writeTemplate('styles', 'fresh rules');
+
+            final targets = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+              ),
+            );
+            expect(targets.single, containsPair('action', 'create'));
+            expect(targets.single, containsPair('proposedByteLength', 12));
+            expect(targets.single, containsPair('proposedSha256', freshDigest));
+          });
+
+          test(
+            'replaces the whole target with normalized template bytes',
+            () async {
+              writeTemplate('styles', 'fresh rules');
+              fs
+                  .file('/sandbox/project/CLAUDE.md')
+                  .writeAsStringSync('stale rules\n');
+
+              final targets = plannedTargets(
+                successJson(
+                  await exec(const <String>[
+                    'styles',
+                    '--harness',
+                    'claude',
+                    '--replace',
+                    '--format',
+                    'json',
+                    '--unattended',
+                  ]),
+                ),
+              );
+              expect(targets.single, containsPair('action', 'replace'));
+              expect(targets.single, containsPair('proposedByteLength', 12));
+              expect(
+                targets.single,
+                containsPair('proposedSha256', freshDigest),
+              );
+            },
+          );
+
+          test('plans an empty template for create and replace', () async {
+            writeTemplate('styles', '');
+
+            final created = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+              ),
+            );
+            expect(created.single, containsPair('proposedByteLength', 0));
+            expect(created.single, containsPair('proposedSha256', emptyDigest));
+
+            fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('old\n');
+            final replaced = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--replace',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+              ),
+            );
+            expect(replaced.single, containsPair('proposedByteLength', 0));
+          });
+
+          test(
+            'refuses appending an empty template to a non-empty target',
+            () async {
+              writeTemplate('styles', '');
+              fs
+                  .file('/sandbox/project/CLAUDE.md')
+                  .writeAsStringSync('old rules\n');
+
+              expectFailure(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                'EMPTY_TEMPLATE_APPEND_REFUSED',
+              );
+            },
+          );
+
+          test(
+            'appends to a zero-byte target without a blank prefix',
+            () async {
+              writeTemplate('styles', 'fresh rules');
+              fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('');
+
+              final targets = plannedTargets(
+                successJson(
+                  await exec(const <String>[
+                    'styles',
+                    '--harness',
+                    'claude',
+                    '--format',
+                    'json',
+                    '--unattended',
+                  ]),
+                ),
+              );
+              expect(targets.single, containsPair('action', 'append'));
+              expect(targets.single, containsPair('proposedByteLength', 12));
+              expect(
+                targets.single,
+                containsPair('proposedSha256', freshDigest),
+              );
+            },
+          );
+        });
+
         test('resolves an explicit override variant', () async {
           writeTemplate('styles', 'project rules\n');
 

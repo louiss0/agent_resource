@@ -7,6 +7,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../authoring/authoring_transaction.dart';
+import '../context/context_combine.dart';
 import '../context/context_target_resolution.dart';
 import '../context/context_template_store.dart';
 import '../context/context_types.dart';
@@ -108,11 +109,15 @@ final class ContextInjectionService {
       targetDirectory: targetDirectory,
     );
     final template = _templates.inspect(options, templateName);
-    final templateBytes = utf8.encode(template.content);
-    final proposedDigest = sha256.convert(templateBytes).toString();
     final targets = <ContextInjectionTarget>[];
     for (final target in resolved) {
       final observed = _observe(target.path);
+      final proposed = const ContextCombine().call(
+        existingContent: observed.content,
+        content: template.content,
+        replace: replace,
+      );
+      final proposedBytes = utf8.encode(proposed);
       targets.add(
         ContextInjectionTarget(
           path: target.path,
@@ -126,8 +131,8 @@ final class ContextInjectionService {
           existingExists: observed.exists,
           existingSha256: observed.sha256,
           existingByteLength: observed.byteLength,
-          proposedSha256: proposedDigest,
-          proposedByteLength: templateBytes.length,
+          proposedSha256: sha256.convert(proposedBytes).toString(),
+          proposedByteLength: proposedBytes.length,
         ),
       );
     }
@@ -162,6 +167,17 @@ final class ContextInjectionService {
       targets: targets,
       content: showInstructions ? template.content : null,
     );
+  }
+
+  String _decode(List<int> bytes, String path) {
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      throw MambaException(
+        'INVALID_TARGET_UTF8: Context file is not UTF-8: $path',
+        exitCode: 4,
+      );
+    }
   }
 
   String _targetDirectory(
@@ -216,7 +232,9 @@ final class ContextInjectionService {
     return candidate;
   }
 
-  ({bool exists, String? sha256, int byteLength}) _observe(String path) {
+  ({bool exists, String? sha256, int byteLength, String? content}) _observe(
+    String path,
+  ) {
     final type = fileSystem.typeSync(path, followLinks: false);
     if (type == FileSystemEntityType.link) {
       throw MambaException(
@@ -225,7 +243,7 @@ final class ContextInjectionService {
       );
     }
     if (type == FileSystemEntityType.notFound) {
-      return (exists: false, sha256: null, byteLength: 0);
+      return (exists: false, sha256: null, byteLength: 0, content: null);
     }
     if (type != FileSystemEntityType.file) {
       throw MambaException(
@@ -245,6 +263,7 @@ final class ContextInjectionService {
       exists: true,
       sha256: sha256.convert(bytes).toString(),
       byteLength: bytes.length,
+      content: _decode(bytes, path),
     );
   }
 }
