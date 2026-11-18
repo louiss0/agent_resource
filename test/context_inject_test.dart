@@ -1027,6 +1027,42 @@ void main() {
           );
         });
 
+        test('includes template content with --show-instructions', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final envelope = successJson(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--show-instructions',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+          );
+          expect(
+            (envelope['data'] as Map<String, dynamic>)['content'],
+            equals('project rules\n'),
+          );
+        });
+
+        test('renders a deterministic text envelope', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final result = await exec(const <String>[
+            'styles',
+            '--harness',
+            'claude',
+            '--unattended',
+          ]);
+          expect(result, isA<MambaSuccessResult>());
+          expect(
+            (result as MambaSuccessResult).output,
+            contains('context inject: planned'),
+          );
+        });
+
         test('resolves an explicit override variant', () async {
           writeTemplate('styles', 'project rules\n');
 

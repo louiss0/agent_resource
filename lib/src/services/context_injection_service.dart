@@ -312,8 +312,9 @@ final class ContextInjectionService {
     final plannedNames = <String, Set<String>>{};
     for (final target in plan.targets) {
       final directory = fileSystem.path.dirname(target.path);
-      plannedNames.putIfAbsent(directory, () => <String>{})
-        ..add(fileSystem.path.basename(target.path));
+      plannedNames
+          .putIfAbsent(directory, () => <String>{})
+          .add(fileSystem.path.basename(target.path));
     }
     final notedCoexistence = <String>{};
     for (final target in plan.targets) {
