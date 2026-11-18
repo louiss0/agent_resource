@@ -37,6 +37,9 @@ const Set<String> _privateStateDirectories = <String>{
   // private instruction text, not an installation ledger.
   'instruction-drafts',
   'authoring-receipts',
+  // The harness-neutral, user-scope storage of named context templates. It
+  // holds instruction text, not an installation ledger.
+  'context-templates',
 };
 const maxManagementDocumentBytes = 8 * 1024 * 1024;
 const maxManagementDepth = 32;

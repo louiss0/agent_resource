@@ -31,6 +31,9 @@ bool isValidContextTemplateName(String value) =>
     contextTemplateNamePattern.hasMatch(value) &&
     !_windowsReservedNames.contains(value);
 
+/// The two output formats shared by every context command.
+enum ContextOutputFormat { text, json }
+
 /// The coding harnesses that consume injected context files.
 enum ContextHarness { claude, codex, pi }
 
