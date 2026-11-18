@@ -6,6 +6,8 @@ import 'context_read_commands.dart';
 import 'src/services/context_template_service.dart';
 import 'context_authoring_commands.dart';
 import 'src/services/context_template_authoring_service.dart';
+import 'context_delete_command.dart';
+import 'components/installation_approval.dart';
 
 /// The singular `context` group for reusable templates and injection.
 final class ContextCommand extends GroupCommand {
@@ -13,12 +15,21 @@ final class ContextCommand extends GroupCommand {
     ContextTemplateService? contextTemplates,
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : super(_children(contextTemplates, contextAuthoring, fileSystem));
+    InstallationApprovalComponent? deleteApproval,
+  }) : super(
+         _children(
+           contextTemplates,
+           contextAuthoring,
+           fileSystem,
+           deleteApproval,
+         ),
+       );
 
   static List<Command> _children(
     ContextTemplateService? contextTemplates,
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem,
+    InstallationApprovalComponent? deleteApproval,
   ) {
     final service =
         contextTemplates ?? ContextTemplateService(fileSystem: fileSystem);
@@ -33,6 +44,7 @@ final class ContextCommand extends GroupCommand {
       ContextInspectCommand(service),
       ContextCreateCommand(authoring),
       ContextEditCommand(authoring),
+      ContextDeleteCommand(service, approval: deleteApproval),
     ];
   }
 
