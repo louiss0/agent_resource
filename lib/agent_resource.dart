@@ -33,6 +33,7 @@ import 'src/services/skill_lifecycle_service.dart';
 
 import 'context.dart';
 import 'src/services/context_template_service.dart';
+import 'src/services/context_template_authoring_service.dart';
 
 const applicationVersion = String.fromEnvironment(
   'AGENT_RESOURCE_VERSION',
@@ -66,6 +67,7 @@ Executor createExecutor({
   McpRecoveryService? mcpRecovery,
   McpConversionService? mcpConversion,
   ContextTemplateService? contextTemplates,
+  ContextTemplateAuthoringService? contextAuthoring,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -128,6 +130,7 @@ Executor createExecutor({
       ),
       ContextCommand(
         contextTemplates: contextTemplates,
+        contextAuthoring: contextAuthoring,
         fileSystem: fileSystem,
       ),
     ],
