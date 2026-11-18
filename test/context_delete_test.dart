@@ -1,11 +1,11 @@
-import 'dart:convert';
-
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/components/installation_approval.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
+
+import 'support/context_test_support.dart';
 
 void main() {
   group('agent_resource', () {
@@ -32,21 +32,8 @@ void main() {
         const alphaDigest =
             '4f76f12a140a02006bff5b0a8c0bcdf5344d89a6773c0b312b5e459709f59e18';
 
-        List<String> ctx() => const <String>[
-          '--cwd',
-          '/sandbox/project/',
-          '--home',
-          '/sandbox/home/',
-          '--state-dir',
-          '/sandbox/state/',
-        ];
-
-        List<String> deleteCommand(List<String> extra) => <String>[
-          'context',
-          'delete',
-          ...extra,
-          ...ctx(),
-        ];
+        List<String> deleteCommand(List<String> extra) =>
+            contextCommandArgs('delete', extra);
 
         Future<MambaExecutionResult> exec(List<String> tokens) =>
             createExecutor(
@@ -77,25 +64,12 @@ void main() {
           MambaExecutionResult result, {
           required int exitCode,
           required String code,
-        }) {
-          expect(
-            result,
-            isA<MambaFailureResult>()
-                .having((value) => value.exitCode, 'exit code', exitCode)
-                .having((value) => value.message, 'message', contains(code))
-                .having((value) => value.output, 'output', isNull)
-                .having(
-                  (value) => value.error.phase,
-                  'phase',
-                  MambaExecutionPhase.run,
-                )
-                .having(
-                  (value) => value.error.commandPath,
-                  'command path',
-                  <String>['agent_resource', 'context', 'delete'],
-                ),
-          );
-        }
+        }) => expectContextFailure(
+          result,
+          verb: 'delete',
+          code: code,
+          exitCode: exitCode,
+        );
 
         void writeTemplate(String name, String content) {
           final file = fs.file('$templateDir/$name.md')
@@ -270,41 +244,29 @@ void main() {
               ]),
             );
 
-            expect(
+            expectContextJsonSuccess(
               result,
-              isA<MambaSuccessResult>()
-                  .having((value) => value.exitCode, 'exit code', 0)
-                  .having((value) => value.output, 'output', isNotNull),
-            );
-            final envelope = jsonDecode(
-              (result as MambaSuccessResult).output!,
-            ) as Map<String, dynamic>;
-            expect(envelope['schemaVersion'], equals(1));
-            expect(envelope['command'], equals('context delete'));
-            expect(envelope['outcome'], equals('deleted'));
-            expect(
-              envelope['data'],
-              equals(<String, Object?>{
-                'name': 'alpha',
-                'path': '$templateDir/alpha.md',
-                'byteLength': 12,
-                'isEmpty': false,
-                'sha256': alphaDigest,
+              command: 'context delete',
+              outcome: 'deleted',
+              data: <String, Object?>{
+                ...contextTemplateData(
+                  'alpha',
+                  byteLength: 12,
+                  isEmpty: false,
+                  sha256: alphaDigest,
+                ),
                 'deleted': true,
                 'dryRun': false,
-              }),
-            );
-            final diagnostics = envelope['diagnostics'] as List<dynamic>;
-            expect(diagnostics, hasLength(1));
-            expect(
-              diagnostics.first,
-              equals(<String, Object?>{
-                'code': 'TEMPLATE_DELETED',
-                'category': 'operation',
-                'severity': 'info',
-                'field': 'deleted',
-                'message': 'Removed context template "alpha".',
-              }),
+              },
+              diagnostics: <Object?>[
+                <String, Object?>{
+                  'code': 'TEMPLATE_DELETED',
+                  'category': 'operation',
+                  'severity': 'info',
+                  'field': 'deleted',
+                  'message': 'Removed context template "alpha".',
+                },
+              ],
             );
             expect(fs.file('$templateDir/alpha.md').existsSync(), isFalse);
             expect(
@@ -493,52 +455,29 @@ void main() {
             deleteCommand(['alpha', '--dry-run', '--format', 'json']),
           );
 
-          expect(
+          expectContextJsonSuccess(
             result,
-            isA<MambaSuccessResult>()
-                .having((value) => value.exitCode, 'exit code', 0)
-                .having((value) => value.output, 'output', isNotNull),
-          );
-          final envelope = jsonDecode(
-            (result as MambaSuccessResult).output!,
-          ) as Map<String, dynamic>;
-          expect(envelope['schemaVersion'], equals(1));
-          expect(envelope['command'], equals('context delete'));
-          expect(envelope['outcome'], equals('planned'));
-          expect(
-            envelope['data'],
-            equals(<String, Object?>{
-              'name': 'alpha',
-              'path': '$templateDir/alpha.md',
-              'byteLength': 12,
-              'isEmpty': false,
-              'sha256': alphaDigest,
+            command: 'context delete',
+            outcome: 'planned',
+            data: <String, Object?>{
+              ...contextTemplateData(
+                'alpha',
+                byteLength: 12,
+                isEmpty: false,
+                sha256: alphaDigest,
+              ),
               'deleted': false,
               'dryRun': true,
-            }),
-          );
-          expect(
-            envelope['diagnostics'],
-            everyElement(
-              isA<Map<String, dynamic>>()
-                  .having((value) => value['code'], 'code', isA<String>())
-                  .having(
-                    (value) => value['category'],
-                    'category',
-                    isA<String>(),
-                  )
-                  .having(
-                    (value) => value['severity'],
-                    'severity',
-                    isA<String>(),
-                  )
-                  .having((value) => value['field'], 'field', isA<String>())
-                  .having(
-                    (value) => value['message'],
-                    'message',
-                    isA<String>(),
-                  ),
-            ),
+            },
+            diagnostics: <Object?>[
+              <String, Object?>{
+                'code': 'DRY_RUN_PLANNED',
+                'category': 'operation',
+                'severity': 'info',
+                'field': 'deleted',
+                'message': 'No context template was removed.',
+              },
+            ],
           );
           expect(
             fs.file('$templateDir/alpha.md').readAsStringSync(),

@@ -1,10 +1,10 @@
-import 'dart:convert';
-
 import 'package:agent_resource/agent_resource.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
+
+import 'support/context_test_support.dart';
 
 void main() {
   group('agent_resource', () {
@@ -19,60 +19,35 @@ void main() {
       const emptyDigest =
           'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
-      List<String> ctx() => const <String>[
-        '--cwd',
-        '/sandbox/project/',
-        '--home',
-        '/sandbox/home/',
-        '--state-dir',
-        '/sandbox/state/',
-      ];
-
-      List<String> command(String verb, List<String> extra) => <String>[
-        'context',
-        verb,
-        ...extra,
-        ...ctx(),
-      ];
+      List<String> command(String verb, List<String> extra) =>
+          contextCommandArgs(verb, extra);
 
       Future<MambaExecutionResult> exec(List<String> tokens) =>
           createExecutor(fileSystem: fs).fake().execute(tokens);
 
-      Map<String, dynamic> successJson(MambaExecutionResult result) {
-        expect(
-          result,
-          isA<MambaSuccessResult>()
-              .having((value) => value.exitCode, 'exit code', 0)
-              .having((value) => value.output, 'output', isNotNull),
-        );
-        return jsonDecode((result as MambaSuccessResult).output!)
-            as Map<String, dynamic>;
-      }
+      Map<String, dynamic> successJson(
+        MambaExecutionResult result, {
+        required String command,
+        required String outcome,
+        required Map<String, Object?> data,
+      }) => expectContextJsonSuccess(
+        result,
+        command: command,
+        outcome: outcome,
+        data: data,
+      );
 
       void expectFailure(
         MambaExecutionResult result, {
         required String code,
         String verb = 'inspect',
         int exitCode = 4,
-      }) {
-        expect(
-          result,
-          isA<MambaFailureResult>()
-              .having((value) => value.exitCode, 'exit code', exitCode)
-              .having((value) => value.message, 'message', contains(code))
-              .having((value) => value.output, 'output', isNull)
-              .having(
-                (value) => value.error.phase,
-                'phase',
-                MambaExecutionPhase.run,
-              )
-              .having(
-                (value) => value.error.commandPath,
-                'command path',
-                <String>['agent_resource', 'context', verb],
-              ),
-        );
-      }
+      }) => expectContextFailure(
+        result,
+        verb: verb,
+        code: code,
+        exitCode: exitCode,
+      );
 
       void writeTemplate(String name, String content) {
         final file = fs.file('$templateDir/$name.md')
@@ -95,19 +70,13 @@ void main() {
         test(
           'reports an empty inventory when the directory is absent',
           () async {
-            final envelope = successJson(
+            successJson(
               await exec(command('list', ['--format', 'json'])),
+              command: 'context list',
+              outcome: 'listed',
+              data: <String, Object?>{'templates': <Object?>[]},
             );
 
-            expect(envelope['schemaVersion'], equals(1));
-            expect(envelope['command'], equals('context list'));
-            expect(envelope['outcome'], equals('listed'));
-            expect(envelope['data'], isA<Map<String, dynamic>>());
-            expect(
-              (envelope['data'] as Map<String, dynamic>)['templates'],
-              isEmpty,
-            );
-            expect(envelope['diagnostics'], isEmpty);
             expect(fs.directory(templateDir).existsSync(), isFalse);
           },
         );
@@ -121,44 +90,37 @@ void main() {
 
             final envelope = successJson(
               await exec(command('list', ['--format', 'json'])),
+              command: 'context list',
+              outcome: 'listed',
+              data: <String, Object?>{
+                'templates': <Object?>[
+                  contextTemplateData(
+                    'alpha',
+                    byteLength: 12,
+                    isEmpty: false,
+                    sha256: alphaDigest,
+                  ),
+                  contextTemplateData(
+                    'blank',
+                    byteLength: 0,
+                    isEmpty: true,
+                    sha256: emptyDigest,
+                  ),
+                  contextTemplateData(
+                    'zebra',
+                    byteLength: 17,
+                    isEmpty: false,
+                    sha256: betaDigest,
+                  ),
+                ],
+              },
             );
             final templates =
                 (envelope['data'] as Map<String, dynamic>)['templates']
                     as List<dynamic>;
-
             expect(
               templates.map((entry) => entry['name']).toList(),
               equals(['alpha', 'blank', 'zebra']),
-            );
-            expect(
-              templates.first,
-              equals(<String, Object?>{
-                'name': 'alpha',
-                'path': '$templateDir/alpha.md',
-                'byteLength': 12,
-                'isEmpty': false,
-                'sha256': alphaDigest,
-              }),
-            );
-            expect(
-              templates[1],
-              equals(<String, Object?>{
-                'name': 'blank',
-                'path': '$templateDir/blank.md',
-                'byteLength': 0,
-                'isEmpty': true,
-                'sha256': emptyDigest,
-              }),
-            );
-            expect(
-              templates[2],
-              equals(<String, Object?>{
-                'name': 'zebra',
-                'path': '$templateDir/zebra.md',
-                'byteLength': 17,
-                'isEmpty': false,
-                'sha256': betaDigest,
-              }),
             );
           },
         );
@@ -287,25 +249,19 @@ void main() {
           () async {
             writeTemplate('alpha', 'alpha rules\n');
 
-            final envelope = successJson(
+            successJson(
               await exec(command('inspect', ['alpha', '--format', 'json'])),
+              command: 'context inspect',
+              outcome: 'inspected',
+              data: contextTemplateData(
+                'alpha',
+                byteLength: 12,
+                isEmpty: false,
+                sha256: alphaDigest,
+                content: 'alpha rules\n',
+              ),
             );
 
-            expect(envelope['schemaVersion'], equals(1));
-            expect(envelope['command'], equals('context inspect'));
-            expect(envelope['outcome'], equals('inspected'));
-            expect(
-              envelope['data'],
-              equals(<String, Object?>{
-                'name': 'alpha',
-                'path': '$templateDir/alpha.md',
-                'byteLength': 12,
-                'isEmpty': false,
-                'sha256': alphaDigest,
-                'content': 'alpha rules\n',
-              }),
-            );
-            expect(envelope['diagnostics'], isEmpty);
             expect(
               fs.file('$templateDir/alpha.md').readAsStringSync(),
               equals('alpha rules\n'),
@@ -321,6 +277,15 @@ void main() {
             final envelope = successJson(
               await exec(
                 command('inspect', ['--name', 'zebra', '--format', 'json']),
+              ),
+              command: 'context inspect',
+              outcome: 'inspected',
+              data: contextTemplateData(
+                'zebra',
+                byteLength: 17,
+                isEmpty: false,
+                sha256: betaDigest,
+                content: 'beta instructions',
               ),
             );
 
@@ -338,12 +303,18 @@ void main() {
             await exec(
               command('inspect', ['--name', 'blank', '--format', 'json']),
             ),
+            command: 'context inspect',
+            outcome: 'inspected',
+            data: contextTemplateData(
+              'blank',
+              byteLength: 0,
+              isEmpty: true,
+              sha256: emptyDigest,
+              content: '',
+            ),
           );
 
           final data = envelope['data'] as Map<String, dynamic>;
-          expect(data['isEmpty'], isTrue);
-          expect(data['byteLength'], equals(0));
-          expect(data['sha256'], equals(emptyDigest));
           expect(data['content'], equals(''));
         });
 
