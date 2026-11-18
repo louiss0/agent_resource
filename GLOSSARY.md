@@ -217,8 +217,12 @@ A bounded set of typed native dependency nodes and relationship edges with decla
 **Readiness**:
 Whether complete static correctness, reference, destination, ownership, and field-decision checks permit a reviewed publication; never a claim of runtime activation or enforcement.
 
-**Context**:
-Persistent project or user instructions consumed by a coding harness, initially represented by AGENTS.md or CLAUDE.md.
+**Context file**:
+Persistent project, folder, or user instructions placed at a harness-recognized location (such as `AGENTS.md` or `CLAUDE.md`) and consumed by a coding harness.
+_Avoid_: Agent template, agent definition
+
+**Context template**:
+A named, reusable body of context instructions stored and managed by Agent Resource for editing and injection into target context files.
 _Avoid_: Agent template, agent definition
 
 **Validation**:
