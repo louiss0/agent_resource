@@ -3,6 +3,7 @@ import 'dart:io' show Platform, stdin, stdout;
 import 'package:mamba/mamba.dart';
 
 import 'components/guided_value.dart';
+import 'components/installation_approval.dart';
 import 'components/skill_target_selector.dart';
 import 'src/context/context_types.dart';
 import 'src/services/context_injection_service.dart';
@@ -54,10 +55,20 @@ final class ContextInjectCommand extends Command {
     Future<String?> Function(List<String>)? selectTemplate,
     Future<bool> Function()? confirm,
     bool Function()? hasTerminal,
-  }) : _selectHarnesses = selectHarnesses ?? _defaultHarnessSelector,
+    InstallationApprovalComponent? approval,
+  }) : _approval =
+           approval ??
+           const InstallationApprovalComponent(
+             label:
+                 'Apply this reviewed context injection plan? '
+                 '(Ctrl+C to cancel)',
+           ),
+       _explicitConfirm = confirm,
+       _selectHarnesses = selectHarnesses ?? _defaultHarnessSelector,
        _selectTemplate = selectTemplate ?? _defaultTemplateSelector,
-       _confirm = confirm ?? _defaultConfirmation,
-       _hasTerminal = hasTerminal ?? _defaultHasTerminal,
+       _hasTerminal =
+           hasTerminal ??
+           (() => approval?.hasTerminal?.call() ?? _defaultHasTerminal()),
        super(
          discretionaryPositionals: [_nameArgument],
          options: [
@@ -99,7 +110,8 @@ final class ContextInjectCommand extends Command {
   final ContextTemplateService _templates;
   final Future<List<ContextHarness>?> Function() _selectHarnesses;
   final Future<String?> Function(List<String>) _selectTemplate;
-  final Future<bool> Function() _confirm;
+  final InstallationApprovalComponent _approval;
+  final Future<bool> Function()? _explicitConfirm;
   final bool Function() _hasTerminal;
 
   @override
@@ -302,7 +314,7 @@ final class ContextInjectCommand extends Command {
 
   static bool _defaultHasTerminal() => stdin.hasTerminal && stdout.hasTerminal;
 
-  static Future<bool> _defaultConfirmation() async => false;
+  Future<bool> _confirm() => _explicitConfirm?.call() ?? _approval.render();
 
   MambaException _refusal(String code, String message) =>
       MambaException('$code: $message', exitCode: 4);

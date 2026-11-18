@@ -20,6 +20,7 @@ final class ContextCommand extends GroupCommand {
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     InstallationApprovalComponent? deleteApproval,
+    InstallationApprovalComponent? injectApproval,
   }) : super(
          _children(
            contextTemplates,
@@ -28,6 +29,7 @@ final class ContextCommand extends GroupCommand {
            contextAuthoring,
            fileSystem,
            deleteApproval,
+           injectApproval,
          ),
        );
 
@@ -38,6 +40,7 @@ final class ContextCommand extends GroupCommand {
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem,
     InstallationApprovalComponent? deleteApproval,
+    InstallationApprovalComponent? injectApproval,
   ) {
     final service =
         contextTemplates ?? ContextTemplateService(fileSystem: fileSystem);
@@ -57,6 +60,7 @@ final class ContextCommand extends GroupCommand {
           ContextInjectCommand(
             contextInjection ?? ContextInjectionService(fileSystem: fileSystem),
             service,
+            approval: injectApproval,
           ),
     ];
   }

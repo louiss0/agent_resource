@@ -74,6 +74,7 @@ Executor createExecutor({
   ContextInjectCommand? contextInject,
   ContextTemplateAuthoringService? contextAuthoring,
   InstallationApprovalComponent? contextDeleteApproval,
+  InstallationApprovalComponent? contextInjectApproval,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -141,6 +142,7 @@ Executor createExecutor({
         contextAuthoring: contextAuthoring,
         fileSystem: fileSystem,
         deleteApproval: contextDeleteApproval,
+        injectApproval: contextInjectApproval,
       ),
     ],
   );

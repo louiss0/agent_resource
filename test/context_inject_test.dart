@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/components/installation_approval.dart';
 import 'package:agent_resource/context_inject.dart';
 import 'package:agent_resource/src/context/context_types.dart';
 import 'package:agent_resource/src/services/context_injection_service.dart';
@@ -792,6 +793,97 @@ void main() {
                   ),
             );
           });
+
+          test(
+            'approves an interactive apply through the approval seam',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final prompts = <String>[];
+              final result =
+                  await createExecutor(
+                    fileSystem: fs,
+                    contextInjectApproval: InstallationApprovalComponent(
+                      label: 'Apply this reviewed context injection plan?',
+                      hasTerminal: () => true,
+                      confirm: (prompt) {
+                        prompts.add(prompt.prompt);
+                        return true;
+                      },
+                    ),
+                  ).fake().execute(
+                    command(const <String>[
+                      'styles',
+                      '--harness',
+                      'claude',
+                      '--apply',
+                      '--interactive',
+                    ]),
+                  );
+
+              expect(
+                result,
+                isA<MambaSuccessResult>()
+                    .having((value) => value.exitCode, 'exit code', 0)
+                    .having(
+                      (value) => value.output,
+                      'output',
+                      contains('context inject: published'),
+                    ),
+              );
+              expect(
+                prompts.single,
+                contains('Apply this reviewed context injection plan?'),
+              );
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+                equals('rules\n'),
+              );
+            },
+          );
+
+          test(
+            'declines an interactive apply through the approval seam',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final prompts = <String>[];
+              final result =
+                  await createExecutor(
+                    fileSystem: fs,
+                    contextInjectApproval: InstallationApprovalComponent(
+                      label: 'Apply this reviewed context injection plan?',
+                      hasTerminal: () => true,
+                      confirm: (prompt) {
+                        prompts.add(prompt.prompt);
+                        return false;
+                      },
+                    ),
+                  ).fake().execute(
+                    command(const <String>[
+                      'styles',
+                      '--harness',
+                      'claude',
+                      '--apply',
+                      '--interactive',
+                    ]),
+                  );
+
+              expect(
+                result,
+                isA<MambaFailureResult>()
+                    .having((value) => value.exitCode, 'exit code', 7)
+                    .having(
+                      (value) => value.message,
+                      'message',
+                      contains('CANCELLED'),
+                    ),
+              );
+              expect(prompts, hasLength(1));
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
 
           test('refuses a cancelled apply confirmation', () async {
             writeTemplate('styles', 'rules\n');
