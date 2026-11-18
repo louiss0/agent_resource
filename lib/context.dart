@@ -5,24 +5,27 @@ import 'package:mamba/mamba.dart';
 import 'context_read_commands.dart';
 import 'src/services/context_template_service.dart';
 import 'context_delete_command.dart';
+import 'components/installation_approval.dart';
 
 /// The singular `context` group for reusable templates and injection.
 final class ContextCommand extends GroupCommand {
   ContextCommand({
     ContextTemplateService? contextTemplates,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : super(_children(contextTemplates, fileSystem));
+    InstallationApprovalComponent? deleteApproval,
+  }) : super(_children(contextTemplates, fileSystem, deleteApproval));
 
   static List<Command> _children(
     ContextTemplateService? contextTemplates,
     fslib.FileSystem fileSystem,
+    InstallationApprovalComponent? deleteApproval,
   ) {
     final service =
         contextTemplates ?? ContextTemplateService(fileSystem: fileSystem);
     return <Command>[
       ContextListCommand(service),
       ContextInspectCommand(service),
-      ContextDeleteCommand(service),
+      ContextDeleteCommand(service, approval: deleteApproval),
     ];
   }
 

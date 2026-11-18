@@ -1,7 +1,8 @@
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, stdin, stdout;
 
 import 'package:mamba/mamba.dart';
 
+import 'components/installation_approval.dart';
 import 'context_read_commands.dart';
 import 'src/context/context_types.dart';
 import 'src/services/context_template_service.dart';
@@ -18,8 +19,9 @@ final _deleteStateDir = FolderPathOption('state-dir');
 
 /// Removes one stored context template after confirmation.
 final class ContextDeleteCommand extends Command {
-  ContextDeleteCommand(this._service)
-    : super(
+  ContextDeleteCommand(this._service, {InstallationApprovalComponent? approval})
+    : _approval = approval ?? const InstallationApprovalComponent(),
+      super(
         discretionaryPositionals: [_nameArgument],
         options: [
           _nameOption,
@@ -28,7 +30,7 @@ final class ContextDeleteCommand extends Command {
           _deleteHome,
           _deleteStateDir,
         ],
-        flags: [_dryRun, _interactive, _unattended],
+        flags: [_dryRun, _yes, _interactive, _unattended],
         conflicts: {
           'interactive': ['unattended'],
         },
@@ -46,6 +48,10 @@ final class ContextDeleteCommand extends Command {
     'dry-run',
     description: 'Report the deletion without changing the filesystem.',
   );
+  static const _yes = BooleanFlag(
+    'yes',
+    description: 'Confirm the deletion without a prompt.',
+  );
   static const _interactive = BooleanFlag(
     'interactive',
     description: 'Require a usable terminal and confirm interactively.',
@@ -56,6 +62,11 @@ final class ContextDeleteCommand extends Command {
   );
 
   final ContextTemplateService _service;
+  final InstallationApprovalComponent _approval;
+
+  bool _hasTerminal() =>
+      _approval.hasTerminal?.call() ??
+      (stdin.hasTerminal && stdout.hasTerminal);
 
   @override
   String get name => 'delete';
@@ -66,6 +77,20 @@ final class ContextDeleteCommand extends Command {
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(_deleteFormat);
+    if (valueOf(_interactive) && format == ContextOutputFormat.json) {
+      throw MambaException(
+        'INTERACTIVE_JSON_REFUSED: Interactive confirmation cannot be used '
+        'with --format json; pass --yes instead.',
+        exitCode: 4,
+      );
+    }
+    if (valueOf(_interactive) && !_hasTerminal()) {
+      throw MambaException(
+        'INTERACTIVE_TERMINAL_REFUSED: No usable terminal for confirmation; '
+        'pass --yes in unattended mode.',
+        exitCode: 4,
+      );
+    }
     final positionalName = valueOf(_nameArgument);
     final optionName = valueOf(_nameOption);
     if (positionalName != null && optionName != null) {
@@ -97,21 +122,48 @@ final class ContextDeleteCommand extends Command {
       stateDir: valueOf(_deleteStateDir),
     );
     final template = _service.inspect(options, name);
+    final dryRun = valueOf(_dryRun);
+    if (!dryRun && !valueOf(_yes)) {
+      final unattended =
+          valueOf(_unattended) ||
+          format == ContextOutputFormat.json ||
+          !_hasTerminal();
+      if (unattended) {
+        throw MambaException(
+          'CONFIRMATION_REQUIRED: Deleting context template "$name" in '
+          'unattended mode requires --yes.',
+          exitCode: 4,
+        );
+      }
+      if (!await _approval.render()) {
+        throw MambaException(
+          'DELETION_CANCELLED: Deletion of context template "$name" was not '
+          'confirmed.',
+          exitCode: 7,
+        );
+      }
+    }
+    if (!dryRun) {
+      final current = _service.inspect(options, name);
+      _service.fileSystem.file(current.metadata.path).deleteSync();
+    }
     final result = LifecycleResult(
       command: 'context delete',
-      outcome: 'planned',
+      outcome: dryRun ? 'planned' : 'deleted',
       data: <String, Object?>{
         ...template.metadata.toJson(),
-        'deleted': false,
-        'dryRun': true,
+        'deleted': !dryRun,
+        'dryRun': dryRun,
       },
       diagnostics: <Map<String, Object?>>[
         <String, Object?>{
-          'code': 'DRY_RUN_PLANNED',
+          'code': dryRun ? 'DRY_RUN_PLANNED' : 'TEMPLATE_DELETED',
           'category': 'operation',
           'severity': 'info',
           'field': 'deleted',
-          'message': 'No context template was removed.',
+          'message': dryRun
+              ? 'No context template was removed.'
+              : 'Removed context template "$name".',
         },
       ],
     );
