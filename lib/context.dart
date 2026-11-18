@@ -2,7 +2,9 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'context_inject.dart';
 import 'context_read_commands.dart';
+import 'src/services/context_injection_service.dart';
 import 'src/services/context_template_service.dart';
 import 'context_authoring_commands.dart';
 import 'src/services/context_template_authoring_service.dart';
@@ -13,12 +15,16 @@ import 'components/installation_approval.dart';
 final class ContextCommand extends GroupCommand {
   ContextCommand({
     ContextTemplateService? contextTemplates,
+    ContextInjectionService? contextInjection,
+    ContextInjectCommand? inject,
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
     InstallationApprovalComponent? deleteApproval,
   }) : super(
          _children(
            contextTemplates,
+           contextInjection,
+           inject,
            contextAuthoring,
            fileSystem,
            deleteApproval,
@@ -27,6 +33,8 @@ final class ContextCommand extends GroupCommand {
 
   static List<Command> _children(
     ContextTemplateService? contextTemplates,
+    ContextInjectionService? contextInjection,
+    ContextInjectCommand? inject,
     ContextTemplateAuthoringService? contextAuthoring,
     fslib.FileSystem fileSystem,
     InstallationApprovalComponent? deleteApproval,
@@ -45,6 +53,11 @@ final class ContextCommand extends GroupCommand {
       ContextCreateCommand(authoring),
       ContextEditCommand(authoring),
       ContextDeleteCommand(service, approval: deleteApproval),
+      inject ??
+          ContextInjectCommand(
+            contextInjection ?? ContextInjectionService(fileSystem: fileSystem),
+            service,
+          ),
     ];
   }
 
