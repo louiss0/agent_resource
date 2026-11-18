@@ -10,6 +10,20 @@ import 'package:test/test.dart';
 void main() {
   group('agent_resource', () {
     group('context', () {
+      test('group help lists the delete child', () async {
+        final helpFs = MemoryFileSystem(style: FileSystemStyle.posix);
+        final result = await createExecutor(fileSystem: helpFs)
+            .fake()
+            .execute(['context', '--help']);
+
+        expect(
+          result,
+          isA<MambaSuccessResult>()
+              .having((value) => value.exitCode, 'exit code', 0)
+              .having((value) => value.output, 'output', contains('delete')),
+        );
+      });
+
       group('delete', () {
         late fslib.FileSystem fs;
         late InstallationApprovalComponent approval;
@@ -235,6 +249,142 @@ void main() {
             code: 'CONFIRMATION_REQUIRED',
           );
           expect(fs.file('$templateDir/alpha.md').existsSync(), isTrue);
+        });
+
+        test('help describes the delete surface', () async {
+          final result = await exec(deleteCommand(['--help']));
+
+          expect(
+            result,
+            isA<MambaSuccessResult>()
+                .having((value) => value.exitCode, 'exit code', 0)
+                .having(
+                  (value) => value.output,
+                  'output',
+                  allOf(
+                    contains('--dry-run'),
+                    contains('--yes'),
+                    contains('--interactive'),
+                    contains('--unattended'),
+                    contains('--format'),
+                  ),
+                ),
+          );
+        });
+
+        test('rejects an undeclared input during parsing', () async {
+          final result = await exec(deleteCommand(['alpha', '--not-an-input']));
+
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', isNonZero)
+                .having(
+                  (value) => value.message,
+                  'message',
+                  contains('--not-an-input'),
+                )
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.phase,
+                  'phase',
+                  MambaExecutionPhase.parse,
+                )
+                .having(
+                  (value) => value.error.commandPath,
+                  'command path',
+                  <String>['agent_resource', 'context', 'delete'],
+                ),
+          );
+        });
+
+        test('rejects both positional and --name', () async {
+          writeTemplate('alpha', 'alpha rules\n');
+
+          expectFailure(
+            await exec(
+              deleteCommand(['alpha', '--name', 'alpha', '--format', 'json']),
+            ),
+            exitCode: 4,
+            code: 'AMBIGUOUS_TEMPLATE_NAME',
+          );
+        });
+
+        test('requires an explicit name even on a usable terminal', () async {
+          approval = InstallationApprovalComponent(
+            hasTerminal: () => true,
+            confirm: (_) => true,
+          );
+
+          expectFailure(
+            await exec(deleteCommand(['--format', 'json'])),
+            exitCode: 4,
+            code: 'MISSING_TEMPLATE_NAME',
+          );
+        });
+
+        test('refuses a non-portable name', () async {
+          expectFailure(
+            await exec(deleteCommand(['../escape', '--format', 'json'])),
+            exitCode: 4,
+            code: 'INVALID_TEMPLATE_NAME',
+          );
+        });
+
+        test('refuses an absent template', () async {
+          expectFailure(
+            await exec(deleteCommand(['absent', '--format', 'json'])),
+            exitCode: 4,
+            code: 'TEMPLATE_NOT_FOUND',
+          );
+        });
+
+        test(
+          'refuses a symlinked template without unlinking its target',
+          () async {
+            fs.directory(templateDir).createSync(recursive: true);
+            fs.file('/sandbox/home/outside.md').writeAsStringSync('outside');
+            fs
+                .link('$templateDir/linked.md')
+                .createSync('/sandbox/home/outside.md');
+
+            expectFailure(
+              await exec(
+                deleteCommand([
+                  'linked',
+                  '--unattended',
+                  '--yes',
+                  '--format',
+                  'json',
+                ]),
+              ),
+              exitCode: 4,
+              code: 'SYMLINK_REFUSED',
+            );
+            expect(
+              fs.file('/sandbox/home/outside.md').readAsStringSync(),
+              equals('outside'),
+            );
+          },
+        );
+
+        test('refuses a non-regular template entry', () async {
+          fs.directory('$templateDir/folder.md').createSync(recursive: true);
+
+          expectFailure(
+            await exec(
+              deleteCommand([
+                'folder',
+                '--unattended',
+                '--yes',
+                '--format',
+                'json',
+              ]),
+            ),
+            exitCode: 4,
+            code: 'NON_REGULAR_TEMPLATE_REFUSED',
+          );
+          expect(fs.directory('$templateDir/folder.md').existsSync(), isTrue);
         });
 
         test('dry run reports a plan without touching templates', () async {
