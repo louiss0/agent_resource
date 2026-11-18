@@ -414,12 +414,12 @@ interface class ContextTemplateAuthoringService {
       ),
       EditorEditCancelled(:final reason) => throw _cancel(
         'EDITOR_CANCELLED',
-        '$reason draftId ${prepared.draftId} draftPath ${prepared.path}',
+        reason,
         draft: draftRef,
       ),
       EditorEditNotFinished(:final reason) => throw _cancel(
         'EDITOR_NOT_FINISHED',
-        '$reason draftId ${prepared.draftId} draftPath ${prepared.path}',
+        reason,
         draft: draftRef,
       ),
     };
@@ -681,10 +681,7 @@ interface class ContextTemplateAuthoringService {
     String code,
     String message, {
     _DraftReference? draft,
-  }) => MambaException(
-    '$code: $message${_withDraftSuffix('', draft)}',
-    exitCode: 7,
-  );
+  }) => MambaException(_withDraftSuffix('$code: $message', draft), exitCode: 7);
 
   MambaException _publicationFailure(
     String code,
