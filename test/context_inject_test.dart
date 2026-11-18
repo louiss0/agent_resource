@@ -326,6 +326,68 @@ void main() {
           );
         });
 
+        group('plan identity', () {
+          Future<String> planId(List<String> extra) async {
+            final envelope = successJson(
+              await exec(<String>[
+                ...extra,
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+            );
+            return (envelope['data'] as Map<String, dynamic>)['planId']!
+                as String;
+          }
+
+          test('binds the source template and every target state', () async {
+            writeTemplate('styles', 'rules\n');
+            fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('old\n');
+            fs.file('/sandbox/project/AGENTS.md').writeAsStringSync('base\n');
+
+            final baseline = await planId(const <String>[
+              'styles',
+              '--harness',
+              'codex',
+            ]);
+
+            fs.file('/sandbox/project/AGENTS.md').writeAsStringSync('new\n');
+            final targetDrift = await planId(const <String>[
+              'styles',
+              '--harness',
+              'codex',
+            ]);
+            expect(targetDrift, isNot(equals(baseline)));
+
+            fs.file('/sandbox/project/AGENTS.md').writeAsStringSync('base\n');
+            writeTemplate('styles', 'changed rules\n');
+            final sourceDrift = await planId(const <String>[
+              'styles',
+              '--harness',
+              'codex',
+            ]);
+            expect(sourceDrift, isNot(equals(baseline)));
+          });
+
+          test('writes nothing with --dry-run', () async {
+            writeTemplate('styles', 'rules\n');
+
+            final envelope = successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--dry-run',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+            );
+            expect(envelope['outcome'], equals('planned'));
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+        });
+
         group('combine', () {
           const normalizedAppendDigest =
               '8bc1a592ae290cab2854458e4d42d1f9f850637c2b2a89be4571f56c4386b775';
