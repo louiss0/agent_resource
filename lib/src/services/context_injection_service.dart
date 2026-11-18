@@ -99,9 +99,7 @@ final class ContextInjectionService {
     bool showInstructions = false,
   }) {
     final context = LifecycleContext.resolve(options, fileSystem: fileSystem);
-    final targetDirectory = scope == ContextScope.project
-        ? context.projectRoot
-        : context.stateRoot(LifecycleScope.user);
+    final targetDirectory = _targetDirectory(context, scope, folder);
     final resolved = _resolver.resolve(
       context: context,
       harnesses: harnesses,
@@ -164,6 +162,58 @@ final class ContextInjectionService {
       targets: targets,
       content: showInstructions ? template.content : null,
     );
+  }
+
+  String _targetDirectory(
+    LifecycleContext context,
+    ContextScope scope,
+    String? folder,
+  ) {
+    if (folder == null) {
+      return scope == ContextScope.project
+          ? context.projectRoot
+          : context.stateRoot(LifecycleScope.user);
+    }
+    if (scope != ContextScope.project) {
+      throw MambaException(
+        'FOLDER_SCOPE_CONFLICT: --folder is only valid with --scope project.',
+        exitCode: 4,
+      );
+    }
+    final root = context.projectRoot;
+    final candidate = context.resolvePath(folder);
+    if (candidate != root && !fileSystem.path.isWithin(root, candidate)) {
+      throw MambaException(
+        'FOLDER_OUTSIDE_PROJECT: Folder escapes the project root: $candidate',
+        exitCode: 4,
+      );
+    }
+    final relative = fileSystem.path.relative(candidate, from: root);
+    var current = root;
+    for (final segment in relative.split(fileSystem.path.separator)) {
+      if (segment.isEmpty || segment == '.') continue;
+      current = fileSystem.path.join(current, segment);
+      final type = fileSystem.typeSync(current, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        throw MambaException(
+          'SYMLINK_REFUSED: Folder path traverses a link: $current',
+          exitCode: 4,
+        );
+      }
+      if (type == FileSystemEntityType.notFound) {
+        throw MambaException(
+          'FOLDER_NOT_FOUND: Folder does not exist: $current',
+          exitCode: 4,
+        );
+      }
+      if (type != FileSystemEntityType.directory) {
+        throw MambaException(
+          'FOLDER_NOT_DIRECTORY: Folder path is not a directory: $current',
+          exitCode: 4,
+        );
+      }
+    }
+    return candidate;
   }
 
   ({bool exists, String? sha256, int byteLength}) _observe(String path) {
