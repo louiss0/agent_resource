@@ -54,6 +54,25 @@ void main() {
               contextDeleteApproval: approval,
             ).fake().execute(tokens);
 
+        late List<List<String>> selectedNames;
+
+        Future<MambaExecutionResult> execSelecting(
+          String? answer,
+          List<String> extra,
+        ) => createExecutor(
+          fileSystem: fs,
+          contextDeleteApproval: approval,
+          contextHasTerminal: () => true,
+          contextTemplateSelection: (names) async {
+            selectedNames.add(names);
+            return answer;
+          },
+        ).fake().execute(deleteCommand(extra));
+
+        setUp(() {
+          selectedNames = <List<String>>[];
+        });
+
         void expectFailure(
           MambaExecutionResult result, {
           required int exitCode,
@@ -97,6 +116,85 @@ void main() {
           ]) {
             fs.directory(directory).createSync(recursive: true);
           }
+        });
+
+        test('selects and deletes a stored template interactively', () async {
+          writeTemplate('alpha', 'one');
+          writeTemplate('beta', 'beta rules\n');
+          approval = InstallationApprovalComponent(
+            hasTerminal: () => true,
+            confirm: (_) => true,
+          );
+
+          final result = await execSelecting('beta', <String>['--interactive']);
+
+          expect(
+            result,
+            isA<MambaSuccessResult>()
+                .having((value) => value.exitCode, 'exit code', 0)
+                .having(
+                  (value) => value.output,
+                  'output',
+                  allOf(
+                    contains('context delete: deleted'),
+                    contains('name: beta'),
+                  ),
+                ),
+          );
+          expect(selectedNames.single, equals(['alpha', 'beta']));
+          expect(fs.file('$templateDir/beta.md').existsSync(), isFalse);
+          expect(
+            fs.file('$templateDir/alpha.md').readAsStringSync(),
+            equals('one'),
+          );
+        });
+
+        test('refuses selection when no templates are stored', () async {
+          approval = InstallationApprovalComponent(
+            hasTerminal: () => true,
+            confirm: (_) => true,
+          );
+
+          expectFailure(
+            await execSelecting('alpha', <String>['--interactive']),
+            exitCode: 4,
+            code: 'NO_CONTEXT_TEMPLATES',
+          );
+          expect(selectedNames, isEmpty);
+        });
+
+        test('cancels with exit 7 when the selector is dismissed', () async {
+          writeTemplate('alpha', 'one');
+          approval = InstallationApprovalComponent(
+            hasTerminal: () => true,
+            confirm: (_) => true,
+          );
+
+          expectFailure(
+            await execSelecting(null, <String>['--interactive']),
+            exitCode: 7,
+            code: 'TEMPLATE_SELECTION_CANCELLED',
+          );
+          expect(fs.file('$templateDir/alpha.md').existsSync(), isTrue);
+        });
+
+        test('refuses an omitted name in unattended mode', () async {
+          writeTemplate('alpha', 'one');
+          approval = InstallationApprovalComponent(
+            hasTerminal: () => true,
+            confirm: (_) => true,
+          );
+
+          expectFailure(
+            await execSelecting('alpha', <String>[
+              '--unattended',
+              '--format',
+              'json',
+            ]),
+            exitCode: 4,
+            code: 'MISSING_TEMPLATE_NAME',
+          );
+          expect(selectedNames, isEmpty);
         });
 
         test(

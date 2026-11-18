@@ -1,8 +1,7 @@
-import 'dart:io' show Platform, stdin, stdout;
+import 'dart:io' show Platform;
 
 import 'package:mamba/mamba.dart';
 
-import 'components/guided_value.dart';
 import 'components/installation_approval.dart';
 import 'components/skill_target_selector.dart';
 import 'src/context/context_types.dart';
@@ -12,11 +11,6 @@ import 'src/services/lifecycle_state_service.dart';
 
 import 'context_read_commands.dart';
 
-final _format = ChoiceOption.withDefault(
-  'format',
-  choices: ContextOutputFormat.values,
-  defaultValue: ContextOutputFormat.text,
-);
 final _nameOption = StringOption('name');
 final _harnessOption = RepeatableChoiceOption<ContextHarness>(
   'harness',
@@ -30,13 +24,10 @@ final _scopeOption = ChoiceOption.withDefault(
 final _folderOption = StringOption('folder');
 final _variantOption = StringOption('variant');
 final _planIdOption = StringOption('plan-id');
-final _cwdOption = FolderPathOption('cwd');
 final _projectRootOption = FolderPathOption('project-root');
-final _homeOption = FolderPathOption('home');
 final _claudeConfigDirOption = FolderPathOption('claude-config-dir');
 final _codexHomeOption = FolderPathOption('codex-home');
 final _piAgentDirOption = FolderPathOption('pi-agent-dir');
-final _stateDirOption = FolderPathOption('state-dir');
 
 const _replaceFlag = BooleanFlag('replace');
 const _applyFlag = BooleanFlag('apply');
@@ -52,7 +43,7 @@ final class ContextInjectCommand extends Command {
     this._injection,
     this._templates, {
     Future<List<ContextHarness>?> Function()? selectHarnesses,
-    Future<String?> Function(List<String>)? selectTemplate,
+    ContextTemplateSelection? selectTemplate,
     Future<bool> Function()? confirm,
     bool Function()? hasTerminal,
     InstallationApprovalComponent? approval,
@@ -65,10 +56,12 @@ final class ContextInjectCommand extends Command {
            ),
        _explicitConfirm = confirm,
        _selectHarnesses = selectHarnesses ?? _defaultHarnessSelector,
-       _selectTemplate = selectTemplate ?? _defaultTemplateSelector,
+       _selectTemplate = selectTemplate ?? selectStoredContextTemplate,
        _hasTerminal =
            hasTerminal ??
-           (() => approval?.hasTerminal?.call() ?? _defaultHasTerminal()),
+           (() =>
+               approval?.hasTerminal?.call() ??
+               contextHasInteractiveTerminal()),
        super(
          discretionaryPositionals: [_nameArgument],
          options: [
@@ -78,14 +71,14 @@ final class ContextInjectCommand extends Command {
            _folderOption,
            _variantOption,
            _planIdOption,
-           _format,
-           _cwdOption,
+           contextFormatOption,
+           contextCwdOption,
            _projectRootOption,
-           _homeOption,
+           contextHomeOption,
            _claudeConfigDirOption,
            _codexHomeOption,
            _piAgentDirOption,
-           _stateDirOption,
+           contextStateDirOption,
          ],
          flags: [
            _replaceFlag,
@@ -109,7 +102,7 @@ final class ContextInjectCommand extends Command {
   final ContextInjectionService _injection;
   final ContextTemplateService _templates;
   final Future<List<ContextHarness>?> Function() _selectHarnesses;
-  final Future<String?> Function(List<String>) _selectTemplate;
+  final ContextTemplateSelection _selectTemplate;
   final InstallationApprovalComponent _approval;
   final Future<bool> Function()? _explicitConfirm;
   final bool Function() _hasTerminal;
@@ -123,13 +116,8 @@ final class ContextInjectCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final format = valueOf(_format);
-    if (valueOf(_interactiveFlag) && format == ContextOutputFormat.json) {
-      throw _refusal(
-        'INTERACTIVE_JSON_REFUSED',
-        'Interactive selection cannot be used with --format json.',
-      );
-    }
+    final format = valueOf(contextFormatOption);
+    requireContextInteractiveFormat(valueOf(_interactiveFlag), format);
     final options = _options(valueOf);
     final interactive =
         !valueOf(_unattendedFlag) &&
@@ -204,17 +192,16 @@ final class ContextInjectCommand extends Command {
     );
   }
 
-  LifecycleOptions _options(ValueOf valueOf) => LifecycleOptions(
-    processWorkingDirectory: _injection.fileSystem.currentDirectory.path,
+  LifecycleOptions _options(ValueOf valueOf) => contextLifecycleOptions(
+    fileSystem: _injection.fileSystem,
     environment: Map<String, String>.unmodifiable(Platform.environment),
-    scope: LifecycleScope.user,
-    cwd: valueOf(_cwdOption),
+    cwd: valueOf(contextCwdOption),
     projectRoot: valueOf(_projectRootOption),
-    home: valueOf(_homeOption),
+    home: valueOf(contextHomeOption),
     claudeConfigDir: valueOf(_claudeConfigDirOption),
     codexHome: valueOf(_codexHomeOption),
     piAgentDir: valueOf(_piAgentDirOption),
-    stateDir: valueOf(_stateDirOption),
+    stateDir: valueOf(contextStateDirOption),
   );
 
   Future<String> _resolveName(
@@ -222,44 +209,14 @@ final class ContextInjectCommand extends Command {
     LifecycleOptions options,
     bool interactive,
   ) async {
-    final positional = valueOf(_nameArgument);
-    final named = valueOf(_nameOption);
-    if (positional != null && named != null) {
-      throw _refusal(
-        'AMBIGUOUS_TEMPLATE_NAME',
-        'Supply either <name> or --name, not both.',
-      );
-    }
-    final supplied = positional ?? named;
-    if (supplied != null) {
-      if (supplied.trim().isEmpty) {
-        throw _refusal(
-          'MISSING_TEMPLATE_NAME',
-          'The template name must not be blank.',
-        );
-      }
-      return supplied;
-    }
-    if (!interactive) {
-      throw _refusal(
-        'MISSING_TEMPLATE_NAME',
-        'Supply a context template name as <name> or --name.',
-      );
-    }
-    final names = <String>[
-      for (final template in _templates.list(options)) template.name,
-    ];
-    if (names.isEmpty) {
-      throw _refusal(
-        'NO_CONTEXT_TEMPLATES',
-        'No stored context templates are available to select.',
-      );
-    }
-    final chosen = await _selectTemplate(names);
-    if (chosen == null || chosen.trim().isEmpty) {
-      throw _cancelled();
-    }
-    return chosen;
+    return resolveContextTemplateName(
+      positionalName: valueOf(_nameArgument),
+      optionName: valueOf(_nameOption),
+      interactive: interactive,
+      options: options,
+      templates: _templates,
+      select: _selectTemplate,
+    );
   }
 
   Future<List<ContextHarness>> _resolveHarnesses(
@@ -306,13 +263,6 @@ final class ContextInjectCommand extends Command {
       for (final index in choice) ContextHarness.values[index],
     ];
   }
-
-  static Future<String?> _defaultTemplateSelector(List<String> names) =>
-      GuidedValueComponent(
-        label: 'Select a context template (${names.join(', ')}):',
-      ).render();
-
-  static bool _defaultHasTerminal() => stdin.hasTerminal && stdout.hasTerminal;
 
   Future<bool> _confirm() => _explicitConfirm?.call() ?? _approval.render();
 

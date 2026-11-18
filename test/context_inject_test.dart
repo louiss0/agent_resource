@@ -57,11 +57,15 @@ void main() {
               as Map<String, dynamic>;
         }
 
-        void expectFailure(MambaExecutionResult result, String code) {
+        void expectFailure(
+          MambaExecutionResult result,
+          String code, {
+          int exitCode = 4,
+        }) {
           expect(
             result,
             isA<MambaFailureResult>()
-                .having((value) => value.exitCode, 'exit code', 4)
+                .having((value) => value.exitCode, 'exit code', exitCode)
                 .having((value) => value.message, 'message', contains(code))
                 .having((value) => value.output, 'output', isNull)
                 .having(
@@ -694,9 +698,92 @@ void main() {
             contextInject: injected,
           ).fake().execute(command(extra));
 
+          late List<List<String>> selectedNames;
+
+          Future<MambaExecutionResult> execSelecting(
+            String? answer,
+            List<String> extra,
+          ) => createExecutor(
+            fileSystem: fs,
+            contextHasTerminal: () => true,
+            contextTemplateSelection: (names) async {
+              selectedNames.add(names);
+              return answer;
+            },
+          ).fake().execute(command(extra));
+
           setUp(() {
             injection = ContextInjectionService(fileSystem: fs);
             templates = ContextTemplateService(fileSystem: fs);
+            selectedNames = <List<String>>[];
+          });
+
+          test('selects a stored template on a usable terminal', () async {
+            writeTemplate('alpha', 'one');
+            writeTemplate('beta', 'beta rules\n');
+
+            final result = await execSelecting('beta', const <String>[
+              '--harness',
+              'claude',
+              '--interactive',
+            ]);
+
+            expect(
+              result,
+              isA<MambaSuccessResult>()
+                  .having((value) => value.exitCode, 'exit code', 0)
+                  .having(
+                    (value) => value.output,
+                    'output',
+                    allOf(
+                      contains('context inject: planned'),
+                      contains('templateName: beta'),
+                    ),
+                  ),
+            );
+            expect(selectedNames.single, equals(['alpha', 'beta']));
+          });
+
+          test('refuses selection when no templates are stored', () async {
+            expectFailure(
+              await execSelecting('alpha', const <String>[
+                '--harness',
+                'claude',
+                '--interactive',
+              ]),
+              'NO_CONTEXT_TEMPLATES',
+            );
+            expect(selectedNames, isEmpty);
+          });
+
+          test('cancels with exit 7 when the selector is dismissed', () async {
+            writeTemplate('alpha', 'one');
+
+            expectFailure(
+              await execSelecting(null, const <String>[
+                '--harness',
+                'claude',
+                '--interactive',
+              ]),
+              'TEMPLATE_SELECTION_CANCELLED',
+              exitCode: 7,
+            );
+          });
+
+          test('refuses an omitted name in unattended mode', () async {
+            writeTemplate('alpha', 'one');
+
+            expectFailure(
+              await execSelecting('alpha', const <String>[
+                '--harness',
+                'claude',
+                '--unattended',
+                '--format',
+                'json',
+              ]),
+              'MISSING_TEMPLATE_NAME',
+            );
+            expect(selectedNames, isEmpty);
           });
 
           test('requires a harness in unattended mode', () async {

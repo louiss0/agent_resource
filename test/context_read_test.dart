@@ -53,11 +53,12 @@ void main() {
         MambaExecutionResult result, {
         required String code,
         String verb = 'inspect',
+        int exitCode = 4,
       }) {
         expect(
           result,
           isA<MambaFailureResult>()
-              .having((value) => value.exitCode, 'exit code', 4)
+              .having((value) => value.exitCode, 'exit code', exitCode)
               .having((value) => value.message, 'message', contains(code))
               .having((value) => value.output, 'output', isNull)
               .having(
@@ -209,6 +210,78 @@ void main() {
       });
 
       group('inspect', () {
+        late List<List<String>> selectedNames;
+
+        setUp(() {
+          selectedNames = <List<String>>[];
+        });
+
+        Future<MambaExecutionResult> execSelecting(
+          String? answer,
+          List<String> extra, {
+          bool terminal = true,
+        }) => createExecutor(
+          fileSystem: fs,
+          contextHasTerminal: () => terminal,
+          contextTemplateSelection: (names) async {
+            selectedNames.add(names);
+            return answer;
+          },
+        ).fake().execute(command('inspect', extra));
+
+        test('selects a stored template on a usable terminal', () async {
+          writeTemplate('alpha', 'one');
+          writeTemplate('beta', 'beta rules\n');
+
+          final result = await execSelecting('beta', <String>['--interactive']);
+
+          expect(
+            result,
+            isA<MambaSuccessResult>()
+                .having((value) => value.exitCode, 'exit code', 0)
+                .having(
+                  (value) => value.output,
+                  'output',
+                  allOf(
+                    contains('context inspect: inspected'),
+                    contains('name: beta'),
+                    contains('content: beta rules'),
+                  ),
+                ),
+          );
+          expect(selectedNames.single, equals(['alpha', 'beta']));
+        });
+
+        test('refuses selection when no templates are stored', () async {
+          expectFailure(
+            await execSelecting('beta', <String>['--interactive']),
+            code: 'NO_CONTEXT_TEMPLATES',
+          );
+          expect(selectedNames, isEmpty);
+        });
+
+        test('cancels with exit 7 when the selector is dismissed', () async {
+          writeTemplate('alpha', 'one');
+
+          expectFailure(
+            await execSelecting(null, <String>['--interactive']),
+            code: 'TEMPLATE_SELECTION_CANCELLED',
+            exitCode: 7,
+          );
+        });
+
+        test('refuses an omitted name in unattended mode', () async {
+          writeTemplate('alpha', 'one');
+
+          expectFailure(
+            await execSelecting('alpha', <String>[
+              '--unattended',
+            ], terminal: false),
+            code: 'MISSING_TEMPLATE_NAME',
+          );
+          expect(selectedNames, isEmpty);
+        });
+
         test(
           'returns full content and metadata for a positional name',
           () async {

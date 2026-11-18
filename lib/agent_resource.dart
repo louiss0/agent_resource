@@ -33,6 +33,7 @@ import 'src/services/skill_lifecycle_service.dart';
 
 import 'context.dart';
 import 'context_inject.dart';
+import 'context_read_commands.dart';
 import 'src/services/context_injection_service.dart';
 import 'src/services/context_template_service.dart';
 import 'src/services/context_template_authoring_service.dart';
@@ -75,6 +76,8 @@ Executor createExecutor({
   ContextTemplateAuthoringService? contextAuthoring,
   InstallationApprovalComponent? contextDeleteApproval,
   InstallationApprovalComponent? contextInjectApproval,
+  ContextTemplateSelection? contextTemplateSelection,
+  bool Function()? contextHasTerminal,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -143,6 +146,8 @@ Executor createExecutor({
         fileSystem: fileSystem,
         deleteApproval: contextDeleteApproval,
         injectApproval: contextInjectApproval,
+        templateSelection: contextTemplateSelection,
+        hasTerminal: contextHasTerminal,
       ),
     ],
   );
