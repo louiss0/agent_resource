@@ -105,6 +105,7 @@ void main() {
       expect(_containsCommandEntry(output, 'skill'), isTrue);
       expect(_containsCommandEntry(output, 'agent'), isTrue);
       expect(_containsCommandEntry(output, 'mcp'), isTrue);
+      expect(_containsCommandEntry(output, 'context'), isTrue);
       for (final command in [
         'discover',
         'inspect',
@@ -196,6 +197,22 @@ void main() {
           }
         },
       );
+    });
+
+    group('context', () {
+      test('help lists the template read commands', () async {
+        final result = _expectSuccess(
+          await createExecutor().fake().execute(['context', '--help']),
+          isNotEmpty,
+        );
+        for (final command in ['list', 'inspect']) {
+          expect(
+            _containsCommandEntry(result.output!, command),
+            isTrue,
+            reason: command,
+          );
+        }
+      });
     });
 
     for (final leaf in ['discover', 'inspect', 'validate']) {
