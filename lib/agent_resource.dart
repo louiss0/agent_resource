@@ -31,6 +31,14 @@ import 'src/services/prompt_read_service.dart';
 import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 
+import 'context.dart';
+import 'context_inject.dart';
+import 'context_read_commands.dart';
+import 'src/services/context_injection_service.dart';
+import 'src/services/context_template_service.dart';
+import 'src/services/context_template_authoring_service.dart';
+import 'components/installation_approval.dart';
+
 const applicationVersion = String.fromEnvironment(
   'AGENT_RESOURCE_VERSION',
   defaultValue: '0.1.0',
@@ -62,6 +70,14 @@ Executor createExecutor({
   McpMutationService? mcpMutation,
   McpRecoveryService? mcpRecovery,
   McpConversionService? mcpConversion,
+  ContextTemplateService? contextTemplates,
+  ContextInjectionService? contextInjection,
+  ContextInjectCommand? contextInject,
+  ContextTemplateAuthoringService? contextAuthoring,
+  InstallationApprovalComponent? contextDeleteApproval,
+  InstallationApprovalComponent? contextInjectApproval,
+  ContextTemplateSelection? contextTemplateSelection,
+  bool Function()? contextHasTerminal,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -121,6 +137,17 @@ Executor createExecutor({
         recovery: mcpRecovery,
         conversion: mcpConversion,
         fileSystem: fileSystem,
+      ),
+      ContextCommand(
+        contextTemplates: contextTemplates,
+        contextInjection: contextInjection,
+        inject: contextInject,
+        contextAuthoring: contextAuthoring,
+        fileSystem: fileSystem,
+        deleteApproval: contextDeleteApproval,
+        injectApproval: contextInjectApproval,
+        templateSelection: contextTemplateSelection,
+        hasTerminal: contextHasTerminal,
       ),
     ],
   );

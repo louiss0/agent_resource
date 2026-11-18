@@ -1,0 +1,1754 @@
+import 'dart:convert';
+
+import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/components/installation_approval.dart';
+import 'package:agent_resource/context_inject.dart';
+import 'package:agent_resource/src/context/context_types.dart';
+import 'package:agent_resource/src/services/context_injection_service.dart';
+import 'package:agent_resource/src/services/context_template_service.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/memory.dart';
+import 'package:mamba/executor.dart';
+import 'package:test/test.dart';
+
+import 'support/context_test_support.dart';
+
+void main() {
+  group('agent_resource', () {
+    group('context', () {
+      group('inject', () {
+        late fslib.FileSystem fs;
+
+        const templateDir = '/sandbox/state/context-templates';
+
+        List<String> command(List<String> extra) =>
+            contextCommandArgs('inject', extra, includeInjectRoots: true);
+
+        Future<MambaExecutionResult> exec(List<String> extra) =>
+            createExecutor(fileSystem: fs).fake().execute(command(extra));
+
+        Map<String, dynamic> successJson(
+          MambaExecutionResult result, {
+          required String outcome,
+          required Map<String, Object?> data,
+          List<Object?> diagnostics = const <Object?>[],
+        }) => expectContextJsonSuccess(
+          result,
+          command: 'context inject',
+          outcome: outcome,
+          data: data,
+          diagnostics: diagnostics,
+        );
+
+        void expectFailure(
+          MambaExecutionResult result,
+          String code, {
+          int exitCode = 4,
+        }) => expectContextFailure(
+          result,
+          verb: 'inject',
+          code: code,
+          exitCode: exitCode,
+        );
+
+        Map<String, Object?> injectData({
+          required String templateName,
+          required Object? templateByteLength,
+          required String targetDirectory,
+          required List<String> harnesses,
+          required List<Object?> targets,
+          String scope = 'project',
+          String variant = 'standard',
+          bool replace = false,
+          Object? content,
+        }) => <String, Object?>{
+          'planId': matches(contextPlanIdPattern),
+          'templateName': templateName,
+          'template': contextTemplateData(
+            templateName,
+            byteLength: templateByteLength,
+            isEmpty: templateByteLength == 0,
+            sha256: isA<String>(),
+          ),
+          'targetDirectory': targetDirectory,
+          'scope': scope,
+          'harnesses': harnesses,
+          'variant': variant,
+          'replace': replace,
+          'targets': targets,
+          'content': ?content,
+        };
+
+        Map<String, Object?> injectTarget({
+          required String path,
+          required List<String> harnesses,
+          String variant = 'standard',
+          String action = 'create',
+          bool existingExists = false,
+          Object? existingSha256,
+          Object? existingByteLength,
+          Object? proposedSha256,
+          Object? proposedByteLength,
+          Object? receiptId,
+          Object? recoveryPath,
+        }) => <String, Object?>{
+          'path': path,
+          'harnesses': harnesses,
+          'variant': variant,
+          'action': action,
+          'existingExists': existingExists,
+          'existingSha256': existingSha256 ?? isNull,
+          'existingByteLength': existingByteLength ?? 0,
+          'proposedSha256': proposedSha256 ?? isA<String>(),
+          'proposedByteLength': proposedByteLength ?? isA<int>(),
+          'receiptId': receiptId ?? isNull,
+          'recoveryPath': recoveryPath ?? isNull,
+        };
+
+        Map<String, Object?> stylesPlanData({
+          required String action,
+          required String path,
+          Object? existingSha256,
+          Object? existingByteLength,
+          bool published = false,
+          Object? receiptId,
+          Object? recoveryPath,
+          bool replace = false,
+        }) => injectData(
+          templateName: 'styles',
+          templateByteLength: isA<int>(),
+          targetDirectory: '/sandbox/project',
+          harnesses: <String>['claude'],
+          replace: replace,
+          targets: <Object?>[
+            injectTarget(
+              path: path,
+              harnesses: <String>['claude'],
+              action: action,
+              existingExists: action != 'create',
+              existingSha256: existingSha256,
+              existingByteLength: existingByteLength ?? 0,
+              receiptId: published ? (receiptId ?? startsWith('rcp_')) : null,
+              recoveryPath: published ? recoveryPath : null,
+            ),
+          ],
+        );
+
+        void writeTemplate(String name, String content) {
+          final file = fs.file('$templateDir/$name.md')
+            ..parent.createSync(recursive: true);
+          file.writeAsStringSync(content);
+        }
+
+        setUp(() {
+          fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          for (final directory in [
+            '/sandbox/project',
+            '/sandbox/home',
+            '/sandbox/state',
+          ]) {
+            fs.directory(directory).createSync(recursive: true);
+          }
+        });
+
+        test('plans default project-root injection without writing', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final envelope = successJson(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'planned',
+            data: injectData(
+              templateName: 'styles',
+              templateByteLength: isA<int>(),
+              targetDirectory: '/sandbox/project',
+              harnesses: <String>['claude'],
+              targets: <Object?>[
+                injectTarget(
+                  path: '/sandbox/project/CLAUDE.md',
+                  harnesses: <String>['claude'],
+                ),
+              ],
+            ),
+          );
+
+          final data = envelope['data'] as Map<String, dynamic>;
+          final targets = data['targets'] as List<dynamic>;
+          expect(targets, hasLength(1));
+          expect(
+            targets.single,
+            containsPair('path', '/sandbox/project/CLAUDE.md'),
+          );
+          expect(targets.single, containsPair('harnesses', ['claude']));
+          expect(targets.single, containsPair('action', 'create'));
+          expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+        });
+
+        test(
+          'refuses an unsupported variant for any selected harness',
+          () async {
+            writeTemplate('styles', 'project rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--harness',
+                'codex',
+                '--variant',
+                'local',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'UNSUPPORTED_CONTEXT_VARIANT',
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+            expect(fs.file('/sandbox/project/AGENTS.md').existsSync(), isFalse);
+          },
+        );
+
+        test('resolves a folder inside the project root', () async {
+          writeTemplate('styles', 'project rules\n');
+          fs.directory('/sandbox/project/lib/src').createSync(recursive: true);
+
+          final envelope = successJson(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--folder',
+              'lib/src',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'planned',
+            data: injectData(
+              templateName: 'styles',
+              templateByteLength: isA<int>(),
+              targetDirectory: '/sandbox/project/lib/src',
+              harnesses: <String>['claude'],
+              targets: <Object?>[
+                injectTarget(
+                  path: '/sandbox/project/lib/src/CLAUDE.md',
+                  harnesses: <String>['claude'],
+                ),
+              ],
+            ),
+          );
+          final targets =
+              (envelope['data'] as Map<String, dynamic>)['targets']
+                  as List<dynamic>;
+          expect(
+            targets.single,
+            containsPair('path', '/sandbox/project/lib/src/CLAUDE.md'),
+          );
+        });
+
+        for (final testCase in <Map<String, String>>[
+          {
+            'label': 'outside the project root',
+            'folder': '../outside',
+            'code': 'FOLDER_OUTSIDE_PROJECT',
+          },
+          {
+            'label': 'a missing directory',
+            'folder': 'missing',
+            'code': 'FOLDER_NOT_FOUND',
+          },
+          {
+            'label': 'a regular file',
+            'folder': 'notes.txt',
+            'code': 'FOLDER_NOT_DIRECTORY',
+          },
+          {
+            'label': 'a symlinked directory',
+            'folder': 'linked',
+            'code': 'SYMLINK_REFUSED',
+          },
+        ]) {
+          test('refuses a folder ${testCase['label']}', () async {
+            writeTemplate('styles', 'project rules\n');
+            fs.file('/sandbox/project/notes.txt').writeAsStringSync('notes');
+            fs.directory('/sandbox/outside').createSync(recursive: true);
+            fs.link('/sandbox/project/linked').createSync('/sandbox/outside');
+
+            expectFailure(
+              await exec(<String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--folder',
+                testCase['folder']!,
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              testCase['code']!,
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+        }
+
+        test('refuses --folder with user scope', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          expectFailure(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--scope',
+              'user',
+              '--folder',
+              'lib',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            'FOLDER_SCOPE_CONFLICT',
+          );
+        });
+
+        test('resolves user-global targets for all three harnesses', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final envelope = successJson(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--harness',
+              'codex',
+              '--harness',
+              'pi',
+              '--scope',
+              'user',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'planned',
+            data: injectData(
+              templateName: 'styles',
+              templateByteLength: isA<int>(),
+              targetDirectory: '/sandbox/state',
+              scope: 'user',
+              harnesses: <String>['claude', 'codex', 'pi'],
+              targets: <Object?>[
+                injectTarget(
+                  path: '/sandbox/home/claude/CLAUDE.md',
+                  harnesses: <String>['claude'],
+                ),
+                injectTarget(
+                  path: '/sandbox/home/codex/AGENTS.md',
+                  harnesses: <String>['codex'],
+                ),
+                injectTarget(
+                  path: '/sandbox/home/pi/AGENTS.md',
+                  harnesses: <String>['pi'],
+                ),
+              ],
+            ),
+          );
+          final targets =
+              (envelope['data'] as Map<String, dynamic>)['targets']
+                  as List<dynamic>;
+          expect(
+            targets.map((target) => target['path']).toList(),
+            equals(<String>[
+              '/sandbox/home/claude/CLAUDE.md',
+              '/sandbox/home/codex/AGENTS.md',
+              '/sandbox/home/pi/AGENTS.md',
+            ]),
+          );
+          expect(
+            targets.map((target) => target['harnesses']).toList(),
+            equals(<Object>[
+              ['claude'],
+              ['codex'],
+              ['pi'],
+            ]),
+          );
+        });
+
+        test('deduplicates shared codex and pi target paths', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final envelope = successJson(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'pi',
+              '--harness',
+              'codex',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'planned',
+            data: injectData(
+              templateName: 'styles',
+              templateByteLength: isA<int>(),
+              targetDirectory: '/sandbox/project',
+              harnesses: <String>['codex', 'pi'],
+              targets: <Object?>[
+                injectTarget(
+                  path: '/sandbox/project/AGENTS.md',
+                  harnesses: <String>['codex', 'pi'],
+                ),
+              ],
+            ),
+          );
+          final targets =
+              (envelope['data'] as Map<String, dynamic>)['targets']
+                  as List<dynamic>;
+          expect(targets, hasLength(1));
+          expect(
+            targets.single,
+            containsPair('path', '/sandbox/project/AGENTS.md'),
+          );
+          expect(targets.single, containsPair('harnesses', ['codex', 'pi']));
+        });
+
+        test('deduplicates shared override target paths', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final envelope = successJson(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'codex',
+              '--harness',
+              'pi',
+              '--variant',
+              'override',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'planned',
+            data: injectData(
+              templateName: 'styles',
+              templateByteLength: isA<int>(),
+              targetDirectory: '/sandbox/project',
+              harnesses: <String>['codex', 'pi'],
+              variant: 'override',
+              targets: <Object?>[
+                injectTarget(
+                  path: '/sandbox/project/AGENTS.override.md',
+                  harnesses: <String>['codex', 'pi'],
+                  variant: 'override',
+                ),
+              ],
+            ),
+          );
+          final targets =
+              (envelope['data'] as Map<String, dynamic>)['targets']
+                  as List<dynamic>;
+          expect(targets, hasLength(1));
+          expect(
+            targets.single,
+            containsPair('path', '/sandbox/project/AGENTS.override.md'),
+          );
+        });
+
+        group('apply', () {
+          Future<String> plannedId(
+            List<String> extra, {
+            required Map<String, Object?> data,
+          }) async {
+            final envelope = successJson(
+              await exec(<String>[
+                ...extra,
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              outcome: 'planned',
+              data: data,
+            );
+            return (envelope['data'] as Map<String, dynamic>)['planId']!
+                as String;
+          }
+
+          Future<Map<String, dynamic>> publish(
+            String planId,
+            List<String> extra, {
+            required Map<String, Object?> data,
+          }) async => successJson(
+            await exec(<String>[
+              ...extra,
+              '--apply',
+              '--plan-id',
+              planId,
+              '--yes',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'published',
+            data: data,
+          );
+
+          test('--dry-run plans without writing even with --apply', () async {
+            writeTemplate('styles', 'rules\n');
+
+            successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--yes',
+                '--dry-run',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              outcome: 'planned',
+              data: stylesPlanData(
+                action: 'create',
+                path: '/sandbox/project/CLAUDE.md',
+              ),
+            );
+
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+            expect(
+              fs.directory('/sandbox/state/authoring-receipts').existsSync(),
+              isFalse,
+            );
+          });
+
+          test('creates a raw markdown target with a receipt', () async {
+            writeTemplate('styles', 'rules\n');
+            final planId = await plannedId(
+              const <String>['styles', '--harness', 'claude'],
+              data: stylesPlanData(
+                action: 'create',
+                path: '/sandbox/project/CLAUDE.md',
+              ),
+            );
+
+            final envelope = await publish(
+              planId,
+              const <String>['styles', '--harness', 'claude'],
+              data: stylesPlanData(
+                action: 'create',
+                path: '/sandbox/project/CLAUDE.md',
+                published: true,
+              ),
+            );
+            expect(envelope['outcome'], equals('published'));
+            final targets =
+                (envelope['data'] as Map<String, dynamic>)['targets']
+                    as List<dynamic>;
+            expect(
+              targets.single,
+              containsPair('receiptId', startsWith('rcp_')),
+            );
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'rules\n',
+            );
+            expect(
+              fs.file('/sandbox/state/installations.json').existsSync(),
+              isFalse,
+            );
+          });
+
+          test('saves recovery evidence when appending', () async {
+            writeTemplate('styles', 'new rules');
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('old rules\n');
+            final planId = await plannedId(
+              const <String>['styles', '--harness', 'claude'],
+              data: stylesPlanData(
+                action: 'append',
+                path: '/sandbox/project/CLAUDE.md',
+                existingSha256: isA<String>(),
+                existingByteLength: 10,
+              ),
+            );
+
+            final envelope = await publish(
+              planId,
+              const <String>['styles', '--harness', 'claude'],
+              data: stylesPlanData(
+                action: 'append',
+                path: '/sandbox/project/CLAUDE.md',
+                existingSha256: isA<String>(),
+                existingByteLength: 10,
+                published: true,
+                recoveryPath: startsWith('/sandbox/state/authoring-recovery/'),
+              ),
+            );
+            final target =
+                ((envelope['data'] as Map<String, dynamic>)['targets']
+                            as List<dynamic>)
+                        .single
+                    as Map<String, dynamic>;
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'old rules\n\nnew rules\n',
+            );
+            final recoveryPath = target['recoveryPath'] as String;
+            expect(fs.file(recoveryPath).readAsStringSync(), 'old rules\n');
+            final receiptId = target['receiptId'] as String;
+            final receipt = jsonDecode(
+              fs
+                  .file('/sandbox/state/authoring-receipts/$receiptId.json')
+                  .readAsStringSync(),
+            ) as Map<String, dynamic>;
+            expect(receipt['operation'], equals('contextInject'));
+          });
+
+          test('replaces a target and keeps the previous bytes', () async {
+            writeTemplate('styles', 'fresh rules');
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('old rules\n');
+            final planId = await plannedId(
+              const <String>['styles', '--harness', 'claude', '--replace'],
+              data: stylesPlanData(
+                action: 'replace',
+                path: '/sandbox/project/CLAUDE.md',
+                existingSha256: isA<String>(),
+                existingByteLength: 10,
+                replace: true,
+              ),
+            );
+
+            final envelope = await publish(
+              planId,
+              const <String>['styles', '--harness', 'claude', '--replace'],
+              data: stylesPlanData(
+                action: 'replace',
+                path: '/sandbox/project/CLAUDE.md',
+                existingSha256: isA<String>(),
+                existingByteLength: 10,
+                published: true,
+                recoveryPath: startsWith('/sandbox/state/authoring-recovery/'),
+                replace: true,
+              ),
+            );
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'fresh rules\n',
+            );
+            final target =
+                ((envelope['data'] as Map<String, dynamic>)['targets']
+                            as List<dynamic>)
+                        .single
+                    as Map<String, dynamic>;
+            expect(
+              fs.file(target['recoveryPath'] as String).readAsStringSync(),
+              'old rules\n',
+            );
+          });
+
+          test('refuses a stale plan id', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                'pln_0000000000000000000000000000000000000000000000000000000000000000',
+                '--yes',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'STALE_CONTEXT_PLAN',
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+
+          test('refuses a stale plan after template drift', () async {
+            writeTemplate('styles', 'rules\n');
+            final planId = await plannedId(
+              const <String>['styles', '--harness', 'claude'],
+              data: stylesPlanData(
+                action: 'create',
+                path: '/sandbox/project/CLAUDE.md',
+              ),
+            );
+            writeTemplate('styles', 'changed rules\n');
+
+            expectFailure(
+              await exec(<String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                planId,
+                '--yes',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'STALE_CONTEXT_PLAN',
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+
+          test('refuses a stale plan after target drift', () async {
+            writeTemplate('styles', 'rules\n');
+            fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('old\n');
+            final planId = await plannedId(
+              const <String>['styles', '--harness', 'claude'],
+              data: stylesPlanData(
+                action: 'append',
+                path: '/sandbox/project/CLAUDE.md',
+                existingSha256: isA<String>(),
+                existingByteLength: 4,
+              ),
+            );
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('changed\n');
+
+            expectFailure(
+              await exec(<String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                planId,
+                '--yes',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'STALE_CONTEXT_PLAN',
+            );
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'changed\n',
+            );
+          });
+
+          test('requires --yes in unattended mode', () async {
+            writeTemplate('styles', 'rules\n');
+            final planId = await plannedId(
+              const <String>['styles', '--harness', 'claude'],
+              data: stylesPlanData(
+                action: 'create',
+                path: '/sandbox/project/CLAUDE.md',
+              ),
+            );
+
+            expectFailure(
+              await exec(<String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                planId,
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'MISSING_APPROVAL',
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+        });
+
+        group('advisory diagnostics', () {
+          List<Object?> diagnosticCodes(Map<String, dynamic> envelope) =>
+              (envelope['diagnostics'] as List<dynamic>)
+                  .map((diagnostic) => diagnostic['code'])
+                  .toList();
+
+          test(
+            'warns when a project codex target exceeds 32768 bytes',
+            () async {
+              writeTemplate('big', '${'x' * 32769}\n');
+
+              final envelope = successJson(
+                await exec(const <String>[
+                  'big',
+                  '--harness',
+                  'codex',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'big',
+                  templateByteLength: isA<int>(),
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['codex'],
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/AGENTS.md',
+                      harnesses: <String>['codex'],
+                    ),
+                  ],
+                ),
+                diagnostics: <Object?>[
+                  <String, Object?>{
+                    'code': 'CODEX_BYTE_BUDGET_WARNING',
+                    'category': 'advisory',
+                    'severity': 'warning',
+                    'field': 'targets',
+                    'message':
+                        '32770 bytes exceeds Codex default '
+                        'project_doc_max_bytes of 32768 for /sandbox/project.',
+                  },
+                ],
+              );
+              expect(envelope['outcome'], equals('planned'));
+              expect(
+                diagnosticCodes(envelope),
+                contains('CODEX_BYTE_BUDGET_WARNING'),
+              );
+              final diagnostic =
+                  (envelope['diagnostics'] as List<dynamic>).first
+                      as Map<String, dynamic>;
+              expect(diagnostic['severity'], equals('warning'));
+              expect(diagnostic['category'], equals('advisory'));
+              expect(diagnostic, containsPair('field', isNotNull));
+              expect(diagnostic, containsPair('message', isNotNull));
+            },
+          );
+
+          test('warns when an override shadows a target AGENTS.md', () async {
+            writeTemplate('styles', 'rules\n');
+            fs
+                .file('/sandbox/project/AGENTS.override.md')
+                .writeAsStringSync('override\n');
+
+            final envelope = successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'codex',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              outcome: 'planned',
+              data: injectData(
+                templateName: 'styles',
+                templateByteLength: isA<int>(),
+                targetDirectory: '/sandbox/project',
+                harnesses: <String>['codex'],
+                targets: <Object?>[
+                  injectTarget(
+                    path: '/sandbox/project/AGENTS.md',
+                    harnesses: <String>['codex'],
+                  ),
+                ],
+              ),
+              diagnostics: <Object?>[
+                <String, Object?>{
+                  'code': 'CONTEXT_SHADOWING_WARNING',
+                  'category': 'advisory',
+                  'severity': 'warning',
+                  'field': 'targets',
+                  'message':
+                      'AGENTS.override.md shadows AGENTS.md in /sandbox/project; '
+                      'Codex and native Pi prefer the override file.',
+                },
+              ],
+            );
+            expect(
+              diagnosticCodes(envelope),
+              contains('CONTEXT_SHADOWING_WARNING'),
+            );
+          });
+
+          test(
+            'notes AGENTS.md and CLAUDE.md shadowing in one folder',
+            () async {
+              writeTemplate('styles', 'rules\n');
+
+              final envelope = successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--harness',
+                  'codex',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: isA<int>(),
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['claude', 'codex'],
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/CLAUDE.md',
+                      harnesses: <String>['claude'],
+                    ),
+                    injectTarget(
+                      path: '/sandbox/project/AGENTS.md',
+                      harnesses: <String>['codex'],
+                    ),
+                  ],
+                ),
+                diagnostics: <Object?>[
+                  <String, Object?>{
+                    'code': 'CONTEXT_SHADOWING_WARNING',
+                    'category': 'advisory',
+                    'severity': 'info',
+                    'field': 'targets',
+                    'message':
+                        'CLAUDE.md and AGENTS.md coexist in /sandbox/project; '
+                        'Claude Code prefers CLAUDE.md while native Pi prefers '
+                        'AGENTS.md.',
+                  },
+                ],
+              );
+              expect(
+                diagnosticCodes(envelope),
+                contains('CONTEXT_SHADOWING_WARNING'),
+              );
+            },
+          );
+        });
+
+        group('interactive selection', () {
+          late ContextInjectionService injection;
+          late ContextTemplateService templates;
+
+          Future<MambaExecutionResult> execWith(
+            ContextInjectCommand injected,
+            List<String> extra,
+          ) => createExecutor(
+            fileSystem: fs,
+            contextInject: injected,
+          ).fake().execute(command(extra));
+
+          late List<List<String>> selectedNames;
+
+          Future<MambaExecutionResult> execSelecting(
+            String? answer,
+            List<String> extra,
+          ) => createExecutor(
+            fileSystem: fs,
+            contextHasTerminal: () => true,
+            contextTemplateSelection: (names) async {
+              selectedNames.add(names);
+              return answer;
+            },
+          ).fake().execute(command(extra));
+
+          setUp(() {
+            injection = ContextInjectionService(fileSystem: fs);
+            templates = ContextTemplateService(fileSystem: fs);
+            selectedNames = <List<String>>[];
+          });
+
+          test('selects a stored template on a usable terminal', () async {
+            writeTemplate('alpha', 'one');
+            writeTemplate('beta', 'beta rules\n');
+
+            final result = await execSelecting('beta', const <String>[
+              '--harness',
+              'claude',
+              '--interactive',
+            ]);
+
+            expect(
+              result,
+              isA<MambaSuccessResult>()
+                  .having((value) => value.exitCode, 'exit code', 0)
+                  .having(
+                    (value) => value.output,
+                    'output',
+                    allOf(
+                      contains('context inject: planned'),
+                      contains('templateName: beta'),
+                    ),
+                  ),
+            );
+            expect(selectedNames.single, equals(['alpha', 'beta']));
+          });
+
+          test('refuses selection when no templates are stored', () async {
+            expectFailure(
+              await execSelecting('alpha', const <String>[
+                '--harness',
+                'claude',
+                '--interactive',
+              ]),
+              'NO_CONTEXT_TEMPLATES',
+            );
+            expect(selectedNames, isEmpty);
+          });
+
+          test('cancels with exit 7 when the selector is dismissed', () async {
+            writeTemplate('alpha', 'one');
+
+            expectFailure(
+              await execSelecting(null, const <String>[
+                '--harness',
+                'claude',
+                '--interactive',
+              ]),
+              'TEMPLATE_SELECTION_CANCELLED',
+              exitCode: 7,
+            );
+          });
+
+          test('refuses an omitted name in unattended mode', () async {
+            writeTemplate('alpha', 'one');
+
+            expectFailure(
+              await execSelecting('alpha', const <String>[
+                '--harness',
+                'claude',
+                '--unattended',
+                '--format',
+                'json',
+              ]),
+              'MISSING_TEMPLATE_NAME',
+            );
+            expect(selectedNames, isEmpty);
+          });
+
+          test('requires a harness in unattended mode', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'MISSING_TARGET_HARNESS',
+            );
+          });
+
+          test('requires a template name in unattended mode', () async {
+            expectFailure(
+              await exec(const <String>[
+                '--harness',
+                'claude',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'MISSING_TEMPLATE_NAME',
+            );
+          });
+
+          test('refuses both positional and named template names', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--name',
+                'styles',
+                '--harness',
+                'claude',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'AMBIGUOUS_TEMPLATE_NAME',
+            );
+          });
+
+          test(
+            'uses the selected harness and template interactively',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final injected = ContextInjectCommand(
+                injection,
+                templates,
+                selectHarnesses: () async => <ContextHarness>[
+                  ContextHarness.pi,
+                ],
+                selectTemplate: (names) async => 'styles',
+                hasTerminal: () => true,
+              );
+
+              final result = await execWith(injected, const <String>[
+                '--interactive',
+              ]);
+              expect(result, isA<MambaSuccessResult>());
+              expect(
+                (result as MambaSuccessResult).output,
+                contains('planned'),
+              );
+            },
+          );
+
+          test('refuses a cancelled harness selection', () async {
+            writeTemplate('styles', 'rules\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              selectHarnesses: () async => null,
+              hasTerminal: () => true,
+            );
+
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--interactive',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'exit code', 7)
+                  .having(
+                    (value) => value.message,
+                    'message',
+                    contains('CANCELLED'),
+                  ),
+            );
+          });
+
+          test(
+            'approves an interactive apply through the approval seam',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final prompts = <String>[];
+              final result =
+                  await createExecutor(
+                    fileSystem: fs,
+                    contextInjectApproval: InstallationApprovalComponent(
+                      label: 'Apply this reviewed context injection plan?',
+                      hasTerminal: () => true,
+                      confirm: (prompt) {
+                        prompts.add(prompt.prompt);
+                        return true;
+                      },
+                    ),
+                  ).fake().execute(
+                    command(const <String>[
+                      'styles',
+                      '--harness',
+                      'claude',
+                      '--apply',
+                      '--interactive',
+                    ]),
+                  );
+
+              expect(
+                result,
+                isA<MambaSuccessResult>()
+                    .having((value) => value.exitCode, 'exit code', 0)
+                    .having(
+                      (value) => value.output,
+                      'output',
+                      contains('context inject: published'),
+                    ),
+              );
+              expect(
+                prompts.single,
+                contains('Apply this reviewed context injection plan?'),
+              );
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+                equals('rules\n'),
+              );
+            },
+          );
+
+          test(
+            'declines an interactive apply through the approval seam',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final prompts = <String>[];
+              final result =
+                  await createExecutor(
+                    fileSystem: fs,
+                    contextInjectApproval: InstallationApprovalComponent(
+                      label: 'Apply this reviewed context injection plan?',
+                      hasTerminal: () => true,
+                      confirm: (prompt) {
+                        prompts.add(prompt.prompt);
+                        return false;
+                      },
+                    ),
+                  ).fake().execute(
+                    command(const <String>[
+                      'styles',
+                      '--harness',
+                      'claude',
+                      '--apply',
+                      '--interactive',
+                    ]),
+                  );
+
+              expect(
+                result,
+                isA<MambaFailureResult>()
+                    .having((value) => value.exitCode, 'exit code', 7)
+                    .having(
+                      (value) => value.message,
+                      'message',
+                      contains('CANCELLED'),
+                    ),
+              );
+              expect(prompts, hasLength(1));
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test('refuses a cancelled apply confirmation', () async {
+            writeTemplate('styles', 'rules\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              confirm: () async => false,
+              hasTerminal: () => true,
+            );
+
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--apply',
+              '--interactive',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'exit code', 7)
+                  .having(
+                    (value) => value.message,
+                    'message',
+                    contains('CANCELLED'),
+                  ),
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+        });
+
+        group('plan identity', () {
+          Future<String> planId(
+            List<String> extra, {
+            required Map<String, Object?> data,
+            List<Object?> diagnostics = const <Object?>[],
+          }) async {
+            final envelope = successJson(
+              await exec(<String>[
+                ...extra,
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              outcome: 'planned',
+              data: data,
+              diagnostics: diagnostics,
+            );
+            return (envelope['data'] as Map<String, dynamic>)['planId']!
+                as String;
+          }
+
+          test('binds the source template and every target state', () async {
+            writeTemplate('styles', 'rules\n');
+            fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('old\n');
+            fs.file('/sandbox/project/AGENTS.md').writeAsStringSync('base\n');
+            final shadowing = <Object?>[
+              <String, Object?>{
+                'code': 'CONTEXT_SHADOWING_WARNING',
+                'category': 'advisory',
+                'severity': 'info',
+                'field': 'targets',
+                'message':
+                    'CLAUDE.md and AGENTS.md coexist in /sandbox/project; '
+                    'Claude Code prefers CLAUDE.md while native Pi prefers '
+                    'AGENTS.md.',
+              },
+            ];
+
+            final baseline = await planId(
+              const <String>['styles', '--harness', 'codex'],
+              data: injectData(
+                templateName: 'styles',
+                templateByteLength: isA<int>(),
+                targetDirectory: '/sandbox/project',
+                harnesses: <String>['codex'],
+                targets: <Object?>[
+                  injectTarget(
+                    path: '/sandbox/project/AGENTS.md',
+                    harnesses: <String>['codex'],
+                    action: 'append',
+                    existingExists: true,
+                    existingSha256: isA<String>(),
+                    existingByteLength: 5,
+                  ),
+                ],
+              ),
+              diagnostics: shadowing,
+            );
+
+            fs.file('/sandbox/project/AGENTS.md').writeAsStringSync('new\n');
+            final targetDrift = await planId(
+              const <String>['styles', '--harness', 'codex'],
+              data: injectData(
+                templateName: 'styles',
+                templateByteLength: isA<int>(),
+                targetDirectory: '/sandbox/project',
+                harnesses: <String>['codex'],
+                targets: <Object?>[
+                  injectTarget(
+                    path: '/sandbox/project/AGENTS.md',
+                    harnesses: <String>['codex'],
+                    action: 'append',
+                    existingExists: true,
+                    existingSha256: isA<String>(),
+                    existingByteLength: 4,
+                  ),
+                ],
+              ),
+              diagnostics: shadowing,
+            );
+            expect(targetDrift, isNot(equals(baseline)));
+
+            fs.file('/sandbox/project/AGENTS.md').writeAsStringSync('base\n');
+            writeTemplate('styles', 'changed rules\n');
+            final sourceDrift = await planId(
+              const <String>['styles', '--harness', 'codex'],
+              data: injectData(
+                templateName: 'styles',
+                templateByteLength: isA<int>(),
+                targetDirectory: '/sandbox/project',
+                harnesses: <String>['codex'],
+                targets: <Object?>[
+                  injectTarget(
+                    path: '/sandbox/project/AGENTS.md',
+                    harnesses: <String>['codex'],
+                    action: 'append',
+                    existingExists: true,
+                    existingSha256: isA<String>(),
+                    existingByteLength: 5,
+                  ),
+                ],
+              ),
+              diagnostics: shadowing,
+            );
+            expect(sourceDrift, isNot(equals(baseline)));
+          });
+
+          test('writes nothing with --dry-run', () async {
+            writeTemplate('styles', 'rules\n');
+
+            final envelope = successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--dry-run',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              outcome: 'planned',
+              data: stylesPlanData(
+                action: 'create',
+                path: '/sandbox/project/CLAUDE.md',
+              ),
+            );
+            expect(envelope['outcome'], equals('planned'));
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+        });
+
+        group('combine', () {
+          const normalizedAppendDigest =
+              '8bc1a592ae290cab2854458e4d42d1f9f850637c2b2a89be4571f56c4386b775';
+          const freshDigest =
+              '3f84e8942f9245cba2bd7ae643ec53f933b16f07c0c74a4737eba47e2c49584d';
+          const emptyDigest =
+              'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+          List<dynamic> plannedTargets(Map<String, dynamic> envelope) =>
+              (envelope['data'] as Map<String, dynamic>)['targets']
+                  as List<dynamic>;
+
+          test('normalizes a single blank line when appending', () async {
+            writeTemplate('styles', '\nnew rules');
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('old rules\n\n\n');
+
+            final targets = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: isA<int>(),
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['claude'],
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/CLAUDE.md',
+                      harnesses: <String>['claude'],
+                      action: 'append',
+                      existingExists: true,
+                      existingSha256: isA<String>(),
+                      existingByteLength: isA<int>(),
+                      proposedSha256: normalizedAppendDigest,
+                      proposedByteLength: 21,
+                    ),
+                  ],
+                ),
+              ),
+            );
+            expect(targets.single, containsPair('action', 'append'));
+            expect(targets.single, containsPair('proposedByteLength', 21));
+            expect(
+              targets.single,
+              containsPair('proposedSha256', normalizedAppendDigest),
+            );
+          });
+
+          test('adds one trailing newline when creating', () async {
+            writeTemplate('styles', 'fresh rules');
+
+            final targets = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: isA<int>(),
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['claude'],
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/CLAUDE.md',
+                      harnesses: <String>['claude'],
+                      proposedSha256: freshDigest,
+                      proposedByteLength: 12,
+                    ),
+                  ],
+                ),
+              ),
+            );
+            expect(targets.single, containsPair('action', 'create'));
+            expect(targets.single, containsPair('proposedByteLength', 12));
+            expect(targets.single, containsPair('proposedSha256', freshDigest));
+          });
+
+          test(
+            'replaces the whole target with normalized template bytes',
+            () async {
+              writeTemplate('styles', 'fresh rules');
+              fs
+                  .file('/sandbox/project/CLAUDE.md')
+                  .writeAsStringSync('stale rules\n');
+
+              final targets = plannedTargets(
+                successJson(
+                  await exec(const <String>[
+                    'styles',
+                    '--harness',
+                    'claude',
+                    '--replace',
+                    '--format',
+                    'json',
+                    '--unattended',
+                  ]),
+                  outcome: 'planned',
+                  data: injectData(
+                    templateName: 'styles',
+                    templateByteLength: isA<int>(),
+                    targetDirectory: '/sandbox/project',
+                    harnesses: <String>['claude'],
+                    replace: true,
+                    targets: <Object?>[
+                      injectTarget(
+                        path: '/sandbox/project/CLAUDE.md',
+                        harnesses: <String>['claude'],
+                        action: 'replace',
+                        existingExists: true,
+                        existingSha256: isA<String>(),
+                        existingByteLength: isA<int>(),
+                        proposedSha256: freshDigest,
+                        proposedByteLength: 12,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+              expect(targets.single, containsPair('action', 'replace'));
+              expect(targets.single, containsPair('proposedByteLength', 12));
+              expect(
+                targets.single,
+                containsPair('proposedSha256', freshDigest),
+              );
+            },
+          );
+
+          test('plans an empty template for create and replace', () async {
+            writeTemplate('styles', '');
+
+            final created = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: 0,
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['claude'],
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/CLAUDE.md',
+                      harnesses: <String>['claude'],
+                      proposedSha256: emptyDigest,
+                      proposedByteLength: 0,
+                    ),
+                  ],
+                ),
+              ),
+            );
+            expect(created.single, containsPair('proposedByteLength', 0));
+            expect(created.single, containsPair('proposedSha256', emptyDigest));
+
+            fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('old\n');
+            final replaced = plannedTargets(
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--replace',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: 0,
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['claude'],
+                  replace: true,
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/CLAUDE.md',
+                      harnesses: <String>['claude'],
+                      action: 'replace',
+                      existingExists: true,
+                      existingSha256: isA<String>(),
+                      existingByteLength: 4,
+                      proposedSha256: emptyDigest,
+                      proposedByteLength: 0,
+                    ),
+                  ],
+                ),
+              ),
+            );
+            expect(replaced.single, containsPair('proposedByteLength', 0));
+          });
+
+          test(
+            'refuses appending an empty template to a non-empty target',
+            () async {
+              writeTemplate('styles', '');
+              fs
+                  .file('/sandbox/project/CLAUDE.md')
+                  .writeAsStringSync('old rules\n');
+
+              expectFailure(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                'EMPTY_TEMPLATE_APPEND_REFUSED',
+              );
+            },
+          );
+
+          test(
+            'appends to a zero-byte target without a blank prefix',
+            () async {
+              writeTemplate('styles', 'fresh rules');
+              fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('');
+
+              final targets = plannedTargets(
+                successJson(
+                  await exec(const <String>[
+                    'styles',
+                    '--harness',
+                    'claude',
+                    '--format',
+                    'json',
+                    '--unattended',
+                  ]),
+                  outcome: 'planned',
+                  data: injectData(
+                    templateName: 'styles',
+                    templateByteLength: isA<int>(),
+                    targetDirectory: '/sandbox/project',
+                    harnesses: <String>['claude'],
+                    targets: <Object?>[
+                      injectTarget(
+                        path: '/sandbox/project/CLAUDE.md',
+                        harnesses: <String>['claude'],
+                        action: 'append',
+                        existingExists: true,
+                        existingSha256: isA<String>(),
+                        existingByteLength: 0,
+                        proposedSha256: freshDigest,
+                        proposedByteLength: 12,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+              expect(targets.single, containsPair('action', 'append'));
+              expect(targets.single, containsPair('proposedByteLength', 12));
+              expect(
+                targets.single,
+                containsPair('proposedSha256', freshDigest),
+              );
+            },
+          );
+        });
+
+        test('includes template content with --show-instructions', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final envelope = successJson(
+            await exec(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--show-instructions',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'planned',
+            data: injectData(
+              templateName: 'styles',
+              templateByteLength: isA<int>(),
+              targetDirectory: '/sandbox/project',
+              harnesses: <String>['claude'],
+              targets: <Object?>[
+                injectTarget(
+                  path: '/sandbox/project/CLAUDE.md',
+                  harnesses: <String>['claude'],
+                ),
+              ],
+              content: 'project rules\n',
+            ),
+          );
+          expect(
+            (envelope['data'] as Map<String, dynamic>)['content'],
+            equals('project rules\n'),
+          );
+        });
+
+        test('renders a deterministic text envelope', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final result = await exec(const <String>[
+            'styles',
+            '--harness',
+            'claude',
+            '--unattended',
+          ]);
+          expect(result, isA<MambaSuccessResult>());
+          expect(
+            (result as MambaSuccessResult).output,
+            contains('context inject: planned'),
+          );
+        });
+
+        test('resolves an explicit override variant', () async {
+          writeTemplate('styles', 'project rules\n');
+
+          final envelope = successJson(
+            await exec(const <String>[
+              '--name',
+              'styles',
+              '--harness',
+              'codex',
+              '--variant',
+              'override',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+            outcome: 'planned',
+            data: injectData(
+              templateName: 'styles',
+              templateByteLength: isA<int>(),
+              targetDirectory: '/sandbox/project',
+              harnesses: <String>['codex'],
+              variant: 'override',
+              targets: <Object?>[
+                injectTarget(
+                  path: '/sandbox/project/AGENTS.override.md',
+                  harnesses: <String>['codex'],
+                  variant: 'override',
+                ),
+              ],
+            ),
+          );
+          final targets =
+              (envelope['data'] as Map<String, dynamic>)['targets']
+                  as List<dynamic>;
+          expect(
+            targets.single,
+            containsPair('path', '/sandbox/project/AGENTS.override.md'),
+          );
+        });
+      });
+    });
+  });
+}
