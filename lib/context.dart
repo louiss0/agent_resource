@@ -12,12 +12,14 @@ final class ContextCommand extends GroupCommand {
   ContextCommand({
     ContextTemplateService? contextTemplates,
     ContextInjectionService? contextInjection,
+    ContextInjectCommand? inject,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
-  }) : super(_children(contextTemplates, contextInjection, fileSystem));
+  }) : super(_children(contextTemplates, contextInjection, inject, fileSystem));
 
   static List<Command> _children(
     ContextTemplateService? contextTemplates,
     ContextInjectionService? contextInjection,
+    ContextInjectCommand? inject,
     fslib.FileSystem fileSystem,
   ) {
     final service =
@@ -25,10 +27,11 @@ final class ContextCommand extends GroupCommand {
     return <Command>[
       ContextListCommand(service),
       ContextInspectCommand(service),
-      ContextInjectCommand(
-        contextInjection ?? ContextInjectionService(fileSystem: fileSystem),
-        service,
-      ),
+      inject ??
+          ContextInjectCommand(
+            contextInjection ?? ContextInjectionService(fileSystem: fileSystem),
+            service,
+          ),
     ];
   }
 

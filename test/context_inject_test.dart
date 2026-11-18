@@ -1,6 +1,10 @@
 import 'dart:convert';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/context_inject.dart';
+import 'package:agent_resource/src/context/context_types.dart';
+import 'package:agent_resource/src/services/context_injection_service.dart';
+import 'package:agent_resource/src/services/context_template_service.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
@@ -324,6 +328,385 @@ void main() {
             targets.single,
             containsPair('path', '/sandbox/project/AGENTS.override.md'),
           );
+        });
+
+        group('apply', () {
+          Future<String> plannedId(List<String> extra) async {
+            final envelope = successJson(
+              await exec(<String>[
+                ...extra,
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+            );
+            return (envelope['data'] as Map<String, dynamic>)['planId']!
+                as String;
+          }
+
+          Future<Map<String, dynamic>> publish(
+            String planId,
+            List<String> extra,
+          ) async => successJson(
+            await exec(<String>[
+              ...extra,
+              '--apply',
+              '--plan-id',
+              planId,
+              '--yes',
+              '--format',
+              'json',
+              '--unattended',
+            ]),
+          );
+
+          test('creates a raw markdown target with a receipt', () async {
+            writeTemplate('styles', 'rules\n');
+            final planId = await plannedId(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+            ]);
+
+            final envelope = await publish(planId, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+            ]);
+            expect(envelope['outcome'], equals('published'));
+            final targets =
+                (envelope['data'] as Map<String, dynamic>)['targets']
+                    as List<dynamic>;
+            expect(
+              targets.single,
+              containsPair('receiptId', startsWith('rcp_')),
+            );
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'rules\n',
+            );
+            expect(
+              fs.file('/sandbox/state/installations.json').existsSync(),
+              isFalse,
+            );
+          });
+
+          test('saves recovery evidence when appending', () async {
+            writeTemplate('styles', 'new rules');
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('old rules\n');
+            final planId = await plannedId(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+            ]);
+
+            final envelope = await publish(planId, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+            ]);
+            final target =
+                ((envelope['data'] as Map<String, dynamic>)['targets']
+                            as List<dynamic>)
+                        .single
+                    as Map<String, dynamic>;
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'old rules\n\nnew rules\n',
+            );
+            final recoveryPath = target['recoveryPath'] as String;
+            expect(fs.file(recoveryPath).readAsStringSync(), 'old rules\n');
+            final receiptId = target['receiptId'] as String;
+            final receipt = jsonDecode(
+              fs
+                  .file('/sandbox/state/authoring-receipts/$receiptId.json')
+                  .readAsStringSync(),
+            ) as Map<String, dynamic>;
+            expect(receipt['operation'], equals('contextInject'));
+          });
+
+          test('replaces a target and keeps the previous bytes', () async {
+            writeTemplate('styles', 'fresh rules');
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('old rules\n');
+            final planId = await plannedId(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--replace',
+            ]);
+
+            final envelope = await publish(planId, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--replace',
+            ]);
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'fresh rules\n',
+            );
+            final target =
+                ((envelope['data'] as Map<String, dynamic>)['targets']
+                            as List<dynamic>)
+                        .single
+                    as Map<String, dynamic>;
+            expect(
+              fs.file(target['recoveryPath'] as String).readAsStringSync(),
+              'old rules\n',
+            );
+          });
+
+          test('refuses a stale plan id', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                'pln_0000000000000000000000000000000000000000000000000000000000000000',
+                '--yes',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'STALE_CONTEXT_PLAN',
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+
+          test('refuses a stale plan after template drift', () async {
+            writeTemplate('styles', 'rules\n');
+            final planId = await plannedId(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+            ]);
+            writeTemplate('styles', 'changed rules\n');
+
+            expectFailure(
+              await exec(<String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                planId,
+                '--yes',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'STALE_CONTEXT_PLAN',
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+
+          test('refuses a stale plan after target drift', () async {
+            writeTemplate('styles', 'rules\n');
+            fs.file('/sandbox/project/CLAUDE.md').writeAsStringSync('old\n');
+            final planId = await plannedId(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+            ]);
+            fs
+                .file('/sandbox/project/CLAUDE.md')
+                .writeAsStringSync('changed\n');
+
+            expectFailure(
+              await exec(<String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                planId,
+                '--yes',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'STALE_CONTEXT_PLAN',
+            );
+            expect(
+              fs.file('/sandbox/project/CLAUDE.md').readAsStringSync(),
+              'changed\n',
+            );
+          });
+
+          test('requires --yes in unattended mode', () async {
+            writeTemplate('styles', 'rules\n');
+            final planId = await plannedId(const <String>[
+              'styles',
+              '--harness',
+              'claude',
+            ]);
+
+            expectFailure(
+              await exec(<String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--plan-id',
+                planId,
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'MISSING_APPROVAL',
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+        });
+
+        group('interactive selection', () {
+          late ContextInjectionService injection;
+          late ContextTemplateService templates;
+
+          Future<MambaExecutionResult> execWith(
+            ContextInjectCommand injected,
+            List<String> extra,
+          ) => createExecutor(
+            fileSystem: fs,
+            contextInject: injected,
+          ).fake().execute(command(extra));
+
+          setUp(() {
+            injection = ContextInjectionService(fileSystem: fs);
+            templates = ContextTemplateService(fileSystem: fs);
+          });
+
+          test('requires a harness in unattended mode', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'MISSING_TARGET_HARNESS',
+            );
+          });
+
+          test('requires a template name in unattended mode', () async {
+            expectFailure(
+              await exec(const <String>[
+                '--harness',
+                'claude',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'MISSING_TEMPLATE_NAME',
+            );
+          });
+
+          test('refuses both positional and named template names', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--name',
+                'styles',
+                '--harness',
+                'claude',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'AMBIGUOUS_TEMPLATE_NAME',
+            );
+          });
+
+          test(
+            'uses the selected harness and template interactively',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final injected = ContextInjectCommand(
+                injection,
+                templates,
+                selectHarnesses: () async => <ContextHarness>[
+                  ContextHarness.pi,
+                ],
+                selectTemplate: (names) async => 'styles',
+                hasTerminal: () => true,
+              );
+
+              final result = await execWith(injected, const <String>[
+                '--interactive',
+              ]);
+              expect(result, isA<MambaSuccessResult>());
+              expect(
+                (result as MambaSuccessResult).output,
+                contains('planned'),
+              );
+            },
+          );
+
+          test('refuses a cancelled harness selection', () async {
+            writeTemplate('styles', 'rules\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              selectHarnesses: () async => null,
+              hasTerminal: () => true,
+            );
+
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--interactive',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'exit code', 7)
+                  .having(
+                    (value) => value.message,
+                    'message',
+                    contains('CANCELLED'),
+                  ),
+            );
+          });
+
+          test('refuses a cancelled apply confirmation', () async {
+            writeTemplate('styles', 'rules\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              confirm: () async => false,
+              hasTerminal: () => true,
+            );
+
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--apply',
+              '--interactive',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'exit code', 7)
+                  .having(
+                    (value) => value.message,
+                    'message',
+                    contains('CANCELLED'),
+                  ),
+            );
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
         });
 
         group('plan identity', () {

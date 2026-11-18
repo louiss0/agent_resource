@@ -6,6 +6,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../authoring/authoring_receipt.dart';
 import '../authoring/authoring_transaction.dart';
 import '../context/context_combine.dart';
 import '../context/context_target_resolution.dart';
@@ -25,9 +26,30 @@ final class const ContextInjectionTarget({
   required final int existingByteLength,
   required final String proposedSha256,
   required final int proposedByteLength,
+  required final String existingContent,
+  required final String proposedContent,
   final String? receiptId,
   final String? recoveryPath,
 }) {
+  ContextInjectionTarget withEvidence({
+    required String receiptId,
+    required String? recoveryPath,
+  }) => ContextInjectionTarget(
+    path: path,
+    harnesses: harnesses,
+    variant: variant,
+    action: action,
+    existingExists: existingExists,
+    existingSha256: existingSha256,
+    existingByteLength: existingByteLength,
+    proposedSha256: proposedSha256,
+    proposedByteLength: proposedByteLength,
+    existingContent: existingContent,
+    proposedContent: proposedContent,
+    receiptId: receiptId,
+    recoveryPath: recoveryPath,
+  );
+
   Map<String, Object?> toJson() => <String, Object?>{
     'path': path,
     'harnesses': <String>[for (final harness in harnesses) harness.name],
@@ -38,8 +60,8 @@ final class const ContextInjectionTarget({
     'existingByteLength': existingByteLength,
     'proposedSha256': proposedSha256,
     'proposedByteLength': proposedByteLength,
-    if (receiptId != null) 'receiptId': receiptId,
-    if (recoveryPath != null) 'recoveryPath': recoveryPath,
+    'receiptId': receiptId,
+    'recoveryPath': recoveryPath,
   };
 }
 
@@ -56,6 +78,21 @@ final class const ContextInjectionPlan({
   required final List<ContextInjectionTarget> targets,
   final String? content,
 }) {
+  ContextInjectionPlan withEvidence(
+    List<ContextInjectionTarget> publishedTargets,
+  ) => ContextInjectionPlan(
+    planId: planId,
+    templateName: templateName,
+    template: template,
+    targetDirectory: targetDirectory,
+    scope: scope,
+    harnesses: harnesses,
+    variant: variant,
+    replace: replace,
+    targets: publishedTargets,
+    content: content,
+  );
+
   Map<String, Object?> toData() => <String, Object?>{
     'planId': planId,
     'templateName': templateName,
@@ -133,6 +170,8 @@ final class ContextInjectionService {
           existingByteLength: observed.byteLength,
           proposedSha256: sha256.convert(proposedBytes).toString(),
           proposedByteLength: proposedBytes.length,
+          existingContent: observed.content ?? '',
+          proposedContent: proposed,
         ),
       );
     }
@@ -167,6 +206,135 @@ final class ContextInjectionService {
       targets: targets,
       content: showInstructions ? template.content : null,
     );
+  }
+
+  /// Re-observes the plan and publishes each reviewed target atomically.
+  ContextInjectionPlan publish({
+    required LifecycleOptions options,
+    required ContextInjectionPlan reviewed,
+    required String? suppliedPlanId,
+  }) {
+    final current = plan(
+      options: options,
+      templateName: reviewed.templateName,
+      harnesses: reviewed.harnesses,
+      scope: reviewed.scope,
+      variant: reviewed.variant,
+      folder: reviewed.scope == ContextScope.project
+          ? reviewed.targetDirectory
+          : null,
+      replace: reviewed.replace,
+      showInstructions: reviewed.content != null,
+    );
+    if (current.planId != reviewed.planId) {
+      throw MambaException(
+        'CONTEXT_PLAN_DRIFT: The template or a target changed after the '
+        'plan was reviewed.',
+        exitCode: 4,
+      );
+    }
+    if (suppliedPlanId != null && suppliedPlanId != current.planId) {
+      throw MambaException(
+        'STALE_CONTEXT_PLAN: The supplied plan id does not match the '
+        'current request.',
+        exitCode: 4,
+      );
+    }
+    _requireSameEvidence(reviewed, current);
+
+    final context = LifecycleContext.resolve(options, fileSystem: fileSystem);
+    final stateRoot = context.stateRoot(LifecycleScope.user);
+    final state = LifecycleStateService(io: LifecycleIO(fs: fileSystem));
+    final published = <ContextInjectionTarget>[];
+    for (final target in current.targets) {
+      final key = sha256.convert(utf8.encode(target.path)).toString();
+      final recoveryPath = target.action == ContextCombineAction.create
+          ? null
+          : fileSystem.path.join(
+              stateRoot,
+              authoringRecoveryDirectoryName,
+              reviewed.planId,
+              '$key.md',
+            );
+      if (recoveryPath != null) {
+        state.writeProtectedDocument(
+          recoveryPath,
+          utf8.encode(target.existingContent),
+        );
+      }
+      final staged = fileSystem.path.join(
+        stateRoot,
+        authoringStagingDirectoryName,
+        reviewed.planId,
+        '$key.candidate',
+      );
+      state.io.createDirectory(fileSystem.path.dirname(staged));
+      final bytes = utf8.encode(target.proposedContent);
+      state.io.write(staged, bytes);
+      final stagedBytes = state.io.read(staged, bytes.length + 1);
+      if (sha256.convert(stagedBytes).toString() != target.proposedSha256) {
+        throw MambaException(
+          'STAGING_DIGEST_MISMATCH: Staged bytes do not match the reviewed '
+          'plan.',
+          exitCode: 4,
+        );
+      }
+      state.io.createDirectory(fileSystem.path.dirname(target.path));
+      state.io.rename(staged, target.path);
+      final receiptId = authoringReceiptId(reviewed.planId, target.path);
+      writeAuthoringReceipt(
+        state: state,
+        stateRoot: stateRoot,
+        document: authoringReceiptDocument(
+          receiptId: receiptId,
+          planId: reviewed.planId,
+          operation: 'contextInject',
+          kind: 'contextFile',
+          profile: target.variant.wireName,
+          target: target.path,
+          root: reviewed.scope.name,
+          form: fileSystem.path.basename(target.path),
+        ),
+      );
+      published.add(
+        target.withEvidence(receiptId: receiptId, recoveryPath: recoveryPath),
+      );
+    }
+    return current.withEvidence(published);
+  }
+
+  void _requireSameEvidence(
+    ContextInjectionPlan reviewed,
+    ContextInjectionPlan current,
+  ) {
+    if (reviewed.template.sha256 != current.template.sha256 ||
+        reviewed.template.byteLength != current.template.byteLength) {
+      throw MambaException(
+        'CONTEXT_PLAN_DRIFT: The context template changed after planning.',
+        exitCode: 4,
+      );
+    }
+    if (reviewed.targets.length != current.targets.length) {
+      throw MambaException(
+        'CONTEXT_PLAN_DRIFT: The reviewed target set changed.',
+        exitCode: 4,
+      );
+    }
+    for (var index = 0; index < reviewed.targets.length; index++) {
+      final before = reviewed.targets[index];
+      final after = current.targets[index];
+      if (before.path != after.path ||
+          before.action != after.action ||
+          before.existingSha256 != after.existingSha256 ||
+          before.existingByteLength != after.existingByteLength ||
+          before.proposedSha256 != after.proposedSha256 ||
+          before.proposedByteLength != after.proposedByteLength) {
+        throw MambaException(
+          'CONTEXT_PLAN_DRIFT: Target ${after.path} changed after planning.',
+          exitCode: 4,
+        );
+      }
+    }
   }
 
   String _decode(List<int> bytes, String path) {

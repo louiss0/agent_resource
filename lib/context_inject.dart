@@ -100,7 +100,6 @@ final class ContextInjectCommand extends Command {
   final ContextTemplateService _templates;
   final Future<List<ContextHarness>?> Function() _selectHarnesses;
   final Future<String?> Function(List<String>) _selectTemplate;
-  // ignore: unused_field
   final Future<bool> Function() _confirm;
   final bool Function() _hasTerminal;
 
@@ -149,12 +148,47 @@ final class ContextInjectCommand extends Command {
       replace: valueOf(_replaceFlag),
       showInstructions: valueOf(_showInstructionsFlag),
     );
+    final outcome = valueOf(_applyFlag) ? 'published' : 'planned';
+    final reported = valueOf(_applyFlag)
+        ? await _publish(
+            options,
+            plan,
+            valueOf(_planIdOption),
+            valueOf(_yesFlag),
+            interactive,
+          )
+        : plan;
     final result = LifecycleResult(
       command: 'context inject',
-      outcome: 'planned',
-      data: plan.toData(),
+      outcome: outcome,
+      data: reported.toData(),
     );
     return renderContextResult(result, format);
+  }
+
+  Future<ContextInjectionPlan> _publish(
+    LifecycleOptions options,
+    ContextInjectionPlan plan,
+    String? planId,
+    bool approved,
+    bool interactive,
+  ) async {
+    if (!approved) {
+      if (!interactive) {
+        throw _refusal(
+          'MISSING_APPROVAL',
+          'Supply --yes to apply a plan in unattended mode.',
+        );
+      }
+      if (!await _confirm()) {
+        throw _cancelled();
+      }
+    }
+    return _injection.publish(
+      options: options,
+      reviewed: plan,
+      suppliedPlanId: planId,
+    );
   }
 
   LifecycleOptions _options(ValueOf valueOf) => LifecycleOptions(
@@ -267,7 +301,6 @@ final class ContextInjectCommand extends Command {
 
   static bool _defaultHasTerminal() => stdin.hasTerminal && stdout.hasTerminal;
 
-  // ignore: unused_element
   static Future<bool> _defaultConfirmation() async => false;
 
   MambaException _refusal(String code, String message) =>
