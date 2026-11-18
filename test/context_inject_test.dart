@@ -567,6 +567,89 @@ void main() {
           });
         });
 
+        group('advisory diagnostics', () {
+          List<Object?> diagnosticCodes(Map<String, dynamic> envelope) =>
+              (envelope['diagnostics'] as List<dynamic>)
+                  .map((diagnostic) => diagnostic['code'])
+                  .toList();
+
+          test(
+            'warns when a project codex target exceeds 32768 bytes',
+            () async {
+              writeTemplate('big', '${'x' * 32769}\n');
+
+              final envelope = successJson(
+                await exec(const <String>[
+                  'big',
+                  '--harness',
+                  'codex',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+              );
+              expect(envelope['outcome'], equals('planned'));
+              expect(
+                diagnosticCodes(envelope),
+                contains('CODEX_BYTE_BUDGET_WARNING'),
+              );
+              final diagnostic =
+                  (envelope['diagnostics'] as List<dynamic>).first
+                      as Map<String, dynamic>;
+              expect(diagnostic['severity'], equals('warning'));
+              expect(diagnostic['category'], equals('advisory'));
+              expect(diagnostic, containsPair('field', isNotNull));
+              expect(diagnostic, containsPair('message', isNotNull));
+            },
+          );
+
+          test('warns when an override shadows a target AGENTS.md', () async {
+            writeTemplate('styles', 'rules\n');
+            fs
+                .file('/sandbox/project/AGENTS.override.md')
+                .writeAsStringSync('override\n');
+
+            final envelope = successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'codex',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+            );
+            expect(
+              diagnosticCodes(envelope),
+              contains('CONTEXT_SHADOWING_WARNING'),
+            );
+          });
+
+          test(
+            'notes AGENTS.md and CLAUDE.md shadowing in one folder',
+            () async {
+              writeTemplate('styles', 'rules\n');
+
+              final envelope = successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--harness',
+                  'codex',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+              );
+              expect(
+                diagnosticCodes(envelope),
+                contains('CONTEXT_SHADOWING_WARNING'),
+              );
+            },
+          );
+        });
+
         group('interactive selection', () {
           late ContextInjectionService injection;
           late ContextTemplateService templates;

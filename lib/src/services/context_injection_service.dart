@@ -107,6 +107,9 @@ final class const ContextInjectionPlan({
   };
 }
 
+/// The default Codex `project_doc_max_bytes` budget.
+const int codexProjectDocMaxBytes = 32768;
+
 /// Plans and publishes raw Markdown context-file injections.
 final class ContextInjectionService {
   ContextInjectionService({
@@ -302,6 +305,72 @@ final class ContextInjectionService {
     }
     return current.withEvidence(published);
   }
+
+  /// Returns non-blocking advisory diagnostics for one reviewed plan.
+  List<Map<String, Object?>> diagnostics(ContextInjectionPlan plan) {
+    final found = <Map<String, Object?>>[];
+    final plannedNames = <String, Set<String>>{};
+    for (final target in plan.targets) {
+      final directory = fileSystem.path.dirname(target.path);
+      plannedNames.putIfAbsent(directory, () => <String>{})
+        ..add(fileSystem.path.basename(target.path));
+    }
+    final notedCoexistence = <String>{};
+    for (final target in plan.targets) {
+      final directory = fileSystem.path.dirname(target.path);
+      final name = fileSystem.path.basename(target.path);
+      final names = plannedNames[directory]!;
+      if (plan.scope == ContextScope.project &&
+          target.harnesses.contains(ContextHarness.codex) &&
+          target.proposedByteLength > codexProjectDocMaxBytes) {
+        found.add(<String, Object?>{
+          'code': 'CODEX_BYTE_BUDGET_WARNING',
+          'category': 'advisory',
+          'severity': 'warning',
+          'field': 'targets',
+          'message':
+              '${target.proposedByteLength} bytes exceeds Codex default '
+              'project_doc_max_bytes of $codexProjectDocMaxBytes for $directory.',
+        });
+      }
+      if (name == 'AGENTS.md' &&
+          (names.contains('AGENTS.override.md') ||
+              _exists(fileSystem.path.join(directory, 'AGENTS.override.md')))) {
+        found.add(<String, Object?>{
+          'code': 'CONTEXT_SHADOWING_WARNING',
+          'category': 'advisory',
+          'severity': 'warning',
+          'field': 'targets',
+          'message':
+              'AGENTS.override.md shadows AGENTS.md in $directory; Codex '
+              'and native Pi prefer the override file.',
+        });
+      }
+      final coexists =
+          (name == 'CLAUDE.md' &&
+              (names.contains('AGENTS.md') ||
+                  _exists(fileSystem.path.join(directory, 'AGENTS.md')))) ||
+          (name == 'AGENTS.md' &&
+              (names.contains('CLAUDE.md') ||
+                  _exists(fileSystem.path.join(directory, 'CLAUDE.md'))));
+      if (coexists && notedCoexistence.add(directory)) {
+        found.add(<String, Object?>{
+          'code': 'CONTEXT_SHADOWING_WARNING',
+          'category': 'advisory',
+          'severity': 'info',
+          'field': 'targets',
+          'message':
+              'CLAUDE.md and AGENTS.md coexist in $directory; Claude Code '
+              'prefers CLAUDE.md while native Pi prefers AGENTS.md.',
+        });
+      }
+    }
+    return found;
+  }
+
+  bool _exists(String path) =>
+      fileSystem.typeSync(path, followLinks: false) !=
+      FileSystemEntityType.notFound;
 
   void _requireSameEvidence(
     ContextInjectionPlan reviewed,

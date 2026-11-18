@@ -162,6 +162,7 @@ final class ContextInjectCommand extends Command {
       command: 'context inject',
       outcome: outcome,
       data: reported.toData(),
+      diagnostics: _injection.diagnostics(plan),
     );
     return renderContextResult(result, format);
   }
