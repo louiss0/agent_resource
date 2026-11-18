@@ -4,6 +4,7 @@ import 'package:mamba/mamba.dart';
 
 import 'context_read_commands.dart';
 import 'src/services/context_template_service.dart';
+import 'context_delete_command.dart';
 
 /// The singular `context` group for reusable templates and injection.
 final class ContextCommand extends GroupCommand {
@@ -21,6 +22,7 @@ final class ContextCommand extends GroupCommand {
     return <Command>[
       ContextListCommand(service),
       ContextInspectCommand(service),
+      ContextDeleteCommand(service),
     ];
   }
 
