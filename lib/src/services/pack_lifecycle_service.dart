@@ -15,7 +15,6 @@ import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
 import '../installation/skill_root_markdown_migration.dart';
-import '../harness/harness_catalog.dart';
 import '../mcp/mcp_native.dart'
     show
         McpNativeLocation,

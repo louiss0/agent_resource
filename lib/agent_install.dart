@@ -67,11 +67,7 @@ final class AgentInstallCommand extends Command {
   );
   static final _targets = RepeatableChoiceOption(
     'target',
-    const [
-      InstallationTarget.claude,
-      InstallationTarget.codex,
-      InstallationTarget.pi,
-    ],
+    InstallationTarget.values,
     unique: true,
     description: 'Consuming harness filter: claude, codex, pi, or antigravity.',
   );
