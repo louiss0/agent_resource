@@ -174,7 +174,7 @@ interface class PackDiscoveryService {
           form: candidate.form,
           profile: candidate.profile,
           views: [
-            for (final consumer in PromptConsumer.values)
+            for (final consumer in PromptConsumer.inspectable)
               PromptNativeView(
                 consumer: consumer,
                 classification:

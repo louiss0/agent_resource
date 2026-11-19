@@ -1,5 +1,7 @@
 import 'package:mamba/mamba.dart';
 
+import '../harness/harness_catalog.dart';
+
 /// The resource family that one shared authoring input belongs to.
 enum AuthoringKind { skill, agent, prompt }
 
@@ -8,7 +10,7 @@ enum AuthoringKind { skill, agent, prompt }
 /// [global] is a prompt-only profile: it is the harness-neutral skill-backed
 /// form that carries the manual-only controls of every supported harness.
 /// A profile never implies runtime discovery or activation.
-enum AuthoringProfile { claude, codex, pi, global }
+enum AuthoringProfile { claude, codex, pi, global, antigravity }
 
 /// The value shape that one supported native field accepts.
 enum NativeFieldValueKind { text, list, map }
@@ -98,57 +100,18 @@ final class NativeFieldMatrix {
         exitCode: 4,
       );
     }
-    return NativeFieldMatrix(
-      kind: kind,
-      profile: profile,
-      fields: <NativeFieldSpec>[
-        const NativeFieldSpec(
-          name: 'name',
-          valueKind: NativeFieldValueKind.text,
-          required: true,
-          description: 'Native skill name; it must match the directory name.',
-        ),
-        const NativeFieldSpec(
-          name: 'description',
-          valueKind: NativeFieldValueKind.text,
-          required: true,
-          description: 'When the harness should offer this skill.',
-        ),
-        const NativeFieldSpec(
-          name: 'license',
-          valueKind: NativeFieldValueKind.text,
-          description: 'Declared license of the skill.',
-        ),
-        const NativeFieldSpec(
-          name: 'compatibility',
-          valueKind: NativeFieldValueKind.text,
-          description: 'Declared harness compatibility of the skill.',
-        ),
-        const NativeFieldSpec(
-          name: 'metadata',
-          valueKind: NativeFieldValueKind.map,
-          description: 'Additional string metadata entries.',
-        ),
-        const NativeFieldSpec(
-          name: 'allowed-tools',
-          valueKind: NativeFieldValueKind.list,
-          clearable: true,
-          inheritable: true,
-          listForm: NativeListForm.scalar,
-          description:
-              'Complete tool list; a supplied list replaces the field.',
-        ),
-        if (profile == AuthoringProfile.claude)
-          const NativeFieldSpec(
-            name: 'disallowed-tools',
-            valueKind: NativeFieldValueKind.list,
-            clearable: true,
-            inheritable: true,
-            listForm: NativeListForm.scalar,
-            description: 'Complete denied tool list.',
-          ),
-      ],
-    );
+    final harness = switch (profile) {
+      AuthoringProfile.claude => HarnessId.claude,
+      AuthoringProfile.codex => HarnessId.codex,
+      AuthoringProfile.pi => HarnessId.pi,
+      AuthoringProfile.antigravity => HarnessId.antigravity,
+      AuthoringProfile.global => throw StateError('unreachable'),
+    };
+    final spec = HarnessCatalog.instance.requireFacet(
+      harness,
+      HarnessFacet.skill,
+    ) as SkillHarnessSpec;
+    return spec.nativeSkillFields(profile);
   }
 
   static NativeFieldMatrix _prompt(
@@ -246,6 +209,12 @@ final class NativeFieldMatrix {
             ),
           ],
         );
+      case AuthoringProfile.antigravity:
+        HarnessCatalog.instance.requirePromptFacet(
+          HarnessId.antigravity,
+          exitCode: 4,
+        );
+        throw StateError('unreachable');
     }
   }
 
@@ -256,6 +225,12 @@ final class NativeFieldMatrix {
     if (profile == AuthoringProfile.global) {
       throw MambaException(
         'A global profile applies to prompts only.',
+        exitCode: 4,
+      );
+    }
+    if (profile == AuthoringProfile.antigravity) {
+      throw MambaException(
+        'Antigravity Agent authoring is not available.',
         exitCode: 4,
       );
     }
