@@ -4,7 +4,8 @@ import 'dart:convert';
 enum McpHarness {
   claude('claude'),
   codex('codex'),
-  pi('pi');
+  pi('pi'),
+  antigravity('antigravity');
 
   const McpHarness(this.wireName);
 

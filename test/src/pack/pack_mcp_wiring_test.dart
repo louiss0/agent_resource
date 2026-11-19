@@ -59,6 +59,7 @@ headers = { Authorization = "Bearer ${TOKEN}" }
     const claudePath = '/pack-mcp-wiring/project/.mcp.json';
     const codexPath = '/pack-mcp-wiring/project/.codex/config.toml';
     const piPath = '/pack-mcp-wiring/project/.pi/mcp.json';
+    const antigravityPath = '/pack-mcp-wiring/project/.agents/mcp_config.json';
     const ledgerPath = '/sandbox/state/mcp-registrations.json';
 
     void writeText(String path, String content) => fs.file(path)
@@ -100,6 +101,11 @@ track = { kind = "local" }
         '{\n  "mcpServers": {"keep": {"command": "keep-svc"}},\n'
         '  "autoEnableCodemode": false\n}\n',
       );
+      writeText(
+        antigravityPath,
+        '{\n  "mcpServers": {"keep": {"command": "keep-svc"}},\n'
+        '  "unrelatedTopLevel": "keep-me"\n}\n',
+      );
     }
 
     McpNativeLocation location(McpHarness harness) => switch (harness) {
@@ -121,6 +127,13 @@ track = { kind = "local" }
         harness: McpHarness.pi,
         scope: McpScope.project,
         path: piPath,
+        format: McpNativeFormat.json,
+        section: McpNativeSection.mcpServers,
+      ),
+      McpHarness.antigravity => const McpNativeLocation(
+        harness: McpHarness.antigravity,
+        scope: McpScope.project,
+        path: antigravityPath,
         format: McpNativeFormat.json,
         section: McpNativeSection.mcpServers,
       ),
@@ -197,29 +210,37 @@ track = { kind = "local" }
         ..createSync(recursive: true);
       home = fs.directory(fs.path.join(sandbox.path, 'home'))
         ..createSync(recursive: true);
+      fs
+          .directory(fs.path.join(home.path, '.gemini'))
+          .createSync(recursive: true);
       sourceRoot = fs.path.join(sandbox.path, 'source');
       writePublisherCatalog(stdioCatalog);
-      writeProjectConfig(<String>['claude', 'codex', 'pi']);
+      writeProjectConfig(<String>['claude', 'codex', 'pi', 'antigravity']);
     });
 
-    List<String> invocation(String operation) => <String>[
-      'pack',
-      operation,
-      'local/demo',
-      '--scope',
-      'project',
-      '--cwd',
-      '${project.path}${fs.path.separator}',
-      '--project-root',
-      '${project.path}${fs.path.separator}',
-      '--home',
-      '${home.path}${fs.path.separator}',
-      '--state-dir',
-      '/sandbox/state/',
-      '--format',
-      'json',
-      if (operation != 'validate' && operation != 'discover') '--yes',
-    ];
+    List<String> invocation(String operation, {String scope = 'project'}) =>
+        <String>[
+          'pack',
+          operation,
+          'local/demo',
+          '--scope',
+          scope,
+          '--cwd',
+          '${project.path}${fs.path.separator}',
+          '--config',
+          '${project.path}${fs.path.separator}agent-resources.toml',
+          '--project-root',
+          '${project.path}${fs.path.separator}',
+          '--home',
+          '${home.path}${fs.path.separator}',
+          '--gemini-dir',
+          '${home.path}${fs.path.separator}.gemini${fs.path.separator}',
+          '--state-dir',
+          '/sandbox/state/',
+          '--format',
+          'json',
+          if (operation != 'validate' && operation != 'discover') '--yes',
+        ];
 
     Future<MambaExecutionResult> run(List<String> arguments) =>
         createExecutor(fileSystem: fs).fake().execute(arguments);
@@ -251,7 +272,12 @@ track = { kind = "local" }
     test('validates an MCP selection without writing', () async {
       seedUnrelatedNativeFiles();
       final before = <String, String>{
-        for (final path in <String>[claudePath, codexPath, piPath])
+        for (final path in <String>[
+          claudePath,
+          codexPath,
+          piPath,
+          antigravityPath,
+        ])
           path: fs.file(path).readAsStringSync(),
       };
       final envelope = successEnvelope(
@@ -430,7 +456,12 @@ track = { kind = "local" }
     test('dry-run publishes a reviewed plan and writes nothing', () async {
       seedUnrelatedNativeFiles();
       final before = <String, String>{
-        for (final path in <String>[claudePath, codexPath, piPath])
+        for (final path in <String>[
+          claudePath,
+          codexPath,
+          piPath,
+          antigravityPath,
+        ])
           path: fs.file(path).readAsStringSync(),
       };
       final envelope = successEnvelope(
@@ -447,7 +478,12 @@ track = { kind = "local" }
       expect(plan['planId'], startsWith('plan_v1_'));
       final resources = plan['resources']! as List<Object?>;
       final resource = resources.single! as Map<String, Object?>;
-      expect(resource['targets'], <String>['claude', 'codex', 'pi']);
+      expect(resource['targets'], <String>[
+        'claude',
+        'codex',
+        'pi',
+        'antigravity',
+      ]);
       expect(resource['previousSnapshot'], isA<String>());
       for (final entry in before.entries) {
         expect(fs.file(entry.key).readAsStringSync(), entry.value);
@@ -625,7 +661,7 @@ track = { kind = "local" }
 
     test('a validation failure blocks the native write', () async {
       writePublisherCatalog(claudeOnlyCatalog);
-      writeProjectConfig(<String>['claude', 'codex', 'pi']);
+      writeProjectConfig(<String>['claude', 'codex', 'pi', 'antigravity']);
       final result = await run(<String>[
         ...invocation('install'),
         '--type',
@@ -660,5 +696,48 @@ track = { kind = "local" }
         expect(ids, containsAll(<String>['github', 'build']));
       },
     );
+
+    test('installs an Antigravity user-scope MCP selection', () async {
+      writeProjectConfig(const <String>['antigravity']);
+      final result = await run(<String>[
+        ...invocation('install', scope: 'user'),
+        '--type',
+        'mcp',
+      ]);
+      final envelope = successEnvelope(result);
+      final resources = envelope['resources']! as List<Object?>;
+      expect(resources, hasLength(1));
+      final resource = resources.single! as Map<String, Object?>;
+      expect(resource['type'], 'mcp');
+      expect(resource['name'], 'github');
+      expect(resource['disposition'], 'installed');
+
+      final userPath = fs.path.join(
+        home.path,
+        '.gemini',
+        'config',
+        'mcp_config.json',
+      );
+      final entry = McpNativeReader(fs).read(
+        McpNativeLocation(
+          harness: McpHarness.antigravity,
+          scope: McpScope.user,
+          path: userPath,
+          format: McpNativeFormat.json,
+          section: McpNativeSection.mcpServers,
+        ),
+      )['github'];
+      expect(entry, isNotNull);
+      expect(entry!['command'], 'npx');
+
+      final records = (readLedger()['records']! as List<Object?>)
+          .cast<Map<String, Object?>>();
+      final record = records.firstWhere((item) => item['name'] == 'github');
+      expect(record['harness'], 'antigravity');
+      expect(record['scope'], 'user');
+      expect(record['location'], userPath);
+      expect(record['baselineDigest'], mcpCanonicalDigest(entry));
+      expect(fs.file(antigravityPath).existsSync(), isFalse);
+    });
   });
 }

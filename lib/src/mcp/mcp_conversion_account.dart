@@ -132,6 +132,7 @@ const Set<String> mcpCredentialPolicyFields = <String>{
   'scopes',
   'http_headers_helper',
   'headersHelper',
+  'authProviderType',
   'env_http_headers',
   'env_vars',
 };
@@ -160,4 +161,14 @@ const Set<String> mcpPiRuntimeControls = <String>{
   'description',
   'exposure',
   'toolExposure',
+};
+
+/// Antigravity runtime controls with no equivalent in the other harnesses.
+/// A different `tools` shape is still reviewed as a loss, not approximated.
+const Set<String> mcpAntigravityRuntimeControls = <String>{
+  'disabled',
+  'enabledTools',
+  'disabledTools',
+  'tools',
+  'timeoutSeconds',
 };

@@ -7,6 +7,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../../components/installation_approval.dart';
+import '../harness/harness_catalog.dart';
 import '../mcp/mcp_envelope.dart';
 import '../mcp/mcp_native.dart';
 import '../mcp/mcp_native_editor.dart';
@@ -55,6 +56,7 @@ final class McpMutationRequest {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.stateDir,
   });
 
@@ -84,6 +86,7 @@ final class McpMutationRequest {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final String? stateDir;
 }
 
@@ -253,13 +256,10 @@ interface class McpMutationService {
         exitCode: 2,
       );
     }
-    if (request.harness == McpHarness.claude &&
-        (request.scope == McpScope.user || request.scope == McpScope.local)) {
+    final spec = HarnessCatalog.instance.mcpSpec(request.harness);
+    if (spec.inspectOnlyScopes.contains(request.scope)) {
       throw MambaException(
-        'Claude user/local MCP registrations live in the shared ~/.claude.json '
-        'home file, whose third-party edit/concurrency protocol is not '
-        'documented. This surface is inspect-only: all mutations are refused '
-        'and no managed policy or trust file is written.',
+        spec.inspectOnlyDiagnostic ?? 'The selected MCP scope is inspect-only.',
         exitCode: 2,
       );
     }
@@ -275,6 +275,7 @@ interface class McpMutationService {
       claudeConfigDir: request.claudeConfigDir,
       codexHome: request.codexHome,
       piAgentDir: request.piAgentDir,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
     );
     final locations = _resolver.resolve(
@@ -425,7 +426,7 @@ interface class McpMutationService {
       'decisions': <String, Object?>{'allowDrift': request.allowDrift},
     });
 
-    final transport = _transport(proposed ?? current);
+    final transport = _transport(proposed ?? current, request.harness);
     final planEnvelope = _planEnvelope(
       request,
       snapshot,
@@ -461,6 +462,7 @@ interface class McpMutationService {
         exitCode: 2,
       );
     }
+    final spec = HarnessCatalog.instance.mcpSpec(request.harness);
     final fields = <String, Object?>{};
     if (command != null) {
       fields['command'] = command;
@@ -469,15 +471,14 @@ interface class McpMutationService {
       if (env.isNotEmpty) fields['env'] = env;
       if (request.type != null) fields['type'] = request.type;
     } else {
-      fields['url'] = url;
+      fields[spec.httpEndpointKey] = url;
       final headers = _parseReferences(request.headerValues, 'header');
       if (headers.isNotEmpty) {
-        fields[_headerKey(request.harness)] = headers;
+        fields[spec.headerKey] = headers;
       }
       if (request.type != null) {
         fields['type'] = request.type;
-      } else if (request.harness == McpHarness.claude) {
-        // Claude HTTP registrations require an explicit transport type.
+      } else if (spec.validation.requiresHttpType) {
         fields['type'] = 'http';
       }
     }
@@ -488,9 +489,15 @@ interface class McpMutationService {
     McpMutationRequest request,
     Map<String, Object?> current,
   ) {
+    final spec = HarnessCatalog.instance.mcpSpec(request.harness);
     final fields = Map<String, Object?>.from(current);
     if (request.command != null) fields['command'] = request.command;
-    if (request.url != null) fields['url'] = request.url;
+    if (request.url != null) {
+      for (final key in spec.httpTransportKeys) {
+        fields.remove(key);
+      }
+      fields[spec.httpEndpointKey] = request.url;
+    }
     if (request.args.isNotEmpty) fields['args'] = request.args;
     if (request.type != null) fields['type'] = request.type;
     if (request.envValues.isNotEmpty) {
@@ -501,7 +508,7 @@ interface class McpMutationService {
       fields['env'] = merged;
     }
     if (request.headerValues.isNotEmpty) {
-      final key = _headerKey(request.harness);
+      final key = spec.headerKey;
       final merged = <String, Object?>{};
       final existing = fields[key];
       if (existing is Map) merged.addAll(Map<String, Object?>.from(existing));
@@ -510,9 +517,6 @@ interface class McpMutationService {
     }
     return fields;
   }
-
-  String _headerKey(McpHarness harness) =>
-      harness == McpHarness.codex ? 'http_headers' : 'headers';
 
   /// Newly supplied credential values must be environment-variable or command
   /// references; a literal secret is refused (story 17).
@@ -553,19 +557,13 @@ interface class McpMutationService {
     }
   }
 
-  String _transport(Map<String, Object?>? fields) {
+  String _transport(Map<String, Object?>? fields, McpHarness harness) {
     if (fields == null) return 'unknown';
-    if (fields['url'] != null) return McpTransport.http.wireName;
-    if (fields['command'] != null) return McpTransport.stdio.wireName;
-    final type = fields['type'];
-    if (type == 'http' ||
-        type == 'streamable-http' ||
-        type == 'ws' ||
-        type == 'sse') {
-      return McpTransport.http.wireName;
-    }
-    if (type == 'stdio') return McpTransport.stdio.wireName;
-    return 'unknown';
+    return HarnessCatalog.instance
+            .mcpSpec(harness)
+            .transportOf(fields)
+            ?.wireName ??
+        'unknown';
   }
 
   McpEnvelope _planEnvelope(

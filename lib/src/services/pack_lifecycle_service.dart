@@ -94,6 +94,7 @@ final class const PackLifecycleRequest({
   final String? cwd,
   final String? projectRoot,
   final String? home,
+  final String? geminiDir,
   final String? stateDir,
   final String? configPath,
   final String? target,
@@ -137,6 +138,7 @@ final class PackDiscoveryRequest {
     this.cwd,
     this.projectRoot,
     this.home,
+    this.geminiDir,
     this.stateDir,
     this.configPath,
   });
@@ -167,6 +169,9 @@ final class PackDiscoveryRequest {
 
   /// The explicit home directory.
   final String? home;
+
+  /// The explicit Antigravity user root.
+  final String? geminiDir;
 
   /// The explicit state directory.
   final String? stateDir;
@@ -558,6 +563,8 @@ interface class PackLifecycleService {
             resolved.add(McpHarness.codex);
           case 'pi':
             resolved.add(McpHarness.pi);
+          case 'antigravity':
+            resolved.add(McpHarness.antigravity);
           case 'shared':
             resolved.addAll(const <McpHarness>[
               McpHarness.claude,
@@ -1058,6 +1065,7 @@ interface class PackLifecycleService {
     cwd: request.cwd,
     projectRoot: request.projectRoot,
     home: request.home,
+    geminiDir: request.geminiDir,
     stateDir: request.stateDir,
     configPath: request.configPath,
     target: request.target,
@@ -1331,10 +1339,11 @@ interface class PackLifecycleService {
       );
     }
     final target = request.target;
-    if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
+    if (target != null &&
+        !const {'claude', 'codex', 'pi', 'antigravity'}.contains(target)) {
       throw MambaException(
         'Unsupported MCP discovery target: $target. The supported targets '
-        'are claude, codex, and pi.',
+        'are claude, codex, pi, and antigravity.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
@@ -1345,6 +1354,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
     );
     final configuration = _loadPackConfiguration(
@@ -1371,6 +1381,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
       configPath: request.configPath,
       dryRun: true,
@@ -1437,7 +1448,8 @@ interface class PackLifecycleService {
       return _discoverMcp(request);
     }
     final target = request.target;
-    if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
+    if (target != null &&
+        !const {'claude', 'codex', 'pi', 'antigravity'}.contains(target)) {
       throw MambaException(
         'Unsupported discovery target: $target. The supported targets are '
         'claude, codex, and pi.',
@@ -1451,6 +1463,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
     );
     final configuration = _loadPackConfiguration(
@@ -1477,6 +1490,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
       configPath: request.configPath,
       dryRun: true,
@@ -4459,6 +4473,7 @@ interface class PackLifecycleService {
     cwd: request.cwd,
     projectRoot: request.projectRoot,
     home: request.home,
+    geminiDir: request.geminiDir,
     stateDir: request.stateDir,
     dryRun: request.dryRun,
     approved: request.yes || request.interactive,
@@ -4472,6 +4487,7 @@ interface class PackLifecycleService {
     String? cwd,
     String? projectRoot,
     String? home,
+    String? geminiDir,
     String? stateDir,
     bool dryRun = false,
     bool approved = false,
@@ -4483,6 +4499,7 @@ interface class PackLifecycleService {
       cwd: cwd,
       projectRoot: projectRoot,
       home: home,
+      geminiDir: geminiDir,
       stateDir: stateDir,
       dryRun: dryRun,
       approved: approved,

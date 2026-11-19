@@ -26,13 +26,14 @@ final class HarnessDescriptor {
     HarnessId id, {
     required HarnessRootResolver userRoot,
     HarnessRootResolver? userConfigRoot,
+    McpHarnessSpec? mcp,
     bool prompt = true,
   }) => HarnessDescriptor(
     id: id,
     rootResolver: userRoot,
     configRootResolver: userConfigRoot ?? userRoot,
     context: _HarnessCapability(id, HarnessFacet.context),
-    mcp: _HarnessCapability(id, HarnessFacet.mcp),
+    mcp: mcp,
     skill: _HarnessCapability(id, HarnessFacet.skill),
     prompt: prompt ? _HarnessCapability(id, HarnessFacet.prompt) : null,
     agent: _HarnessCapability(id, HarnessFacet.agent),
@@ -67,7 +68,6 @@ final class HarnessDescriptor {
 final class _HarnessCapability
     implements
         ContextHarnessSpec,
-        McpHarnessSpec,
         SkillHarnessSpec,
         PromptHarnessSpec,
         AgentHarnessSpec {

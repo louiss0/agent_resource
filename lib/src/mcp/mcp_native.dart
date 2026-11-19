@@ -4,52 +4,57 @@ import 'dart:io' show FileSystemEntityType, FileSystemException;
 import 'package:crypto/crypto.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:mamba/mamba.dart';
+import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 
+import '../harness/harness_catalog.dart';
 import '../services/lifecycle_state_service.dart';
 import '../services/parent_config_service.dart';
+import 'mcp_native_location.dart';
 import 'mcp_types.dart';
+
+export 'mcp_native_location.dart';
 
 const int maxMcpNativeBytes = 8 * 1024 * 1024;
 const int maxMcpNativeDepth = 32;
 const int maxMcpNativeNodes = 100000;
 
-/// The parser used for a native configuration file.
-enum McpNativeFormat { json, toml }
-
-/// Which part of a parsed document holds the named server entries.
-enum McpNativeSection { mcpServers, claudeLocalProjects, codexMcpServers }
-
-/// One bounded, read-only native configuration location.
-final class McpNativeLocation {
-  const McpNativeLocation({
-    required this.harness,
-    required this.scope,
-    required this.path,
-    required this.format,
-    required this.section,
-    this.projectKey,
-  });
-
-  final McpHarness harness;
-  final McpScope scope;
-  final String path;
-  final McpNativeFormat format;
-  final McpNativeSection section;
-
-  /// The `projects` map key for Claude local scope.
-  final String? projectKey;
-}
-
 /// Maps requested harnesses and scopes to native configuration locations,
 /// following the existing [LifecycleContext] path rules (home, codex home,
 /// Pi agent directory, project root and their overrides).
+final class _LifecycleMcpRoots implements McpHarnessRoots {
+  const _LifecycleMcpRoots(this.context);
+
+  final LifecycleContext context;
+
+  @override
+  String get projectRoot => context.projectRoot;
+
+  @override
+  p.Context get path => context.fs.path;
+
+  @override
+  String requireHome() => context.requireHome();
+
+  @override
+  String claudeConfigRoot() => context.claudeConfigRoot();
+
+  @override
+  String codexRoot() => context.codexRoot();
+
+  @override
+  String piAgentRoot() => context.piAgentRoot();
+
+  @override
+  String geminiConfigRoot() => context.geminiConfigRoot();
+}
+
 final class McpNativeResolver {
   const McpNativeResolver();
 
   /// Resolves the shared lifecycle context of one static MCP request.
   ///
-  /// Every MCP service resolves the same eight path options with user scope;
+  /// Every MCP service resolves the same path options with user scope;
   /// keeping that decision here prevents the services from drifting apart.
   static LifecycleContext resolveLifecycleContext(
     fslib.FileSystem fs, {
@@ -60,6 +65,7 @@ final class McpNativeResolver {
     String? claudeConfigDir,
     String? codexHome,
     String? piAgentDir,
+    String? geminiDir,
     String? stateDir,
   }) => LifecycleContext.resolve(
     LifecycleOptions(
@@ -72,108 +78,33 @@ final class McpNativeResolver {
       claudeConfigDir: claudeConfigDir,
       codexHome: codexHome,
       piAgentDir: piAgentDir,
+      geminiDir: geminiDir,
       stateDir: stateDir,
     ),
     fileSystem: fs,
   );
 
-  /// Whether a harness publishes registrations at a given scope. Claude has
-  /// a local scope in the home file; Codex and Pi have only project/user.
-  static bool supports(McpHarness harness, McpScope scope) {
-    if (scope == McpScope.local) return harness == McpHarness.claude;
-    return true;
-  }
+  /// Whether the selected harness facet publishes registrations at a scope.
+  static bool supports(McpHarness harness, McpScope scope) =>
+      HarnessCatalog.instance.mcpSpec(harness).supportedScopes.contains(scope);
 
+  /// Resolves every supported location through the composed catalog facets.
   List<McpNativeLocation> resolve(
     LifecycleContext context, {
     McpHarness? harness,
     McpScope? scope,
   }) {
-    final fs = context.fs;
-    final root = context.projectRoot;
+    final roots = _LifecycleMcpRoots(context);
+    final catalog = HarnessCatalog.instance;
     final locations = <McpNativeLocation>[];
-
-    bool wants(McpHarness candidate, McpScope candidateScope) =>
-        (harness == null || harness == candidate) &&
-        (scope == null || scope == candidateScope);
-
-    if (wants(McpHarness.claude, McpScope.project)) {
-      locations.add(
-        McpNativeLocation(
-          harness: McpHarness.claude,
-          scope: McpScope.project,
-          path: fs.path.join(root, '.mcp.json'),
-          format: McpNativeFormat.json,
-          section: McpNativeSection.mcpServers,
-        ),
-      );
-    }
-    if (wants(McpHarness.claude, McpScope.user)) {
-      locations.add(
-        McpNativeLocation(
-          harness: McpHarness.claude,
-          scope: McpScope.user,
-          path: fs.path.join(context.requireHome(), '.claude.json'),
-          format: McpNativeFormat.json,
-          section: McpNativeSection.mcpServers,
-        ),
-      );
-    }
-    if (wants(McpHarness.claude, McpScope.local)) {
-      locations.add(
-        McpNativeLocation(
-          harness: McpHarness.claude,
-          scope: McpScope.local,
-          path: fs.path.join(context.requireHome(), '.claude.json'),
-          format: McpNativeFormat.json,
-          section: McpNativeSection.claudeLocalProjects,
-          projectKey: root,
-        ),
-      );
-    }
-    if (wants(McpHarness.codex, McpScope.user)) {
-      locations.add(
-        McpNativeLocation(
-          harness: McpHarness.codex,
-          scope: McpScope.user,
-          path: fs.path.join(context.codexRoot(), 'config.toml'),
-          format: McpNativeFormat.toml,
-          section: McpNativeSection.codexMcpServers,
-        ),
-      );
-    }
-    if (wants(McpHarness.codex, McpScope.project)) {
-      locations.add(
-        McpNativeLocation(
-          harness: McpHarness.codex,
-          scope: McpScope.project,
-          path: fs.path.join(root, '.codex', 'config.toml'),
-          format: McpNativeFormat.toml,
-          section: McpNativeSection.codexMcpServers,
-        ),
-      );
-    }
-    if (wants(McpHarness.pi, McpScope.user)) {
-      locations.add(
-        McpNativeLocation(
-          harness: McpHarness.pi,
-          scope: McpScope.user,
-          path: fs.path.join(context.piAgentRoot(), 'mcp.json'),
-          format: McpNativeFormat.json,
-          section: McpNativeSection.mcpServers,
-        ),
-      );
-    }
-    if (wants(McpHarness.pi, McpScope.project)) {
-      locations.add(
-        McpNativeLocation(
-          harness: McpHarness.pi,
-          scope: McpScope.project,
-          path: fs.path.join(root, '.pi', 'mcp.json'),
-          format: McpNativeFormat.json,
-          section: McpNativeSection.mcpServers,
-        ),
-      );
+    for (final id in catalog.harnessesSupporting(HarnessFacet.mcp)) {
+      final spec = catalog.mcpSpecById(id);
+      if (harness != null && spec.mcpHarness != harness) continue;
+      for (final location in spec.locations(roots)) {
+        if (scope == null || location.scope == scope) {
+          locations.add(location);
+        }
+      }
     }
     return locations;
   }
@@ -195,18 +126,20 @@ final class McpNativeReader {
       McpNativeFormat.json => _strictJson(text, location.path),
       McpNativeFormat.toml => _toml(text, location.path),
     };
+    final spec = HarnessCatalog.instance.mcpSpec(location.harness);
     return switch (location.section) {
       McpNativeSection.mcpServers => _entries(
-        document['mcpServers'],
+        document[spec.sectionKey(McpNativeSection.mcpServers)],
         location.path,
       ),
       McpNativeSection.codexMcpServers => _entries(
-        document['mcp_servers'],
+        document[spec.sectionKey(McpNativeSection.codexMcpServers)],
         location.path,
       ),
       McpNativeSection.claudeLocalProjects => _claudeLocalEntries(
         document,
         location,
+        spec,
       ),
     };
   }
@@ -268,8 +201,10 @@ final class McpNativeReader {
   Map<String, Map<String, Object?>> _claudeLocalEntries(
     Map<String, Object?> document,
     McpNativeLocation location,
+    McpHarnessSpec spec,
   ) {
-    final projects = document['projects'];
+    final projects =
+        document[spec.sectionKey(McpNativeSection.claudeLocalProjects)];
     if (projects == null) return <String, Map<String, Object?>>{};
     if (projects is! Map) {
       throw MambaException(
@@ -292,7 +227,10 @@ final class McpNativeReader {
         exitCode: 1,
       );
     }
-    return _entries(selected['mcpServers'], location.path);
+    return _entries(
+      selected[spec.sectionKey(McpNativeSection.mcpServers)],
+      location.path,
+    );
   }
 
   Map<String, Map<String, Object?>> _entries(Object? container, String path) {

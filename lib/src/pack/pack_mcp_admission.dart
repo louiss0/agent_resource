@@ -4,6 +4,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../harness/harness_catalog.dart';
 import '../mcp/mcp_native.dart';
 import '../mcp/mcp_ownership_ledger.dart';
 import '../mcp/mcp_types.dart';
@@ -91,44 +92,6 @@ final class PackMcpAdmissionReport {
   };
 }
 
-/// One explicitly named, project-level native configuration file. Discovery
-/// reads only these fixed paths; it never sweeps the tree and never reads
-/// user/home configuration.
-final class _ProjectLocation {
-  const _ProjectLocation(
-    this.segments,
-    this.harness,
-    this.format,
-    this.section,
-  );
-
-  final List<String> segments;
-  final McpHarness harness;
-  final McpNativeFormat format;
-  final McpNativeSection section;
-}
-
-const List<_ProjectLocation> _projectLocations = <_ProjectLocation>[
-  _ProjectLocation(
-    <String>['.mcp.json'],
-    McpHarness.claude,
-    McpNativeFormat.json,
-    McpNativeSection.mcpServers,
-  ),
-  _ProjectLocation(
-    <String>['.codex', 'config.toml'],
-    McpHarness.codex,
-    McpNativeFormat.toml,
-    McpNativeSection.codexMcpServers,
-  ),
-  _ProjectLocation(
-    <String>['.pi', 'mcp.json'],
-    McpHarness.pi,
-    McpNativeFormat.json,
-    McpNativeSection.mcpServers,
-  ),
-];
-
 /// The gate for an opt-in MCP pack selection (stories 36-38, 44).
 ///
 /// It validates each inline declaration against every requested target
@@ -189,18 +152,20 @@ interface class PackMcpAdmissionService {
   /// refused, and the shared reader enforces the byte/depth/node caps.
   Map<McpHarness, Set<String>> discoverNative(String sourceRoot) {
     final result = <McpHarness, Set<String>>{};
-    for (final spec in _projectLocations) {
-      final path = _boundedPath(sourceRoot, spec.segments);
+    for (final harness in McpHarness.values) {
+      final spec = HarnessCatalog.instance.mcpSpec(harness);
+      if (!spec.supportedScopes.contains(McpScope.project)) continue;
+      final path = _boundedPath(sourceRoot, spec.projectSegments);
       final entries = _reader.read(
         McpNativeLocation(
-          harness: spec.harness,
+          harness: harness,
           scope: McpScope.project,
           path: path,
-          format: spec.format,
-          section: spec.section,
+          format: spec.nativeFormat,
+          section: spec.nativeSection,
         ),
       );
-      result.putIfAbsent(spec.harness, () => <String>{}).addAll(entries.keys);
+      result.putIfAbsent(harness, () => <String>{}).addAll(entries.keys);
     }
     return result;
   }
@@ -216,6 +181,11 @@ interface class PackMcpAdmissionService {
     }
     for (final declaration in request.declarations) {
       for (final harness in request.targetHarnesses) {
+        HarnessCatalog.instance.requireFacet(
+          HarnessId.fromWire(harness.wireName),
+          HarnessFacet.mcp,
+          refusalExitCode: PackProcessStatus.invalidInput.code,
+        );
         final report = _validation.validate(
           harness: harness,
           fields: declaration.fields,
