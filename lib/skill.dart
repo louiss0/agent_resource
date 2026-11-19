@@ -14,6 +14,8 @@ import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 import 'lifecycle.dart';
 import 'skill_create_command.dart';
+import 'skill_edit_command.dart';
+import 'skill_clone_command.dart';
 import 'skill_lifecycle_commands.dart';
 
 typedef InspectOperation = String Function(String skill);
@@ -51,6 +53,12 @@ final class SkillCommand extends GroupCommand {
     final reader = read ?? PromptReadService(fileSystem: fileSystem);
     return [
       SkillCreateCommand(
+        guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
+      ),
+      SkillEditCommand(
+        guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
+      ),
+      SkillCloneCommand(
         guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
       ),
       SkillListCommand(service),
