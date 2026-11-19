@@ -5,9 +5,23 @@ import 'package:mamba/mamba.dart';
 import 'components/installation_approval.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
+import 'src/harness/harness_id.dart';
 import 'src/services/lifecycle_state_service.dart';
 
 typedef AuthoringConfirmation = Future<bool> Function(String prompt);
+
+/// The harness spelling of the native target of an authoring request.
+///
+/// It overrides the request's `target.harness` without changing the request
+/// document; an omitted flag keeps the reviewed request authoritative.
+final authoringHarnessOption = ChoiceOption(
+  'harness',
+  choices: HarnessId.values,
+  description: 'The harness whose native target is authored or converted.',
+);
+
+String? authoringHarnessOverride(ValueOf valueOf) =>
+    valueOf(authoringHarnessOption)?.wireName;
 
 Future<bool> defaultAuthoringConfirmation(String prompt) =>
     InstallationApprovalComponent(label: prompt).render();

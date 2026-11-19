@@ -739,5 +739,44 @@ track = { kind = "local" }
       expect(record['baselineDigest'], mcpCanonicalDigest(entry));
       expect(fs.file(antigravityPath).existsSync(), isFalse);
     });
+
+    test('accepts --harness antigravity for MCP installation', () async {
+      writeProjectConfig(const <String>['antigravity']);
+      final result = await run(<String>[
+        ...invocation('install', scope: 'user'),
+        '--type',
+        'mcp',
+        '--harness',
+        'antigravity',
+      ]);
+      final envelope = successEnvelope(result);
+      final resources = envelope['resources']! as List<Object?>;
+      expect(
+        resources.single! as Map<String, Object?>,
+        containsPair('name', 'github'),
+      );
+      final userPath = fs.path.join(
+        home.path,
+        '.gemini',
+        'config',
+        'mcp_config.json',
+      );
+      final entry = McpNativeReader(fs).read(
+        McpNativeLocation(
+          harness: McpHarness.antigravity,
+          scope: McpScope.user,
+          path: userPath,
+          format: McpNativeFormat.json,
+          section: McpNativeSection.mcpServers,
+        ),
+      )['github'];
+      expect(entry, isNotNull);
+      final records = (readLedger()['records']! as List<Object?>)
+          .cast<Map<String, Object?>>();
+      expect(
+        records.firstWhere((item) => item['name'] == 'github')['harness'],
+        'antigravity',
+      );
+    });
   });
 }

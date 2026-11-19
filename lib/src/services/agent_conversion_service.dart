@@ -38,6 +38,7 @@ ConversionRequest parseConversionRequest(
   String requestFile,
   String workingDirectory, {
   fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  String? harnessOverride,
 }) {
   final path = fileSystem.path.normalize(
     fileSystem.path.isAbsolute(requestFile)
@@ -114,6 +115,9 @@ ConversionRequest parseConversionRequest(
     throw MambaException('Unsupported conversion source kind: $kind');
   }
   final target = _map(map['target'], 'target');
+  if (harnessOverride != null) {
+    target['harness'] = harnessOverride;
+  }
   _known(target, const {
     'harness',
     'output',

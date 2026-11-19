@@ -53,6 +53,7 @@ AuthoringRequest parseAuthoringRequest(
   String requestFile,
   String workingDirectory, {
   fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  String? harnessOverride,
 }) {
   final path = fileSystem.path.normalize(
     fileSystem.path.isAbsolute(requestFile)
@@ -103,6 +104,9 @@ AuthoringRequest parseAuthoringRequest(
     );
   }
   final target = _object(map['target'], 'target');
+  if (harnessOverride != null) {
+    target['harness'] = harnessOverride;
+  }
   _knownKeys(target, const {
     'harness',
     'output',

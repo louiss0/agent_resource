@@ -31,6 +31,7 @@ final class AgentEditCommand extends Command {
            _geminiDir,
            _stateDir,
            _planId,
+           authoringHarnessOption,
          ],
          flags: const [_apply, _dryRun, _yes, _interactive, _showInstructions],
          conflicts: const {
@@ -130,6 +131,7 @@ final class AgentEditCommand extends Command {
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
       fileSystem: _fileSystem,
+      harnessOverride: authoringHarnessOverride(valueOf),
     );
     if (request.operation != AuthoringOperation.edit) {
       throw MambaException('The request operation must be edit.');

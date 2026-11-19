@@ -31,6 +31,7 @@ final class AgentCloneCommand extends Command {
            _geminiDir,
            _stateDir,
            _planId,
+           authoringHarnessOption,
          ],
          flags: const [_apply, _dryRun, _yes, _interactive, _showInstructions],
          conflicts: const {
@@ -133,6 +134,7 @@ final class AgentCloneCommand extends Command {
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
       fileSystem: _fileSystem,
+      harnessOverride: authoringHarnessOverride(valueOf),
     );
     if (request.operation != AuthoringOperation.clone) {
       throw MambaException('The request operation must be clone.');
