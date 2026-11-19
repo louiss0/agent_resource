@@ -15,6 +15,8 @@ import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
 import 'parent_config_service.dart' show parseStrictJsonObject;
 
+const _authoringHarnessNames = <String>{'claude', 'codex', 'pi'};
+
 enum AuthoringOperation { create, clone, edit, compose }
 
 final class AuthoringRequest {
@@ -104,8 +106,7 @@ AuthoringRequest parseAuthoringRequest(
     'installationId',
   }, 'target');
   final harness = target['harness'];
-  if (harness is! String ||
-      AgentHarness.values.every((value) => value.name != harness)) {
+  if (harness is! String || !_authoringHarnessNames.contains(harness)) {
     throw MambaException('Target harness must be claude, codex, or pi.');
   }
   for (final key in const ['output', 'installationId']) {
@@ -241,7 +242,7 @@ Map<String, Object?> _source(Object? value) {
       throw MambaException('A native-file source requires a nonblank path.');
     }
     if (source['harness'] is! String ||
-        AgentHarness.values.every((item) => item.name != source['harness'])) {
+        !_authoringHarnessNames.contains(source['harness'])) {
       throw MambaException(
         'A native-file source requires an explicit harness.',
       );
@@ -855,6 +856,10 @@ interface class AgentAuthoringService {
             ? context.codexAgentsRoot()
             : _fileSystem.path.join(context.codexRoot(), 'agents'),
       AgentHarness.pi => context.piAgentsRoot(),
+      AgentHarness.antigravity =>
+        context.scope == LifecycleScope.project
+            ? _fileSystem.path.join(context.projectRoot, '.agents', 'agents')
+            : _fileSystem.path.join(context.geminiConfigRoot(), 'agents'),
     };
     return _fileSystem.path.join(
       root,
@@ -1019,6 +1024,7 @@ String _profile(AgentHarness harness) => switch (harness) {
   AgentHarness.claude => 'claude-agent-native-v1',
   AgentHarness.codex => 'codex-agent-native-v1',
   AgentHarness.pi => 'pi-agent-common-v1',
+  AgentHarness.antigravity => 'antigravity-agent-native-v1',
 };
 
 bool _qualifiedModel(String value) {

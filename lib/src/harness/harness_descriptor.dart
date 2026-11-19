@@ -64,13 +64,12 @@ final class HarnessDescriptor {
   bool supports(HarnessFacet category) => facet(category) != null;
 }
 
-final class _HarnessCapability
+final class _HarnessCapability extends AgentHarnessSpec
     implements
         ContextHarnessSpec,
         McpHarnessSpec,
         SkillHarnessSpec,
-        PromptHarnessSpec,
-        AgentHarnessSpec {
+        PromptHarnessSpec {
   const _HarnessCapability(this.harness, this.facet);
 
   @override

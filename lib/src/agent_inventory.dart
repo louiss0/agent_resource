@@ -11,6 +11,8 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'agent_inspection.dart';
+import 'harness/harness_catalog.dart';
+import 'services/lifecycle_state_service.dart';
 import 'skill_files.dart';
 
 const _maxAncestors = 64;
@@ -37,6 +39,7 @@ final class AgentInventoryInput {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.readRoots = const <String>[],
     this.stateDir,
   });
@@ -52,6 +55,7 @@ final class AgentInventoryInput {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final List<String> readRoots;
   final String? stateDir;
 }
@@ -154,6 +158,8 @@ final class _Root {
     required this.scope,
     required this.destination,
     required this.piDistinction,
+    required this.spec,
+    required this.maxDepth,
   });
 
   final String path;
@@ -162,6 +168,8 @@ final class _Root {
   final AgentScope scope;
   final String destination;
   final bool piDistinction;
+  final AgentHarnessSpec spec;
+  final int maxDepth;
 }
 
 final class _Inventory {
@@ -173,6 +181,8 @@ final class _Inventory {
   final diagnostics = <AgentDiagnostic>[];
   late final fslib.Directory cwd;
   late final fslib.Directory projectRoot;
+  late final LifecycleContext lifecycleContext;
+  late String homePath;
   var entries = 0;
   var directories = 0;
   var metadataBytes = 0;
@@ -205,12 +215,37 @@ final class _Inventory {
       (input.claudeConfigDir, 'Claude config directory'),
       (input.codexHome, 'Codex home'),
       (input.piAgentDir, 'Pi Agent directory'),
+      (input.geminiDir, 'Antigravity user root'),
     ]) {
       if (raw != null) {
         await _refuseLinkedPath(_path(raw, cwd.path), cwd.path);
         await _directory(raw, cwd.path, label);
       }
     }
+    homePath =
+        input.home ??
+        _environmentPath('HOME') ??
+        _environmentPath('USERPROFILE') ??
+        '';
+    lifecycleContext = LifecycleContext.resolve(
+      LifecycleOptions(
+        processWorkingDirectory: input.processWorkingDirectory,
+        environment: input.environment,
+        scope: input.scope == AgentScope.user
+            ? LifecycleScope.user
+            : LifecycleScope.project,
+        cwd: cwd.path,
+        projectRoot: projectRoot.path,
+        home: input.home,
+        claudeConfigDir: input.claudeConfigDir,
+        codexHome: input.codexHome,
+        piAgentDir: input.piAgentDir,
+        geminiDir: input.geminiDir,
+        stateDir: input.stateDir,
+        readRoots: input.readRoots,
+      ),
+      fileSystem: fileSystem,
+    );
 
     if (input.scope != AgentScope.user) {
       await _addProjectRoots();
@@ -266,134 +301,76 @@ final class _Inventory {
   Future<void> _addProjectRoots() async {
     final scanAncestors =
         _selected(AgentHarness.claude) || _selected(AgentHarness.codex);
-    final chain = scanAncestors ? _ancestors() : [projectRoot];
+    final chain = scanAncestors ? _ancestors() : <fslib.Directory>[projectRoot];
     ancestors = chain.length;
-    for (final ancestor in chain) {
-      if (_selected(AgentHarness.claude)) {
-        await _scanRoot(
-          _Root(
-            path: fileSystem.path.join(ancestor.path, '.claude', 'agents'),
-            anchor: ancestor.path,
-            harness: AgentHarness.claude,
-            scope: AgentScope.project,
-            destination: 'native',
-            piDistinction: false,
-          ),
-        );
-      }
-      if (_selected(AgentHarness.codex)) {
-        await _scanRoot(
-          _Root(
-            path: fileSystem.path.join(ancestor.path, '.codex', 'agents'),
-            anchor: ancestor.path,
-            harness: AgentHarness.codex,
-            scope: AgentScope.project,
-            destination: 'native',
-            piDistinction: false,
-          ),
-        );
-        await _scanCodexConfig(
-          fileSystem.path.join(ancestor.path, '.codex', 'config.toml'),
-          AgentScope.project,
-          ancestor.path,
-        );
-      }
-    }
-    if (_selected(AgentHarness.pi)) {
-      for (final (path, destination) in [
-        (fileSystem.path.join(projectRoot.path, '.pi', 'agents'), 'native'),
-        (fileSystem.path.join(projectRoot.path, '.agents', 'agents'), 'shared'),
-      ]) {
-        await _scanRoot(
-          _Root(
-            path: path,
-            anchor: projectRoot.path,
-            harness: AgentHarness.pi,
-            scope: AgentScope.project,
-            destination: destination,
-            piDistinction: true,
-          ),
-        );
-      }
-    }
-    if (_selected(AgentHarness.claude)) {
-      for (final directory in readRoots) {
-        await _scanRoot(
-          _Root(
-            path: fileSystem.path.join(directory.path, '.claude', 'agents'),
-            anchor: directory.path,
-            harness: AgentHarness.claude,
-            scope: AgentScope.project,
-            destination: 'native',
-            piDistinction: false,
-          ),
-        );
+    final discovery = _discoveryContext([
+      for (final directory in chain) directory.path,
+    ]);
+    for (final harness in AgentHarness.values) {
+      if (!_selected(harness)) continue;
+      final spec = _spec(harness);
+      for (final root in spec.discoveryRoots(discovery, scope: 'project')) {
+        await _consumeRoot(root, harness, spec);
       }
     }
   }
 
   Future<void> _addUserRoots() async {
     final home = await _directory(_home(), cwd.path, 'home directory');
-    if (_selected(AgentHarness.claude)) {
-      final config = _path(
-        input.claudeConfigDir ??
-            _environmentPath('CLAUDE_CONFIG_DIR') ??
-            fileSystem.path.join(home.path, '.claude'),
-        cwd.path,
-      );
-      await _scanRoot(
-        _Root(
-          path: fileSystem.path.join(config, 'agents'),
-          anchor: home.path,
-          harness: AgentHarness.claude,
-          scope: AgentScope.user,
-          destination: 'native',
-          piDistinction: false,
-        ),
-      );
-    }
-    if (_selected(AgentHarness.codex)) {
-      final codexHome = _path(
-        input.codexHome ??
-            _environmentPath('CODEX_HOME') ??
-            fileSystem.path.join(home.path, '.codex'),
-        cwd.path,
-      );
-      await _scanRoot(
-        _Root(
-          path: fileSystem.path.join(codexHome, 'agents'),
-          anchor: home.path,
-          harness: AgentHarness.codex,
-          scope: AgentScope.user,
-          destination: 'native',
-          piDistinction: false,
-        ),
-      );
-      await _scanCodexConfig(
-        fileSystem.path.join(codexHome, 'config.toml'),
-        AgentScope.user,
-        home.path,
-      );
-    }
-    if (_selected(AgentHarness.pi)) {
-      final piHome = _path(
-        input.piAgentDir ??
-            _environmentPath('PI_CODING_AGENT_DIR') ??
-            fileSystem.path.join(home.path, '.pi', 'agent'),
-        cwd.path,
-      );
-      await _scanRoot(
-        _Root(
-          path: fileSystem.path.join(piHome, 'agents'),
-          anchor: home.path,
-          harness: AgentHarness.pi,
-          scope: AgentScope.user,
-          destination: 'native',
-          piDistinction: true,
-        ),
-      );
+    homePath = home.path;
+    final discovery = _discoveryContext(<String>[projectRoot.path]);
+    for (final harness in AgentHarness.values) {
+      if (!_selected(harness)) continue;
+      final spec = _spec(harness);
+      for (final root in spec.discoveryRoots(discovery, scope: 'user')) {
+        await _consumeRoot(root, harness, spec);
+      }
     }
   }
+
+  AgentDiscoveryContext _discoveryContext(List<String> chain) =>
+      AgentDiscoveryContext(
+        path: fileSystem.path,
+        projectRoot: projectRoot.path,
+        home: homePath,
+        ancestors: List<String>.unmodifiable(chain),
+        readRoots: List<String>.unmodifiable([
+          for (final directory in readRoots) directory.path,
+        ]),
+        userRoots: lifecycleContext,
+      );
+
+  Future<void> _consumeRoot(
+    AgentDiscoveryRoot discovery,
+    AgentHarness harness,
+    AgentHarnessSpec spec,
+  ) async {
+    final scope = AgentScope.values.firstWhere(
+      (value) => value.name == discovery.scope,
+    );
+    if (discovery.kind == AgentDiscoveryKind.codexConfig) {
+      await _scanCodexConfig(discovery.path, scope, discovery.anchor);
+      return;
+    }
+    await _scanRoot(
+      _Root(
+        path: discovery.path,
+        anchor: discovery.anchor,
+        harness: harness,
+        scope: scope,
+        destination: discovery.destination,
+        piDistinction: discovery.piDistinction,
+        spec: spec,
+        maxDepth: discovery.maxDepth,
+      ),
+    );
+  }
+
+  AgentHarnessSpec _spec(AgentHarness harness) =>
+      HarnessCatalog.instance.requireFacet(
+        HarnessId.fromWire(harness.name),
+        HarnessFacet.agent,
+      ) as AgentHarnessSpec;
 
   String _path(String raw, String base) {
     if (raw.trim().isEmpty) {
@@ -551,6 +528,7 @@ final class _Inventory {
       final children = await _list(current.directory);
       children.sort((left, right) => left.path.compareTo(right.path));
       for (final child in children.reversed) {
+        final relative = fileSystem.path.relative(child.path, from: root.path);
         final childType = await _type(child.path, followLinks: false);
         if (childType == FileSystemEntityType.directory) {
           if (current.depth >= _maxDepth) {
@@ -559,6 +537,14 @@ final class _Inventory {
               exitCode: 3,
             );
           }
+          if (current.depth >= root.maxDepth) continue;
+          if (!root.spec.acceptsDirectory(
+            relative,
+            current.depth,
+            fileSystem.path,
+          )) {
+            continue;
+          }
           if (!_visitDirectory(root, child.path)) continue;
           pending.add((
             directory: fileSystem.directory(child.path),
@@ -566,16 +552,22 @@ final class _Inventory {
           ));
           continue;
         }
-        final extension = switch (root.harness) {
-          AgentHarness.codex => '.toml',
-          AgentHarness.claude || AgentHarness.pi => '.md',
-        };
-        if (fileSystem.path.extension(child.path) != extension) continue;
+        final layout = root.spec.candidateLayout(
+          relative,
+          current.depth,
+          fileSystem.path,
+        );
+        final extension = root.spec.definitionExtension;
+        if (layout == null ||
+            fileSystem.path.extension(child.path) != extension) {
+          continue;
+        }
         if (childType == FileSystemEntityType.link) {
           _addLinkedOccurrence(
             root,
             child.path,
             providerSpecific: root.piDistinction && current.depth > 0,
+            layout: layout,
           );
           continue;
         }
@@ -596,6 +588,7 @@ final class _Inventory {
           eligibility: root.piDistinction && current.depth > 0
               ? 'provider-specific'
               : 'native',
+          layout: layout,
         );
       }
     }
@@ -683,6 +676,8 @@ final class _Inventory {
       scope: scope,
       destination: 'native',
       piDistinction: false,
+      spec: _spec(AgentHarness.codex),
+      maxDepth: _maxDepth,
     );
     for (final roleKey in inspection.roleKeys) {
       final report = inspection.inspectRole(
@@ -695,6 +690,7 @@ final class _Inventory {
         eligibility: report.validationStatus is AgentValidationIncomplete
             ? 'unsupported-link'
             : 'native',
+        layout: AgentLayout.legacy,
       );
     }
     rootsScanned++;
@@ -723,6 +719,7 @@ final class _Inventory {
     _Root root,
     String path, {
     bool providerSpecific = false,
+    required AgentLayout layout,
   }) {
     final diagnostic = AgentDiagnostic(
       code: 'LINKED_CANDIDATE',
@@ -747,6 +744,7 @@ final class _Inventory {
         'diagnostics': [diagnostic.toJson()],
       },
       eligibility: 'unsupported-link',
+      layout: layout,
     );
   }
 
@@ -754,6 +752,7 @@ final class _Inventory {
     AgentInspectionReport report, {
     required _Root root,
     String eligibility = 'native',
+    required AgentLayout layout,
   }) {
     final sourceBinding = report.binding;
     final binding = sourceBinding == null
@@ -783,6 +782,7 @@ final class _Inventory {
         ],
       },
       eligibility: eligibility,
+      layout: layout,
     );
   }
 
@@ -807,6 +807,7 @@ final class _Inventory {
     required Map<String, Object?> identity,
     required Map<String, Object?> validation,
     required String eligibility,
+    required AgentLayout layout,
   }) {
     final scope = root.scope.name;
     final roleKey = binding?['roleKey'] as String? ?? '';
@@ -819,6 +820,9 @@ final class _Inventory {
         )
         .toString();
     if (!occurrenceIds.add(id)) return;
+    final relative = fileSystem.path.isWithin(root.path, path)
+        ? fileSystem.path.relative(path, from: root.path)
+        : fileSystem.path.basename(path);
     occurrences.add(<String, Object?>{
       'occurrenceId': id,
       'path': path,
@@ -833,33 +837,63 @@ final class _Inventory {
       'validation': validation,
       'management': 'unmanaged',
       'modification': 'notVerified',
+      if (root.spec.nestedLayouts) ...<String, Object?>{
+        'layout': layout.name,
+        'targetName': root.spec.targetName(relative, fileSystem.path),
+      },
     });
   }
 
   List<Map<String, Object?>> _collisions() {
     final groups = <String, List<Map<String, Object?>>>{};
     for (final occurrence in occurrences) {
-      final identity = occurrence['identity']! as Map<String, Object?>;
-      final name = identity['name']! as Map<String, Object?>;
-      final resolved = name['resolved'];
-      if (resolved is! String || resolved.isEmpty) continue;
       final harness = occurrence['harness']! as String;
-      final comparison = harness == 'pi' ? resolved.toLowerCase() : resolved;
-      groups
-          .putIfAbsent('$harness\n$comparison', () => <Map<String, Object?>>[])
-          .add(occurrence);
+      final spec = HarnessCatalog.instance.requireFacet(
+        HarnessId.fromWire(harness),
+        HarnessFacet.agent,
+      ) as AgentHarnessSpec;
+      for (final name in spec.comparisonNames(occurrence, fileSystem.path)) {
+        groups
+            .putIfAbsent('$harness\n$name', () => <Map<String, Object?>>[])
+            .add(occurrence);
+      }
     }
     final result = <Map<String, Object?>>[];
-    for (final entry in groups.entries) {
-      if (entry.value.length < 2) continue;
-      final parts = entry.key.split('\n');
-      result.add(<String, Object?>{
+    final seen = <String>{};
+    final keys = groups.keys.toList()..sort();
+    for (final key in keys) {
+      final group = groups[key]!;
+      if (group.length < 2) continue;
+      final parts = key.split('\n');
+      final occurrenceIds = <String>[
+        for (final occurrence in group) occurrence['occurrenceId']! as String,
+      ]..sort();
+      final pair = '${parts[0]}\n${occurrenceIds.join(',')}';
+      if (!seen.add(pair)) continue;
+      final collision = <String, Object?>{
         'harness': parts[0],
         'comparisonName': parts[1],
-        'occurrenceIds': [
-          for (final occurrence in entry.value) occurrence['occurrenceId'],
-        ],
-      });
+        'occurrenceIds': occurrenceIds,
+      };
+      if (parts[0] == HarnessId.antigravity.wireName) {
+        final layouts = <String>{
+          for (final occurrence in group)
+            if (occurrence['layout'] is String) occurrence['layout']! as String,
+        }.toList()..sort();
+        collision['layouts'] = layouts;
+        diagnostics.add(
+          AgentDiagnostic(
+            code: 'AGENT_NAME_COLLISION',
+            category: AgentDiagnosticCategory.product,
+            severity: AgentDiagnosticSeverity.warning,
+            field: 'name',
+            message:
+                'Antigravity Agent target "${parts[1]}" has conflicting '
+                'native layouts; strict per-target name uniqueness is refused.',
+          ),
+        );
+      }
+      result.add(collision);
     }
     result.sort(
       (left, right) => '${left['harness']}\n${left['comparisonName']}'

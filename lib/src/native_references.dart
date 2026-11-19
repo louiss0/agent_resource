@@ -1,4 +1,5 @@
 import 'agent_inspection.dart';
+import 'harness/harness_catalog.dart';
 
 /// Applies explicit source-name → target-name mappings to a disclosed native
 /// association field. Returns field-specific errors instead of guessing a
@@ -17,13 +18,7 @@ List<String> applyNativeReferenceMappings(
     }
     final kind = entry.key.substring(0, separator);
     final sourceName = entry.key.substring(separator + 1);
-    final field = switch ((kind, harness)) {
-      ('skill', AgentHarness.claude || AgentHarness.codex) => 'skills',
-      ('mcp-server', AgentHarness.claude) => 'mcpServers',
-      ('mcp-server', AgentHarness.codex) => 'mcp_servers',
-      ('hook', AgentHarness.claude) => 'hooks',
-      _ => null,
-    };
+    final field = _agentSpec(harness).associationField(kind);
     if (field == null) {
       errors.add(
         '${entry.key}: ${harness.name} has no supported native association for $kind.',
@@ -63,6 +58,12 @@ bool containsNativeReference(Object? value, String name) {
   }
   return false;
 }
+
+AgentHarnessSpec _agentSpec(AgentHarness harness) =>
+    HarnessCatalog.instance.requireFacet(
+      HarnessId.fromWire(harness.name),
+      HarnessFacet.agent,
+    ) as AgentHarnessSpec;
 
 Object? _replaceReference(Object? value, String source, String target) {
   if (value is String) return value == source ? target : value;

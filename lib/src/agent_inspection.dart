@@ -27,10 +27,11 @@ import 'package:mamba/mamba.dart';
 import 'package:toml/toml.dart';
 import 'package:yaml/yaml.dart';
 
+import 'harness/harness_catalog.dart';
 import 'skill_files.dart';
 
 /// The harness whose native contract a definition file follows.
-enum AgentHarness { claude, codex, pi }
+enum AgentHarness { claude, codex, pi, antigravity }
 
 /// The command operation an inspection serves.
 enum AgentOperation { inspect, validate }
@@ -428,17 +429,11 @@ AgentInspectionReport inspectNativeAgentContent({
   );
 }
 
-void _validateClaudeOrPiFields(
-  AgentHarness harness,
-  Map<Object?, Object?> fields,
-  _ReportBuilder builder,
-) {
-  if (harness == AgentHarness.claude) {
-    _validateClaudeFields(fields, builder);
-  } else {
-    _validatePiFields(fields, builder);
-  }
-}
+AgentHarnessSpec _agentSpec(AgentHarness harness) =>
+    HarnessCatalog.instance.requireFacet(
+      HarnessId.fromWire(harness.name),
+      HarnessFacet.agent,
+    ) as AgentHarnessSpec;
 
 // ---------------------------------------------------------------------------
 // Bounds and evidence constants
@@ -458,6 +453,7 @@ const _maxRequestNodes = 100000;
 const _claudeProfile = 'claude-agent-native-v1';
 const _codexProfile = 'codex-agent-native-v1';
 const _piProfile = 'pi-agent-common-v1';
+const _antigravityProfile = 'antigravity-agent-native-v1';
 const _codexSourceCommit = '8531184b49bcb160175a84e140b659a83a426df7';
 
 const _claudeEvidence = <String, Object?>{
@@ -487,6 +483,12 @@ const _piEvidence = <String, Object?>{
       'commit': '85a704cb8f35c96c0cabfa665b572bab296942e5',
     },
   ],
+};
+
+const _antigravityEvidence = <String, Object?>{
+  'kind': 'official-document-contract',
+  'contract': 'antigravity-custom-subagents',
+  'baseline': '2.12',
 };
 
 // ---------------------------------------------------------------------------
@@ -668,7 +670,7 @@ String _typeName(Object? value) => switch (value) {
 // Report assembly
 // ---------------------------------------------------------------------------
 
-final class _ReportBuilder {
+final class _ReportBuilder implements AgentFieldValidation {
   _ReportBuilder({
     required this.form,
     required this.profile,
@@ -735,6 +737,59 @@ final class _ReportBuilder {
       ),
     );
   }
+
+  @override
+  void reportError(
+    String code,
+    AgentFieldCategory category,
+    String? field,
+    String message,
+  ) => error(code, _fieldCategory(category), field, message);
+
+  @override
+  void reportWarning(
+    String code,
+    AgentFieldCategory category,
+    String? field,
+    String message,
+  ) => warn(code, _fieldCategory(category), field, message);
+
+  @override
+  void declareName(String name) {
+    identityName['declared'] = name;
+    identityName['resolved'] = name;
+    identityName['provenance'] = 'declared';
+  }
+
+  @override
+  void declareDescription(String description) {
+    identityDescription['declared'] = description;
+    identityDescription['resolved'] = description;
+    identityDescription['provenance'] = 'declared';
+  }
+
+  @override
+  void addReference(AgentFieldDeclaration declaration) =>
+      references.add(declaration.toJson());
+
+  @override
+  void addCapability(AgentFieldDeclaration declaration) =>
+      capabilities.add(declaration.toJson());
+
+  @override
+  void addParentRequirement(String aspect, String label, String detail) =>
+      parentRequirements.add(_parentRequirement(aspect, label, detail));
+
+  @override
+  String typeName(Object? value) => _typeName(value);
+
+  static AgentDiagnosticCategory _fieldCategory(AgentFieldCategory category) =>
+      switch (category) {
+        AgentFieldCategory.specification =>
+          AgentDiagnosticCategory.specification,
+        AgentFieldCategory.product => AgentDiagnosticCategory.product,
+        AgentFieldCategory.advisory => AgentDiagnosticCategory.advisory,
+      };
 
   AgentInspectionReport finish({required bool showInstructions}) =>
       AgentInspectionReport._(
@@ -876,6 +931,11 @@ _ReportBuilder _directBuilder(AgentHarness harness) => switch (harness) {
     profile: _piProfile,
     evidence: _piEvidence,
   ),
+  AgentHarness.antigravity => _ReportBuilder(
+    form: 'antigravity-agent-file',
+    profile: _antigravityProfile,
+    evidence: _antigravityEvidence,
+  ),
 };
 
 AgentInspectionReport _validateDecodedNative(
@@ -885,19 +945,34 @@ AgentInspectionReport _validateDecodedNative(
   bool showInstructions,
   String label,
 ) {
-  if (harness == AgentHarness.codex) {
+  final spec = _agentSpec(harness);
+  if (spec.schemaKind == AgentSchemaKind.codex) {
     final fields = _parseTomlCandidate(text, builder, label);
     if (fields != null) {
       builder.nativeFields = fields;
       builder.coverage.add('field-validation');
-      _validateCodexFields(fields, builder, bound: false);
+      spec.validateFields(
+        Map<Object?, Object?>.from(fields),
+        builder,
+        (_, decoded) => _validateCodexFields(
+          Map<String, Object?>.from(decoded),
+          builder,
+          bound: false,
+        ),
+      );
     }
   } else {
     final fields = _parseMarkdownCandidate(text, builder, harness);
     if (fields != null) {
       builder.nativeFields = Map<String, Object?>.from(fields);
       builder.coverage.add('field-validation');
-      _validateClaudeOrPiFields(harness, fields, builder);
+      spec.validateFields(fields, builder, (kind, _) {
+        if (kind == AgentSchemaKind.claude) {
+          _validateClaudeFields(fields, builder);
+        } else if (kind == AgentSchemaKind.pi) {
+          _validatePiFields(fields, builder);
+        }
+      });
     }
   }
   return builder.finish(showInstructions: showInstructions);
@@ -950,7 +1025,8 @@ Map<Object?, Object?>? _parseMarkdownCandidate(
   builder.instructionsPresent = true;
   builder.instructionsProvenance = 'markdown-body';
   builder.instructionText = extraction.body;
-  builder.instructionsRuntimeTrimmed = harness == AgentHarness.pi;
+  builder.instructionsRuntimeTrimmed = _agentSpec(harness)
+      .runtimeTrimmedInstructions;
 
   final yamlText = extraction.yamlText!;
   if (utf8.encode(yamlText).length > _maxFrontmatterBytes) {

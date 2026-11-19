@@ -30,6 +30,7 @@ final class AgentInstallCommand extends Command {
           _claude,
           _codex,
           _piAgentDir,
+          _geminiDir,
           _state,
           _readRoots,
           _destination,
@@ -68,12 +69,13 @@ final class AgentInstallCommand extends Command {
     'target',
     InstallationTarget.values,
     unique: true,
-    description: 'Consuming harness filter: claude, codex, or pi.',
+    description: 'Consuming harness filter: claude, codex, pi, or antigravity.',
   );
   static final _profile = ChoiceOption(
     'profile',
     choices: NativeAgentProfile.values,
-    description: 'Direct-file profile: claude, codex, or pi-common.',
+    description:
+        'Direct-file profile: claude, codex, pi-common, or antigravity.',
   );
   static final _scope = ChoiceOption(
     'scope',
@@ -104,6 +106,7 @@ final class AgentInstallCommand extends Command {
   static final _claude = FolderPathOption('claude-config-dir');
   static final _codex = FolderPathOption('codex-home');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _state = FolderPathOption('state-dir');
   static final _readRoots = RepeatableFolderPathOption('read-root');
   static const _allResources = BooleanFlag(
@@ -146,6 +149,7 @@ final class AgentInstallCommand extends Command {
           claudeConfigDir: valueOf(_claude),
           codexHome: valueOf(_codex),
           piAgentDir: valueOf(_piAgentDir),
+          geminiDir: valueOf(_geminiDir),
           stateDir: valueOf(_state),
           readRoots: valueOf(_readRoots) ?? const <String>[],
           dryRun: valueOf(_dryRun),

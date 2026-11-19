@@ -66,6 +66,13 @@ thinking: high
 tools: read, grep
 ---
 $instructions''',
+              AgentHarness.antigravity =>
+                '''---
+name: reviewer
+description: Reviews changes.
+tools: [read, grep]
+---
+$instructions''',
             });
             final sourceBytes = source.readAsBytesSync();
             final targetDefinition = <String, Object?>{
@@ -73,11 +80,13 @@ $instructions''',
                 AgentHarness.claude => 'claude-sonnet',
                 AgentHarness.codex => 'openai/gpt-5',
                 AgentHarness.pi => 'kimi-coding/k3',
+                AgentHarness.antigravity => 'kimi-coding/k3',
               },
               switch (testCase.target) {
                 AgentHarness.claude => 'effort',
                 AgentHarness.codex => 'model_reasoning_effort',
                 AgentHarness.pi => 'thinking',
+                AgentHarness.antigravity => 'effort',
               }: 'high',
               if (testCase.target == AgentHarness.pi) 'tools': 'read, grep',
               if (testCase.target == AgentHarness.claude)

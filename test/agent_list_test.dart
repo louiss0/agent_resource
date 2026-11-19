@@ -400,18 +400,22 @@ Future<void> main() async {
         });
 
         test('intermediate native root and config links are refused', () async {
-          for (final harness in ['claude', 'codex', 'pi']) {
+          for (final testCase in const [
+            (harness: 'claude', root: '.claude', extension: 'md'),
+            (harness: 'codex', root: '.codex', extension: 'toml'),
+            (harness: 'pi', root: '.pi', extension: 'md'),
+            (harness: 'antigravity', root: '.agents', extension: 'md'),
+          ]) {
             await _withLocalSandbox((sandbox) async {
               final target = sandbox.fileSystem.directory(
                 sandbox.fileSystem.path.join(sandbox.root.path, 'outside'),
               )..createSync();
-              _write(
-                target,
-                'agents/secret.${harness == 'codex' ? 'toml' : 'md'}',
-                'PRIVATE',
-              );
+              _write(target, 'agents/secret.${testCase.extension}', 'PRIVATE');
               final link = sandbox.fileSystem.link(
-                sandbox.fileSystem.path.join(sandbox.project.path, '.$harness'),
+                sandbox.fileSystem.path.join(
+                  sandbox.project.path,
+                  testCase.root,
+                ),
               );
               if (!_tryLink(link, target.path, directory: true)) {
                 markTestSkipped('directory symlink creation is unavailable');
@@ -421,7 +425,7 @@ Future<void> main() async {
                 await _execute(sandbox, [
                   ..._projectArgs(sandbox),
                   '--harness',
-                  harness,
+                  testCase.harness,
                   '--format',
                   'json',
                 ]),
@@ -571,6 +575,7 @@ Future<void> main() async {
               '--claude-config-dir',
               '--codex-home',
               '--pi-agent-dir',
+              '--gemini-dir',
             ]) {
               _expectFailure(
                 await _execute(sandbox, [
@@ -797,6 +802,8 @@ Future<void> main() async {
                 _report(
                   await _execute(sandbox, [
                     ..._projectArgs(sandbox),
+                    '--harness',
+                    'pi',
                     '--format',
                     'json',
                   ]),
@@ -1015,11 +1022,13 @@ Future<void> main() async {
               final report = _report(
                 await _execute(sandbox, [
                   ..._projectArgs(sandbox),
+                  '--harness',
+                  'pi',
                   '--format',
                   'json',
                 ]),
               );
-              expect(_occurrences(report), hasLength(4));
+              expect(_occurrences(report), hasLength(2));
               final collisions = _data(report)['collisions']! as List<Object?>;
               expect(collisions, hasLength(1));
               final collision = collisions.single as Map<Object?, Object?>;

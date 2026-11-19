@@ -12,7 +12,7 @@ final class AgentProfileComponent {
   final int Function(interact.Select)? select;
 
   Future<String?> render() async {
-    const options = ['claude', 'codex', 'pi-common'];
+    const options = ['claude', 'codex', 'pi-common', 'antigravity'];
     final prompt = interact.Select(prompt: label, options: options);
     final index = runPrompt(
       () => select == null ? prompt.interact() : select!(prompt),
