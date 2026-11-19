@@ -28,6 +28,7 @@ final _projectRootOption = FolderPathOption('project-root');
 final _claudeConfigDirOption = FolderPathOption('claude-config-dir');
 final _codexHomeOption = FolderPathOption('codex-home');
 final _piAgentDirOption = FolderPathOption('pi-agent-dir');
+final _geminiDirOption = FolderPathOption('gemini-dir');
 
 const _replaceFlag = BooleanFlag('replace');
 const _applyFlag = BooleanFlag('apply');
@@ -78,6 +79,7 @@ final class ContextInjectCommand extends Command {
            _claudeConfigDirOption,
            _codexHomeOption,
            _piAgentDirOption,
+           _geminiDirOption,
            contextStateDirOption,
          ],
          flags: [
@@ -201,6 +203,7 @@ final class ContextInjectCommand extends Command {
     claudeConfigDir: valueOf(_claudeConfigDirOption),
     codexHome: valueOf(_codexHomeOption),
     piAgentDir: valueOf(_piAgentDirOption),
+    geminiDir: valueOf(_geminiDirOption),
     stateDir: valueOf(contextStateDirOption),
   );
 

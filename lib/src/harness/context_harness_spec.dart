@@ -67,6 +67,18 @@ extension ContextHarnessTargetSpec on ContextHarnessSpec {
         context.piAgentRoot(),
         'AGENTS.override.md',
       ),
+      (HarnessId.antigravity, ContextScope.project, ContextVariant.standard) =>
+        p.join(projectTargetDir, 'AGENTS.md'),
+      (HarnessId.antigravity, ContextScope.project, ContextVariant.gemini) =>
+        p.join(projectTargetDir, 'GEMINI.md'),
+      (HarnessId.antigravity, ContextScope.project, ContextVariant.dotAgents) =>
+        p.join(projectTargetDir, '.agents', 'AGENTS.md'),
+      (HarnessId.antigravity, ContextScope.user, ContextVariant.standard) =>
+        p.join(context.geminiRoot(), 'AGENTS.md'),
+      (HarnessId.antigravity, ContextScope.user, ContextVariant.gemini) =>
+        p.join(context.geminiRoot(), 'GEMINI.md'),
+      (HarnessId.antigravity, ContextScope.user, ContextVariant.dotAgents) =>
+        p.join(context.geminiConfigRoot(), 'AGENTS.md'),
       _ => throw MambaException(
         'UNSUPPORTED_CONTEXT_VARIANT: Variant "${variant.wireName}" is not '
         'supported for harness "${harness.wireName}" at ${scope.name} scope.',
