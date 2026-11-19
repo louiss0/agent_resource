@@ -230,4 +230,59 @@ void main() {
       );
     });
   });
+
+  group('HarnessCatalog user roots', () {
+    test('resolves each harness root through the lifecycle context', () {
+      final catalog = HarnessCatalog.instance;
+      final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      final context = resolveContext(
+        fs,
+        LifecycleOptions(
+          processWorkingDirectory: '/sandbox/project',
+          cwd: '/sandbox/project',
+          projectRoot: '/sandbox/project',
+          home: '/sandbox/home',
+          claudeConfigDir: '/sandbox/claude',
+          codexHome: '/sandbox/codex',
+          piAgentDir: '/sandbox/pi',
+          geminiDir: '/sandbox/gemini',
+        ),
+      );
+
+      expect(catalog.userRoot(HarnessId.claude, context), '/sandbox/claude');
+      expect(catalog.userRoot(HarnessId.codex, context), '/sandbox/codex');
+      expect(catalog.userRoot(HarnessId.pi, context), '/sandbox/pi');
+      expect(
+        catalog.userRoot(HarnessId.antigravity, context),
+        '/sandbox/gemini',
+      );
+      expect(
+        catalog.userConfigRoot(HarnessId.claude, context),
+        '/sandbox/claude',
+      );
+      expect(
+        catalog.userConfigRoot(HarnessId.codex, context),
+        '/sandbox/codex',
+      );
+      expect(catalog.userConfigRoot(HarnessId.pi, context), '/sandbox/pi');
+      expect(
+        catalog.userConfigRoot(HarnessId.antigravity, context),
+        '/sandbox/gemini/config',
+      );
+
+      final windowsFs = MemoryFileSystem(style: FileSystemStyle.windows);
+      final windowsContext = resolveContext(
+        windowsFs,
+        lifecycleOptions(r'C:\sandbox\project', r'C:\sandbox\home'),
+      );
+      expect(
+        catalog.userRoot(HarnessId.antigravity, windowsContext),
+        r'C:\sandbox\home\.gemini',
+      );
+      expect(
+        catalog.userConfigRoot(HarnessId.antigravity, windowsContext),
+        r'C:\sandbox\home\.gemini\config',
+      );
+    });
+  });
 }

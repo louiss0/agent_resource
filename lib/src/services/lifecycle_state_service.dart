@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
+import '../harness/harness_user_roots.dart';
 import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
 import '../skill_files.dart';
@@ -150,7 +151,7 @@ final class LifecycleOptions {
   );
 }
 
-final class LifecycleContext {
+final class LifecycleContext implements HarnessUserRoots {
   LifecycleContext._({
     required this.options,
     required this.cwd,
@@ -241,18 +242,21 @@ final class LifecycleContext {
     return value == null || value.trim().isEmpty ? null : value;
   }
 
+  @override
   String claudeConfigRoot() => resolvePath(
     options.claudeConfigDir ??
         _environment('CLAUDE_CONFIG_DIR') ??
         fs.path.join(requireHome(), '.claude'),
   );
 
+  @override
   String codexRoot() => resolvePath(
     options.codexHome ??
         _environment('CODEX_HOME') ??
         fs.path.join(requireHome(), '.codex'),
   );
 
+  @override
   String piAgentRoot() => resolvePath(
     options.piAgentDir ??
         _environment('PI_CODING_AGENT_DIR') ??
@@ -261,6 +265,7 @@ final class LifecycleContext {
 
   /// Antigravity's user root, honoring an explicit option, either supported
   /// environment override, or `<home>/.gemini` in that order.
+  @override
   String geminiRoot() => resolvePath(
     options.geminiDir ??
         _environment('GEMINI_CONFIG_DIR') ??
@@ -269,6 +274,7 @@ final class LifecycleContext {
   );
 
   /// Antigravity's user customization config root below [geminiRoot].
+  @override
   String geminiConfigRoot() =>
       fs.path.normalize(fs.path.join(geminiRoot(), 'config'));
 
