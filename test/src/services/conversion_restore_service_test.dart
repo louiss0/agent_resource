@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/authoring/authoring_inputs.dart';
 import 'package:agent_resource/src/conversion/conversion_evidence.dart';
+import 'package:agent_resource/agent_resource.dart' show createExecutor;
 import 'package:agent_resource/src/conversion/conversion_restore_evidence.dart';
 import 'package:agent_resource/src/services/authoring_plan_service.dart';
 import 'package:agent_resource/src/services/authoring_publication_service.dart';
@@ -12,6 +13,7 @@ import 'package:agent_resource/src/services/conversion_restore_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
+import 'package:mamba/executor.dart';
 import 'package:mamba/mamba.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
@@ -2953,5 +2955,86 @@ void main() {
         ),
       );
     });
+
+    test('CLI reviews and applies an Antigravity-involved restore', () async {
+      await completeConversion(
+        sourceLocation: '/work/project/.agents/agents/reviewer.md',
+        sourceRoot: '/work/project/.agents/agents',
+        sourceForm: 'antigravity-agent-file',
+        sourceProfile: 'antigravity-agent-native-v1',
+        targetLocation: '/work/project/.claude/agents/reviewer.md',
+        targetRoot: '/work/project/.claude/agents',
+        targetForm: 'claude-agent-file',
+        targetProfile: 'claude-agent-native-v1',
+        targetKind: 'agent-file',
+      );
+      final executor = createExecutor(
+        fileSystem: fs,
+        conversionRecovery: coordinator,
+        conversionRestore: restore,
+      ).fake();
+      final context = <String>[
+        '--cwd',
+        '/work/project/',
+        '--project-root',
+        '/work/project/',
+        '--home',
+        '/home/user/',
+        '--state-dir',
+        '/work/state/',
+        '--format',
+        'json',
+      ];
+
+      Future<MambaExecutionResult> run(List<String> arguments) =>
+          executor.execute(arguments);
+
+      Map<String, Object?> dataOf(MambaExecutionResult result) {
+        expect(
+          result,
+          isA<MambaSuccessResult>(),
+          reason: result is MambaFailureResult ? result.message : null,
+        );
+        final envelope = jsonDecode(
+          (result as MambaSuccessResult).output!,
+        ) as Map<String, Object?>;
+        return envelope['data']! as Map<String, Object?>;
+      }
+
+      final review = dataOf(
+        await run(<String>[
+          'prompt',
+          'conversion',
+          'restore',
+          _transactionId,
+          ...context,
+        ]),
+      );
+      expect(review['action'], 'restore');
+      final planId = review['planId']! as String;
+      final applied = dataOf(
+        await run(<String>[
+          'prompt',
+          'conversion',
+          'restore',
+          _transactionId,
+          '--apply',
+          '--yes',
+          '--plan-id',
+          planId,
+          ...context,
+        ]),
+      );
+      expect(applied['planId'], planId);
+      expect(
+        fs.file('/work/project/.agents/agents/reviewer.md').readAsStringSync(),
+        'original',
+      );
+      expect(
+        fs.file('/work/project/.claude/agents/reviewer.md').existsSync(),
+        isFalse,
+      );
+    });
   });
 }
+
