@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
+import '../harness/harness_user_roots.dart';
 import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
 import '../skill_files.dart';
@@ -105,6 +106,7 @@ final class LifecycleOptions {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.stateDir,
     this.readRoots = const <String>[],
     this.dryRun = false,
@@ -120,6 +122,7 @@ final class LifecycleOptions {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final String? stateDir;
   final List<String> readRoots;
   final bool dryRun;
@@ -127,6 +130,7 @@ final class LifecycleOptions {
 
   LifecycleOptions copyWith({
     LifecycleScope? scope,
+    String? geminiDir,
     bool? dryRun,
     bool? approved,
   }) => LifecycleOptions(
@@ -139,6 +143,7 @@ final class LifecycleOptions {
     claudeConfigDir: claudeConfigDir,
     codexHome: codexHome,
     piAgentDir: piAgentDir,
+    geminiDir: geminiDir ?? this.geminiDir,
     stateDir: stateDir,
     readRoots: readRoots,
     dryRun: dryRun ?? this.dryRun,
@@ -146,7 +151,7 @@ final class LifecycleOptions {
   );
 }
 
-final class LifecycleContext {
+final class LifecycleContext implements HarnessUserRoots {
   LifecycleContext._({
     required this.options,
     required this.cwd,
@@ -237,23 +242,41 @@ final class LifecycleContext {
     return value == null || value.trim().isEmpty ? null : value;
   }
 
+  @override
   String claudeConfigRoot() => resolvePath(
     options.claudeConfigDir ??
         _environment('CLAUDE_CONFIG_DIR') ??
         fs.path.join(requireHome(), '.claude'),
   );
 
+  @override
   String codexRoot() => resolvePath(
     options.codexHome ??
         _environment('CODEX_HOME') ??
         fs.path.join(requireHome(), '.codex'),
   );
 
+  @override
   String piAgentRoot() => resolvePath(
     options.piAgentDir ??
         _environment('PI_CODING_AGENT_DIR') ??
         fs.path.join(requireHome(), '.pi', 'agent'),
   );
+
+  /// Antigravity's user root, honoring an explicit option, either supported
+  /// environment override, or `<home>/.gemini` in that order.
+  @override
+  String geminiRoot() => resolvePath(
+    options.geminiDir ??
+        _environment('GEMINI_CONFIG_DIR') ??
+        _environment('GEMINI_HOME') ??
+        fs.path.join(requireHome(), '.gemini'),
+  );
+
+  /// Antigravity's user customization config root below [geminiRoot].
+  @override
+  String geminiConfigRoot() =>
+      fs.path.normalize(fs.path.join(geminiRoot(), 'config'));
 
   String stateRoot([LifecycleScope? selectedScope]) {
     final selected = selectedScope ?? scope;
