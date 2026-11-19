@@ -1,12 +1,19 @@
 import 'dart:convert';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/agent_inspection.dart';
 import 'package:agent_resource/src/services/agent_graph_service.dart';
+import 'package:agent_resource/src/services/agent_installation_service.dart';
 import 'package:agent_resource/src/services/agent_lifecycle_service.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:agent_resource/src/services/pack_lifecycle_service.dart';
 import 'package:file/file.dart' as fs;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
+import 'package:mamba/mamba.dart';
 import 'package:test/test.dart';
+
+import 'support/installation_test_support.dart';
 
 const _privateBody = 'ANTIGRAVITY-PRIVATE-BODY-2b17 keep me private.';
 
@@ -60,6 +67,36 @@ List<String> _context(fs.FileSystem fileSystem) => [
   '--state-dir',
   '/sandbox/state/',
 ];
+
+List<String> _lifecycleArgs() => const <String>[
+  '--scope',
+  'project',
+  '--cwd',
+  '/sandbox/project/',
+  '--project-root',
+  '/sandbox/project/',
+  '--home',
+  '/sandbox/home/',
+  '--state-dir',
+  '/sandbox/state/',
+];
+
+Executor _installationExecutor(
+  fs.FileSystem fileSystem, {
+  LifecycleStateService? state,
+}) {
+  final lifecycle = AgentLifecycleService(fileSystem: fileSystem, state: state);
+  return createExecutor(
+    fileSystem: fileSystem,
+    agentLifecycle: lifecycle,
+    agentInstallation: AgentInstallationService(
+      fileSystem: fileSystem,
+      lifecycle: lifecycle,
+      interaction: ScriptedInstallationInteraction(),
+      progress: noInstallationProgress,
+    ),
+  );
+}
 
 Map<String, Object?> _successData(MambaExecutionResult result) {
   expect(
@@ -441,5 +478,319 @@ void main() {
         expect(message, isNot(contains(body.trim())));
       });
     });
+
+    for (final layout in const ['flat', 'nested']) {
+      test(
+        'agent install publishes the $layout layout as a regular file',
+        () async {
+          await _withSandbox((fileSystem) async {
+            final sourcePath = layout == 'flat'
+                ? '/sandbox/source/reviewer.md'
+                : '/sandbox/source/reviewer/agent.md';
+            _write(fileSystem, sourcePath, _definition('reviewer'));
+            final source = fileSystem.file(sourcePath);
+            final result = await _installationExecutor(fileSystem)
+                .fake()
+                .execute([
+                  'agent',
+                  'install',
+                  source.path,
+                  '--source-kind',
+                  'resource',
+                  '--profile',
+                  'antigravity',
+                  '--target',
+                  'antigravity',
+                  ..._lifecycleArgs(),
+                  '--yes',
+                  '--format',
+                  'json',
+                ]);
+            final envelope = _successData(result);
+            final unit =
+                ((envelope['data']! as Map<Object?, Object?>)['units']!
+                            as List<Object?>)
+                        .single
+                    as Map<Object?, Object?>;
+            expect(unit['profile'], 'antigravity');
+            expect(unit['nativeName'], 'reviewer');
+            final destination = fileSystem.file(
+              '/sandbox/project/.agents/agents/reviewer.md',
+            );
+            expect(destination.existsSync(), isTrue);
+            expect(destination.readAsBytesSync(), source.readAsBytesSync());
+          });
+        },
+      );
+    }
+
+    test('installation refuses a strict same-target name collision', () async {
+      await _withSandbox((fileSystem) async {
+        final root = '/sandbox/project/.agents/agents';
+        _write(fileSystem, '$root/taken.md', _definition('reviewer'));
+        _write(fileSystem, '$root/taken/agent.md', _definition('reviewer'));
+        final source = '/sandbox/source/reviewer.md';
+        _write(fileSystem, source, _definition('reviewer'));
+        final result = await _installationExecutor(fileSystem).fake().execute([
+          'agent',
+          'install',
+          source,
+          '--source-kind',
+          'resource',
+          '--profile',
+          'antigravity',
+          '--target',
+          'antigravity',
+          ..._lifecycleArgs(),
+          '--dry-run',
+          '--format',
+          'json',
+        ]);
+        expect(
+          result,
+          isA<MambaFailureResult>()
+              .having((value) => value.exitCode, 'exit code', 4)
+              .having((value) => value.output, 'output', isNull)
+              .having(
+                (value) => value.message,
+                'message',
+                contains('conflicts'),
+              ),
+        );
+        expect(fileSystem.file('$root/reviewer.md').existsSync(), isFalse);
+      });
+    });
+
+    test(
+      'adopt, replace, remove, and retained backups support nested files',
+      () async {
+        await _withSandbox((fileSystem) async {
+          final nested = '/sandbox/project/.agents/agents/team/agent.md';
+          final first = _definition('team', body: 'FIRST-BODY\n');
+          _write(fileSystem, nested, first);
+          final adopted = await _installationExecutor(fileSystem)
+              .fake()
+              .execute([
+                'agent',
+                'adopt',
+                nested,
+                '--harness',
+                'antigravity',
+                '--destination',
+                'native',
+                ..._lifecycleArgs(),
+                '--yes',
+                '--format',
+                'json',
+              ]);
+          final adoptedData =
+              _successData(adopted)['data']! as Map<Object?, Object?>;
+          final installationId = adoptedData['installationId']! as String;
+          expect(installationId, isNotEmpty);
+
+          final replacement = '/sandbox/source/replacement.md';
+          final second = _definition('team', body: 'SECOND-BODY\n');
+          _write(fileSystem, replacement, second);
+          final replaced = await _installationExecutor(fileSystem)
+              .fake()
+              .execute([
+                'agent',
+                'replace',
+                installationId,
+                replacement,
+                '--harness',
+                'antigravity',
+                ..._lifecycleArgs(),
+                '--yes',
+                '--format',
+                'json',
+              ]);
+          final replacedData =
+              _successData(replaced)['data']! as Map<Object?, Object?>;
+          expect(replacedData['backupRetained'], isTrue);
+          final backupId = replacedData['backupId']! as String;
+          expect(fileSystem.file(nested).readAsStringSync(), second);
+
+          final backups = await _installationExecutor(fileSystem)
+              .fake()
+              .execute([
+                'agent',
+                'backup',
+                'list',
+                ..._lifecycleArgs(),
+                '--format',
+                'json',
+              ]);
+          final backupData =
+              _successData(backups)['data']! as Map<Object?, Object?>;
+          expect(
+            (backupData['backups']! as List<Object?>)
+                .cast<Map<Object?, Object?>>()
+                .map((backup) => backup['backupId']),
+            contains(backupId),
+          );
+
+          final removed = await _installationExecutor(fileSystem)
+              .fake()
+              .execute([
+                'agent',
+                'remove',
+                installationId,
+                ..._lifecycleArgs(),
+                '--yes',
+                '--format',
+                'json',
+              ]);
+          expect(_successData(removed)['outcome'], 'removed');
+          expect(fileSystem.file(nested).existsSync(), isFalse);
+        });
+      },
+    );
+
+    test(
+      'pack Agent installation publishes nested sources in the flat layout',
+      () async {
+        await _withSandbox((fileSystem) async {
+          final p = fileSystem.path;
+          for (final path in [
+            '/sandbox/home/AppData/Roaming',
+            '/sandbox/home/AppData/Local',
+          ]) {
+            fileSystem.directory(path).createSync(recursive: true);
+          }
+          _write(
+            fileSystem,
+            '/sandbox/source/agent-resources.toml',
+            'schema_version = 1\n'
+                '[[catalog.agents]]\n'
+                'path = "agents/nested/agent.md"\n'
+                'profile = "antigravity"\n',
+          );
+          final source = _definition('nested', body: 'PACK-BODY\n');
+          _write(fileSystem, '/sandbox/source/agents/nested/agent.md', source);
+          _write(
+            fileSystem,
+            '/sandbox/project/agent-resources.toml',
+            'schema_version = 1\n'
+                '[packs."local/demo".source]\n'
+                'kind = "local"\n'
+                'path = "../source"\n'
+                '[packs."local/demo".update]\n'
+                'track = { kind = "local" }\n',
+          );
+          final result = await PackLifecycleService(fileSystem: fileSystem)
+              .execute(
+                PackLifecycleRequest(
+                  operation: PackOperation.install,
+                  resourceType: PackResourceType.agent,
+                  resourceTypes: const <PackResourceType>[],
+                  pack: 'local/demo',
+                  processWorkingDirectory: '/sandbox',
+                  environment: <String, String>{
+                    'HOME': '/sandbox/home',
+                    'USERPROFILE': '/sandbox/home',
+                    'APPDATA': p.join('/sandbox/home', 'AppData', 'Roaming'),
+                    'LOCALAPPDATA': p.join('/sandbox/home', 'AppData', 'Local'),
+                  },
+                  scope: LifecycleScope.project,
+                  cwd: '/sandbox/project',
+                  projectRoot: '/sandbox/project',
+                  home: '/sandbox/home',
+                  stateDir: '/sandbox/state',
+                  yes: true,
+                ),
+              );
+          expect(result.resources.single.disposition.wireName, 'installed');
+          final destination = fileSystem.file(
+            '/sandbox/project/.agents/agents/nested.md',
+          );
+          expect(destination.existsSync(), isTrue);
+          expect(destination.readAsStringSync(), source);
+        });
+      },
+    );
+
+    test(
+      'an interrupted installation is recoverable for Antigravity',
+      () async {
+        await _withSandbox((fileSystem) async {
+          final source = '/sandbox/source/recovery.md';
+          _write(fileSystem, source, _definition('recovery'));
+          final io = _InterruptingIO(fileSystem);
+          final state = LifecycleStateService(io: io);
+          final service = AgentLifecycleService(
+            fileSystem: fileSystem,
+            state: state,
+          );
+          final options = LifecycleOptions(
+            processWorkingDirectory: '/sandbox/project',
+            scope: LifecycleScope.project,
+            cwd: '/sandbox/project',
+            projectRoot: '/sandbox/project',
+            home: '/sandbox/home',
+            stateDir: '/sandbox/state',
+          );
+          await expectLater(
+            service.install(
+              AgentInstallInput(
+                options: options,
+                source: source,
+                harness: AgentHarness.antigravity,
+              ),
+            ),
+            throwsA(
+              isA<MambaException>().having(
+                (error) => error.exitCode,
+                'exit code',
+                6,
+              ),
+            ),
+          );
+          io.armed = false;
+          final transactions = fileSystem
+              .directory('/sandbox/project/.agent-resource/transactions')
+              .listSync()
+              .whereType<fs.File>()
+              .toList();
+          expect(transactions, hasLength(1));
+          final transactionId = fileSystem.path.basenameWithoutExtension(
+            transactions.single.path,
+          );
+          final recovered = await service.recover(
+            options.copyWith(approved: true),
+            transactionId: transactionId,
+            action: 'rollback',
+          );
+          expect(recovered.outcome, 'recovered');
+          expect(
+            fileSystem
+                .file('/sandbox/project/.agents/agents/recovery.md')
+                .existsSync(),
+            isFalse,
+          );
+        });
+      },
+    );
   });
+}
+
+final class _InterruptingIO extends LifecycleIO {
+  _InterruptingIO(fs.FileSystem fileSystem) : super(fs: fileSystem);
+
+  bool armed = true;
+  var interrupted = false;
+  var ledgerWrites = 0;
+
+  @override
+  void before(String operation, String path) {
+    if (!armed || operation != 'write') return;
+    if (interrupted) throw Exception('Simulated process interruption');
+    if (path.contains('installations.json')) {
+      ledgerWrites++;
+      if (ledgerWrites == 2) {
+        interrupted = true;
+        throw Exception('Simulated ledger interruption');
+      }
+    }
+  }
 }
