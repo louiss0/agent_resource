@@ -1,4 +1,5 @@
 import '../mcp/mcp_types.dart';
+import 'agent_harness_spec.dart';
 import 'harness_descriptor.dart';
 import 'harness_facet.dart';
 import 'harness_facet_refusal.dart';
@@ -7,6 +8,7 @@ import 'harness_user_roots.dart';
 import 'mcp_harness_spec.dart';
 import 'mcp_harness_specs.dart';
 
+export 'agent_conversion_claims.dart';
 export 'agent_harness_spec.dart';
 export 'context_harness_spec.dart';
 export 'harness_descriptor.dart';
@@ -80,6 +82,10 @@ final class HarnessCatalog {
 
   HarnessFacetSpec? facet(HarnessId id, HarnessFacet facet) =>
       byId(id).facet(facet);
+
+  /// The composed Agent facet of one registered harness identity.
+  AgentHarnessSpec agentSpecById(HarnessId id) =>
+      requireFacet(id, HarnessFacet.agent) as AgentHarnessSpec;
 
   /// The composed MCP facet of one registered harness identity.
   McpHarnessSpec mcpSpecById(HarnessId id) =>

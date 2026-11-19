@@ -4,6 +4,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../authoring/native_field_matrix.dart';
+import 'agent_conversion_claims.dart';
 import 'harness_facet.dart';
 import 'harness_id.dart';
 import 'harness_user_roots.dart';
@@ -189,7 +190,12 @@ abstract class AgentHarnessSpec implements HarnessFacetSpec {
 
   String get nativeForm => '${harness.wireName}-agent-file';
 
-  String get profile => '${harness.wireName}-agent-native-v1';
+  String get profile => switch (harness) {
+    HarnessId.claude => 'claude-agent-native-v1',
+    HarnessId.codex => 'codex-agent-native-v1',
+    HarnessId.pi => 'pi-agent-common-v1',
+    HarnessId.antigravity => 'antigravity-agent-native-v1',
+  };
 
   Map<String, Object?> get evidence => switch (harness) {
     HarnessId.claude => const <String, Object?>{
@@ -947,6 +953,16 @@ extension AgentHarnessAuthoring on AgentHarnessSpec {
       ],
     );
   }
+
+  /// Imports one native definition into canonical Agent claims. The import
+  /// spoke knows only the source harness.
+  AgentCanonicalClaims importNativeAgent(AgentImportRequest request) =>
+      agentImportNative(this, request);
+
+  /// Exports canonical claims into this harness's native profile, returning
+  /// the complete per-field account and readiness diagnostics.
+  AgentExportResult exportCanonicalAgent(AgentExportRequest request) =>
+      agentExportCanonical(this, request);
 
   /// Serializes one reviewed native Agent definition.
   String serializeNativeAgent(
