@@ -23,6 +23,12 @@ void main() {
       (source: AgentHarness.codex, target: AgentHarness.pi),
       (source: AgentHarness.pi, target: AgentHarness.claude),
       (source: AgentHarness.pi, target: AgentHarness.codex),
+      (source: AgentHarness.claude, target: AgentHarness.antigravity),
+      (source: AgentHarness.codex, target: AgentHarness.antigravity),
+      (source: AgentHarness.pi, target: AgentHarness.antigravity),
+      (source: AgentHarness.antigravity, target: AgentHarness.claude),
+      (source: AgentHarness.antigravity, target: AgentHarness.codex),
+      (source: AgentHarness.antigravity, target: AgentHarness.pi),
     ];
     for (final testCase in cases) {
       test(
@@ -71,26 +77,33 @@ $instructions''',
 name: reviewer
 description: Reviews changes.
 tools: [read, grep]
+mainAgent: true
 ---
 $instructions''',
             });
             final sourceBytes = source.readAsBytesSync();
+            final effortKey = switch (testCase.target) {
+              AgentHarness.claude => 'effort',
+              AgentHarness.codex => 'model_reasoning_effort',
+              AgentHarness.pi => 'thinking',
+              AgentHarness.antigravity => '',
+            };
             final targetDefinition = <String, Object?>{
-              'model': switch (testCase.target) {
-                AgentHarness.claude => 'claude-sonnet',
-                AgentHarness.codex => 'openai/gpt-5',
-                AgentHarness.pi => 'kimi-coding/k3',
-                AgentHarness.antigravity => 'kimi-coding/k3',
-              },
-              switch (testCase.target) {
-                AgentHarness.claude => 'effort',
-                AgentHarness.codex => 'model_reasoning_effort',
-                AgentHarness.pi => 'thinking',
-                AgentHarness.antigravity => 'effort',
-              }: 'high',
+              if (testCase.target != AgentHarness.antigravity)
+                'model': switch (testCase.target) {
+                  AgentHarness.claude => 'claude-sonnet',
+                  AgentHarness.codex => 'openai/gpt-5',
+                  AgentHarness.pi => 'kimi-coding/k3',
+                  AgentHarness.antigravity => throw StateError('unreachable'),
+                },
+              if (effortKey.isNotEmpty) effortKey: 'high',
               if (testCase.target == AgentHarness.pi) 'tools': 'read, grep',
               if (testCase.target == AgentHarness.claude)
                 'tools': <Object?>['Read'],
+              if (testCase.target == AgentHarness.antigravity)
+                'tools': <Object?>['read'],
+              if (testCase.target == AgentHarness.antigravity)
+                'mainAgent': true,
             };
             final request = ConversionRequest(
               source: <String, Object?>{
@@ -102,7 +115,9 @@ $instructions''',
                 'harness': testCase.target.name,
                 'output': fs.path.join(
                   project.path,
-                  '.${testCase.target.name}',
+                  testCase.target == AgentHarness.antigravity
+                      ? '.agents'
+                      : '.${testCase.target.name}',
                   'agents',
                   'reviewer${testCase.target == AgentHarness.codex ? '.toml' : '.md'}',
                 ),
@@ -110,14 +125,24 @@ $instructions''',
               context: './',
               definition: targetDefinition,
               decisions: <String>{
-                'map:model',
-                'map:effort',
+                if (testCase.target != AgentHarness.antigravity) 'map:model',
+                if (testCase.target != AgentHarness.antigravity) 'map:effort',
+                if (testCase.target == AgentHarness.antigravity) ...<String>[
+                  if (testCase.source != AgentHarness.antigravity) 'omit:model',
+                  if (testCase.source != AgentHarness.antigravity)
+                    'omit:effort',
+                  'map:tools',
+                  'map:mainAgent',
+                ],
                 if (testCase.target == AgentHarness.pi ||
                     testCase.target == AgentHarness.claude)
                   'map:tools',
                 if (testCase.source != AgentHarness.codex &&
                     testCase.target == AgentHarness.codex)
                   'omit:tools',
+                if (testCase.source == AgentHarness.antigravity &&
+                    testCase.target != AgentHarness.antigravity)
+                  'omit:mainAgent',
               },
               references: const <String, String>{},
             );
@@ -154,7 +179,15 @@ $instructions''',
                 'reviewer',
               ),
             );
-            expect(candidate.nativeFields['model'], targetDefinition['model']);
+            if (testCase.target == AgentHarness.antigravity) {
+              expect(candidate.nativeFields.containsKey('model'), isFalse);
+              expect(candidate.nativeFields['tools'], <Object?>['read']);
+            } else {
+              expect(
+                candidate.nativeFields['model'],
+                targetDefinition['model'],
+              );
+            }
             expect(source.readAsBytesSync(), sourceBytes);
             final output = fs.file(request.target['output']! as String);
             expect(output.existsSync(), isFalse);
@@ -1178,5 +1211,145 @@ Review.
         }
       },
     );
+
+    test(
+      'refuses an unapproved control loss at the Antigravity spoke',
+      () async {
+        final sandbox = fs.directory('/sandbox')..createSync();
+        try {
+          final project = fs.directory(fs.path.join(sandbox.path, 'project'))
+            ..createSync();
+          final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+            ..createSync();
+          final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
+            ..writeAsStringSync('''---
+name: reviewer
+description: Reviews changes.
+model: claude-sonnet
+tools: [Read]
+---
+Review carefully.''');
+          final options = LifecycleOptions(
+            processWorkingDirectory: project.path,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          );
+          ConversionRequest request(Set<String> decisions) => ConversionRequest(
+            source: <String, Object?>{
+              'kind': 'native-file',
+              'path': source.path,
+              'harness': 'claude',
+            },
+            target: <String, Object?>{
+              'harness': 'antigravity',
+              'output': fs.path.join(
+                project.path,
+                '.agents',
+                'agents',
+                'reviewer.md',
+              ),
+            },
+            context: './',
+            definition: <String, Object?>{
+              'tools': <Object?>['read'],
+            },
+            decisions: decisions,
+            references: const <String, String>{},
+          );
+          final service = AgentConversionService(fileSystem: fs);
+          final unresolved = await service.plan(
+            request(<String>{'map:tools'}),
+            options,
+          );
+          expect(unresolved.result.data['ready'], isFalse);
+          final model = (unresolved.result.data['fields']! as List<Object?>)
+              .cast<Map<String, Object?>>()
+              .singleWhere((field) => field['sourcePath'] == 'model');
+          expect(model['outcome'], 'unresolved');
+          expect(
+            unresolved.result.diagnostics.where(
+              (diagnostic) => diagnostic['field'] == 'model',
+            ),
+            isNotEmpty,
+          );
+
+          final approved = await service.plan(
+            request(<String>{'map:tools', 'omit:model'}),
+            options,
+          );
+          expect(approved.result.data['ready'], isTrue);
+          expect(approved.authoring.content, isNot(contains('model:')));
+        } finally {
+          sandbox.deleteSync(recursive: true);
+        }
+      },
+    );
+
+    test('refuses broader tool exposure without a widening decision', () async {
+      final sandbox = fs.directory('/sandbox')..createSync();
+      try {
+        final project = fs.directory(fs.path.join(sandbox.path, 'project'))
+          ..createSync();
+        final home = fs.directory(fs.path.join(sandbox.path, 'home'))
+          ..createSync();
+        final source = fs.file(fs.path.join(sandbox.path, 'source.md'))
+          ..writeAsStringSync('''---
+name: reviewer
+description: Reviews changes.
+tools: [read]
+---
+Review carefully.''');
+        final options = LifecycleOptions(
+          processWorkingDirectory: project.path,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        );
+        ConversionRequest request(Set<String> decisions) => ConversionRequest(
+          source: <String, Object?>{
+            'kind': 'native-file',
+            'path': source.path,
+            'harness': 'antigravity',
+          },
+          target: <String, Object?>{
+            'harness': 'claude',
+            'output': fs.path.join(
+              project.path,
+              '.claude',
+              'agents',
+              'reviewer.md',
+            ),
+          },
+          context: './',
+          definition: <String, Object?>{
+            'model': 'claude-sonnet',
+            'tools': <Object?>['Read', 'Write'],
+          },
+          decisions: decisions,
+          references: const <String, String>{},
+        );
+        final service = AgentConversionService(fileSystem: fs);
+        final unresolved = await service.plan(
+          request(<String>{'map:model', 'map:tools'}),
+          options,
+        );
+        expect(unresolved.result.data['ready'], isFalse);
+        expect(
+          unresolved.result.diagnostics.where(
+            (diagnostic) => diagnostic['code'] == 'CONVERSION_TOOL_EXPOSURE',
+          ),
+          isNotEmpty,
+        );
+
+        final reviewed = await service.plan(
+          request(<String>{'map:model', 'map:tools', 'widen:tools'}),
+          options,
+        );
+        expect(reviewed.result.data['ready'], isTrue);
+      } finally {
+        sandbox.deleteSync(recursive: true);
+      }
+    });
   });
 }

@@ -28,6 +28,7 @@ final class AgentCloneCommand extends Command {
            _claudeConfigDir,
            _codexHome,
            _piAgentDir,
+           _geminiDir,
            _stateDir,
            _planId,
          ],
@@ -70,6 +71,7 @@ final class AgentCloneCommand extends Command {
   static final _claudeConfigDir = FolderPathOption('claude-config-dir');
   static final _codexHome = FolderPathOption('codex-home');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _stateDir = FolderPathOption('state-dir');
   static final _planId = StringOption(
     'plan-id',
@@ -122,6 +124,7 @@ final class AgentCloneCommand extends Command {
       claudeConfigDir: valueOf(_claudeConfigDir),
       codexHome: valueOf(_codexHome),
       piAgentDir: valueOf(_piAgentDir),
+      geminiDir: valueOf(_geminiDir),
       stateDir: valueOf(_stateDir),
       dryRun: valueOf(_dryRun),
       approved: valueOf(_yes),

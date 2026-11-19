@@ -1,3 +1,4 @@
+import 'package:agent_resource/src/authoring/native_field_matrix.dart';
 import 'package:agent_resource/src/harness/harness_catalog.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:file/memory.dart';
@@ -127,6 +128,80 @@ void main() {
         catalog.requireFacet(HarnessId.pi, HarnessFacet.agent).harness,
         HarnessId.pi,
       );
+    });
+
+    test('the Agent facet owns authoring matrices and conversion spokes', () {
+      final catalog = HarnessCatalog.instance;
+      final ids = HarnessId.values;
+      for (final id in ids) {
+        final spec = catalog.agentSpecById(id);
+        final profile = AuthoringProfile.values.firstWhere(
+          (value) => value.name == id.wireName,
+        );
+        final matrix = spec.nativeAgentFields(profile);
+        expect(matrix.kind, AuthoringKind.agent);
+        expect(matrix.profile, profile);
+        if (id == HarnessId.antigravity) {
+          expect(matrix.supportedNames, <String>[
+            'description',
+            'mainAgent',
+            'name',
+            'tools',
+          ]);
+          expect(matrix.specFor('tools')!.listForm, NativeListForm.sequence);
+        }
+        final native = spec.importNativeAgent(
+          AgentImportRequest(
+            fields: <String, Object?>{
+              'name': 'reviewer',
+              'description': 'Reviews.',
+              'tools': <Object?>['read'],
+            },
+            sourceForm: '${id.wireName}-agent-file',
+            sourceProfile: spec.profile,
+          ),
+        );
+        expect(native.sourceHarness, id);
+        expect(
+          native.claims.map((claim) => claim.provenance.sourceHarness).toSet(),
+          <HarnessId>{id},
+        );
+      }
+      for (final source in ids) {
+        final sourceSpec = catalog.agentSpecById(source);
+        for (final target in ids) {
+          if (source == target) continue;
+          final targetSpec = catalog.agentSpecById(target);
+          final result = targetSpec.exportCanonicalAgent(
+            AgentExportRequest(
+              canonical: sourceSpec.importNativeAgent(
+                AgentImportRequest(
+                  fields: const <String, Object?>{
+                    'name': 'reviewer',
+                    'description': 'Reviews.',
+                    'tools': <Object?>['read'],
+                  },
+                  sourceForm: '${source.wireName}-agent-file',
+                  sourceProfile: sourceSpec.profile,
+                ),
+              ),
+              definition: const <String, Object?>{},
+              decisions: const <String>{},
+              sourceProfile: sourceSpec.profile,
+            ),
+          );
+          expect(result.fields, isNotEmpty);
+          expect(result.targetProfile, targetSpec.profile);
+          expect(
+            result.fields.every(
+              (field) =>
+                  field.containsKey('sourceProfile') &&
+                  field.containsKey('outcome'),
+            ),
+            isTrue,
+          );
+        }
+      }
     });
   });
 

@@ -13,7 +13,7 @@ enum AuthoringKind { skill, agent, prompt }
 enum AuthoringProfile { claude, codex, pi, global, antigravity }
 
 /// The value shape that one supported native field accepts.
-enum NativeFieldValueKind { text, list, map }
+enum NativeFieldValueKind { text, list, map, flag }
 
 /// The native form that a repeatable list field takes.
 enum NativeListForm { sequence, scalar }
@@ -222,90 +222,20 @@ final class NativeFieldMatrix {
     AuthoringKind kind,
     AuthoringProfile profile,
   ) {
-    if (profile == AuthoringProfile.global) {
-      throw MambaException(
+    final harness = switch (profile) {
+      AuthoringProfile.claude => HarnessId.claude,
+      AuthoringProfile.codex => HarnessId.codex,
+      AuthoringProfile.pi => HarnessId.pi,
+      AuthoringProfile.antigravity => HarnessId.antigravity,
+      AuthoringProfile.global => throw MambaException(
         'A global profile applies to prompts only.',
         exitCode: 4,
-      );
-    }
-    if (profile == AuthoringProfile.antigravity) {
-      throw MambaException(
-        'Antigravity Agent authoring is not available.',
-        exitCode: 4,
-      );
-    }
-    return NativeFieldMatrix(
-      kind: kind,
-      profile: profile,
-      fields: <NativeFieldSpec>[
-        const NativeFieldSpec(
-          name: 'name',
-          valueKind: NativeFieldValueKind.text,
-          required: true,
-          description: 'Native agent name.',
-        ),
-        const NativeFieldSpec(
-          name: 'description',
-          valueKind: NativeFieldValueKind.text,
-          required: true,
-          description: 'When the harness should delegate to this agent.',
-        ),
-        NativeFieldSpec(
-          name: 'model',
-          valueKind: NativeFieldValueKind.text,
-          required: profile == AuthoringProfile.pi,
-          description: 'Provider qualified model identifier.',
-        ),
-        if (profile == AuthoringProfile.pi)
-          const NativeFieldSpec(
-            name: 'tools',
-            valueKind: NativeFieldValueKind.list,
-            required: true,
-            listForm: NativeListForm.scalar,
-            description: 'Complete shared builtin tool list.',
-          )
-        else if (profile == AuthoringProfile.claude)
-          const NativeFieldSpec(
-            name: 'tools',
-            valueKind: NativeFieldValueKind.list,
-            clearable: true,
-            inheritable: true,
-            listForm: NativeListForm.scalar,
-            description: 'Complete tool list.',
-          ),
-        if (profile == AuthoringProfile.claude) ...const <NativeFieldSpec>[
-          NativeFieldSpec(
-            name: 'skills',
-            valueKind: NativeFieldValueKind.list,
-            clearable: true,
-            inheritable: true,
-            description: 'Complete referenced skill list.',
-          ),
-          NativeFieldSpec(
-            name: 'mcpServers',
-            valueKind: NativeFieldValueKind.map,
-            clearable: true,
-            inheritable: true,
-            description: 'Complete MCP server declaration.',
-          ),
-        ],
-        if (profile == AuthoringProfile.codex) ...const <NativeFieldSpec>[
-          NativeFieldSpec(
-            name: 'skills',
-            valueKind: NativeFieldValueKind.map,
-            clearable: true,
-            inheritable: true,
-            description: 'Complete referenced skill declaration.',
-          ),
-          NativeFieldSpec(
-            name: 'mcp_servers',
-            valueKind: NativeFieldValueKind.map,
-            clearable: true,
-            inheritable: true,
-            description: 'Complete MCP server declaration.',
-          ),
-        ],
-      ],
-    );
+      ),
+    };
+    final spec = HarnessCatalog.instance.requireFacet(
+      harness,
+      HarnessFacet.agent,
+    ) as AgentHarnessSpec;
+    return spec.nativeAgentFields(profile);
   }
 }

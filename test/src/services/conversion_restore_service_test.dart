@@ -122,6 +122,7 @@ void main() {
     String nativeForm = 'claude-agent-file',
     String scope = 'project',
     String nativeDestination = 'claude',
+    String ledgerProfile = 'claude',
     Map<String, Object?> origin = const <String, Object?>{'status': 'unknown'},
   }) {
     final record = InstallationRecord(
@@ -133,7 +134,7 @@ void main() {
       location: location,
       nativeRoot: nativeRoot,
       name: location.split('/').last,
-      nativeProfile: 'claude',
+      nativeProfile: ledgerProfile,
       validatedProfiles: const <String>['claude'],
       knownConsumers: const <String>['claude'],
       baseline: const ArtifactBaseline(<BaselineEntry>[]),
@@ -161,6 +162,7 @@ void main() {
     required String nativeRoot,
     required String artifactKind,
     required String nativeForm,
+    String nativeProfile = 'claude',
     bool managed = true,
     String scope = 'project',
     bool membership = false,
@@ -173,7 +175,7 @@ void main() {
       intent: ConversionParticipantIntent.retired,
       artifactKind: artifactKind,
       nativeForm: nativeForm,
-      nativeProfile: 'claude',
+      nativeProfile: nativeProfile,
       location: location,
       nativeRoot: nativeRoot,
       scope: scope,
@@ -182,7 +184,7 @@ void main() {
         installationId: managed ? _sourceInstallationId : null,
         receiptId: managed ? null : 'rcp_0123456789abcdef0123456789abcdef',
         nativeForm: nativeForm,
-        nativeProfile: 'claude',
+        nativeProfile: nativeProfile,
         location: location,
         nativeRoot: nativeRoot,
         scope: scope,
@@ -206,13 +208,14 @@ void main() {
     required String nativeForm,
     String scope = 'project',
     bool managed = true,
+    String nativeProfile = 'claude',
     String? nativeDestination,
   }) => ConversionParticipant(
     role: ConversionParticipantRole.target,
     intent: ConversionParticipantIntent.created,
     artifactKind: artifactKind,
     nativeForm: nativeForm,
-    nativeProfile: 'claude',
+    nativeProfile: nativeProfile,
     location: location,
     nativeRoot: nativeRoot,
     scope: scope,
@@ -221,7 +224,7 @@ void main() {
       installationId: managed ? _sourceInstallationId : null,
       receiptId: managed ? null : 'rcp_0123456789abcdef0123456789abcdef',
       nativeForm: nativeForm,
-      nativeProfile: 'claude',
+      nativeProfile: nativeProfile,
       nativeDestination: nativeDestination,
       location: location,
       nativeRoot: nativeRoot,
@@ -239,12 +242,19 @@ void main() {
     String targetRoot = '/work/project/.pi/prompts',
     String targetKind = 'prompt-template',
     String targetForm = 'pi-prompt-template',
+    String sourceForm = 'claude-agent-file',
+    String sourceProfile = 'claude',
+    String targetProfile = 'claude',
   }) async {
     fs.file(sourceLocation)
       ..createSync(recursive: true)
       ..writeAsStringSync('original');
     if (managed) {
-      seedLedger(location: sourceLocation, nativeRoot: sourceRoot);
+      seedLedger(
+        location: sourceLocation,
+        nativeRoot: sourceRoot,
+        nativeForm: sourceForm,
+      );
     }
     final request = ConversionTransitionRequest(
       transactionId: _transactionId,
@@ -253,7 +263,8 @@ void main() {
         location: sourceLocation,
         nativeRoot: sourceRoot,
         artifactKind: 'agent-file',
-        nativeForm: 'claude-agent-file',
+        nativeForm: sourceForm,
+        nativeProfile: sourceProfile,
         managed: managed,
       ),
       target: targetParticipant(
@@ -262,10 +273,9 @@ void main() {
         artifactKind: inPlace
             ? 'agent-file'
             : (managed ? targetKind : 'agent-file'),
-        nativeForm: inPlace
-            ? 'claude-agent-file'
-            : (managed ? targetForm : 'claude-agent-file'),
+        nativeForm: inPlace ? sourceForm : (managed ? targetForm : sourceForm),
         managed: managed,
+        nativeProfile: inPlace ? sourceProfile : targetProfile,
       ),
       targetFiles: {'reviewer.md': utf8.encode('converted')},
     );
@@ -396,6 +406,76 @@ void main() {
         // The outgoing target is preserved as private evidence.
         final outgoing = result.data['outgoingTargetEvidence']! as String;
         expect(fs.file(outgoing).readAsStringSync(), 'converted');
+      },
+    );
+
+    test(
+      'restores conversions involving Antigravity in either direction',
+      () async {
+        final directions =
+            <
+              ({
+                String sourceLocation,
+                String sourceRoot,
+                String sourceForm,
+                String sourceProfile,
+                String targetLocation,
+                String targetRoot,
+                String targetForm,
+                String targetProfile,
+              })
+            >[
+              (
+                sourceLocation: '/work/project/.agents/agents/reviewer.md',
+                sourceRoot: '/work/project/.agents/agents',
+                sourceForm: 'antigravity-agent-file',
+                sourceProfile: 'antigravity-agent-native-v1',
+                targetLocation: '/work/project/.claude/agents/reviewer.md',
+                targetRoot: '/work/project/.claude/agents',
+                targetForm: 'claude-agent-file',
+                targetProfile: 'claude-agent-native-v1',
+              ),
+              (
+                sourceLocation: '/work/project/.claude/agents/reviewer.md',
+                sourceRoot: '/work/project/.claude/agents',
+                sourceForm: 'claude-agent-file',
+                sourceProfile: 'claude-agent-native-v1',
+                targetLocation: '/work/project/.agents/agents/reviewer.md',
+                targetRoot: '/work/project/.agents/agents',
+                targetForm: 'antigravity-agent-file',
+                targetProfile: 'antigravity-agent-native-v1',
+              ),
+            ];
+        for (final direction in directions) {
+          reset();
+          await completeConversion(
+            sourceLocation: direction.sourceLocation,
+            sourceRoot: direction.sourceRoot,
+            sourceForm: direction.sourceForm,
+            sourceProfile: direction.sourceProfile,
+            targetLocation: direction.targetLocation,
+            targetRoot: direction.targetRoot,
+            targetKind: 'agent-file',
+            targetForm: direction.targetForm,
+            targetProfile: direction.targetProfile,
+          );
+          final review = await restore.restoreReviewed(
+            approved(dryRun: true),
+            _transactionId,
+          );
+          expect(review.outcome, 'planned');
+          final result = await restore.restoreReviewed(
+            approved(),
+            _transactionId,
+            planId: review.data['planId']! as String,
+          );
+          expect(result.outcome, 'restored');
+          expect(
+            fs.file(direction.sourceLocation).readAsStringSync(),
+            'original',
+          );
+          expect(fs.file(direction.targetLocation).existsSync(), isFalse);
+        }
       },
     );
 

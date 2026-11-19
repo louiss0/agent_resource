@@ -92,6 +92,12 @@ final class GuidedCreateFields {
         'The complete tool list of the created Agent. A supplied list '
         'replaces the field; an omitted list preserves the source value.',
   );
+  static const mainAgent = BooleanFlag(
+    'main-agent',
+    description:
+        'Declare the Antigravity Agent as a main agent. Runtime dispatch '
+        'is not verified.',
+  );
   static final allowedTools = RepeatableStringOption(
     'allowed-tools',
     description:
@@ -210,6 +216,7 @@ final class GuidedCreateFields {
     String? description,
     String? model,
     List<String>? tools,
+    bool mainAgent = false,
     List<String>? skills,
     List<String>? allowedTools,
     List<String>? disallowedTools,
@@ -222,6 +229,7 @@ final class GuidedCreateFields {
     'description': ?description,
     'model': ?model,
     'tools': ?tools == null ? null : List<String>.of(tools),
+    if (mainAgent) 'mainAgent': true,
     'skills': ?skills == null ? null : List<String>.of(skills),
     'allowed-tools': ?allowedTools == null
         ? null

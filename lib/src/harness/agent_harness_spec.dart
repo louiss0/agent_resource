@@ -1,6 +1,10 @@
+import 'dart:convert';
+
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
+import '../authoring/native_field_matrix.dart';
+import 'agent_conversion_claims.dart';
 import 'harness_facet.dart';
 import 'harness_id.dart';
 import 'harness_user_roots.dart';
@@ -186,7 +190,12 @@ abstract class AgentHarnessSpec implements HarnessFacetSpec {
 
   String get nativeForm => '${harness.wireName}-agent-file';
 
-  String get profile => '${harness.wireName}-agent-native-v1';
+  String get profile => switch (harness) {
+    HarnessId.claude => 'claude-agent-native-v1',
+    HarnessId.codex => 'codex-agent-native-v1',
+    HarnessId.pi => 'pi-agent-common-v1',
+    HarnessId.antigravity => 'antigravity-agent-native-v1',
+  };
 
   Map<String, Object?> get evidence => switch (harness) {
     HarnessId.claude => const <String, Object?>{
@@ -812,4 +821,199 @@ abstract class AgentHarnessSpec implements HarnessFacetSpec {
     final name = nativeName ?? inferred;
     return '${path.basename(name)}$definitionExtension';
   }
+}
+
+/// The Agent authoring contract owned by one harness facet.
+///
+/// The matrix is the supported surface of named native fields; the
+/// serializer is the only writer of the native form. Both live with the
+/// discovery and validation rules so a harness has one authority for its
+/// Agent definition.
+extension AgentHarnessAuthoring on AgentHarnessSpec {
+  NativeFieldMatrix nativeAgentFields(AuthoringProfile profile) {
+    if (profile == AuthoringProfile.global) {
+      throw MambaException(
+        'A global profile applies to prompts only.',
+        exitCode: 4,
+      );
+    }
+    return NativeFieldMatrix(
+      kind: AuthoringKind.agent,
+      profile: profile,
+      fields: <NativeFieldSpec>[
+        const NativeFieldSpec(
+          name: 'name',
+          valueKind: NativeFieldValueKind.text,
+          required: true,
+          description: 'Native agent name.',
+        ),
+        const NativeFieldSpec(
+          name: 'description',
+          valueKind: NativeFieldValueKind.text,
+          required: true,
+          description: 'When the harness should delegate to this agent.',
+        ),
+        if (harness != HarnessId.antigravity)
+          NativeFieldSpec(
+            name: 'model',
+            valueKind: NativeFieldValueKind.text,
+            required: harness == HarnessId.pi,
+            description: 'Provider qualified model identifier.',
+          ),
+        if (harness == HarnessId.antigravity)
+          const NativeFieldSpec(
+            name: 'tools',
+            valueKind: NativeFieldValueKind.list,
+            listForm: NativeListForm.sequence,
+            clearable: true,
+            inheritable: true,
+            description:
+                'Complete tool allowlist; an omitted list inherits the '
+                'available tool pool.',
+          )
+        else if (harness == HarnessId.pi)
+          const NativeFieldSpec(
+            name: 'tools',
+            valueKind: NativeFieldValueKind.list,
+            required: true,
+            listForm: NativeListForm.scalar,
+            description: 'Complete shared builtin tool list.',
+          )
+        else if (harness == HarnessId.claude)
+          const NativeFieldSpec(
+            name: 'tools',
+            valueKind: NativeFieldValueKind.list,
+            clearable: true,
+            inheritable: true,
+            listForm: NativeListForm.scalar,
+            description: 'Complete tool list.',
+          ),
+        if (harness == HarnessId.antigravity)
+          const NativeFieldSpec(
+            name: 'mainAgent',
+            valueKind: NativeFieldValueKind.flag,
+            description:
+                'Whether the harness may select this as a main agent; '
+                'runtime dispatch is not verified.',
+          ),
+        if (harness == HarnessId.claude) ...const <NativeFieldSpec>[
+          NativeFieldSpec(
+            name: 'skills',
+            valueKind: NativeFieldValueKind.list,
+            clearable: true,
+            inheritable: true,
+            description: 'Complete referenced skill list.',
+          ),
+          NativeFieldSpec(
+            name: 'mcpServers',
+            valueKind: NativeFieldValueKind.map,
+            clearable: true,
+            inheritable: true,
+            description: 'Complete MCP server declaration.',
+          ),
+          NativeFieldSpec(
+            name: 'effort',
+            valueKind: NativeFieldValueKind.text,
+            clearable: true,
+            inheritable: true,
+            description: 'Declared reasoning effort.',
+          ),
+        ],
+        if (harness == HarnessId.codex) ...const <NativeFieldSpec>[
+          NativeFieldSpec(
+            name: 'skills',
+            valueKind: NativeFieldValueKind.map,
+            clearable: true,
+            inheritable: true,
+            description: 'Complete referenced skill declaration.',
+          ),
+          NativeFieldSpec(
+            name: 'mcp_servers',
+            valueKind: NativeFieldValueKind.map,
+            clearable: true,
+            inheritable: true,
+            description: 'Complete MCP server declaration.',
+          ),
+          NativeFieldSpec(
+            name: 'model_reasoning_effort',
+            valueKind: NativeFieldValueKind.text,
+            clearable: true,
+            inheritable: true,
+            description: 'Declared reasoning effort.',
+          ),
+        ],
+        if (harness == HarnessId.pi)
+          const NativeFieldSpec(
+            name: 'thinking',
+            valueKind: NativeFieldValueKind.text,
+            clearable: true,
+            inheritable: true,
+            description: 'Declared reasoning effort.',
+          ),
+      ],
+    );
+  }
+
+  /// Imports one native definition into canonical Agent claims. The import
+  /// spoke knows only the source harness.
+  AgentCanonicalClaims importNativeAgent(AgentImportRequest request) =>
+      agentImportNative(this, request);
+
+  /// Exports canonical claims into this harness's native profile, returning
+  /// the complete per-field account and readiness diagnostics.
+  AgentExportResult exportCanonicalAgent(AgentExportRequest request) =>
+      agentExportCanonical(this, request);
+
+  /// Serializes one reviewed native Agent definition.
+  String serializeNativeAgent(
+    AuthoringProfile profile,
+    Map<String, Object?> fields,
+    String instructions, {
+    NativeFieldMatrix? matrix,
+  }) {
+    final entries = fields.entries.toList()
+      ..sort((left, right) => left.key.compareTo(right.key));
+    if (definitionExtension == '.toml') {
+      return '${entries.map((entry) => '${entry.key} = ${_nativeTomlValue(entry.value, matrix?.specFor(entry.key))}').join('\n')}\n';
+    }
+    final frontmatter = entries
+        .map(
+          (entry) =>
+              '${entry.key}: ${_nativeYamlValue(entry.value, matrix?.specFor(entry.key))}',
+        )
+        .join('\n');
+    return '---\n$frontmatter\n---\n$instructions';
+  }
+}
+
+String _nativeYamlValue(Object? value, NativeFieldSpec? spec) {
+  if (value is List) {
+    return spec?.listForm == NativeListForm.scalar
+        ? jsonEncode(value.join(', '))
+        : jsonEncode(value);
+  }
+  if (value is Map) {
+    return jsonEncode(
+      value.map((key, item) => MapEntry(key.toString(), item.toString())),
+    );
+  }
+  return jsonEncode(value);
+}
+
+String _nativeTomlValue(Object? value, NativeFieldSpec? spec) {
+  if (value is List) {
+    return spec?.listForm == NativeListForm.scalar
+        ? jsonEncode(value.join(', '))
+        : jsonEncode(value);
+  }
+  if (value is Map<String, Object?>) {
+    return '{ ${value.entries.map((entry) => '${entry.key} = ${_nativeTomlValue(entry.value, null)}').join(', ')} }';
+  }
+  if (value == null || value is String || value is num || value is bool) {
+    return jsonEncode(value);
+  }
+  throw MambaException(
+    'The proposed native output contains an unsupported value type.',
+    exitCode: 2,
+  );
 }

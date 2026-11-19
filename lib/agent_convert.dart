@@ -28,6 +28,7 @@ final class AgentConvertCommand extends Command {
            _claudeConfigDir,
            _codexHome,
            _piAgentDir,
+           _geminiDir,
            _stateDir,
            _planId,
          ],
@@ -37,7 +38,8 @@ final class AgentConvertCommand extends Command {
          },
          longDescription:
              'Preview-first conversion between Claude, Codex standalone or '
-             'config-bound roles, and the common Pi profile. Explicit native '
+             'config-bound roles, the common Pi profile, and Antigravity. '
+             'Explicit native '
              'model, tool, effort, reference, and field decisions are required. '
              'The source and bindings remain unchanged; behavior-lossless or '
              'runtime-equivalent conversion is never claimed.',
@@ -70,6 +72,7 @@ final class AgentConvertCommand extends Command {
   static final _claudeConfigDir = FolderPathOption('claude-config-dir');
   static final _codexHome = FolderPathOption('codex-home');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _stateDir = FolderPathOption('state-dir');
   static final _planId = StringOption(
     'plan-id',
@@ -122,6 +125,7 @@ final class AgentConvertCommand extends Command {
       claudeConfigDir: valueOf(_claudeConfigDir),
       codexHome: valueOf(_codexHome),
       piAgentDir: valueOf(_piAgentDir),
+      geminiDir: valueOf(_geminiDir),
       stateDir: valueOf(_stateDir),
       dryRun: valueOf(_dryRun),
       approved: valueOf(_yes),
