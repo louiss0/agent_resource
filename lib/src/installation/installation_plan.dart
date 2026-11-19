@@ -7,7 +7,7 @@ import '../services/acquisition_service.dart';
 
 enum InstallationResourceType { skill, agent }
 
-enum InstallationTarget { claude, codex, pi }
+enum InstallationTarget { claude, codex, pi, antigravity }
 
 enum InstallationMethod implements MambaEnumValue {
   canonical('canonical'),

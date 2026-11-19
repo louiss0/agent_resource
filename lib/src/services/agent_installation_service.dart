@@ -8,6 +8,7 @@ import 'package:mamba/mamba.dart';
 
 import '../../components/acquisition_progress.dart';
 import '../agent_inspection.dart';
+import '../harness/harness_catalog.dart';
 import '../installation/installation_batch.dart';
 import '../installation/installation_interaction.dart';
 import '../installation/installation_plan.dart';
@@ -208,7 +209,9 @@ interface class AgentInstallationService {
     );
     final location = _fileSystem.path.join(
       root,
-      _fileSystem.path.basename(candidate.path),
+      _agentSpec(
+        harness,
+      ).installationFileName(candidate.path, inspected.name, _fileSystem.path),
     );
     final target = _target(profile);
     final origin = <String, Object?>{
@@ -319,13 +322,21 @@ AgentHarness _harness(NativeAgentProfile profile) => switch (profile) {
   NativeAgentProfile.claude => AgentHarness.claude,
   NativeAgentProfile.codex => AgentHarness.codex,
   NativeAgentProfile.piCommon => AgentHarness.pi,
+  NativeAgentProfile.antigravity => AgentHarness.antigravity,
 };
 
 InstallationTarget _target(NativeAgentProfile profile) => switch (profile) {
   NativeAgentProfile.claude => InstallationTarget.claude,
   NativeAgentProfile.codex => InstallationTarget.codex,
   NativeAgentProfile.piCommon => InstallationTarget.pi,
+  NativeAgentProfile.antigravity => InstallationTarget.antigravity,
 };
+
+AgentHarnessSpec _agentSpec(AgentHarness harness) =>
+    HarnessCatalog.instance.requireFacet(
+      HarnessId.fromWire(harness.name),
+      HarnessFacet.agent,
+    ) as AgentHarnessSpec;
 
 Future<T> _agentProgress<T>(String label, Future<T> Function() work) =>
     AcquisitionProgressComponent(label: label).render(work);

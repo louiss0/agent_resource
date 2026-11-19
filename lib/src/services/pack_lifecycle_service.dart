@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import '../../components/installation_approval.dart';
 import '../../components/resource_selector.dart';
 import '../agent_inspection.dart';
+import '../harness/harness_catalog.dart';
 import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
@@ -3007,7 +3008,11 @@ interface class PackLifecycleService {
       final root = _agents.installRoot(context, harness);
       final location = _fileSystem.path.join(
         root,
-        _fileSystem.path.basename(candidate.path),
+        _agentSpec(harness).installationFileName(
+          candidate.path,
+          candidate.name,
+          _fileSystem.path,
+        ),
       );
       return InstallationUnitPlan(
         resourceType: InstallationResourceType.agent,
@@ -3392,7 +3397,8 @@ interface class PackLifecycleService {
       } else if (candidate.profile == null) {
         failures.add(
           'NATIVE_PROFILE_REQUIRED: discovered Agents require an explicit '
-          'catalog profile (claude, codex, or pi-common); no profile was inferred',
+          'catalog profile (claude, codex, pi-common, or antigravity); no '
+          'profile was inferred',
         );
       } else {
         final report = inspectNativeAgent(
@@ -3647,7 +3653,7 @@ interface class PackLifecycleService {
       } else {
         if (profile == null) {
           throw MambaException(
-            'Catalog-less Agent discovery cannot infer a native profile for $relative; add an explicit publisher catalog entry with profile = "claude", "codex", or "pi-common".',
+            'Catalog-less Agent discovery cannot infer a native profile for $relative; add an explicit publisher catalog entry with profile = "claude", "codex", "pi-common", or "antigravity".',
             exitCode: PackProcessStatus.invalidInput.code,
           );
         }
@@ -5119,7 +5125,14 @@ interface class PackLifecycleService {
     NativeAgentProfile.claude => AgentHarness.claude,
     NativeAgentProfile.codex => AgentHarness.codex,
     NativeAgentProfile.piCommon => AgentHarness.pi,
+    NativeAgentProfile.antigravity => AgentHarness.antigravity,
   };
+
+  AgentHarnessSpec _agentSpec(AgentHarness harness) =>
+      HarnessCatalog.instance.requireFacet(
+        HarnessId.fromWire(harness.name),
+        HarnessFacet.agent,
+      ) as AgentHarnessSpec;
 
   String _methodName(String value) =>
       value == 'source-link' ? 'sourceLink' : value;

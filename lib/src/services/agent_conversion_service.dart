@@ -306,8 +306,16 @@ interface class AgentConversionService {
       'claude-agent-file' => AgentHarness.claude,
       'codex-agent-file' || 'codex-config-bound-role' => AgentHarness.codex,
       'pi-agent-file' => AgentHarness.pi,
+      'antigravity-agent-file' => AgentHarness.antigravity,
       _ => throw MambaException('Unsupported native source form.', exitCode: 4),
     };
+    if (sourceHarness == AgentHarness.antigravity ||
+        targetHarness == AgentHarness.antigravity) {
+      throw MambaException(
+        'Antigravity Agent conversion is not supported by this profile.',
+        exitCode: 4,
+      );
+    }
     if (sourceHarness == targetHarness) {
       throw MambaException(
         'Conversion requires different source and target profiles; use clone or edit.',
@@ -909,5 +917,6 @@ interface class AgentConversionService {
     AgentHarness.claude => 'claude-agent-native-v1',
     AgentHarness.codex => 'codex-agent-native-v1',
     AgentHarness.pi => 'pi-agent-common-v1',
+    AgentHarness.antigravity => 'antigravity-agent-native-v1',
   };
 }

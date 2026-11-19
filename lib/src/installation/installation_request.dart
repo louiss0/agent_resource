@@ -489,4 +489,5 @@ InstallationTarget _profileTarget(NativeAgentProfile profile) =>
       NativeAgentProfile.claude => InstallationTarget.claude,
       NativeAgentProfile.codex => InstallationTarget.codex,
       NativeAgentProfile.piCommon => InstallationTarget.pi,
+      NativeAgentProfile.antigravity => InstallationTarget.antigravity,
     };
