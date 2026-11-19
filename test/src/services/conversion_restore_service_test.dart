@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/authoring/authoring_inputs.dart';
 import 'package:agent_resource/src/conversion/conversion_evidence.dart';
-import 'package:agent_resource/agent_resource.dart' show createExecutor;
 import 'package:agent_resource/src/conversion/conversion_restore_evidence.dart';
 import 'package:agent_resource/src/services/authoring_plan_service.dart';
 import 'package:agent_resource/src/services/authoring_publication_service.dart';
@@ -15,7 +14,6 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:mamba/mamba.dart';
-import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
 
 const _sourceInstallationId = 'ins_0123456789abcdef0123456789abcdef';
@@ -3037,4 +3035,3 @@ void main() {
     });
   });
 }
-

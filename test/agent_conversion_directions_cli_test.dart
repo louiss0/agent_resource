@@ -213,6 +213,7 @@ Review correctness.
             ...context(),
           ]),
         );
+        expect(applied, isA<MambaSuccessResult>());
         expect(output.existsSync(), isTrue);
         expect(output.readAsStringSync(), contains('Review correctness.'));
         expect(source.readAsBytesSync(), sourceBytes);
