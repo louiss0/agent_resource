@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/src/services/agent_graph_service.dart';
 import 'package:agent_resource/src/services/agent_lifecycle_service.dart';
 import 'package:file/file.dart' as fs;
 import 'package:file/memory.dart';
@@ -242,5 +243,203 @@ void main() {
         });
       },
     );
+
+    test(
+      'inspection validates the schema, graphs tools, and withholds body',
+      () async {
+        await _withSandbox((fileSystem) async {
+          const hiddenValue = 'UNREPORTED-FRONTMATTER-VALUE-7c11';
+          const body = 'PRIVATE-INSPECTION-BODY\n';
+          final source = fileSystem.file('/sandbox/source/reviewer.md');
+          source.writeAsStringSync(
+            _definition(
+              'reviewer',
+              tools: '[read, grep]',
+              mainAgent: 'true',
+              extra: 'privateSetting: $hiddenValue\n',
+              body: body,
+            ),
+          );
+          final result =
+              await createExecutor(
+                fileSystem: fileSystem,
+                agentGraph: AgentGraphService(fileSystem: fileSystem),
+              ).fake().execute([
+                'agent',
+                'inspect',
+                source.path,
+                '--harness',
+                'antigravity',
+                '--format',
+                'json',
+                '--cwd',
+                '/sandbox/project/',
+              ]);
+          final envelope = _successData(result);
+          final output = (result as MambaSuccessResult).output!;
+          final data = envelope['data']! as Map<Object?, Object?>;
+          expect(data['form'], 'antigravity-agent-file');
+          expect(data['profile'], 'antigravity-agent-native-v1');
+          expect(
+            (data['validation']! as Map<Object?, Object?>)['status'],
+            'passed',
+          );
+          expect(
+            (data['instructions']! as Map<Object?, Object?>)['present'],
+            isTrue,
+          );
+          expect(
+            (data['instructions']! as Map<Object?, Object?>)['text'],
+            isNull,
+          );
+          final diagnostics = (envelope['diagnostics']! as List<Object?>)
+              .cast<Map<Object?, Object?>>();
+          expect(
+            diagnostics.map((diagnostic) => diagnostic['code']),
+            contains('UNKNOWN_FIELD'),
+          );
+          final graph = data['graph']! as Map<Object?, Object?>;
+          expect(graph['ready'], isTrue);
+          final edges = (graph['edges']! as List<Object?>)
+              .cast<Map<Object?, Object?>>();
+          expect(
+            edges.map((edge) => edge['kind']),
+            contains('tool-capability'),
+          );
+          final capabilities = (graph['capabilities']! as List<Object?>)
+              .cast<Map<Object?, Object?>>();
+          expect(
+            capabilities.map((capability) => capability['kind']),
+            containsAll(<String>['tool-allowlist', 'main-agent']),
+          );
+          expect(output, isNot(contains(hiddenValue)));
+          expect(output, isNot(contains(body.trim())));
+        });
+      },
+    );
+
+    test(
+      'show-instructions is inspect-only and validation stays private',
+      () async {
+        await _withSandbox((fileSystem) async {
+          const body = 'SHOWN-ONLY-ON-INSPECT-4a91\n';
+          final source = fileSystem.file('/sandbox/source/reviewer.md');
+          source.writeAsStringSync(
+            _definition('reviewer', mainAgent: null, body: body),
+          );
+          final shown =
+              await createExecutor(
+                fileSystem: fileSystem,
+                agentGraph: AgentGraphService(fileSystem: fileSystem),
+              ).fake().execute([
+                'agent',
+                'inspect',
+                source.path,
+                '--harness',
+                'antigravity',
+                '--show-instructions',
+                '--format',
+                'json',
+                '--cwd',
+                '/sandbox/project/',
+              ]);
+          final shownEnvelope = _successData(shown);
+          final shownInstructions =
+              ((shownEnvelope['data']!
+                      as Map<Object?, Object?>)['instructions']!
+                  as Map<Object?, Object?>)['text'];
+          expect(shownInstructions, body);
+          expect((shown as MambaSuccessResult).output, contains(body.trim()));
+
+          final validated = await createExecutor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'agent',
+                'validate',
+                source.path,
+                '--harness',
+                'antigravity',
+                '--format',
+                'json',
+                '--cwd',
+                '/sandbox/project/',
+              ]);
+          final validatedEnvelope = _successData(validated);
+          expect(
+            ((validatedEnvelope['data']!
+                    as Map<Object?, Object?>)['instructions']!
+                as Map<Object?, Object?>)['text'],
+            isNull,
+          );
+          expect(
+            (validated as MambaSuccessResult).output,
+            isNot(contains(body.trim())),
+          );
+
+          final rejected = await createExecutor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'agent',
+                'validate',
+                source.path,
+                '--harness',
+                'antigravity',
+                '--show-instructions',
+              ]);
+          expect(
+            rejected,
+            isA<MambaFailureResult>()
+                .having(
+                  (value) => value.error.phase,
+                  'phase',
+                  MambaExecutionPhase.parse,
+                )
+                .having((value) => value.output, 'output', isNull),
+          );
+        });
+      },
+    );
+
+    test('validation refuses malformed tools and boolean fields', () async {
+      await _withSandbox((fileSystem) async {
+        const hiddenValue = 'UNREPORTED-SCHEMA-VALUE-2d31';
+        const body = 'PRIVATE-VALIDATION-BODY\n';
+        final source = fileSystem.file('/sandbox/source/broken.md');
+        source.writeAsStringSync(
+          _definition(
+            'broken',
+            tools: 'read, grep',
+            mainAgent: 'perhaps',
+            extra: 'privateSetting: $hiddenValue\n',
+            body: body,
+          ),
+        );
+        final result = await createExecutor(fileSystem: fileSystem)
+            .fake()
+            .execute([
+              'agent',
+              'validate',
+              source.path,
+              '--harness',
+              'antigravity',
+              '--format',
+              'json',
+              '--cwd',
+              '/sandbox/project/',
+            ]);
+        expect(
+          result,
+          isA<MambaFailureResult>()
+              .having((value) => value.exitCode, 'exit code', 2)
+              .having((value) => value.output, 'output', isNull),
+        );
+        final message = (result as MambaFailureResult).message;
+        expect(message, contains('TOOLS_FORM'));
+        expect(message, contains('MAIN_AGENT_TYPE'));
+        expect(message, contains('UNKNOWN_FIELD'));
+        expect(message, isNot(contains(hiddenValue)));
+        expect(message, isNot(contains(body.trim())));
+      });
+    });
   });
 }
