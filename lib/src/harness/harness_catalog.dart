@@ -1,8 +1,11 @@
+import '../mcp/mcp_types.dart';
 import 'harness_descriptor.dart';
 import 'harness_facet.dart';
 import 'harness_facet_refusal.dart';
 import 'harness_id.dart';
 import 'harness_user_roots.dart';
+import 'mcp_harness_spec.dart';
+import 'mcp_harness_specs.dart';
 
 export 'agent_harness_spec.dart';
 export 'context_harness_spec.dart';
@@ -32,13 +35,26 @@ final class HarnessCatalog {
 
   static final HarnessCatalog instance = HarnessCatalog._(
     List<HarnessDescriptor>.unmodifiable(<HarnessDescriptor>[
-      HarnessDescriptor.composed(HarnessId.claude, userRoot: _claudeUserRoot),
-      HarnessDescriptor.composed(HarnessId.codex, userRoot: _codexUserRoot),
-      HarnessDescriptor.composed(HarnessId.pi, userRoot: _piUserRoot),
+      HarnessDescriptor.composed(
+        HarnessId.claude,
+        userRoot: _claudeUserRoot,
+        mcp: mcpHarnessSpecs[HarnessId.claude]!,
+      ),
+      HarnessDescriptor.composed(
+        HarnessId.codex,
+        userRoot: _codexUserRoot,
+        mcp: mcpHarnessSpecs[HarnessId.codex]!,
+      ),
+      HarnessDescriptor.composed(
+        HarnessId.pi,
+        userRoot: _piUserRoot,
+        mcp: mcpHarnessSpecs[HarnessId.pi]!,
+      ),
       HarnessDescriptor.composed(
         HarnessId.antigravity,
         userRoot: _geminiUserRoot,
         userConfigRoot: _geminiUserConfigRoot,
+        mcp: mcpHarnessSpecs[HarnessId.antigravity]!,
         prompt: false,
       ),
     ]),
@@ -64,6 +80,14 @@ final class HarnessCatalog {
 
   HarnessFacetSpec? facet(HarnessId id, HarnessFacet facet) =>
       byId(id).facet(facet);
+
+  /// The composed MCP facet of one registered harness identity.
+  McpHarnessSpec mcpSpecById(HarnessId id) =>
+      requireFacet(id, HarnessFacet.mcp) as McpHarnessSpec;
+
+  /// The composed MCP facet selected by the MCP wire name.
+  McpHarnessSpec mcpSpec(McpHarness harness) =>
+      mcpSpecById(HarnessId.fromWire(harness.wireName));
 
   HarnessFacetRefusal? refusal(
     HarnessId id,

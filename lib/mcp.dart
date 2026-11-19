@@ -91,12 +91,13 @@ final class McpListCommand extends Command {
           _claudeConfigDir,
           _codexHome,
           _piAgentDir,
+          _geminiDir,
           _stateDir,
         ],
         flags: [_verify],
         longDescription:
             'Read-only, management-aware MCP registration inventory across '
-            'Claude Code, Codex, and native Pi. Discovers native configuration '
+            'Claude Code, Codex, Pi, and Antigravity. Discovers native configuration '
             'for the selected harnesses and scopes and classifies each entry '
             'as managed, unmanaged, or ownership-unverified. This is passive '
             'static discovery: it never launches, connects to, or '
@@ -126,6 +127,7 @@ final class McpListCommand extends Command {
   static final _claudeConfigDir = FolderPathOption('claude-config-dir');
   static final _codexHome = FolderPathOption('codex-home');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _stateDir = FolderPathOption('state-dir');
   static const _verify = BooleanFlag('verify');
 
@@ -152,6 +154,7 @@ final class McpListCommand extends Command {
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
+        geminiDir: valueOf(_geminiDir),
         stateDir: valueOf(_stateDir),
       ),
     );
@@ -173,6 +176,7 @@ final class McpInspectCommand extends Command {
           _claudeConfigDir,
           _codexHome,
           _piAgentDir,
+          _geminiDir,
           _stateDir,
         ],
         longDescription:
@@ -208,6 +212,7 @@ final class McpInspectCommand extends Command {
   static final _claudeConfigDir = FolderPathOption('claude-config-dir');
   static final _codexHome = FolderPathOption('codex-home');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _stateDir = FolderPathOption('state-dir');
 
   final McpInspectionService _service;
@@ -233,6 +238,7 @@ final class McpInspectCommand extends Command {
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
+        geminiDir: valueOf(_geminiDir),
         stateDir: valueOf(_stateDir),
       ),
     );
@@ -254,6 +260,7 @@ final class McpValidateCommand extends Command {
           _claudeConfigDir,
           _codexHome,
           _piAgentDir,
+          _geminiDir,
           _stateDir,
         ],
         longDescription:
@@ -292,6 +299,7 @@ final class McpValidateCommand extends Command {
   static final _claudeConfigDir = FolderPathOption('claude-config-dir');
   static final _codexHome = FolderPathOption('codex-home');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _stateDir = FolderPathOption('state-dir');
 
   final McpValidationService _service;
@@ -321,6 +329,7 @@ final class McpValidateCommand extends Command {
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
+        geminiDir: valueOf(_geminiDir),
         stateDir: valueOf(_stateDir),
       ),
     );

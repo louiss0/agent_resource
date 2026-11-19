@@ -48,6 +48,7 @@ final class _PackContextOptions {
   static final cwd = FolderPathOption('cwd');
   static final projectRoot = FolderPathOption('project-root');
   static final home = FolderPathOption('home');
+  static final geminiDir = FolderPathOption('gemini-dir');
   static final state = FolderPathOption('state-dir');
   static final config = FilePathOption('config');
 }
@@ -67,6 +68,7 @@ final class PackActionCommand extends Command {
            _PackContextOptions.cwd,
            _PackContextOptions.projectRoot,
            _PackContextOptions.home,
+           _PackContextOptions.geminiDir,
            _PackContextOptions.state,
            _PackContextOptions.config,
            if (_operation != PackOperation.validate) _target,
@@ -252,6 +254,7 @@ final class PackActionCommand extends Command {
         cwd: valueOf(_PackContextOptions.cwd),
         projectRoot: valueOf(_PackContextOptions.projectRoot),
         home: valueOf(_PackContextOptions.home),
+        geminiDir: valueOf(_PackContextOptions.geminiDir),
         stateDir: valueOf(_PackContextOptions.state),
         configPath: valueOf(_PackContextOptions.config),
         target: mutating ? valueOf(_target) : null,
@@ -311,6 +314,7 @@ final class PackDiscoverCommand extends Command {
            _PackContextOptions.cwd,
            _PackContextOptions.projectRoot,
            _PackContextOptions.home,
+           _PackContextOptions.geminiDir,
            _PackContextOptions.state,
            _PackContextOptions.config,
            _target,
@@ -362,6 +366,7 @@ final class PackDiscoverCommand extends Command {
         cwd: valueOf(_PackContextOptions.cwd),
         projectRoot: valueOf(_PackContextOptions.projectRoot),
         home: valueOf(_PackContextOptions.home),
+        geminiDir: valueOf(_PackContextOptions.geminiDir),
         stateDir: valueOf(_PackContextOptions.state),
         configPath: valueOf(_PackContextOptions.config),
       ),

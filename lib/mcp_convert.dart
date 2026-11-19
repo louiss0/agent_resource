@@ -58,6 +58,7 @@ final class McpConvertInputs {
   final _claudeConfigDir = FolderPathOption('claude-config-dir');
   final _codexHome = FolderPathOption('codex-home');
   final _piAgentDir = FolderPathOption('pi-agent-dir');
+  final _geminiDir = FolderPathOption('gemini-dir');
   final _stateDir = FolderPathOption('state-dir');
 
   final _apply = BooleanFlag(
@@ -92,6 +93,7 @@ final class McpConvertInputs {
     _claudeConfigDir,
     _codexHome,
     _piAgentDir,
+    _geminiDir,
     _stateDir,
   ];
 
@@ -120,7 +122,7 @@ final class McpConvertCommand extends Command {
         },
         longDescription:
             'Convert one managed MCP server registration across Claude Code, '
-            'Codex and native Pi. Transport and scope are preserved; changing '
+            'Codex, Pi and Antigravity. Transport and scope are preserved; changing '
             'scope is a separate reviewed --target-scope decision. Fields '
             'with no target-native equivalent refuse the conversion unless '
             'explicitly omitted with --omit-field. OAuth state, provider '
@@ -158,6 +160,7 @@ final class McpConvertCommand extends Command {
     final claudeConfigDir = valueOf(inputs._claudeConfigDir);
     final codexHome = valueOf(inputs._codexHome);
     final piAgentDir = valueOf(inputs._piAgentDir);
+    final geminiDir = valueOf(inputs._geminiDir);
     final stateDir = valueOf(inputs._stateDir);
 
     final envelope = await _service.execute(
@@ -180,6 +183,7 @@ final class McpConvertCommand extends Command {
         claudeConfigDir: claudeConfigDir,
         codexHome: codexHome,
         piAgentDir: piAgentDir,
+        geminiDir: geminiDir,
         stateDir: stateDir,
       ),
     );

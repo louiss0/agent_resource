@@ -81,6 +81,7 @@ final class McpRecoveryRequest {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.stateDir,
   });
 
@@ -102,6 +103,7 @@ final class McpRecoveryRequest {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final String? stateDir;
 }
 
@@ -632,6 +634,7 @@ interface class McpRecoveryService implements McpMutationService {
         claudeConfigDir: request.claudeConfigDir,
         codexHome: request.codexHome,
         piAgentDir: request.piAgentDir,
+        geminiDir: request.geminiDir,
         stateDir: request.stateDir,
       );
 
@@ -954,6 +957,7 @@ interface class McpRecoveryService implements McpMutationService {
         claudeConfigDir: request.claudeConfigDir,
         codexHome: request.codexHome,
         piAgentDir: request.piAgentDir,
+        geminiDir: request.geminiDir,
         stateDir: request.stateDir,
       );
 
@@ -973,6 +977,7 @@ interface class McpRecoveryService implements McpMutationService {
     claudeConfigDir: request.claudeConfigDir,
     codexHome: request.codexHome,
     piAgentDir: request.piAgentDir,
+    geminiDir: request.geminiDir,
     stateDir: request.stateDir,
   );
 
@@ -1001,6 +1006,7 @@ interface class McpRecoveryService implements McpMutationService {
         claudeConfigDir: request.claudeConfigDir,
         codexHome: request.codexHome,
         piAgentDir: request.piAgentDir,
+        geminiDir: request.geminiDir,
         stateDir: request.stateDir,
       );
 

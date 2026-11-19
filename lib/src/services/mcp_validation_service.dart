@@ -21,6 +21,7 @@ final class McpValidationSelectionRequest {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.stateDir,
   });
 
@@ -34,6 +35,7 @@ final class McpValidationSelectionRequest {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final String? stateDir;
 }
 
@@ -85,6 +87,7 @@ interface class McpValidationService {
       claudeConfigDir: request.claudeConfigDir,
       codexHome: request.codexHome,
       piAgentDir: request.piAgentDir,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
     );
     final locations = _resolver.resolve(
