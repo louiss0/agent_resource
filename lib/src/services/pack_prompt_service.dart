@@ -4,6 +4,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../harness/harness_catalog.dart';
 import '../pack/pack_configuration.dart' show packPromptProfiles;
 import '../pack/pack_models.dart';
 import '../services/prompt_inspection_service.dart';
@@ -81,7 +82,7 @@ final class PackPromptCandidate {
   bool isPrompt(PromptConsumer consumer) => source.isPrompt(consumer);
 
   /// Whether the candidate is a Prompt for any consumer.
-  bool get isPromptAnywhere => PromptConsumer.values.any(source.isPrompt);
+  bool get isPromptAnywhere => PromptConsumer.inspectable.any(source.isPrompt);
 
   /// Whether the candidate belongs to the Prompt selection.
   ///
@@ -168,7 +169,7 @@ interface class PackPromptService {
     required List<PackPromptCandidate> selected,
     required List<String> targets,
   }) {
-    requireNoPiTarget(targets);
+    requireSupportedTargets(targets);
     for (final candidate in selected) {
       if (candidate.template) {
         throw MambaException(
@@ -308,11 +309,13 @@ interface class PackPromptService {
     );
   }
 
-  /// Refuses a Pi target.
+  /// Refuses a target without a Prompt capability.
   ///
-  /// The Pi Prompt installation is not supported: a Pi skill-backed Prompt
-  /// is recognized and validated, but it is not installed for Pi.
-  void requireNoPiTarget(List<String> targets) {
+  /// Pi Prompts are recognized but never installed. Antigravity has no
+  /// Prompt facet at all, so its selection is refused with the catalog's
+  /// explanation rather than an invented manual-only form. Both refusals
+  /// precede any installation effect.
+  void requireSupportedTargets(List<String> targets) {
     for (final target in targets) {
       if (target == 'pi') {
         throw MambaException(
@@ -321,8 +324,27 @@ interface class PackPromptService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
+      if (const {'claude', 'codex', 'shared'}.contains(target)) continue;
+      HarnessId? id;
+      for (final value in HarnessId.values) {
+        if (value.wireName == target) id = value;
+      }
+      if (id == null) {
+        throw MambaException(
+          'Unsupported Prompt installation target: $target.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      HarnessCatalog.instance.requirePromptFacet(
+        id,
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
     }
   }
+
+  /// Backward-compatible name for the supported-target gate.
+  void requireNoPiTarget(List<String> targets) =>
+      requireSupportedTargets(targets);
 
   /// The Prompt consumers of the requested targets.
   ///
@@ -337,6 +359,7 @@ interface class PackPromptService {
           PromptConsumer.codex,
         ],
         'pi' => const <PromptConsumer>[PromptConsumer.pi],
+        'antigravity' => const <PromptConsumer>[PromptConsumer.antigravity],
         _ => throw MambaException(
           'Unsupported Prompt installation target: $target.',
           exitCode: PackProcessStatus.invalidInput.code,
@@ -368,5 +391,6 @@ interface class PackPromptService {
     PromptConsumer.claude => 'claude',
     PromptConsumer.codex => 'codex',
     PromptConsumer.pi => 'pi',
+    PromptConsumer.antigravity => 'antigravity',
   };
 }

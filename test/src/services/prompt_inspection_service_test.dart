@@ -517,7 +517,7 @@ void main() {
                 : PromptClassification.prompt,
             reason: tool,
           );
-          for (final consumer in PromptConsumer.values) {
+          for (final consumer in PromptConsumer.inspectable) {
             final view = result.views[consumer]!;
             expect(view.valid, isFalse, reason: '$consumer: $tool');
             expect(

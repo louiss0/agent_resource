@@ -64,9 +64,9 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     final initial = recordById(context, installationId);
     _requireResource(initial, resource, context, live: true);
     _requireCanonicalUnchanged(initial);
-    if (target == 'codex') {
+    if (target == 'codex' || target == 'antigravity') {
       throw MambaException(
-        'A direct Codex reader cannot be revoked by metadata removal while '
+        'A direct $target reader cannot be revoked by metadata removal while '
         'shared canonical content remains discoverable. Remove the whole '
         'canonical installation explicitly instead.',
         exitCode: 4,

@@ -15,6 +15,7 @@ import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
 import '../installation/skill_root_markdown_migration.dart';
+import '../harness/harness_catalog.dart';
 import '../mcp/mcp_native.dart'
     show
         McpNativeLocation,
@@ -3049,7 +3050,11 @@ interface class PackLifecycleService {
           path: canonical,
           kind: InstallationEntryKind.content,
           action: InstallationEntryAction.createContent,
-          target: targets.contains('codex') ? 'codex' : null,
+          target: targets.contains('codex')
+              ? 'codex'
+              : targets.contains('antigravity')
+              ? 'antigravity'
+              : null,
           nativeRoot: root,
           nativeDestination: 'canonical',
           artifactKind: OwnedArtifactKind.skillCanonical,
@@ -3073,23 +3078,20 @@ interface class PackLifecycleService {
           ),
         );
       }
-      if (targets.contains('codex')) {
+      for (final direct in const <String>['codex', 'antigravity']) {
+        if (!targets.contains(direct)) continue;
         entries.add(
           InstallationEntryPlan(
             path: canonical,
             kind: InstallationEntryKind.consumer,
             action: InstallationEntryAction.recordConsumer,
-            target: 'codex',
+            target: direct,
           ),
         );
       }
     } else {
       for (final target in targets) {
-        final root = _fileSystem.path.normalize(
-          target == 'claude'
-              ? context.claudeSkillsRoot()
-              : context.sharedSkillsRoot(),
-        );
+        final root = _fileSystem.path.normalize(_skillRoot(context, target));
         entries.add(
           InstallationEntryPlan(
             path: _fileSystem.path.join(root, candidate.name),
@@ -3107,7 +3109,12 @@ interface class PackLifecycleService {
                 ? _nativeDirectoryLinkKind
                 : null,
             nativeRoot: root,
-            nativeDestination: target == 'claude' ? 'claude' : 'shared',
+            nativeDestination: target == 'claude'
+                ? 'claude'
+                : target == 'antigravity' &&
+                      context.scope == LifecycleScope.user
+                ? 'antigravity'
+                : 'shared',
             artifactKind: selectedMethod == SkillInstallMethod.copy
                 ? OwnedArtifactKind.skillCopy
                 : OwnedArtifactKind.skillLink,
@@ -3984,6 +3991,9 @@ interface class PackLifecycleService {
     // The targets are resolved without an interactive choice: the selection
     // is checked before the installation asks for a target.
     final requestedTargets = _requestedTargets(request, pack, configuration);
+    if (request.promptSelection) {
+      _promptService.requireSupportedTargets(requestedTargets);
+    }
     if (request.promptSelection && requestedTargets.isEmpty) {
       throw MambaException(
         'The prompt selection requires an explicit claude or codex '
@@ -4052,10 +4062,16 @@ interface class PackLifecycleService {
     final targets = _requestedTargets(request, pack, configuration);
     if (targets.isEmpty ||
         targets.any(
-          (target) => !const {'claude', 'codex', 'shared'}.contains(target),
+          (target) => !const {
+            'claude',
+            'codex',
+            'shared',
+            'antigravity',
+          }.contains(target),
         )) {
       throw MambaException(
-        'Skill installation requires an explicit claude or codex --target/configuration choice.',
+        'Skill installation requires an explicit claude, codex, or '
+        'antigravity --target/configuration choice.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
@@ -4568,6 +4584,23 @@ interface class PackLifecycleService {
     );
   }
 
+  String _skillRoot(LifecycleContext context, String target) {
+    if (context.scope == LifecycleScope.project && target != 'claude') {
+      return context.sharedSkillsRoot();
+    }
+    final id = switch (target) {
+      'claude' => HarnessId.claude,
+      'codex' => HarnessId.codex,
+      'antigravity' => HarnessId.antigravity,
+      _ => HarnessId.pi,
+    };
+    final spec = HarnessCatalog.instance.requireFacet(
+      id,
+      HarnessFacet.skill,
+    ) as SkillHarnessSpec;
+    return spec.root(context, userScope: context.scope == LifecycleScope.user);
+  }
+
   Future<List<String>> _targets(
     PackLifecycleRequest request,
     PackDefinition pack,
@@ -4592,10 +4625,10 @@ interface class PackLifecycleService {
         : configuration.cli.install.targets;
     if (targets.isEmpty && record != null) return record.validatedProfiles;
     if (targets.isEmpty && request.interactive && !request.yes) {
-      final target = await _promptChoice('Skill target [claude/codex]:', const [
-        'claude',
-        'codex',
-      ]);
+      final target = await _promptChoice(
+        'Skill target [claude/codex/antigravity]:',
+        const ['claude', 'codex', 'antigravity'],
+      );
       if (target == null) {
         throw MambaException(
           'Skill target selection was cancelled; no resource was published.',
@@ -4606,10 +4639,16 @@ interface class PackLifecycleService {
     }
     if (targets.isEmpty ||
         targets.any(
-          (target) => !const {'claude', 'codex', 'shared'}.contains(target),
+          (target) => !const {
+            'claude',
+            'codex',
+            'shared',
+            'antigravity',
+          }.contains(target),
         )) {
       throw MambaException(
-        'Skill installation requires an explicit claude or codex --target/configuration choice.',
+        'Skill installation requires an explicit claude, codex, or '
+        'antigravity --target/configuration choice.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }

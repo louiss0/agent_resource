@@ -10,6 +10,7 @@ import '../agent_inspection.dart';
 import '../authoring/authoring_inputs.dart';
 import '../authoring/authoring_profiles.dart';
 import '../authoring/package_manifest.dart';
+import '../harness/harness_catalog.dart';
 import '../native_references.dart';
 import '../prompt_resource_path_scanner.dart';
 import '../skill_files.dart';
@@ -590,6 +591,7 @@ interface class AuthoringPlanService {
         ).intersection(
           PromptInspectionService.allowedFields(form, PromptConsumer.codex),
         ),
+      AuthoringProfile.antigravity => inputs.matrix.supportedNames.toSet(),
     };
   }
 
@@ -1372,6 +1374,14 @@ interface class AuthoringPlanService {
         AuthoringProfile.codex => context.codexSkillsRoot(),
         AuthoringProfile.global => context.sharedSkillsRoot(),
         AuthoringProfile.pi => _piSkillsRoot(context),
+        AuthoringProfile.antigravity =>
+          (HarnessCatalog.instance.requireFacet(
+            HarnessId.antigravity,
+            HarnessFacet.skill,
+          ) as SkillHarnessSpec).root(
+            context,
+            userScope: context.scope == LifecycleScope.user,
+          ),
       };
 
   String _piSkillsRoot(LifecycleContext context) =>
@@ -1396,6 +1406,10 @@ interface class AuthoringPlanService {
               : _fileSystem.path.join(context.codexRoot(), 'agents'),
         AuthoringProfile.pi => context.piAgentsRoot(),
         AuthoringProfile.global => throw StateError('unreachable'),
+        AuthoringProfile.antigravity => throw MambaException(
+          'Antigravity Agent authoring is not available.',
+          exitCode: 4,
+        ),
       };
 
   bool _within(String path, String root) =>
@@ -1406,7 +1420,8 @@ interface class AuthoringPlanService {
       switch (kind) {
         AuthoringKind.skill =>
           profile == AuthoringProfile.claude ||
-              profile == AuthoringProfile.codex,
+              profile == AuthoringProfile.codex ||
+              profile == AuthoringProfile.antigravity,
         AuthoringKind.agent => true,
         AuthoringKind.prompt => false,
       };
@@ -1557,7 +1572,7 @@ PromptView? _promptView(
       selected.classification == PromptClassification.prompt) {
     return selected;
   }
-  for (final consumer in PromptConsumer.values) {
+  for (final consumer in PromptConsumer.inspectable) {
     final view = inspection.views[consumer];
     if (view != null && view.classification == PromptClassification.prompt) {
       return view;
@@ -1571,6 +1586,7 @@ PromptConsumer _consumer(AuthoringProfile profile) => switch (profile) {
   AuthoringProfile.codex => PromptConsumer.codex,
   AuthoringProfile.pi => PromptConsumer.pi,
   AuthoringProfile.global => PromptConsumer.claude,
+  AuthoringProfile.antigravity => PromptConsumer.antigravity,
 };
 
 /// The native profile of the selected source.

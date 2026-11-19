@@ -51,6 +51,7 @@ final class GuidedCreateFields {
   static final claudeConfigDir = FolderPathOption('claude-config-dir');
   static final codexHome = FolderPathOption('codex-home');
   static final piAgentDir = FolderPathOption('pi-agent-dir');
+  static final geminiDir = FolderPathOption('gemini-dir');
   static final stateDir = FolderPathOption('state-dir');
 
   /// The instruction body read from a file.

@@ -8,7 +8,23 @@ enum PromptForm { skill, template }
 enum PromptClassification { prompt, nonPrompt, unclassified, malformed }
 
 /// The consuming harness of a Prompt view.
-enum PromptConsumer { claude, codex, pi }
+enum PromptConsumer {
+  claude,
+  codex,
+  pi,
+
+  /// Antigravity has no Prompt facet. The value exists so an explicit
+  /// target can be recognized and refused instead of parsed as unknown.
+  antigravity;
+
+  /// Consumers with a native inspection view. Antigravity deliberately has
+  /// none; its prompt commands refuse before a view is built.
+  static const List<PromptConsumer> inspectable = <PromptConsumer>[
+    claude,
+    codex,
+    pi,
+  ];
+}
 
 /// Caller-supplied placement evidence, not a claim of discovery or activation.
 enum PromptPlacement { project, user, uninstalled, unknown }

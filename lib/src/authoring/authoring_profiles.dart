@@ -17,4 +17,8 @@ AgentHarness agentHarnessForProfile(AuthoringProfile profile) =>
         'A global profile does not target an Agent definition.',
         exitCode: 4,
       ),
+      AuthoringProfile.antigravity => throw MambaException(
+        'Antigravity Agent authoring is not available.',
+        exitCode: 4,
+      ),
     };

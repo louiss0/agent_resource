@@ -13,6 +13,7 @@ import 'src/prompt/prompt_validation_failure.dart';
 import 'src/services/conversion_coordinator_service.dart';
 import 'src/services/guided_authoring_service.dart';
 import 'src/services/conversion_restore_service.dart';
+import 'src/harness/harness_catalog.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/prompt_read_service.dart';
 import 'src/services/prompt_inspection_service.dart';
@@ -56,6 +57,7 @@ final ChoiceOption _promptTarget = ChoiceOption(
     PromptConsumer.claude,
     PromptConsumer.codex,
     PromptConsumer.pi,
+    PromptConsumer.antigravity,
   ],
   description:
       'The consuming harness of the report. Without it the report shows the '
@@ -72,6 +74,12 @@ final _promptFormat = ChoiceOption.withDefault(
   choices: LifecycleOutputFormat.values,
   defaultValue: LifecycleOutputFormat.text,
 );
+
+void _requirePromptTarget(PromptConsumer? target) {
+  if (target == PromptConsumer.antigravity) {
+    HarnessCatalog.instance.requirePromptFacet(HarnessId.antigravity);
+  }
+}
 
 final class PromptInspectCommand extends Command {
   PromptInspectCommand(this._read)
@@ -101,10 +109,9 @@ final class PromptInspectCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final views = await _read.inspect(
-      valueOf(_path),
-      consumer: valueOf(_target) as PromptConsumer?,
-    );
+    final target = valueOf(_target) as PromptConsumer?;
+    _requirePromptTarget(target);
+    final views = await _read.inspect(valueOf(_path), consumer: target);
     return _renderPromptViews(views, valueOf(_format), 'prompt inspect');
   }
 }
@@ -122,7 +129,7 @@ String _renderPromptViews(
     '  global: ${views.globalCompatibility.name}',
     '  placement: ${views.placement.name}',
   ];
-  for (final consumer in PromptConsumer.values) {
+  for (final consumer in PromptConsumer.inspectable) {
     final view = views.views[consumer];
     if (view == null) continue;
     lines.add(
@@ -164,11 +171,10 @@ final class PromptValidateCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    final target = valueOf(_target) as PromptConsumer?;
+    _requirePromptTarget(target);
     try {
-      final views = await _read.validate(
-        valueOf(_path),
-        consumer: valueOf(_target) as PromptConsumer?,
-      );
+      final views = await _read.validate(valueOf(_path), consumer: target);
       return _renderPromptViews(views, valueOf(_format), 'prompt validate');
     } on PromptValidationFailure catch (failure) {
       throw MambaException(
@@ -231,6 +237,8 @@ final class PromptListCommand extends Command {
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    final target = valueOf(_target) as PromptConsumer?;
+    _requirePromptTarget(target);
     final inventory = await _read.list(
       LifecycleOptions(
         processWorkingDirectory: _fileSystem.currentDirectory.path,
@@ -244,7 +252,7 @@ final class PromptListCommand extends Command {
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
       ),
-      consumer: valueOf(_target) as PromptConsumer?,
+      consumer: target,
     );
     return switch (valueOf(_format)) {
       LifecycleOutputFormat.json => jsonEncode(inventory.toJson()),
