@@ -105,6 +105,7 @@ final class LifecycleOptions {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.stateDir,
     this.readRoots = const <String>[],
     this.dryRun = false,
@@ -120,6 +121,7 @@ final class LifecycleOptions {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final String? stateDir;
   final List<String> readRoots;
   final bool dryRun;
@@ -127,6 +129,7 @@ final class LifecycleOptions {
 
   LifecycleOptions copyWith({
     LifecycleScope? scope,
+    String? geminiDir,
     bool? dryRun,
     bool? approved,
   }) => LifecycleOptions(
@@ -139,6 +142,7 @@ final class LifecycleOptions {
     claudeConfigDir: claudeConfigDir,
     codexHome: codexHome,
     piAgentDir: piAgentDir,
+    geminiDir: geminiDir ?? this.geminiDir,
     stateDir: stateDir,
     readRoots: readRoots,
     dryRun: dryRun ?? this.dryRun,
@@ -254,6 +258,19 @@ final class LifecycleContext {
         _environment('PI_CODING_AGENT_DIR') ??
         fs.path.join(requireHome(), '.pi', 'agent'),
   );
+
+  /// Antigravity's user root, honoring an explicit option, either supported
+  /// environment override, or `<home>/.gemini` in that order.
+  String geminiRoot() => resolvePath(
+    options.geminiDir ??
+        _environment('GEMINI_CONFIG_DIR') ??
+        _environment('GEMINI_HOME') ??
+        fs.path.join(requireHome(), '.gemini'),
+  );
+
+  /// Antigravity's user customization config root below [geminiRoot].
+  String geminiConfigRoot() =>
+      fs.path.normalize(fs.path.join(geminiRoot(), 'config'));
 
   String stateRoot([LifecycleScope? selectedScope]) {
     final selected = selectedScope ?? scope;

@@ -1,6 +1,28 @@
 import 'package:agent_resource/src/harness/harness_catalog.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:file/memory.dart';
 import 'package:mamba/mamba.dart';
 import 'package:test/test.dart';
+
+LifecycleOptions lifecycleOptions(
+  String project,
+  String home, {
+  Map<String, String> environment = const <String, String>{},
+  String? geminiDir,
+}) => LifecycleOptions(
+  processWorkingDirectory: project,
+  cwd: project,
+  projectRoot: project,
+  home: home,
+  environment: environment,
+  geminiDir: geminiDir,
+);
+
+LifecycleContext resolveContext(MemoryFileSystem fs, LifecycleOptions options) {
+  fs.directory(options.cwd!).createSync(recursive: true);
+  fs.directory(options.home!).createSync(recursive: true);
+  return LifecycleContext.resolve(options, fileSystem: fs);
+}
 
 void main() {
   group('HarnessCatalog', () {
@@ -104,6 +126,107 @@ void main() {
       expect(
         catalog.requireFacet(HarnessId.pi, HarnessFacet.agent).harness,
         HarnessId.pi,
+      );
+    });
+  });
+
+  group('LifecycleContext', () {
+    test('resolves Antigravity roots across platforms without writes', () {
+      void expectDefaultRoots(
+        FileSystemStyle style,
+        String project,
+        String home,
+        String expectedRoot,
+        String expectedConfigRoot,
+      ) {
+        final fs = MemoryFileSystem(style: style);
+        final context = resolveContext(fs, lifecycleOptions(project, home));
+
+        expect(context.geminiRoot(), expectedRoot);
+        expect(context.geminiConfigRoot(), expectedConfigRoot);
+        expect(fs.directory(expectedRoot).existsSync(), isFalse);
+        expect(fs.directory(expectedConfigRoot).existsSync(), isFalse);
+      }
+
+      expectDefaultRoots(
+        FileSystemStyle.posix,
+        '/sandbox/project',
+        '/sandbox/home',
+        '/sandbox/home/.gemini',
+        '/sandbox/home/.gemini/config',
+      );
+      expectDefaultRoots(
+        FileSystemStyle.windows,
+        r'C:\sandbox\project',
+        r'C:\sandbox\home',
+        r'C:\sandbox\home\.gemini',
+        r'C:\sandbox\home\.gemini\config',
+      );
+
+      final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+      final configDirContext = resolveContext(
+        fs,
+        lifecycleOptions(
+          '/sandbox/project',
+          '/sandbox/home',
+          environment: const <String, String>{
+            'GEMINI_CONFIG_DIR': '/sandbox/from-config-env',
+            'GEMINI_HOME': '/sandbox/from-home-env',
+          },
+        ),
+      );
+      expect(configDirContext.geminiRoot(), '/sandbox/from-config-env');
+      expect(
+        configDirContext.geminiConfigRoot(),
+        '/sandbox/from-config-env/config',
+      );
+
+      final geminiHomeContext = resolveContext(
+        fs,
+        lifecycleOptions(
+          '/sandbox/project',
+          '/sandbox/home',
+          environment: const <String, String>{
+            'GEMINI_HOME': '/sandbox/from-home-env',
+          },
+        ),
+      );
+      expect(geminiHomeContext.geminiRoot(), '/sandbox/from-home-env');
+      expect(
+        geminiHomeContext.geminiConfigRoot(),
+        '/sandbox/from-home-env/config',
+      );
+
+      final explicitOptions = lifecycleOptions(
+        '/sandbox/project',
+        '/sandbox/home',
+        environment: const <String, String>{
+          'GEMINI_CONFIG_DIR': '/sandbox/from-config-env',
+        },
+        geminiDir: '/sandbox/explicit-gemini',
+      );
+      expect(
+        LifecycleContext.resolve(explicitOptions, fileSystem: fs).geminiRoot(),
+        '/sandbox/explicit-gemini',
+      );
+      expect(
+        LifecycleContext.resolve(
+          explicitOptions.copyWith(scope: LifecycleScope.user),
+          fileSystem: fs,
+        ).geminiConfigRoot(),
+        '/sandbox/explicit-gemini/config',
+      );
+      expect(
+        LifecycleContext.resolve(
+          explicitOptions.copyWith(geminiDir: '/sandbox/copied-gemini'),
+          fileSystem: fs,
+        ).geminiRoot(),
+        '/sandbox/copied-gemini',
+      );
+      expect(fs.directory('/sandbox/home/.gemini').existsSync(), isFalse);
+      expect(
+        fs.directory('/sandbox/home/.gemini/config').existsSync(),
+        isFalse,
       );
     });
   });
