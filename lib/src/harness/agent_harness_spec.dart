@@ -953,17 +953,17 @@ extension AgentHarnessAuthoring on AgentHarnessSpec {
     AuthoringProfile profile,
     Map<String, Object?> fields,
     String instructions, {
-    required NativeFieldMatrix matrix,
+    NativeFieldMatrix? matrix,
   }) {
     final entries = fields.entries.toList()
       ..sort((left, right) => left.key.compareTo(right.key));
     if (definitionExtension == '.toml') {
-      return '${entries.map((entry) => '${entry.key} = ${_nativeTomlValue(entry.value, matrix.specFor(entry.key))}').join('\n')}\n';
+      return '${entries.map((entry) => '${entry.key} = ${_nativeTomlValue(entry.value, matrix?.specFor(entry.key))}').join('\n')}\n';
     }
     final frontmatter = entries
         .map(
           (entry) =>
-              '${entry.key}: ${_nativeYamlValue(entry.value, matrix.specFor(entry.key))}',
+              '${entry.key}: ${_nativeYamlValue(entry.value, matrix?.specFor(entry.key))}',
         )
         .join('\n');
     return '---\n$frontmatter\n---\n$instructions';

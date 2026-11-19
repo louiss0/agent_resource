@@ -8,6 +8,8 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
+import '../authoring/authoring_inputs.dart' show AuthoringProfile;
+import '../harness/harness_catalog.dart';
 import '../native_references.dart';
 import '../skill_files.dart';
 import 'agent_graph_service.dart';
@@ -15,7 +17,9 @@ import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
 import 'parent_config_service.dart' show parseStrictJsonObject;
 
-const _authoringHarnessNames = <String>{'claude', 'codex', 'pi'};
+final Set<String> _authoringHarnessNames = HarnessCatalog.instance.descriptors
+    .map((descriptor) => descriptor.wireName)
+    .toSet();
 
 enum AuthoringOperation { create, clone, edit, compose }
 
@@ -1060,32 +1064,15 @@ String _serialize(
   Map<String, Object?> fields,
   String instructions,
 ) {
-  final entries = fields.entries.toList()
-    ..sort((left, right) => left.key.compareTo(right.key));
-  if (harness == AgentHarness.codex) {
-    return '${entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value)}').join('\n')}\n';
-  }
-  final frontmatter = entries
-      .map((entry) => '${entry.key}: ${_yamlValue(entry.value)}')
-      .join('\n');
-  return '---\n$frontmatter\n---\n$instructions';
-}
-
-String _yamlValue(Object? value) => jsonEncode(value);
-
-String _tomlValue(Object? value) {
-  if (value == null ||
-      value is String ||
-      value is num ||
-      value is bool ||
-      value is List<Object?>) {
-    return jsonEncode(value);
-  }
-  if (value is Map<String, Object?>) {
-    return '{ ${value.entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value)}').join(', ')} }';
-  }
-  throw MambaException(
-    'Unsupported native value type in proposed output.',
-    exitCode: 2,
-  );
+  final profile = switch (harness) {
+    AgentHarness.claude => AuthoringProfile.claude,
+    AgentHarness.codex => AuthoringProfile.codex,
+    AgentHarness.pi => AuthoringProfile.pi,
+    AgentHarness.antigravity => AuthoringProfile.antigravity,
+  };
+  final spec = HarnessCatalog.instance.requireFacet(
+    HarnessId.fromWire(harness.name),
+    HarnessFacet.agent,
+  ) as AgentHarnessSpec;
+  return spec.serializeNativeAgent(profile, fields, instructions);
 }
