@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/compiled_cli_test_support.dart';
+import 'support/process_fixture_lock.dart';
 import 'support/process_test_support.dart';
 import 'support/trusted_temp.dart';
 
@@ -1655,88 +1656,88 @@ Future<void> main() async {
         test(
           'production JSON and text inventory match explicit isolated context',
           () async {
-            await _withLocalSandbox((sandbox) async {
-              _write(sandbox.project, '.pi/agents/a.md', _pi('production'));
-              final environment = isolatedEnvironment(sandbox.root);
-              Future<CliProcessResult> run(List<String> arguments) =>
-                  runDartScript(
-                    script: _entrypoint,
-                    packageConfig: _packageConfig,
-                    arguments: ['agent', 'list', ...arguments],
-                    workingDirectory: sandbox.work,
-                    environment: environment,
-                    timeout: const Duration(seconds: 120),
-                  );
-              final json = await run([
-                '--project-root',
-                '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
-                '--format',
-                'json',
-              ]);
-              expect(json.exitCode, 0);
-              expect(json.stderr, isEmpty);
-              final report = Map<String, Object?>.from(
-                jsonDecode(json.stdout) as Map<Object?, Object?>,
-              );
-              expect(_single(report)['harness'], 'pi');
-              expect(json.stdout, isNot(contains('PRIVATE-PI-BODY')));
+            await withSerializedProcessFixture(() async {
+              await _withLocalSandbox((sandbox) async {
+                _write(sandbox.project, '.pi/agents/a.md', _pi('production'));
+                final environment = isolatedEnvironment(sandbox.root);
+                Future<CliProcessResult> run(List<String> arguments) =>
+                    runDartScript(
+                      script: _entrypoint,
+                      packageConfig: _packageConfig,
+                      arguments: ['agent', 'list', ...arguments],
+                      workingDirectory: sandbox.work,
+                      environment: environment,
+                      timeout: const Duration(seconds: 120),
+                    );
+                final json = await run([
+                  '--project-root',
+                  '${sandbox.project.path}${sandbox.fileSystem.path.separator}',
+                  '--format',
+                  'json',
+                ]);
+                expect(json.exitCode, 0);
+                expect(json.stderr, isEmpty);
+                final report = Map<String, Object?>.from(
+                  jsonDecode(json.stdout) as Map<Object?, Object?>,
+                );
+                expect(_single(report)['harness'], 'pi');
+                expect(json.stdout, isNot(contains('PRIVATE-PI-BODY')));
 
-              _write(
-                sandbox.home,
-                '.claude/agents/user.md',
-                _claude('home-user'),
-              );
-              final text = await run(['--scope', 'user']);
-              expect(text.exitCode, 0, reason: text.stderr);
-              expect(text.stderr, isEmpty);
-              expect(text.stdout, contains('home-user'));
-              expect(text.stdout, contains('agent list: inventoried'));
+                _write(
+                  sandbox.home,
+                  '.claude/agents/user.md',
+                  _claude('home-user'),
+                );
+                final text = await run(['--scope', 'user']);
+                expect(text.exitCode, 0, reason: text.stderr);
+                expect(text.stderr, isEmpty);
+                expect(text.stdout, contains('home-user'));
+                expect(text.stdout, contains('agent list: inventoried'));
 
-              _write(
-                sandbox.root,
-                'env-claude/agents/env.md',
-                _claude('env-claude'),
-              );
-              _write(
-                sandbox.root,
-                'env-codex/agents/env.toml',
-                _codex('env-codex'),
-              );
-              _write(sandbox.root, 'env-pi/agents/env.md', _pi('env-pi'));
-              environment['CLAUDE_CONFIG_DIR'] = sandbox.fileSystem.path.join(
-                sandbox.root.path,
-                'env-claude',
-              );
-              environment['CODEX_HOME'] = sandbox.fileSystem.path.join(
-                sandbox.root.path,
-                'env-codex',
-              );
-              environment['PI_CODING_AGENT_DIR'] = sandbox.fileSystem.path.join(
-                sandbox.root.path,
-                'env-pi',
-              );
-              final nativeEnvironment = await run([
-                '--scope',
-                'user',
-                '--format',
-                'json',
-              ]);
-              expect(nativeEnvironment.exitCode, 0);
-              expect(nativeEnvironment.stderr, isEmpty);
-              final environmentReport = Map<String, Object?>.from(
-                jsonDecode(nativeEnvironment.stdout) as Map<Object?, Object?>,
-              );
-              final environmentOccurrences = _occurrences(environmentReport);
-              expect(environmentOccurrences, hasLength(3));
-              expect(
-                jsonEncode(environmentOccurrences),
-                allOf(
-                  contains('env-claude'),
-                  contains('env-codex'),
-                  contains('env-pi'),
-                  isNot(contains('home-user')),
-                ),
-              );
+                _write(
+                  sandbox.root,
+                  'env-claude/agents/env.md',
+                  _claude('env-claude'),
+                );
+                _write(
+                  sandbox.root,
+                  'env-codex/agents/env.toml',
+                  _codex('env-codex'),
+                );
+                _write(sandbox.root, 'env-pi/agents/env.md', _pi('env-pi'));
+                environment['CLAUDE_CONFIG_DIR'] = sandbox.fileSystem.path.join(
+                  sandbox.root.path,
+                  'env-claude',
+                );
+                environment['CODEX_HOME'] = sandbox.fileSystem.path.join(
+                  sandbox.root.path,
+                  'env-codex',
+                );
+                environment['PI_CODING_AGENT_DIR'] = sandbox.fileSystem.path
+                    .join(sandbox.root.path, 'env-pi');
+                final nativeEnvironment = await run([
+                  '--scope',
+                  'user',
+                  '--format',
+                  'json',
+                ]);
+                expect(nativeEnvironment.exitCode, 0);
+                expect(nativeEnvironment.stderr, isEmpty);
+                final environmentReport = Map<String, Object?>.from(
+                  jsonDecode(nativeEnvironment.stdout) as Map<Object?, Object?>,
+                );
+                final environmentOccurrences = _occurrences(environmentReport);
+                expect(environmentOccurrences, hasLength(3));
+                expect(
+                  jsonEncode(environmentOccurrences),
+                  allOf(
+                    contains('env-claude'),
+                    contains('env-codex'),
+                    contains('env-pi'),
+                    isNot(contains('home-user')),
+                  ),
+                );
+              });
             });
           },
           timeout: const Timeout(Duration(minutes: 6)),
