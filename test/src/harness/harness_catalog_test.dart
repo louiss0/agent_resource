@@ -1,4 +1,5 @@
 import 'package:agent_resource/src/harness/harness_catalog.dart';
+import 'package:mamba/mamba.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -56,6 +57,53 @@ void main() {
       expect(
         catalog.facet(HarnessId.antigravity, HarnessFacet.agent)?.harness,
         HarnessId.antigravity,
+      );
+    });
+
+    test('refuses unsupported facets with the category exit code', () {
+      final catalog = HarnessCatalog.instance;
+      final refusal = catalog.refusal(
+        HarnessId.antigravity,
+        HarnessFacet.prompt,
+        exitCode: 4,
+      )!;
+      final invalidInputRefusal = catalog.refusal(
+        HarnessId.antigravity,
+        HarnessFacet.prompt,
+        exitCode: 2,
+      )!;
+
+      expect(refusal.harness, HarnessId.antigravity);
+      expect(refusal.facet, HarnessFacet.prompt);
+      expect(refusal.code, 'UNSUPPORTED_HARNESS_FACET');
+      expect(
+        refusal.message,
+        'UNSUPPORTED_HARNESS_FACET: Harness "antigravity" does not support '
+        'the "prompt" Resource category.',
+      );
+      expect(invalidInputRefusal.message, refusal.message);
+      expect(refusal.toException().exitCode, 4);
+      expect(invalidInputRefusal.toException().exitCode, 2);
+      expect(
+        () => catalog.requireFacet(
+          HarnessId.antigravity,
+          HarnessFacet.prompt,
+          refusalExitCode: 2,
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having((error) => error.exitCode, 'exit code', 2)
+              .having(
+                (error) => error.message,
+                'message',
+                contains('UNSUPPORTED_HARNESS_FACET'),
+              ),
+        ),
+      );
+      expect(catalog.refusal(HarnessId.claude, HarnessFacet.prompt), isNull);
+      expect(
+        catalog.requireFacet(HarnessId.pi, HarnessFacet.agent).harness,
+        HarnessId.pi,
       );
     });
   });

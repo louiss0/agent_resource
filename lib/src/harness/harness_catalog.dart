@@ -1,11 +1,13 @@
 import 'harness_descriptor.dart';
 import 'harness_facet.dart';
+import 'harness_facet_refusal.dart';
 import 'harness_id.dart';
 
 export 'agent_harness_spec.dart';
 export 'context_harness_spec.dart';
 export 'harness_descriptor.dart';
 export 'harness_facet.dart';
+export 'harness_facet_refusal.dart';
 export 'harness_id.dart';
 export 'mcp_harness_spec.dart';
 export 'prompt_harness_spec.dart';
@@ -44,4 +46,27 @@ final class HarnessCatalog {
 
   HarnessFacetSpec? facet(HarnessId id, HarnessFacet facet) =>
       byId(id).facet(facet);
+
+  HarnessFacetRefusal? refusal(
+    HarnessId id,
+    HarnessFacet facet, {
+    int exitCode = 4,
+  }) {
+    final unsupported = HarnessFacetRefusal.unsupported(
+      id,
+      facet,
+      exitCode: exitCode,
+    );
+    return supports(id, facet) ? null : unsupported;
+  }
+
+  HarnessFacetSpec requireFacet(
+    HarnessId id,
+    HarnessFacet facet, {
+    int refusalExitCode = 4,
+  }) {
+    final spec = this.facet(id, facet);
+    if (spec != null) return spec;
+    throw refusal(id, facet, exitCode: refusalExitCode)!.toException();
+  }
 }
