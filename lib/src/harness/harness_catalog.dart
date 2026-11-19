@@ -1,8 +1,15 @@
 import 'harness_descriptor.dart';
+import 'harness_facet.dart';
 import 'harness_id.dart';
 
+export 'agent_harness_spec.dart';
+export 'context_harness_spec.dart';
 export 'harness_descriptor.dart';
+export 'harness_facet.dart';
 export 'harness_id.dart';
+export 'mcp_harness_spec.dart';
+export 'prompt_harness_spec.dart';
+export 'skill_harness_spec.dart';
 
 /// The single registry of harness identities and their composed descriptors.
 final class HarnessCatalog {
@@ -10,10 +17,10 @@ final class HarnessCatalog {
 
   static final HarnessCatalog instance = HarnessCatalog._(
     List<HarnessDescriptor>.unmodifiable(<HarnessDescriptor>[
-      HarnessDescriptor(id: HarnessId.claude),
-      HarnessDescriptor(id: HarnessId.codex),
-      HarnessDescriptor(id: HarnessId.pi),
-      HarnessDescriptor(id: HarnessId.antigravity),
+      HarnessDescriptor.composed(HarnessId.claude),
+      HarnessDescriptor.composed(HarnessId.codex),
+      HarnessDescriptor.composed(HarnessId.pi),
+      HarnessDescriptor.composed(HarnessId.antigravity, prompt: false),
     ]),
   );
 
@@ -26,4 +33,15 @@ final class HarnessCatalog {
 
   HarnessDescriptor byWireName(String wireName) =>
       byId(HarnessId.fromWire(wireName));
+
+  List<HarnessId> harnessesSupporting(HarnessFacet facet) =>
+      List<HarnessId>.unmodifiable(<HarnessId>[
+        for (final descriptor in _descriptors)
+          if (descriptor.supports(facet)) descriptor.id,
+      ]);
+
+  bool supports(HarnessId id, HarnessFacet facet) => byId(id).supports(facet);
+
+  HarnessFacetSpec? facet(HarnessId id, HarnessFacet facet) =>
+      byId(id).facet(facet);
 }
