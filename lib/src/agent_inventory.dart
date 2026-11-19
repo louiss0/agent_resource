@@ -179,6 +179,7 @@ final class _Inventory {
   final fslib.FileSystem fileSystem;
   final occurrences = <Map<String, Object?>>[];
   final diagnostics = <AgentDiagnostic>[];
+  final advisoryKeys = <String>{};
   late final fslib.Directory cwd;
   late final fslib.Directory projectRoot;
   late final LifecycleContext lifecycleContext;
@@ -765,6 +766,17 @@ final class _Inventory {
         report.definitionFile ?? binding?['configFile'] as String? ?? '';
     if (path.isEmpty) {
       throw StateError('An inspected occurrence has no source location.');
+    }
+    if (root.spec.nestedLayouts) {
+      for (final diagnostic in report.diagnostics.where(
+        (diagnostic) =>
+            diagnostic.code == 'UNKNOWN_FIELD' &&
+            diagnostic.severity == AgentDiagnosticSeverity.warning,
+      )) {
+        final key =
+            '${diagnostic.code}\n${diagnostic.field}\n${diagnostic.message}';
+        if (advisoryKeys.add(key)) diagnostics.add(diagnostic);
+      }
     }
     _addOccurrence(
       root: root,

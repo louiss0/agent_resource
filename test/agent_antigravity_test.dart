@@ -180,5 +180,67 @@ void main() {
         });
       },
     );
+
+    test(
+      'flags same-target layout collisions without leaking unknown values',
+      () async {
+        await _withSandbox((fileSystem) async {
+          const secret = 'SECRET-UNKNOWN-9f2b';
+          final p = fileSystem.path;
+          _write(
+            fileSystem,
+            p.join('/sandbox/project', '.agents', 'agents', 'same.md'),
+            _definition(
+              'alpha',
+              extra: 'internalNote: $secret\n',
+              body: 'PRIVATE-FLAT-BODY\n',
+            ),
+          );
+          _write(
+            fileSystem,
+            p.join('/sandbox/project', '.agents', 'agents', 'same', 'agent.md'),
+            _definition('beta', body: 'PRIVATE-NESTED-BODY\n'),
+          );
+          final result =
+              await createExecutor(
+                fileSystem: fileSystem,
+                agentLifecycle: AgentLifecycleService(fileSystem: fileSystem),
+              ).fake().execute([
+                'agent',
+                'list',
+                '--scope',
+                'project',
+                '--harness',
+                'antigravity',
+                '--format',
+                'json',
+                ..._context(fileSystem),
+              ]);
+          final envelope = _successData(result);
+          final output = (result as MambaSuccessResult).output!;
+          final data = envelope['data']! as Map<Object?, Object?>;
+          final collisions = (data['collisions']! as List<Object?>)
+              .cast<Map<Object?, Object?>>();
+          expect(collisions, hasLength(1));
+          expect(collisions.single['harness'], 'antigravity');
+          expect(collisions.single['comparisonName'], 'same');
+          expect(collisions.single['layouts'], ['flat', 'nested']);
+          expect(collisions.single['occurrenceIds'], hasLength(2));
+          final diagnostics = (envelope['diagnostics']! as List<Object?>)
+              .cast<Map<Object?, Object?>>();
+          expect(
+            diagnostics.map((diagnostic) => diagnostic['code']),
+            contains('AGENT_NAME_COLLISION'),
+          );
+          expect(
+            diagnostics.map((diagnostic) => diagnostic['field']),
+            contains('internalNote'),
+          );
+          expect(output, isNot(contains(secret)));
+          expect(output, isNot(contains('PRIVATE-FLAT-BODY')));
+          expect(output, isNot(contains('PRIVATE-NESTED-BODY')));
+        });
+      },
+    );
   });
 }
