@@ -66,10 +66,7 @@ final class HarnessDescriptor {
 }
 
 final class _HarnessCapability extends AgentHarnessSpec
-    implements
-        ContextHarnessSpec,
-        SkillHarnessSpec,
-        PromptHarnessSpec {
+    implements ContextHarnessSpec, SkillHarnessSpec, PromptHarnessSpec {
   const _HarnessCapability(this.harness, this.facet);
 
   @override
