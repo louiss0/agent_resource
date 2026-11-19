@@ -251,12 +251,14 @@ final class ContextInjectCommand extends Command {
     'local' => ContextVariant.local,
     'override' => ContextVariant.override,
     'dot-claude' => ContextVariant.dotClaude,
+    'gemini' => ContextVariant.gemini,
+    'dot-agents' => ContextVariant.dotAgents,
     _ => throw _refusal('INVALID_CONTEXT_VARIANT', 'Unknown variant "$raw".'),
   };
 
   static Future<List<ContextHarness>?> _defaultHarnessSelector() async {
     final choice = await const SkillTargetSelectorComponent(
-      options: <String>['claude', 'codex', 'pi'],
+      options: <String>['claude', 'codex', 'pi', 'antigravity'],
     ).render();
     if (choice == null) return null;
     return <ContextHarness>[

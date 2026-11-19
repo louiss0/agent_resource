@@ -35,7 +35,7 @@ bool isValidContextTemplateName(String value) =>
 enum ContextOutputFormat { text, json }
 
 /// The coding harnesses that consume injected context files.
-enum ContextHarness { claude, codex, pi }
+enum ContextHarness { claude, codex, pi, antigravity }
 
 /// Whether a context resource belongs to a project or the user's environment.
 enum ContextScope { project, user }
@@ -46,6 +46,8 @@ enum const ContextVariant(final String wireName) {
   local('local'),
   override('override'),
   dotClaude('dot-claude'),
+  gemini('gemini'),
+  dotAgents('dot-agents'),
 }
 
 /// The byte-level action taken when combining a template with a target file.

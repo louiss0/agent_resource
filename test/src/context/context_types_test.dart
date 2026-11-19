@@ -62,7 +62,7 @@ void main() {
       test('context harness members use their CLI spellings', () {
         expect(
           ContextHarness.values.map((value) => value.name).toList(),
-          equals(['claude', 'codex', 'pi']),
+          equals(['claude', 'codex', 'pi', 'antigravity']),
         );
       });
 
@@ -76,7 +76,14 @@ void main() {
       test('context variants expose the documented wire names', () {
         expect(
           ContextVariant.values.map((value) => value.wireName).toList(),
-          equals(['standard', 'local', 'override', 'dot-claude']),
+          equals([
+            'standard',
+            'local',
+            'override',
+            'dot-claude',
+            'gemini',
+            'dot-agents',
+          ]),
         );
       });
 
