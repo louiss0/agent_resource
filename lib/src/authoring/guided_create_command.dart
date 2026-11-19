@@ -87,6 +87,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   /// The shared flags of the guided create commands.
   static final List<Flag<Object?>> sharedFlags = <Flag<Object?>>[
     GuidedCreateFields.bodyStdin,
+    GuidedCreateFields.mainAgent,
     GuidedCreateFields.manage,
     GuidedCreateFields.apply,
     GuidedCreateFields.yes,
@@ -234,6 +235,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
         description: valueOf(GuidedCreateFields.description),
         model: valueOf(GuidedCreateFields.model),
         tools: valueOf(GuidedCreateFields.tools),
+        mainAgent: valueOf(GuidedCreateFields.mainAgent),
         skills: skills,
         allowedTools: valueOf(GuidedCreateFields.allowedTools),
         disallowedTools: valueOf(GuidedCreateFields.disallowedTools),

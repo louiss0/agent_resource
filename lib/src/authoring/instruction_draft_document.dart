@@ -284,6 +284,10 @@ Map<String, Object?> _fieldJson(AuthoringFieldValue value) => switch (value) {
     'type': 'text',
     'value': text,
   },
+  BooleanFieldValue(:final value) => <String, Object?>{
+    'type': 'flag',
+    'value': value,
+  },
   ListFieldValue(:final values) => <String, Object?>{
     'type': 'list',
     'value': values,
@@ -304,6 +308,13 @@ AuthoringFieldValue _fieldValue(String name, Object? value) {
     case 'text':
       _knownKeys(map, const {'type', 'value'}, 'instruction draft field');
       return TextFieldValue(_string(map, 'value'));
+    case 'flag':
+      _knownKeys(map, const {'type', 'value'}, 'instruction draft field');
+      final value = map['value'];
+      if (value is! bool) {
+        throw FormatException('The value must be a boolean.');
+      }
+      return BooleanFieldValue(value);
     case 'list':
       _knownKeys(map, const {'type', 'value'}, 'instruction draft field');
       return ListFieldValue(_strings(map, 'value'));

@@ -618,6 +618,8 @@ interface class AuthoringPlanService {
           break;
         case TextFieldValue(:final text):
           merged[entry.key] = text;
+        case BooleanFieldValue(:final value):
+          merged[entry.key] = value;
         case ListFieldValue(:final values):
           merged[entry.key] = List<String>.of(values);
         case MapFieldValue(:final entries):
@@ -651,7 +653,10 @@ interface class AuthoringPlanService {
           intents[entry.key] = 'cleared';
         case InheritedFieldValue():
           intents[entry.key] = 'inherited';
-        case TextFieldValue() || ListFieldValue() || MapFieldValue():
+        case TextFieldValue() ||
+            BooleanFieldValue() ||
+            ListFieldValue() ||
+            MapFieldValue():
           intents[entry.key] = 'supplied';
       }
     }
@@ -1406,10 +1411,10 @@ interface class AuthoringPlanService {
               : _fileSystem.path.join(context.codexRoot(), 'agents'),
         AuthoringProfile.pi => context.piAgentsRoot(),
         AuthoringProfile.global => throw StateError('unreachable'),
-        AuthoringProfile.antigravity => throw MambaException(
-          'Antigravity Agent authoring is not available.',
-          exitCode: 4,
-        ),
+        AuthoringProfile.antigravity =>
+          context.scope == LifecycleScope.project
+              ? _fileSystem.path.join(context.projectRoot, '.agents', 'agents')
+              : _fileSystem.path.join(context.geminiConfigRoot(), 'agents'),
       };
 
   bool _within(String path, String root) =>
@@ -1510,18 +1515,12 @@ interface class AuthoringPlanService {
     String body,
     NativeFieldMatrix matrix,
   ) {
-    final entries = fields.entries.toList()
-      ..sort((left, right) => left.key.compareTo(right.key));
-    if (profile == AuthoringProfile.codex) {
-      return '${entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value, matrix.specFor(entry.key))}').join('\n')}\n';
-    }
-    final frontmatter = entries
-        .map(
-          (entry) =>
-              '${entry.key}: ${_yamlValue(entry.value, matrix.specFor(entry.key))}',
-        )
-        .join('\n');
-    return '---\n$frontmatter\n---\n$body';
+    final harness = agentHarnessForProfile(profile);
+    final spec = HarnessCatalog.instance.requireFacet(
+      HarnessId.fromWire(harness.name),
+      HarnessFacet.agent,
+    ) as AgentHarnessSpec;
+    return spec.serializeNativeAgent(profile, fields, body, matrix: matrix);
   }
 
   String _yamlValue(Object? value, NativeFieldSpec? spec) {
@@ -1536,24 +1535,6 @@ interface class AuthoringPlanService {
       );
     }
     return jsonEncode(value);
-  }
-
-  String _tomlValue(Object? value, NativeFieldSpec? spec) {
-    if (value is List) {
-      return spec?.listForm == NativeListForm.scalar
-          ? jsonEncode(value.join(', '))
-          : jsonEncode(value);
-    }
-    if (value is Map) {
-      return '{ ${value.entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value, null)}').join(', ')} }';
-    }
-    if (value == null || value is String || value is num || value is bool) {
-      return jsonEncode(value);
-    }
-    throw MambaException(
-      'The proposed native output contains an unsupported value type.',
-      exitCode: 2,
-    );
   }
 }
 
