@@ -190,6 +190,22 @@ abstract class AgentHarnessSpec implements HarnessFacetSpec {
 
   String get nativeForm => '${harness.wireName}-agent-file';
 
+  /// The native field that carries reasoning effort, when one exists.
+  String? get effortKey => switch (harness) {
+    HarnessId.claude => 'effort',
+    HarnessId.codex => 'model_reasoning_effort',
+    HarnessId.pi => 'thinking',
+    HarnessId.antigravity => null,
+  };
+
+  /// The authoring profile matching this facet's native identity.
+  AuthoringProfile get authoringProfile => switch (harness) {
+    HarnessId.claude => AuthoringProfile.claude,
+    HarnessId.codex => AuthoringProfile.codex,
+    HarnessId.pi => AuthoringProfile.pi,
+    HarnessId.antigravity => AuthoringProfile.antigravity,
+  };
+
   String get profile => switch (harness) {
     HarnessId.claude => 'claude-agent-native-v1',
     HarnessId.codex => 'codex-agent-native-v1',
@@ -998,6 +1014,8 @@ final class AgentHarnessFacet extends AgentHarnessSpec {
     required this.profile,
     required this.evidence,
     required this.definitionExtension,
+    required this.effortKey,
+    required this.authoringProfile,
     this.runtimeTrimmedInstructions = false,
     this.nestedLayouts = false,
     this.caseInsensitiveNames = false,
@@ -1022,6 +1040,12 @@ final class AgentHarnessFacet extends AgentHarnessSpec {
 
   @override
   final String definitionExtension;
+
+  @override
+  final String? effortKey;
+
+  @override
+  final AuthoringProfile authoringProfile;
 
   @override
   final bool runtimeTrimmedInstructions;
@@ -1050,6 +1074,8 @@ const agentHarnessFacets = <HarnessId, AgentHarnessSpec>{
       'contract': 'claude-agent-native-v1',
     },
     definitionExtension: '.md',
+    effortKey: 'effort',
+    authoringProfile: AuthoringProfile.claude,
     builtinNames: <String>{'Explore', 'Plan', 'general-purpose'},
   ),
   HarnessId.codex: AgentHarnessFacet(
@@ -1061,6 +1087,8 @@ const agentHarnessFacets = <HarnessId, AgentHarnessSpec>{
       'contract': 'codex-agent-native-v1',
     },
     definitionExtension: '.toml',
+    effortKey: 'model_reasoning_effort',
+    authoringProfile: AuthoringProfile.codex,
     builtinNames: <String>{'default', 'worker', 'explorer'},
   ),
   HarnessId.pi: AgentHarnessFacet(
@@ -1072,6 +1100,8 @@ const agentHarnessFacets = <HarnessId, AgentHarnessSpec>{
       'contract': 'pi-agent-common-v1',
     },
     definitionExtension: '.md',
+    effortKey: 'thinking',
+    authoringProfile: AuthoringProfile.pi,
     runtimeTrimmedInstructions: true,
     caseInsensitiveNames: true,
   ),
@@ -1081,6 +1111,8 @@ const agentHarnessFacets = <HarnessId, AgentHarnessSpec>{
     profile: 'antigravity-agent-native-v1',
     evidence: AgentHarnessSpec._antigravityEvidence,
     definitionExtension: '.md',
+    effortKey: null,
+    authoringProfile: AuthoringProfile.antigravity,
     nestedLayouts: true,
     documentedFrontmatterFields: AgentHarnessSpec._antigravityKnownFields,
   ),

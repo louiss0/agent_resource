@@ -1,4 +1,3 @@
-import '../authoring/native_field_matrix.dart';
 import 'agent_harness_spec.dart';
 import 'harness_id.dart';
 
@@ -218,9 +217,9 @@ AgentExportResult agentExportCanonical(
   final canonical = request.canonical;
   final definition = request.definition;
   final decisions = request.decisions;
-  final profile = _profileFor(target.harness);
+  final profile = target.authoringProfile;
   final matrix = target.nativeAgentFields(profile);
-  final effortKey = _effortKey(target.harness);
+  final effortKey = target.effortKey;
   String? targetKeyFor(AgentCanonicalClaim claim) => switch (claim.kind) {
     AgentClaimKind.model => matrix.specFor('model') == null ? null : 'model',
     AgentClaimKind.effort => effortKey,
@@ -348,16 +347,14 @@ AgentExportResult agentExportCanonical(
       case AgentClaimKind.toolSurface:
         if (defined) {
           add(key, targetKey, mapped ? 'altered' : 'unresolved', 'map:$key');
-          if (mapped &&
-              !decisions.contains('widen:$key') &&
-              _broadensTools(claim.value, definition[targetKey])) {
-            requireDecision(
-              key,
-              targetKey,
-              'widen:$key',
-              'CONVERSION_TOOL_EXPOSURE',
-              'The proposed tool list exposes tools absent from the source; '
-                  'an explicit widen:tools decision is required.',
+          if (mapped) {
+            requireReviewedToolExposure(
+              source: claim.value,
+              target: definition[targetKey],
+              decisions: decisions,
+              requireDecision: requireDecision,
+              sourcePath: key,
+              targetPath: targetKey,
             );
           }
         } else if (omit) {
@@ -407,20 +404,12 @@ AgentExportResult agentExportCanonical(
         'map:$key',
       );
       if (key == 'tools' && decision) {
-        final sourceTools = _toolNames(canonical.nativeFields['tools']);
-        final targetTools = _toolNames(definition[key]);
-        if (sourceTools.isNotEmpty &&
-            !decisions.contains('widen:tools') &&
-            targetTools.difference(sourceTools).isNotEmpty) {
-          requireDecision(
-            'tools',
-            'tools',
-            'widen:tools',
-            'CONVERSION_TOOL_EXPOSURE',
-            'The proposed tool list exposes tools absent from the source; '
-                'an explicit widen:tools decision is required.',
-          );
-        }
+        requireReviewedToolExposure(
+          source: canonical.nativeFields['tools'],
+          target: definition[key],
+          decisions: decisions,
+          requireDecision: requireDecision,
+        );
       }
       continue;
     }
@@ -447,7 +436,7 @@ AgentExportResult agentExportCanonical(
   return AgentExportResult(
     fields: List<Map<String, Object?>>.unmodifiable(fields),
     diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
-    targetProfile: _conversionProfile(target.harness),
+    targetProfile: target.profile,
   );
 }
 
@@ -456,27 +445,6 @@ int _compare(Object? left, Object? right) =>
 
 List<String> _sorted(Iterable<String> values) =>
     List<String>.unmodifiable(values.toList()..sort());
-
-String _conversionProfile(HarnessId harness) => switch (harness) {
-  HarnessId.claude => 'claude-agent-native-v1',
-  HarnessId.codex => 'codex-agent-native-v1',
-  HarnessId.pi => 'pi-agent-common-v1',
-  HarnessId.antigravity => 'antigravity-agent-native-v1',
-};
-
-AuthoringProfile _profileFor(HarnessId harness) => switch (harness) {
-  HarnessId.claude => AuthoringProfile.claude,
-  HarnessId.codex => AuthoringProfile.codex,
-  HarnessId.pi => AuthoringProfile.pi,
-  HarnessId.antigravity => AuthoringProfile.antigravity,
-};
-
-String? _effortKey(HarnessId harness) => switch (harness) {
-  HarnessId.claude => 'effort',
-  HarnessId.codex => 'model_reasoning_effort',
-  HarnessId.pi => 'thinking',
-  HarnessId.antigravity => null,
-};
 
 Set<String> _toolNames(Object? value) {
   final names = <String>[];
@@ -496,4 +464,34 @@ bool _broadensTools(Object? source, Object? target) {
   final targetNames = _toolNames(target);
   return sourceNames.isNotEmpty &&
       targetNames.difference(sourceNames).isNotEmpty;
+}
+
+/// The one tool-exposure guard shared by both import and export spokes.
+typedef ToolDecisionRequester = void Function(
+  String? sourcePath,
+  String? targetPath,
+  String? decision,
+  String code,
+  String message,
+);
+
+void requireReviewedToolExposure({
+  required Object? source,
+  required Object? target,
+  required Set<String> decisions,
+  required ToolDecisionRequester requireDecision,
+  String sourcePath = 'tools',
+  String? targetPath = 'tools',
+}) {
+  if (decisions.contains('widen:tools') || !_broadensTools(source, target)) {
+    return;
+  }
+  requireDecision(
+    sourcePath,
+    targetPath,
+    'widen:tools',
+    'CONVERSION_TOOL_EXPOSURE',
+    'The proposed tool list exposes tools absent from the source; an '
+        'explicit widen:tools decision is required.',
+  );
 }

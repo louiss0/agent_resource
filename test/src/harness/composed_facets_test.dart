@@ -43,6 +43,16 @@ void main() {
         isTrue,
       );
       expect(catalog.agentSpecById(HarnessId.pi).caseInsensitiveNames, isTrue);
+      expect(catalog.agentSpecById(HarnessId.claude).effortKey, 'effort');
+      expect(
+        catalog.agentSpecById(HarnessId.codex).effortKey,
+        'model_reasoning_effort',
+      );
+      expect(catalog.agentSpecById(HarnessId.antigravity).effortKey, isNull);
+      expect(
+        catalog.agentSpecById(HarnessId.antigravity).authoringProfile.name,
+        'antigravity',
+      );
       expect(
         (catalog.facet(
           HarnessId.antigravity,
