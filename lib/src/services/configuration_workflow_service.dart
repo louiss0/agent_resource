@@ -604,8 +604,8 @@ interface class ConfigurationWorkflowService {
       LifecycleOptions(
         processWorkingDirectory: _fileSystem.currentDirectory.path,
         environment: _environment,
-        // Publication evidence uses the project coordination root even for
-        // user-scope configuration; user paths still resolve through home.
+        // Coordination uses the project context; configuration evidence is
+        // anchored to the selected target, including for user scope.
         scope: LifecycleScope.project,
         cwd: request.cwd,
         projectRoot: request.projectRoot,

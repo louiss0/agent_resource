@@ -70,9 +70,9 @@ interface class ConfigurationPublicationService {
     String target,
   ) {
     _refuseUnsupportedTargetPath(target);
-    _refusePendingEvidence(request.context);
+    _refusePendingEvidence(request.context, target);
     final path = _io.fs.path;
-    final stateRoot = request.context.stateRoot();
+    final stateRoot = _targetEvidenceRoot(target);
     final transactionId = _state.newInstallationId();
     final transactionPath = path.join(
       stateRoot,
@@ -295,12 +295,20 @@ interface class ConfigurationPublicationService {
     );
   }
 
-  void _refusePendingEvidence(LifecycleContext context) {
+  String _targetEvidenceRoot(String target) => _io.fs.path.join(
+    _io.fs.path.dirname(target),
+    '.agent-resource-configuration',
+    _digest(target),
+  );
+
+  void _refusePendingEvidence(LifecycleContext context, String target) {
     final path = _io.fs.path;
-    final directory = path.join(
-      context.stateRoot(),
-      'configuration-transactions',
-    );
+    for (final root in [context.stateRoot(), _targetEvidenceRoot(target)]) {
+      _refusePendingDirectory(path.join(root, 'configuration-transactions'));
+    }
+  }
+
+  void _refusePendingDirectory(String directory) {
     final type = _io.type(directory, followLinks: false);
     if (type == FileSystemEntityType.notFound) return;
     if (type != FileSystemEntityType.directory) {

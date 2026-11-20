@@ -873,6 +873,59 @@ void main() {
           },
         );
 
+        test(
+          'blocks another project after interrupted shared user publication',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+            _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
+            fs.directory('/project-a').createSync(recursive: true);
+            fs.directory('/project-b').createSync(recursive: true);
+            final lifecycleIO = _InterruptAfterQuarantineIO(fs: fs);
+            final workflow = ConfigurationWorkflowService(
+              fileSystem: fs,
+              environment: const {'HOME': '/user'},
+              publication: ConfigurationPublicationService(
+                fileSystem: fs,
+                io: lifecycleIO,
+              ),
+            );
+            final executor = Executor('agent_resource', 'test', '1.0.0', [
+              ConfigCommand(workflow: workflow, fileSystem: fs),
+            ]);
+            List<String> args(String project) => [
+              'config',
+              'prefer',
+              '--scope',
+              'user',
+              '--user-config',
+              '/user/config.toml',
+              '--project-config',
+              '$project/config.toml',
+              '--cwd',
+              '$project/',
+              '--project-root',
+              '$project/',
+              '--set',
+              'cli.retention.snapshot_days=14',
+              '--apply',
+            ];
+            await expectLater(
+              executor.fake().execute(args('/project-a')),
+              throwsA(isA<StateError>()),
+            );
+            final result = await executor.fake().execute(args('/project-b'));
+            expect(
+              result,
+              isA<MambaFailureResult>().having(
+                (r) => r.message,
+                'message',
+                contains('recovery'),
+              ),
+            );
+            expect(fs.file('/user/config.toml').existsSync(), isFalse);
+          },
+        );
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
@@ -1680,4 +1733,15 @@ void _writeConfig(MemoryFileSystem fileSystem, String path, String source) {
   final file = fileSystem.file(path);
   file.parent.createSync(recursive: true);
   file.writeAsStringSync(source);
+}
+
+final class _InterruptAfterQuarantineIO extends LifecycleIO {
+  _InterruptAfterQuarantineIO({required super.fs});
+  @override
+  void rename(String source, String destination) {
+    super.rename(source, destination);
+    if (source == '/user/config.toml') {
+      throw StateError('simulated interruption');
+    }
+  }
 }
