@@ -1,5 +1,6 @@
 import 'agent_harness_spec.dart';
 import 'harness_id.dart';
+import 'hub_claim_types.dart';
 
 /// The closed categories of canonical Agent claims.
 enum AgentClaimKind {
@@ -15,21 +16,22 @@ enum AgentClaimKind {
 }
 
 /// Where one canonical claim came from. It never carries a native value.
-final class AgentClaimProvenance {
+final class AgentClaimProvenance extends HubClaimProvenance<HarnessId> {
   const AgentClaimProvenance({
-    required this.sourceHarness,
-    required this.sourceProfile,
+    required super.sourceHarness,
+    required super.sourceProfile,
     required this.sourceForm,
-    required this.sourcePath,
+    required super.sourcePath,
   });
 
-  final HarnessId sourceHarness;
-  final String sourceProfile;
   final String sourceForm;
-  final String sourcePath;
 
+  @override
+  String get sourceHarnessWire => sourceHarness.wireName;
+
+  @override
   Map<String, Object?> toJson() => <String, Object?>{
-    'sourceHarness': sourceHarness.wireName,
+    'sourceHarness': sourceHarnessWire,
     'sourceProfile': sourceProfile,
     'sourceForm': sourceForm,
     'sourcePath': sourcePath,
@@ -37,56 +39,44 @@ final class AgentClaimProvenance {
 }
 
 /// One canonical claim plus the provenance of its native declaration.
-final class AgentCanonicalClaim {
+final class AgentCanonicalClaim
+    extends HubClaim<AgentClaimKind, AgentClaimProvenance> {
   const AgentCanonicalClaim({
-    required this.canonicalPath,
-    required this.sourcePath,
-    required this.kind,
-    required this.value,
-    required this.provenance,
-    this.detail,
+    required super.canonicalPath,
+    required super.sourcePath,
+    required super.kind,
+    required super.value,
+    required super.provenance,
+    super.detail,
   });
 
-  final String canonicalPath;
-  final String sourcePath;
-  final AgentClaimKind kind;
-  final Object? value;
-  final AgentClaimProvenance provenance;
-  final String? detail;
-
-  Map<String, Object?> toJson() => <String, Object?>{
-    'canonicalPath': canonicalPath,
-    'sourcePath': sourcePath,
-    'kind': kind.name,
-    'provenance': provenance.toJson(),
-    if (detail != null) 'detail': detail,
-  };
+  Map<String, Object?> toJson() => toJsonBase();
 }
 
 /// The hub representation of one native Agent definition.
-final class AgentCanonicalClaims {
+final class AgentCanonicalClaims
+    extends HubClaims<HarnessId, AgentCanonicalClaim> {
   const AgentCanonicalClaims({
-    required this.sourceHarness,
-    required this.sourceProfile,
+    required super.sourceHarness,
     required this.sourceForm,
-    required this.claims,
-    required this.nativeFields,
+    required super.sourceProfile,
+    required super.claims,
+    required super.nativeFields,
     required this.instructions,
   });
 
-  final HarnessId sourceHarness;
-  final String sourceProfile;
   final String sourceForm;
-  final List<AgentCanonicalClaim> claims;
-  final Map<String, Object?> nativeFields;
   final String? instructions;
+
+  @override
+  String get sourceHarnessWire => sourceHarness.wireName;
 
   /// A value-free account suitable for binding a reviewed plan identity.
   Map<String, Object?> toJson() => <String, Object?>{
-    'sourceHarness': sourceHarness.wireName,
+    'sourceHarness': sourceHarnessWire,
     'sourceProfile': sourceProfile,
     'sourceForm': sourceForm,
-    'claims': <Object?>[for (final claim in claims) claim.toJson()],
+    'claims': <Object?>[for (final claim in claims) claim.toJsonBase()],
   };
 }
 

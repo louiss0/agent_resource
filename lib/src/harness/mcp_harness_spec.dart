@@ -7,6 +7,7 @@ import '../mcp/mcp_redaction.dart';
 import '../mcp/mcp_types.dart';
 import '../mcp/mcp_validation_contract.dart';
 import 'harness_facet.dart';
+import 'hub_claim_types.dart';
 
 /// The root vocabulary a composed MCP facet needs to resolve native files.
 abstract interface class McpHarnessRoots {
@@ -116,21 +117,22 @@ enum McpCanonicalClaimKind {
 }
 
 /// Where one canonical claim came from. It never carries a native value.
-final class McpClaimProvenance {
+final class McpClaimProvenance extends HubClaimProvenance<McpHarness> {
   const McpClaimProvenance({
-    required this.sourceHarness,
+    required super.sourceHarness,
     required this.sourceScope,
-    required this.sourceProfile,
-    required this.sourcePath,
+    required super.sourceProfile,
+    required super.sourcePath,
   });
 
-  final McpHarness sourceHarness;
   final McpScope sourceScope;
-  final String sourceProfile;
-  final String sourcePath;
 
+  @override
+  String get sourceHarnessWire => sourceHarness.wireName;
+
+  @override
   Map<String, Object?> toJson() => <String, Object?>{
-    'sourceHarness': sourceHarness.wireName,
+    'sourceHarness': sourceHarnessWire,
     'sourceScope': sourceScope.wireName,
     'sourceProfile': sourceProfile,
     'sourcePath': sourcePath,
@@ -139,57 +141,45 @@ final class McpClaimProvenance {
 
 /// One canonical claim plus its source provenance. [canonicalPath] is the
 /// hub vocabulary; [sourcePath] stays the native field path.
-final class McpCanonicalClaim {
+final class McpCanonicalClaim
+    extends HubClaim<McpCanonicalClaimKind, McpClaimProvenance> {
   const McpCanonicalClaim({
-    required this.canonicalPath,
-    required this.sourcePath,
-    required this.kind,
-    required this.value,
-    required this.provenance,
-    this.detail,
+    required super.canonicalPath,
+    required super.sourcePath,
+    required super.kind,
+    required super.value,
+    required super.provenance,
+    super.detail,
   });
 
-  final String canonicalPath;
-  final String sourcePath;
-  final McpCanonicalClaimKind kind;
-  final Object? value;
-  final McpClaimProvenance provenance;
-  final String? detail;
-
-  Map<String, Object?> toJson() => <String, Object?>{
-    'canonicalPath': canonicalPath,
-    'sourcePath': sourcePath,
-    'kind': kind.name,
-    'provenance': provenance.toJson(),
-    if (detail != null) 'detail': detail,
-  };
+  Map<String, Object?> toJson() => toJsonBase();
 }
 
 /// The hub representation of one named MCP registration.
-final class McpCanonicalRegistration {
+final class McpCanonicalRegistration
+    extends HubClaims<McpHarness, McpCanonicalClaim> {
   const McpCanonicalRegistration({
-    required this.sourceHarness,
+    required super.sourceHarness,
     required this.sourceScope,
-    required this.sourceProfile,
+    required super.sourceProfile,
     required this.transport,
-    required this.claims,
-    required this.nativeFields,
+    required super.claims,
+    required super.nativeFields,
   });
 
-  final McpHarness sourceHarness;
   final McpScope sourceScope;
-  final String sourceProfile;
   final McpTransport transport;
-  final List<McpCanonicalClaim> claims;
-  final Map<String, Object?> nativeFields;
+
+  @override
+  String get sourceHarnessWire => sourceHarness.wireName;
 
   /// A value-free account suitable for binding a reviewed plan identity.
   Map<String, Object?> toJson() => <String, Object?>{
-    'sourceHarness': sourceHarness.wireName,
+    'sourceHarness': sourceHarnessWire,
     'sourceScope': sourceScope.wireName,
     'sourceProfile': sourceProfile,
     'transport': transport.wireName,
-    'claims': <Object?>[for (final claim in claims) claim.toJson()],
+    'claims': <Object?>[for (final claim in claims) claim.toJsonBase()],
   };
 }
 
