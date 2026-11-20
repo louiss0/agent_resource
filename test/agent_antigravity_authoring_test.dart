@@ -466,6 +466,12 @@ Original instructions.''');
                 .writeAsStringSync('Drafted instructions.\n');
             return const EditorProcessOutcome(started: true, exitCode: 0);
           },
+          platformLauncher: (request) async {
+            fixture.fs
+                .file(request.path)
+                .writeAsStringSync('Drafted instructions.\n');
+            return const EditorPlatformOutcome(launched: true);
+          },
           environment: const EditorSessionEnvironment(
             hasTerminal: true,
             hasDisplay: true,
