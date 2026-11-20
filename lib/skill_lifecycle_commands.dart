@@ -604,23 +604,28 @@ final class SkillRecoverCommand extends Command {
     );
     final configurationTarget = valueOf(_configurationTarget);
     if (configurationTarget != null) {
-      final context = LifecycleContext.resolve(
-        options(dryRun, yes),
+      final publication = ConfigurationPublicationService(
         fileSystem: _service.state.io.fs,
+        state: _service.state,
       );
-      final result =
-          await ConfigurationPublicationService(
-            fileSystem: _service.state.io.fs,
-            state: _service.state,
-          ).inspectRecovery(
-            context: context,
+      Future<LifecycleResult> invoke(bool planned, bool approved) =>
+          publication.inspectRecovery(
+            context: LifecycleContext.resolve(
+              options(planned, approved),
+              fileSystem: _service.state.io.fs,
+            ),
             targetPath: configurationTarget,
             command: 'skill recover',
             transactionId: valueOf(_id),
             action: action,
             planId: valueOf(_plan),
           );
-      return _render(result, format);
+      final approved = action == null
+          ? yes
+          : await _confirmDestruction(interactive, dryRun, yes, () async {
+              await invoke(true, false);
+            }, _confirmation);
+      return _render(await invoke(dryRun, approved), format);
     }
     final approved = action == null
         ? yes

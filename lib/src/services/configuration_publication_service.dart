@@ -170,158 +170,104 @@ interface class ConfigurationPublicationService {
       );
     }
     if (action != null) {
-      if (context.dryRun) {
-        return LifecycleResult(
-          command: command,
-          outcome: 'planned',
-          data: {
-            'configurationTarget': target,
-            'transactionId': transactionId,
-            'action': action,
-          },
-        );
-      }
-      if (!context.approved) {
+      if (!context.dryRun && !context.approved) {
         throw MambaException(
           'Configuration recovery requires --yes or interactive approval.',
           exitCode: 4,
         );
       }
-      return _state.runMutation(
-        context: context,
-        locations: [target],
-        body: () async {
-          final evidencePath = transactions.single['evidencePath']! as String;
-          final decoded = _readTransaction(evidencePath);
-          if (decoded['transactionId'] != transactionId ||
-              decoded['target'] != target ||
-              decoded['operation'] != 'config-prefer-apply' ||
-              decoded['schemaVersion'] != 1 ||
-              decoded['expectedDigest'] is! String ||
-              !RegExp(r'^[0-9a-f]{64}$')
-                  .hasMatch(decoded['expectedDigest'] as String)) {
+      LifecycleResult planned() => LifecycleResult(
+        command: command,
+        outcome: 'planned',
+        data: {
+          'configurationTarget': target,
+          'transactionId': transactionId,
+          'action': action,
+          'approvalRequiredForApply': true,
+        },
+      );
+      Future<LifecycleResult> perform() async {
+        final evidencePath = transactions.single['evidencePath']! as String;
+        final decoded = _readTransaction(evidencePath);
+        if (decoded['transactionId'] != transactionId ||
+            decoded['target'] != target ||
+            decoded['operation'] != 'config-prefer-apply' ||
+            decoded['schemaVersion'] != 1 ||
+            decoded['expectedDigest'] is! String ||
+            !RegExp(r'^[0-9a-f]{64}$')
+                .hasMatch(decoded['expectedDigest'] as String)) {
+          throw MambaException(
+            'Configuration recovery evidence is invalid: $evidencePath.',
+            exitCode: 6,
+          );
+        }
+        final phase = decoded['phase'];
+        if (action == 'complete') {
+          if (!const {
+            'staged',
+            'published',
+            'recoveryRequired',
+            'committedCleanupPending',
+          }.contains(phase)) {
             throw MambaException(
-              'Configuration recovery evidence is invalid: $evidencePath.',
-              exitCode: 6,
-            );
-          }
-          final phase = decoded['phase'];
-          if (action == 'complete') {
-            if (!const {
-              'staged',
-              'published',
-              'recoveryRequired',
-              'committedCleanupPending',
-            }.contains(phase)) {
-              throw MambaException(
-                'Configuration completion is not supported for phase $phase.',
-                exitCode: 4,
-              );
-            }
-            final candidate = decoded['candidateDigest'];
-            final quarantine = _io.fs.path.join(
-              _io.fs.path.dirname(target),
-              '.agent-resource-prefer-$transactionId.quarantine',
-            );
-            if (decoded['quarantinePath'] != quarantine ||
-                candidate is! String ||
-                !RegExp(r'^[0-9a-f]{64}$').hasMatch(candidate) ||
-                _io.type(target, followLinks: false) !=
-                    FileSystemEntityType.file ||
-                _digest(_readBounded(target)) != candidate) {
-              throw MambaException(
-                'Configuration completion cannot prove the published bytes.',
-                exitCode: 6,
-              );
-            }
-            final expected = decoded['expectedDigest'] as String;
-            final backup = decoded['backupPath'];
-            if (backup != null) {
-              final expectedBackup = _io.fs.path.join(
-                _targetEvidenceRoot(target),
-                'configuration-backups',
-                '$transactionId.bak',
-              );
-              if (backup != expectedBackup ||
-                  _io.type(expectedBackup, followLinks: false) !=
-                      FileSystemEntityType.file ||
-                  _digest(_readBounded(expectedBackup)) != expected) {
-                throw MambaException(
-                  'Configuration completion cannot prove the backup.',
-                  exitCode: 6,
-                );
-              }
-            }
-            final quarantineType = _io.type(quarantine, followLinks: false);
-            if (quarantineType == FileSystemEntityType.file) {
-              if (_digest(_readBounded(quarantine)) != expected) {
-                throw MambaException(
-                  'Configuration quarantine changed; evidence retained.',
-                  exitCode: 6,
-                );
-              }
-              _io.delete(quarantine);
-            } else if (quarantineType != FileSystemEntityType.notFound) {
-              throw MambaException(
-                'Configuration quarantine is unsafe; evidence retained.',
-                exitCode: 6,
-              );
-            }
-            _advance(
-              evidencePath,
-              Map<String, Object?>.from(decoded),
-              'committed',
-            );
-            return LifecycleResult(
-              command: command,
-              outcome: 'recovered',
-              data: {
-                'configurationTarget': target,
-                'transactionId': transactionId,
-                'action': action,
-              },
-            );
-          }
-          if (phase != 'prepared' &&
-              phase != 'staged' &&
-              phase != 'recoveryRequired') {
-            throw MambaException(
-              'Configuration rollback is not supported for phase $phase.',
+              'Configuration completion is not supported for phase $phase.',
               exitCode: 4,
             );
           }
+          final candidate = decoded['candidateDigest'];
           final quarantine = _io.fs.path.join(
             _io.fs.path.dirname(target),
             '.agent-resource-prefer-$transactionId.quarantine',
           );
-          if (decoded['quarantinePath'] != quarantine) {
+          if (decoded['quarantinePath'] != quarantine ||
+              candidate is! String ||
+              !RegExp(r'^[0-9a-f]{64}$').hasMatch(candidate) ||
+              _io.type(target, followLinks: false) !=
+                  FileSystemEntityType.file ||
+              _digest(_readBounded(target)) != candidate) {
             throw MambaException(
-              'Configuration quarantine authority is invalid.',
+              'Configuration completion cannot prove the published bytes.',
               exitCode: 6,
             );
           }
-          _refuseUnsupportedTargetPath(target);
-          final targetType = _io.type(target, followLinks: false);
-          final quarantineType = _io.type(quarantine, followLinks: false);
           final expected = decoded['expectedDigest'] as String;
-          if (targetType == FileSystemEntityType.notFound &&
-              quarantineType == FileSystemEntityType.file &&
-              _digest(_readBounded(quarantine)) == expected) {
-            _io.rename(quarantine, target);
-          } else if (targetType == FileSystemEntityType.file &&
-              quarantineType == FileSystemEntityType.notFound &&
-              _digest(_readBounded(target)) == expected) {
-            // A previous recovery may have restored the target before interruption.
-          } else {
+          final backup = decoded['backupPath'];
+          if (backup != null) {
+            final expectedBackup = _io.fs.path.join(
+              _targetEvidenceRoot(target),
+              'configuration-backups',
+              '$transactionId.bak',
+            );
+            if (backup != expectedBackup ||
+                _io.type(expectedBackup, followLinks: false) !=
+                    FileSystemEntityType.file ||
+                _digest(_readBounded(expectedBackup)) != expected) {
+              throw MambaException(
+                'Configuration completion cannot prove the backup.',
+                exitCode: 6,
+              );
+            }
+          }
+          final quarantineType = _io.type(quarantine, followLinks: false);
+          if (quarantineType == FileSystemEntityType.file) {
+            if (_digest(_readBounded(quarantine)) != expected) {
+              throw MambaException(
+                'Configuration quarantine changed; evidence retained.',
+                exitCode: 6,
+              );
+            }
+            if (!context.dryRun) _io.delete(quarantine);
+          } else if (quarantineType != FileSystemEntityType.notFound) {
             throw MambaException(
-              'Configuration rollback cannot prove the original bytes; evidence retained.',
+              'Configuration quarantine is unsafe; evidence retained.',
               exitCode: 6,
             );
           }
+          if (context.dryRun) return planned();
           _advance(
             evidencePath,
             Map<String, Object?>.from(decoded),
-            'failedRestored',
+            'committed',
           );
           return LifecycleResult(
             command: command,
@@ -332,7 +278,65 @@ interface class ConfigurationPublicationService {
               'action': action,
             },
           );
-        },
+        }
+        if (phase != 'prepared' &&
+            phase != 'staged' &&
+            phase != 'recoveryRequired') {
+          throw MambaException(
+            'Configuration rollback is not supported for phase $phase.',
+            exitCode: 4,
+          );
+        }
+        final quarantine = _io.fs.path.join(
+          _io.fs.path.dirname(target),
+          '.agent-resource-prefer-$transactionId.quarantine',
+        );
+        if (decoded['quarantinePath'] != quarantine) {
+          throw MambaException(
+            'Configuration quarantine authority is invalid.',
+            exitCode: 6,
+          );
+        }
+        _refuseUnsupportedTargetPath(target);
+        final targetType = _io.type(target, followLinks: false);
+        final quarantineType = _io.type(quarantine, followLinks: false);
+        final expected = decoded['expectedDigest'] as String;
+        if (targetType == FileSystemEntityType.notFound &&
+            quarantineType == FileSystemEntityType.file &&
+            _digest(_readBounded(quarantine)) == expected) {
+          if (!context.dryRun) _io.rename(quarantine, target);
+        } else if (targetType == FileSystemEntityType.file &&
+            quarantineType == FileSystemEntityType.notFound &&
+            _digest(_readBounded(target)) == expected) {
+          // A previous recovery may have restored the target before interruption.
+        } else {
+          throw MambaException(
+            'Configuration rollback cannot prove the original bytes; evidence retained.',
+            exitCode: 6,
+          );
+        }
+        if (context.dryRun) return planned();
+        _advance(
+          evidencePath,
+          Map<String, Object?>.from(decoded),
+          'failedRestored',
+        );
+        return LifecycleResult(
+          command: command,
+          outcome: 'recovered',
+          data: {
+            'configurationTarget': target,
+            'transactionId': transactionId,
+            'action': action,
+          },
+        );
+      }
+
+      if (context.dryRun) return perform();
+      return _state.runMutation(
+        context: context,
+        locations: [target],
+        body: perform,
       );
     }
     return LifecycleResult(
