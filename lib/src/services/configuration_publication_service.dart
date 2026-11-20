@@ -105,8 +105,6 @@ interface class ConfigurationPublicationService {
     _requireAbsent(backupPath, target);
     _requireAbsent(quarantinePath, target);
     _requireAbsent(failedNewPath, target);
-    _advance(transactionPath, transaction, 'prepared');
-
     fslib.Directory? stagingDirectory;
     var quarantined = false;
     var published = false;
@@ -114,6 +112,9 @@ interface class ConfigurationPublicationService {
     String? retainedBackupPath;
     String currentSource = '';
     try {
+      _io.createDirectory(path.dirname(target));
+      _refuseUnsupportedTargetPath(target);
+      _advance(transactionPath, transaction, 'prepared');
       final initialType = _io.type(target, followLinks: false);
       if (initialType == FileSystemEntityType.link) {
         _refusePublication(target, 'configuration target is a symbolic link');

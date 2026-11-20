@@ -790,6 +790,38 @@ void main() {
           );
         });
 
+        test(
+          'applies a user preference when its parent does not exist',
+          () async {
+            final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+            const userPath = '/sandbox/home/new/config.toml';
+            final result = await _executor(fileSystem: fileSystem)
+                .fake()
+                .execute([
+                  'config',
+                  'prefer',
+                  '--scope',
+                  'user',
+                  '--user-config',
+                  userPath,
+                  '--project-config',
+                  '/sandbox/project.toml',
+                  '--cwd',
+                  '/sandbox/project/',
+                  '--project-root',
+                  '/sandbox/project/',
+                  '--set',
+                  'cli.retention.snapshot_days=14',
+                  '--apply',
+                ]);
+            expect(result, isA<MambaSuccessResult>());
+            expect(
+              fileSystem.file(userPath).readAsStringSync(),
+              contains('snapshot_days = 14'),
+            );
+          },
+        );
+
         final applyCases =
             <
               ({
