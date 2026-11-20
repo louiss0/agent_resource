@@ -1,9 +1,17 @@
-import 'dart:convert' show jsonEncode;
-import 'dart:io' show FileSystemException, Platform;
+import 'dart:convert' show jsonEncode, utf8;
+import 'dart:io'
+    show
+        FileLock,
+        FileMode,
+        FileSystemEntityType,
+        FileSystemException,
+        Platform,
+        RandomAccessFile;
 
 import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart' show MambaException;
+import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart' show TomlDocument, TomlException;
 
 import '../pack/pack_configuration.dart'
@@ -11,6 +19,7 @@ import '../pack/pack_configuration.dart'
         PackConfiguration,
         PackConfigurationException,
         PackConfigurationScope,
+        SkillInstallMethod,
         packConfigurationFileName;
 import '../pack/pack_models.dart' show PackProcessStatus;
 import '../configuration/effective_configuration.dart';
@@ -54,11 +63,27 @@ interface class ConfigurationWorkflowService {
     final projectDocument = request.scope == PackConfigurationScope.project
         ? _readDocument(projectLayerPath, PackConfigurationScope.project)
         : _ConfigDocument.absent();
+    final selectedDocument = request.scope == PackConfigurationScope.project
+        ? projectDocument
+        : userDocument;
+    final selectedLayerPath = request.scope == PackConfigurationScope.project
+        ? projectLayerPath
+        : userLayerPath;
+    final packKey = request.packKey;
+    final packOverrides = packKey == null
+        ? const <EligiblePreference, _PackOverride>{}
+        : _packOverrides(
+            packKey,
+            selectedDocument,
+            selectedLayerPath,
+            request.scope,
+          );
     final settings = <EffectiveSetting>[
       for (final preference in EligiblePreference.values)
         _setting(
           preference,
           request,
+          packOverrides,
           userDocument.map,
           projectDocument.map,
           userLayerPath,
@@ -157,6 +182,7 @@ interface class ConfigurationWorkflowService {
     return _setting(
       preference,
       request,
+      const <EligiblePreference, _PackOverride>{},
       userDocument,
       projectDocument,
       userLayerPath,
@@ -330,51 +356,258 @@ interface class ConfigurationWorkflowService {
     return left == right;
   }
 
-  void _writeDocument(String configPath, String source) {
-    final target = _fileSystem.file(configPath);
-    final temporary = _fileSystem.file('$configPath.prefer.tmp');
-    String? publicationError;
-    String? cleanupError;
+  Map<EligiblePreference, _PackOverride> _packOverrides(
+    String packKey,
+    _ConfigDocument document,
+    String configPath,
+    PackConfigurationScope scope,
+  ) {
+    if (packKey.trim().isEmpty || _hasControl(packKey)) {
+      throw MambaException(
+        'Pack key must be a nonblank single-line value.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    if (document.source.isEmpty) {
+      throw MambaException(
+        'No configured pack matches $packKey in $configPath.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
     try {
-      target.parent.createSync(recursive: true);
-      if (temporary.existsSync()) temporary.deleteSync();
-      temporary.writeAsStringSync(source, flush: true);
-      if (temporary.readAsStringSync() != source) {
-        throw FileSystemException(
-          'staged configuration verification failed',
-          temporary.path,
+      final configuration = PackConfiguration.parse(
+        document.source,
+        configPath: configPath,
+        scope: scope,
+      );
+      final pack = configuration.findPack(packKey);
+      if (pack == null) {
+        throw MambaException(
+          'No configured pack matches $packKey in $configPath.',
+          exitCode: PackProcessStatus.invalidInput.code,
         );
       }
-      temporary.renameSync(configPath);
+      final source = '$configPath#packs.${jsonEncode(pack.key)}.install';
+      final result = <EligiblePreference, _PackOverride>{};
+      if (pack.install.targets.isNotEmpty) {
+        result[EligiblePreference.installTargets] = _PackOverride(
+          List<String>.unmodifiable(pack.install.targets),
+          source,
+        );
+      }
+      final method = _skillMethodWireName(pack.install.skillMethod);
+      if (method != null) {
+        result[EligiblePreference.installSkillMethod] = _PackOverride(
+          method,
+          source,
+        );
+      }
+      return result;
+    } on MambaException {
+      rethrow;
+    } on PackConfigurationException catch (error) {
+      throw MambaException(
+        'Configuration validation failed for $configPath:\n${error.message}',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    } on TomlException catch (error) {
+      throw MambaException(
+        'Configuration validation failed for $configPath: ${error.message}',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    } on FormatException catch (error) {
+      throw MambaException(
+        'Configuration validation failed for $configPath: ${error.message}',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+  }
+
+  String? _skillMethodWireName(SkillInstallMethod? method) => switch (method) {
+    SkillInstallMethod.canonical => 'canonical',
+    SkillInstallMethod.copy => 'copy',
+    SkillInstallMethod.sourceLink => 'source-link',
+    null => null,
+  };
+
+  void _writeDocument(String configPath, String source) {
+    final path = _fileSystem.path;
+    final absolute = path.normalize(
+      path.isAbsolute(configPath)
+          ? configPath
+          : path.join(_fileSystem.currentDirectory.path, configPath),
+    );
+    _refuseUnsafeTargetPath(absolute);
+    final target = _fileSystem.file(absolute);
+    target.parent.createSync(recursive: true);
+    fslib.Directory? stagingDirectory;
+    RandomAccessFile? lockHandle;
+    RandomAccessFile? writeHandle;
+    var createdTarget = !target.existsSync();
+    if (createdTarget) {
+      try {
+        target.createSync(exclusive: true);
+      } on FileSystemException {
+        createdTarget = false;
+      }
+    }
+    var publicationStarted = false;
+    List<int> originalBytes = const <int>[];
+    String? publicationError;
+    String? cleanupError;
+    MambaException? safetyError;
+    try {
+      stagingDirectory = target.parent.createTempSync('agent-resource-prefer-');
+      final stagedFile = _fileSystem.file(
+        path.join(stagingDirectory.path, 'config.toml'),
+      );
+      stagedFile.writeAsStringSync(source, flush: true);
+      if (stagedFile.readAsStringSync() != source) {
+        throw FileSystemException(
+          'staged configuration verification failed',
+          stagedFile.path,
+        );
+      }
+      lockHandle = target.openSync(mode: FileMode.read);
+      lockHandle.lockSync(FileLock.exclusive);
+      _refuseUnsafeTargetPath(absolute);
+      originalBytes = target.readAsBytesSync();
+      final bytes = utf8.encode(source);
+      publicationStarted = true;
+      writeHandle = target.openSync(mode: FileMode.write);
+      writeHandle.setPositionSync(0);
+      writeHandle.writeFromSync(bytes);
+      writeHandle.flushSync();
+      if (target.readAsStringSync() != source) {
+        throw FileSystemException('publication verification failed', absolute);
+      }
+    } on MambaException catch (error) {
+      safetyError = error;
     } on FileSystemException catch (error) {
       publicationError = error.message;
     } on FormatException catch (error) {
       publicationError = error.message;
+    } on UnimplementedError catch (error) {
+      publicationError =
+          'exclusive file locking is unsupported: ${error.message}';
     } finally {
-      try {
-        if (temporary.existsSync()) temporary.deleteSync();
-      } on FileSystemException catch (error) {
-        cleanupError = error.message;
+      if (publicationError != null && publicationStarted && !createdTarget) {
+        try {
+          if (writeHandle != null) {
+            writeHandle.truncateSync(originalBytes.length);
+            writeHandle.setPositionSync(0);
+            writeHandle.writeFromSync(originalBytes);
+            writeHandle.flushSync();
+          } else {
+            target.writeAsBytesSync(originalBytes, flush: true);
+          }
+        } on FileSystemException catch (error) {
+          cleanupError = error.message;
+        } on UnimplementedError catch (error) {
+          cleanupError = error.message;
+        }
+      }
+      if (writeHandle != null) {
+        try {
+          writeHandle.closeSync();
+        } on FileSystemException catch (error) {
+          cleanupError ??= error.message;
+        }
+      }
+      if (lockHandle != null) {
+        try {
+          lockHandle.unlockSync();
+        } on FileSystemException catch (error) {
+          cleanupError ??= error.message;
+        } on UnimplementedError catch (error) {
+          cleanupError ??= error.message;
+        }
+        try {
+          lockHandle.closeSync();
+        } on FileSystemException catch (error) {
+          cleanupError ??= error.message;
+        }
+      }
+      if (createdTarget && (publicationError != null || safetyError != null)) {
+        try {
+          if (target.existsSync()) target.deleteSync();
+        } on FileSystemException catch (error) {
+          cleanupError ??= error.message;
+        }
+      }
+      if (stagingDirectory != null) {
+        try {
+          if (stagingDirectory.existsSync()) {
+            stagingDirectory.deleteSync(recursive: true);
+          }
+        } on FileSystemException catch (error) {
+          cleanupError ??= error.message;
+        }
       }
     }
+    if (safetyError != null) throw safetyError;
     if (publicationError != null) {
       throw MambaException(
-        'Could not write configuration $configPath: $publicationError',
+        'Could not write configuration $absolute: $publicationError',
         exitCode: PackProcessStatus.failure.code,
       );
     }
     if (cleanupError != null) {
       throw MambaException(
-        'Could not clean staged configuration for $configPath: '
-        '$cleanupError',
+        'Could not clean staged configuration for $absolute: $cleanupError',
         exitCode: PackProcessStatus.failure.code,
       );
     }
   }
 
+  void _refuseUnsafeTargetPath(String configPath) {
+    final path = _fileSystem.path;
+    final absolute = path.normalize(
+      path.isAbsolute(configPath)
+          ? configPath
+          : path.join(_fileSystem.currentDirectory.path, configPath),
+    );
+    final targetType = _fileSystem.typeSync(absolute, followLinks: false);
+    if (targetType == FileSystemEntityType.link) {
+      _refusePublication(absolute, 'configuration target is a symbolic link');
+    }
+    if (targetType != FileSystemEntityType.file &&
+        targetType != FileSystemEntityType.notFound) {
+      _refusePublication(
+        absolute,
+        'configuration target is not a regular file',
+      );
+    }
+    var parent = path.dirname(absolute);
+    for (var step = 0; step < 64; step++) {
+      final type = _fileSystem.typeSync(parent, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        _refusePublication(
+          absolute,
+          'configuration parent chain contains a symbolic link',
+        );
+      }
+      if (type != FileSystemEntityType.directory &&
+          type != FileSystemEntityType.notFound) {
+        _refusePublication(
+          absolute,
+          'configuration parent chain is not a regular directory',
+        );
+      }
+      final next = path.dirname(parent);
+      if (path.equals(next, parent)) return;
+      parent = next;
+    }
+    _refusePublication(
+      absolute,
+      'configuration parent chain exceeds the 64-step budget',
+    );
+  }
+
   EffectiveSetting _setting(
     EligiblePreference preference,
     ConfigurationWorkflowRequest request,
+    Map<EligiblePreference, _PackOverride> packOverrides,
     Map<String, Object?> userDocument,
     Map<String, Object?> projectDocument,
     String userLayerPath,
@@ -402,6 +635,15 @@ interface class ConfigurationWorkflowService {
           EligiblePreference.installSkillMethod => '--method',
           EligiblePreference.retentionSnapshotDays => '--snapshot-days',
         },
+      );
+    }
+    final packOverride = packOverrides[preference];
+    if (packOverride != null) {
+      return EffectiveSetting(
+        preference.wireName,
+        packOverride.value,
+        EffectiveValueOrigin.packConfig,
+        packOverride.source,
       );
     }
     if (request.scope == PackConfigurationScope.project) {
@@ -594,11 +836,15 @@ interface class ConfigurationWorkflowService {
     }
   }
 
-  String get _environmentSource => switch (_operatingSystem) {
-    'windows' => 'APPDATA',
-    'macos' => 'HOME',
-    _ => 'HOME',
-  };
+  String get _environmentSource {
+    if (_operatingSystem == 'windows') return 'APPDATA';
+    if (_operatingSystem == 'macos') return 'HOME';
+    final xdg = _environment['XDG_CONFIG_HOME'];
+    if (xdg != null && p.posix.isAbsolute(xdg)) {
+      return 'XDG_CONFIG_HOME';
+    }
+    return 'HOME';
+  }
 
   String _resolveAgainst(String raw, String base) {
     final path = _fileSystem.path;
@@ -916,6 +1162,12 @@ Never _refuseUnsafeLayout(String configPath) => throw MambaException(
   exitCode: PackProcessStatus.invalidInput.code,
 );
 
+Never _refusePublication(String configPath, String reason) =>
+    throw MambaException(
+      'Cannot safely publish configuration $configPath: $reason.',
+      exitCode: PackProcessStatus.invalidInput.code,
+    );
+
 final class _ResolvedPaths(
   final String userPath,
   final String projectPath,
@@ -930,3 +1182,5 @@ final class const _ConfigDocument(
   factory _ConfigDocument.absent() =>
       _ConfigDocument('', const <String, Object?>{'schema_version': 1});
 }
+
+final class const _PackOverride(final Object? value, final String source);

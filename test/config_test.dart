@@ -222,6 +222,7 @@ void main() {
                     contains('read-only'),
                     contains('--format'),
                     contains('--config'),
+                    contains('--pack'),
                   ),
                 ),
           );
@@ -473,6 +474,188 @@ void main() {
             );
           },
         );
+
+        test('reports pack install overrides as pack-config origins', () async {
+          final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+          const projectPath = '/sandbox/project.toml';
+          const packSource = '/sandbox/project.toml#packs."owner/repo".install';
+          _writeConfig(
+            fileSystem,
+            projectPath,
+            'schema_version = 1\n'
+            '[cli.install]\n'
+            'targets = ["codex"]\n'
+            'skill_method = "copy"\n'
+            '[packs."owner/repo".source]\n'
+            'kind = "local"\n'
+            'path = "../source"\n'
+            '[packs."owner/repo".install]\n'
+            'targets = ["claude"]\n'
+            'skill_method = "canonical"\n',
+          );
+
+          final result = await _executor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'config',
+                'effective',
+                '--scope',
+                'project',
+                '--pack',
+                'owner/repo',
+                '--user-config',
+                '/sandbox/user.toml',
+                '--project-config',
+                projectPath,
+                '--cwd',
+                '/sandbox/project/',
+                '--project-root',
+                '/sandbox/project/',
+                '--format',
+                'json',
+              ]);
+
+          expect(
+            result,
+            isA<MambaSuccessResult>()
+                .having((value) => value.exitCode, 'exit code', 0)
+                .having((value) => value.output, 'output', isA<String>()),
+          );
+          final success = result as MambaSuccessResult;
+          final payload = jsonDecode(success.output as String);
+          expect(payload['settings'], [
+            <String, Object?>{
+              'key': 'cli.install.targets',
+              'value': ['claude'],
+              'origin': 'pack-config',
+              'source': packSource,
+            },
+            <String, Object?>{
+              'key': 'cli.install.skill_method',
+              'value': 'canonical',
+              'origin': 'pack-config',
+              'source': packSource,
+            },
+            <String, Object?>{
+              'key': 'cli.retention.snapshot_days',
+              'value': 90,
+              'origin': 'built-in-default',
+            },
+          ]);
+        });
+
+        test('refuses an unknown pack selection', () async {
+          final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+          const projectPath = '/sandbox/project.toml';
+          _writeConfig(
+            fileSystem,
+            projectPath,
+            'schema_version = 1\n'
+            '[packs."owner/repo".source]\n'
+            'kind = "local"\n'
+            'path = "../source"\n',
+          );
+
+          final result = await _executor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'config',
+                'effective',
+                '--scope',
+                'project',
+                '--pack',
+                'missing',
+                '--user-config',
+                '/sandbox/user.toml',
+                '--project-config',
+                projectPath,
+                '--cwd',
+                '/sandbox/project/',
+                '--project-root',
+                '/sandbox/project/',
+              ]);
+
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', 2)
+                .having(
+                  (value) => value.message.contains(
+                    'No configured pack matches missing',
+                  ),
+                  'diagnostic names missing pack',
+                  isTrue,
+                )
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.phase,
+                  'phase',
+                  MambaExecutionPhase.run,
+                )
+                .having((value) => value.error.commandPath, 'command path', [
+                  'agent_resource',
+                  'config',
+                  'effective',
+                ]),
+          );
+        });
+
+        test('labels XDG_CONFIG_HOME as the user config origin', () async {
+          final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+          const userPath = '/sandbox/xdg/agent-resource/agent-resources.toml';
+
+          final result =
+              await _executor(
+                fileSystem: fileSystem,
+                configurationEnvironment: const <String, String>{
+                  'HOME': '/sandbox/home',
+                  'XDG_CONFIG_HOME': '/sandbox/xdg',
+                },
+                configurationOperatingSystem: 'linux',
+              ).fake().execute([
+                'config',
+                'effective',
+                '--scope',
+                'user',
+                '--cwd',
+                '/sandbox/project/',
+                '--project-root',
+                '/sandbox/project/',
+                '--format',
+                'json',
+              ]);
+
+          expect(
+            result,
+            isA<MambaSuccessResult>()
+                .having((value) => value.exitCode, 'exit code', 0)
+                .having((value) => value.output, 'output', isA<String>()),
+          );
+          final success = result as MambaSuccessResult;
+          final payload = jsonDecode(success.output as String);
+          expect(
+            payload['paths'],
+            contains(
+              equals(<String, Object?>{
+                'name': 'userConfig',
+                'path': userPath,
+                'origin': 'detection',
+                'source': 'XDG_CONFIG_HOME',
+              }),
+            ),
+          );
+          expect(
+            payload['paths'],
+            contains(
+              equals(<String, Object?>{
+                'name': 'selectedConfig',
+                'path': userPath,
+                'origin': 'detection',
+                'source': 'XDG_CONFIG_HOME',
+              }),
+            ),
+          );
+        });
       });
 
       group('prefer', () {
@@ -1201,34 +1384,16 @@ void main() {
           );
         });
 
-        test('keeps original bytes when atomic publication fails', () async {
-          final temporaryDirectory = io.Directory.systemTemp.createTempSync(
-            'agent_resource_config_test_',
+        test('preserves unrelated files at the old staging path', () async {
+          final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+          const projectPath = '/sandbox/project.toml';
+          const oldStagingPath = '/sandbox/project.toml.prefer.tmp';
+          _writeConfig(
+            fileSystem,
+            projectPath,
+            'schema_version = 1\n[cli.retention]\nsnapshot_days = 45\n',
           );
-          addTearDown(() {
-            if (temporaryDirectory.existsSync()) {
-              temporaryDirectory.deleteSync(recursive: true);
-            }
-          });
-          final fileSystem = _RenameFailingFileSystem(local.LocalFileSystem());
-          final cwd =
-              '${temporaryDirectory.path}'
-              '${fileSystem.path.separator}';
-          final projectPath = fileSystem.path.join(
-            temporaryDirectory.path,
-            'project.toml',
-          );
-          final userPath = fileSystem.path.join(
-            temporaryDirectory.path,
-            'user.toml',
-          );
-          const original =
-              '# keep this comment\n'
-              'schema_version = 1\n'
-              '\n'
-              '[cli.retention]\n'
-              'snapshot_days = 45 # keep days\n';
-          fileSystem.file(projectPath).writeAsStringSync(original);
+          _writeConfig(fileSystem, oldStagingPath, 'unrelated data');
 
           final result = await _executor(fileSystem: fileSystem)
               .fake()
@@ -1238,13 +1403,58 @@ void main() {
                 '--scope',
                 'project',
                 '--user-config',
-                userPath,
+                '/sandbox/user.toml',
                 '--project-config',
                 projectPath,
                 '--cwd',
-                cwd,
+                '/sandbox/project/',
                 '--project-root',
-                cwd,
+                '/sandbox/project/',
+                '--set',
+                'cli.retention.snapshot_days=30',
+                '--apply',
+              ]);
+
+          expect(result, isA<MambaSuccessResult>());
+          expect(
+            fileSystem.file(oldStagingPath).readAsStringSync(),
+            'unrelated data',
+          );
+          expect(
+            fileSystem
+                .directory('/sandbox')
+                .listSync()
+                .where(
+                  (entity) => entity.path.contains('agent-resource-prefer-'),
+                ),
+            isEmpty,
+          );
+        });
+
+        test('refuses symlink configuration targets', () async {
+          final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+          const projectPath = '/sandbox/project.toml';
+          const realPath = '/sandbox/real.toml';
+          const original =
+              'schema_version = 1\n[cli.retention]\nsnapshot_days = 45\n';
+          _writeConfig(fileSystem, realPath, original);
+          fileSystem.link(projectPath).createSync(realPath);
+
+          final result = await _executor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'config',
+                'prefer',
+                '--scope',
+                'project',
+                '--user-config',
+                '/sandbox/user.toml',
+                '--project-config',
+                projectPath,
+                '--cwd',
+                '/sandbox/project/',
+                '--project-root',
+                '/sandbox/project/',
                 '--set',
                 'cli.retention.snapshot_days=30',
                 '--apply',
@@ -1253,16 +1463,10 @@ void main() {
           expect(
             result,
             isA<MambaFailureResult>()
-                .having((value) => value.exitCode, 'exit code', 1)
+                .having((value) => value.exitCode, 'exit code', 2)
                 .having(
-                  (value) =>
-                      value.message.contains('Could not write configuration'),
-                  'diagnostic names publication failure',
-                  isTrue,
-                )
-                .having(
-                  (value) => value.message.contains('injected rename failure'),
-                  'diagnostic names cause',
+                  (value) => value.message.contains('Cannot safely publish'),
+                  'diagnostic names safety refusal',
                   isTrue,
                 )
                 .having((value) => value.output, 'output', isNull)
@@ -1277,12 +1481,153 @@ void main() {
                   'prefer',
                 ]),
           );
-          expect(fileSystem.file(projectPath).readAsStringSync(), original);
+          expect(fileSystem.file(realPath).readAsStringSync(), original);
           expect(
-            fileSystem.file('$projectPath.prefer.tmp').existsSync(),
-            isFalse,
+            fileSystem.typeSync(projectPath, followLinks: false),
+            io.FileSystemEntityType.link,
           );
         });
+
+        test('preserves target identity without rename replacement', () async {
+          final temporaryDirectory = io.Directory.systemTemp.createTempSync(
+            'agent_resource_config_test_',
+          );
+          addTearDown(() {
+            if (temporaryDirectory.existsSync()) {
+              temporaryDirectory.deleteSync(recursive: true);
+            }
+          });
+          final projectPath = io.Directory(temporaryDirectory.path).uri
+              .resolve('project.toml')
+              .toFilePath();
+          final fileSystem = _PublicationProbeFileSystem(
+            local.LocalFileSystem(),
+            projectPath,
+          );
+          final cwd = '${temporaryDirectory.path}${fileSystem.path.separator}';
+          const original =
+              '# keep this comment\n'
+              'schema_version = 1\n'
+              '[cli.retention]\n'
+              'snapshot_days = 45 # keep days\n';
+          fileSystem.file(projectPath).writeAsStringSync(original);
+
+          final result = await _executor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'config',
+                'prefer',
+                '--scope',
+                'project',
+                '--user-config',
+                fileSystem.path.join(temporaryDirectory.path, 'user.toml'),
+                '--project-config',
+                projectPath,
+                '--cwd',
+                cwd,
+                '--project-root',
+                cwd,
+                '--set',
+                'cli.retention.snapshot_days=30',
+                '--apply',
+              ]);
+
+          expect(result, isA<MambaSuccessResult>());
+          expect(fileSystem.openCount, greaterThan(0));
+          expect(
+            fileSystem.file(projectPath).readAsStringSync(),
+            contains('snapshot_days = 30'),
+          );
+          expect(
+            temporaryDirectory.listSync().where(
+              (entity) => entity.path.contains('agent-resource-prefer-'),
+            ),
+            isEmpty,
+          );
+        });
+
+        for (final failure in _PublicationFailure.values) {
+          test('keeps original bytes when ${failure.name} fails', () async {
+            final temporaryDirectory = io.Directory.systemTemp.createTempSync(
+              'agent_resource_config_test_',
+            );
+            addTearDown(() {
+              if (temporaryDirectory.existsSync()) {
+                temporaryDirectory.deleteSync(recursive: true);
+              }
+            });
+            final projectPath = io.Directory(temporaryDirectory.path).uri
+                .resolve('project.toml')
+                .toFilePath();
+            final fileSystem = _FailingPublicationFileSystem(
+              local.LocalFileSystem(),
+              projectPath,
+              failure,
+            );
+            final cwd =
+                '${temporaryDirectory.path}${fileSystem.path.separator}';
+            const original =
+                '# keep this comment\n'
+                'schema_version = 1\n'
+                '[cli.retention]\n'
+                'snapshot_days = 45 # keep days\n';
+            fileSystem.file(projectPath).writeAsStringSync(original);
+
+            final result = await _executor(fileSystem: fileSystem)
+                .fake()
+                .execute([
+                  'config',
+                  'prefer',
+                  '--scope',
+                  'project',
+                  '--user-config',
+                  fileSystem.path.join(temporaryDirectory.path, 'user.toml'),
+                  '--project-config',
+                  projectPath,
+                  '--cwd',
+                  cwd,
+                  '--project-root',
+                  cwd,
+                  '--set',
+                  'cli.retention.snapshot_days=30',
+                  '--apply',
+                ]);
+
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((value) => value.exitCode, 'exit code', 1)
+                  .having(
+                    (value) =>
+                        value.message.contains('Could not write configuration'),
+                    'diagnostic names publication failure',
+                    isTrue,
+                  )
+                  .having((value) => value.output, 'output', isNull)
+                  .having(
+                    (value) => value.error.phase,
+                    'phase',
+                    MambaExecutionPhase.run,
+                  )
+                  .having((value) => value.error.commandPath, 'command path', [
+                    'agent_resource',
+                    'config',
+                    'prefer',
+                  ]),
+            );
+            expect(fileSystem.file(projectPath).readAsStringSync(), original);
+            expect(
+              fileSystem.file('$projectPath.prefer.tmp').existsSync(),
+              isFalse,
+            );
+            expect(
+              temporaryDirectory.listSync().where(
+                (entity) => entity.path.contains('agent-resource-prefer-'),
+              ),
+              isEmpty,
+            );
+          });
+        }
       });
     });
   });
@@ -1293,7 +1638,8 @@ Executor _executor({
   Map<String, String>? configurationEnvironment,
   String? configurationOperatingSystem,
 }) {
-  final resolved = fileSystem ?? MemoryFileSystem(style: FileSystemStyle.posix);
+  fslib.FileSystem resolved =
+      fileSystem ?? MemoryFileSystem(style: FileSystemStyle.posix);
   if (resolved is MemoryFileSystem) {
     for (final path in const <String>[
       '/sandbox',
@@ -1302,6 +1648,7 @@ Executor _executor({
     ]) {
       resolved.directory(path).createSync(recursive: true);
     }
+    resolved = _LockEnabledFileSystem(resolved);
   }
   return createExecutor(
     fileSystem: resolved,
@@ -1316,21 +1663,19 @@ void _writeConfig(MemoryFileSystem fileSystem, String path, String source) {
   file.writeAsStringSync(source);
 }
 
-final class _RenameFailingFileSystem extends fslib.ForwardingFileSystem {
-  _RenameFailingFileSystem(super.delegate);
+enum _PublicationFailure { lock, write }
+
+final class _LockEnabledFileSystem extends fslib.ForwardingFileSystem {
+  _LockEnabledFileSystem(super.delegate);
 
   @override
-  fslib.File file(dynamic path) {
-    final file = super.file(path);
-    if (!file.path.endsWith('.prefer.tmp')) return file;
-    return _FailingRenameFile(this, io.File(file.path));
-  }
+  fslib.File file(dynamic path) => _LockEnabledFile(this, super.file(path));
 }
 
-final class _FailingRenameFile
+final class _LockEnabledFile
     extends fslib.ForwardingFileSystemEntity<fslib.File, io.File>
     with fslib.ForwardingFile {
-  _FailingRenameFile(this.fileSystem, this.delegate);
+  _LockEnabledFile(this.fileSystem, this.delegate);
 
   @override
   final fslib.FileSystem fileSystem;
@@ -1339,17 +1684,172 @@ final class _FailingRenameFile
   final io.File delegate;
 
   @override
+  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) =>
+      _LockEnabledRandomAccessFile(delegate.openSync(mode: mode));
+
+  @override
   fslib.Directory wrapDirectory(io.Directory delegate) =>
       fileSystem.directory(delegate.path);
 
   @override
   fslib.File wrapFile(io.File delegate) =>
-      _FailingRenameFile(fileSystem, delegate);
+      _LockEnabledFile(fileSystem, delegate);
 
   @override
   fslib.Link wrapLink(io.Link delegate) => fileSystem.link(delegate.path);
+}
+
+final class _LockEnabledRandomAccessFile with fslib.ForwardingRandomAccessFile {
+  _LockEnabledRandomAccessFile(this.delegate);
+
+  @override
+  final io.RandomAccessFile delegate;
+
+  @override
+  void lockSync([
+    io.FileLock mode = io.FileLock.exclusive,
+    int start = 0,
+    int end = -1,
+  ]) {}
+
+  @override
+  void unlockSync([int start = 0, int end = -1]) {}
+}
+
+final class _PublicationProbeFileSystem extends _LockEnabledFileSystem {
+  _PublicationProbeFileSystem(super.delegate, this.targetPath);
+
+  final String targetPath;
+  var openCount = 0;
+
+  @override
+  fslib.File file(dynamic path) => _PublicationProbeFile(
+    this,
+    super.file(path),
+    targetPath,
+    () => openCount++,
+  );
+}
+
+final class _PublicationProbeFile
+    extends fslib.ForwardingFileSystemEntity<fslib.File, io.File>
+    with fslib.ForwardingFile {
+  _PublicationProbeFile(
+    this.fileSystem,
+    this.delegate,
+    this.targetPath,
+    this._onOpen,
+  );
+
+  @override
+  final fslib.FileSystem fileSystem;
+
+  @override
+  final io.File delegate;
+
+  final String targetPath;
+  final void Function() _onOpen;
+
+  @override
+  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) {
+    if (path == targetPath) _onOpen();
+    return delegate.openSync(mode: mode);
+  }
 
   @override
   fslib.File renameSync(String newPath) =>
-      throw io.FileSystemException('injected rename failure', path);
+      throw io.FileSystemException('unsafe replacement', path);
+
+  @override
+  fslib.Directory wrapDirectory(io.Directory delegate) =>
+      fileSystem.directory(delegate.path);
+
+  @override
+  fslib.File wrapFile(io.File delegate) =>
+      _PublicationProbeFile(fileSystem, delegate, targetPath, _onOpen);
+
+  @override
+  fslib.Link wrapLink(io.Link delegate) => fileSystem.link(delegate.path);
+}
+
+final class _FailingPublicationFileSystem extends _LockEnabledFileSystem {
+  _FailingPublicationFileSystem(super.delegate, this.targetPath, this.failure);
+
+  final String targetPath;
+  final _PublicationFailure failure;
+
+  @override
+  fslib.File file(dynamic path) {
+    final file = super.file(path);
+    if (file.path != targetPath) return file;
+    return _FailingPublicationFile(this, file, failure);
+  }
+}
+
+final class _FailingPublicationFile
+    extends fslib.ForwardingFileSystemEntity<fslib.File, io.File>
+    with fslib.ForwardingFile {
+  _FailingPublicationFile(this.fileSystem, this.delegate, this.failure);
+
+  @override
+  final fslib.FileSystem fileSystem;
+
+  @override
+  final io.File delegate;
+
+  final _PublicationFailure failure;
+
+  @override
+  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) =>
+      _FailingPublicationRandomAccessFile(
+        delegate.openSync(mode: mode),
+        failure,
+      );
+
+  @override
+  fslib.Directory wrapDirectory(io.Directory delegate) =>
+      fileSystem.directory(delegate.path);
+
+  @override
+  fslib.File wrapFile(io.File delegate) =>
+      _FailingPublicationFile(fileSystem, delegate, failure);
+
+  @override
+  fslib.Link wrapLink(io.Link delegate) => fileSystem.link(delegate.path);
+}
+
+final class _FailingPublicationRandomAccessFile
+    with fslib.ForwardingRandomAccessFile {
+  _FailingPublicationRandomAccessFile(this.delegate, this.failure);
+
+  @override
+  final io.RandomAccessFile delegate;
+
+  final _PublicationFailure failure;
+  var _failedWrite = false;
+
+  @override
+  void lockSync([
+    io.FileLock mode = io.FileLock.exclusive,
+    int start = 0,
+    int end = -1,
+  ]) {
+    if (failure == _PublicationFailure.lock) {
+      throw io.FileSystemException('concurrent configuration update', path);
+    }
+    delegate.lockSync(mode, start, end);
+  }
+
+  @override
+  void writeFromSync(List<int> buffer, [int start = 0, int? end]) {
+    if (failure == _PublicationFailure.write && !_failedWrite) {
+      _failedWrite = true;
+      throw io.FileSystemException('injected publication write failure', path);
+    }
+    delegate.writeFromSync(buffer, start, end);
+  }
+
+  @override
+  void unlockSync([int start = 0, int end = -1]) =>
+      delegate.unlockSync(start, end);
 }

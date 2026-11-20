@@ -247,4 +247,5 @@ credentials are not eligible remembered values.
 
 **Value origin**:
 Where one effective value came from: an explicit argument, project
-configuration, user configuration, path detection, or a built-in default.
+configuration, user configuration, pack configuration, path detection, or a
+built-in default.

@@ -239,24 +239,28 @@ color; JSON success data is plain and contains no prompts or progress output.
 
 `config effective` is read-only. It reports the resolved safe preferences, the
 user and project configuration paths, and each value's origin: explicit
-argument, project config, user config, detection, or built-in default. Use
-`--format text|json` for human-readable or scripted inspection. Explicit
-`--target`, `--method`, and `--snapshot-days` values are shown as explicit
-argument origins without changing configuration.
+argument, project config, user config, pack config, detection, or built-in
+default. Use `--format text|json` for human-readable or scripted inspection.
+Explicit `--target`, `--method`, and `--snapshot-days` values are shown as
+explicit argument origins without changing configuration. `--pack <key>`
+reports pack-level install overrides as `pack-config` origins. A user path
+discovered from `XDG_CONFIG_HOME` reports that variable as its source.
 
 `config prefer` previews eligible changes by default. Add `--apply` to write
 only the reviewed safe preferences to the selected `--scope project|user`
 configuration. The eligible keys are `cli.install.targets`,
 `cli.install.skill_method`, and `cli.retention.snapshot_days`. Applies use
 focused table edits that preserve comments, indentation, and unrelated TOML
-sections; ambiguous inline or dotted layouts are refused. Publication is staged
-through a temporary file and rename, so a failed write leaves the original
-configuration unchanged. Approvals, adoption authority, destructive consent,
+sections; ambiguous inline or dotted layouts are refused. Publication uses a
+unique staging directory, an exclusive target-file lock, and in-place writes
+so file identity and ACLs are preserved; symlink parents and targets are
+refused, and a failed write restores the original bytes. Approvals, adoption
+authority, destructive consent,
 risk acknowledgements, credentials, and credential-like values are refused
 without being echoed or remembered.
 
 ```text
-agent_resource config effective [--scope project|user] [--format text|json]
+agent_resource config effective [--scope project|user] [--pack <key>] [--format text|json]
 agent_resource config prefer --scope project --set cli.install.targets=claude,codex
 agent_resource config prefer --scope user --set cli.retention.snapshot_days=30 --apply
 ```
@@ -289,7 +293,7 @@ SemVer bump policies; ordinary install never advances an existing exact lock.
 
 ```text
 agent_resource config validate [--resolve]
-agent_resource config effective [--scope project|user] [--format text|json]
+agent_resource config effective [--scope project|user] [--pack <key>] [--format text|json]
 agent_resource config prefer --scope project|user --set <key>=<value> [--apply]
 agent_resource prompt inspect --path <path> [--target claude|codex|pi]
 agent_resource prompt validate --path <path> [--target claude|codex|pi]

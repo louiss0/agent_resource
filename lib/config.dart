@@ -170,6 +170,11 @@ final class _ConfigWorkflowOptions {
     range: (min: 1, max: 36500),
     description: 'Explicit snapshot retention override.',
   );
+  static final pack = StringOption(
+    'pack',
+    regex: RegExp(r'^\s*\S[\s\S]*$'),
+    description: 'Configured pack key whose install overrides are reported.',
+  );
   static const apply = BooleanFlag(
     'apply',
     description:
@@ -189,6 +194,7 @@ final class ConfigEffectiveCommand extends Command {
           _ConfigWorkflowOptions.userConfig,
           _ConfigWorkflowOptions.projectConfig,
           _ConfigWorkflowOptions.config,
+          _ConfigWorkflowOptions.pack,
           _ConfigWorkflowOptions.target,
           _ConfigWorkflowOptions.method,
           _ConfigWorkflowOptions.snapshotDays,
@@ -200,8 +206,9 @@ final class ConfigEffectiveCommand extends Command {
         longDescription:
             'Shows the effective safe preferences, the user and project '
             'configuration paths, and the origin of every resolved value. '
-            'Missing configuration files fall back to built-in defaults. '
-            'The command is read-only and never writes configuration or '
+            '--pack reports pack-level install overrides. Missing '
+            'configuration files fall back to built-in defaults. The '
+            'command is read-only and never writes configuration or '
             'management state.',
       );
 
@@ -226,6 +233,7 @@ final class ConfigEffectiveCommand extends Command {
         userConfigPath: valueOf(_ConfigWorkflowOptions.userConfig),
         projectConfigPath: valueOf(_ConfigWorkflowOptions.projectConfig),
         configPath: valueOf(_ConfigWorkflowOptions.config),
+        packKey: valueOf(_ConfigWorkflowOptions.pack),
         explicitTargets:
             valueOf(_ConfigWorkflowOptions.target) ?? const <String>[],
         explicitMethod: valueOf(_ConfigWorkflowOptions.method),

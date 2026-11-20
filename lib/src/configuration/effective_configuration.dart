@@ -7,6 +7,7 @@ enum EffectiveValueOrigin(final String wireName) {
   explicitArgument('explicit-argument'),
   projectConfig('project-config'),
   userConfig('user-config'),
+  packConfig('pack-config'),
   detection('detection'),
   builtInDefault('built-in-default'),
 }
@@ -50,6 +51,7 @@ final class const ConfigurationWorkflowRequest({
   final String? userConfigPath,
   final String? projectConfigPath,
   final String? configPath,
+  final String? packKey,
   final List<String> explicitTargets = const <String>[],
   final String? explicitMethod,
   final int? explicitSnapshotDays,
