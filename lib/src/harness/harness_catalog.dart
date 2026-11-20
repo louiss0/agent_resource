@@ -1,5 +1,6 @@
 import '../mcp/mcp_types.dart';
 import 'agent_harness_spec.dart';
+import 'context_harness_spec.dart';
 import 'harness_descriptor.dart';
 import 'harness_facet.dart';
 import 'harness_facet_refusal.dart';
@@ -7,6 +8,8 @@ import 'harness_id.dart';
 import 'harness_user_roots.dart';
 import 'mcp_harness_spec.dart';
 import 'mcp_harness_specs.dart';
+import 'prompt_harness_spec.dart';
+import 'skill_harness_spec.dart';
 
 export 'agent_conversion_claims.dart';
 export 'agent_harness_spec.dart';
@@ -37,28 +40,24 @@ final class HarnessCatalog {
 
   static final HarnessCatalog instance = HarnessCatalog._(
     List<HarnessDescriptor>.unmodifiable(<HarnessDescriptor>[
-      HarnessDescriptor.composed(
-        HarnessId.claude,
-        userRoot: _claudeUserRoot,
-        mcp: mcpHarnessSpecs[HarnessId.claude]!,
-      ),
-      HarnessDescriptor.composed(
-        HarnessId.codex,
-        userRoot: _codexUserRoot,
-        mcp: mcpHarnessSpecs[HarnessId.codex]!,
-      ),
-      HarnessDescriptor.composed(
-        HarnessId.pi,
-        userRoot: _piUserRoot,
-        mcp: mcpHarnessSpecs[HarnessId.pi]!,
-      ),
-      HarnessDescriptor.composed(
-        HarnessId.antigravity,
-        userRoot: _geminiUserRoot,
-        userConfigRoot: _geminiUserConfigRoot,
-        mcp: mcpHarnessSpecs[HarnessId.antigravity]!,
-        prompt: false,
-      ),
+      for (final id in HarnessId.values)
+        HarnessDescriptor.composed(
+          id,
+          userRoot: switch (id) {
+            HarnessId.claude => _claudeUserRoot,
+            HarnessId.codex => _codexUserRoot,
+            HarnessId.pi => _piUserRoot,
+            HarnessId.antigravity => _geminiUserRoot,
+          },
+          userConfigRoot: id == HarnessId.antigravity
+              ? _geminiUserConfigRoot
+              : null,
+          context: contextHarnessFacets[id]!,
+          skill: skillHarnessFacets[id]!,
+          agent: agentHarnessFacets[id]!,
+          prompt: promptHarnessFacets[id],
+          mcp: mcpHarnessSpecs[id]!,
+        ),
     ]),
   );
 

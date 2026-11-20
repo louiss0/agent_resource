@@ -515,7 +515,7 @@ interface class SkillLifecycleService implements LifecycleResource {
   ) {
     if (context.scope == LifecycleScope.user) {
       if (destination == SkillDestination.antigravity) {
-        return _skillSpec(HarnessId.antigravity).userDiscoveryRoots(context);
+        return _skillSpec(HarnessId.antigravity).discoveryRoots(context);
       }
       return [_root(context, destination)];
     }

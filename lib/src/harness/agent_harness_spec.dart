@@ -986,6 +986,106 @@ extension AgentHarnessAuthoring on AgentHarnessSpec {
   }
 }
 
+/// A concrete Agent facet carrying its declarative metadata.
+///
+/// The conversion, validation and serialization algorithms are methods on
+/// [AgentHarnessSpec]; the per-harness facts they consume are fields of this
+/// object. Registering a harness supplies one of these facets.
+final class AgentHarnessFacet extends AgentHarnessSpec {
+  const AgentHarnessFacet({
+    required this.harness,
+    required this.schemaKind,
+    required this.profile,
+    required this.evidence,
+    required this.definitionExtension,
+    this.runtimeTrimmedInstructions = false,
+    this.nestedLayouts = false,
+    this.caseInsensitiveNames = false,
+    this.builtinNames = const <String>{},
+    this.documentedFrontmatterFields = const <String>{},
+  });
+
+  @override
+  final HarnessId harness;
+
+  @override
+  HarnessFacet get facet => HarnessFacet.agent;
+
+  @override
+  final AgentSchemaKind schemaKind;
+
+  @override
+  final String profile;
+
+  @override
+  final Map<String, Object?> evidence;
+
+  @override
+  final String definitionExtension;
+
+  @override
+  final bool runtimeTrimmedInstructions;
+
+  @override
+  final bool nestedLayouts;
+
+  @override
+  final bool caseInsensitiveNames;
+
+  @override
+  final Set<String> builtinNames;
+
+  @override
+  final Set<String> documentedFrontmatterFields;
+}
+
+/// The registered Agent facets, one per harness identity.
+const agentHarnessFacets = <HarnessId, AgentHarnessSpec>{
+  HarnessId.claude: AgentHarnessFacet(
+    harness: HarnessId.claude,
+    schemaKind: AgentSchemaKind.claude,
+    profile: 'claude-agent-native-v1',
+    evidence: <String, Object?>{
+      'kind': 'official-document-snapshot',
+      'contract': 'claude-agent-native-v1',
+    },
+    definitionExtension: '.md',
+    builtinNames: <String>{'Explore', 'Plan', 'general-purpose'},
+  ),
+  HarnessId.codex: AgentHarnessFacet(
+    harness: HarnessId.codex,
+    schemaKind: AgentSchemaKind.codex,
+    profile: 'codex-agent-native-v1',
+    evidence: <String, Object?>{
+      'kind': 'official-document-snapshot',
+      'contract': 'codex-agent-native-v1',
+    },
+    definitionExtension: '.toml',
+    builtinNames: <String>{'default', 'worker', 'explorer'},
+  ),
+  HarnessId.pi: AgentHarnessFacet(
+    harness: HarnessId.pi,
+    schemaKind: AgentSchemaKind.pi,
+    profile: 'pi-agent-common-v1',
+    evidence: <String, Object?>{
+      'kind': 'pinned-package-sources',
+      'contract': 'pi-agent-common-v1',
+    },
+    definitionExtension: '.md',
+    runtimeTrimmedInstructions: true,
+    caseInsensitiveNames: true,
+  ),
+  HarnessId.antigravity: AgentHarnessFacet(
+    harness: HarnessId.antigravity,
+    schemaKind: AgentSchemaKind.antigravity,
+    profile: 'antigravity-agent-native-v1',
+    evidence: AgentHarnessSpec._antigravityEvidence,
+    definitionExtension: '.md',
+    nestedLayouts: true,
+    documentedFrontmatterFields: AgentHarnessSpec._antigravityKnownFields,
+  ),
+};
+
 String _nativeYamlValue(Object? value, NativeFieldSpec? spec) {
   if (value is List) {
     return spec?.listForm == NativeListForm.scalar
