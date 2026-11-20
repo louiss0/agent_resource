@@ -926,6 +926,78 @@ void main() {
           },
         );
 
+        test('discovers interrupted configuration in both lifecycle recovery commands', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
+          fs.directory('/project').createSync(recursive: true);
+          final lifecycleIO = _InterruptAfterQuarantineIO(fs: fs);
+          final workflow = ConfigurationWorkflowService(
+            fileSystem: fs,
+            environment: const {'HOME': '/user'},
+            publication: ConfigurationPublicationService(
+              fileSystem: fs,
+              io: lifecycleIO,
+            ),
+          );
+          final executor = Executor('agent_resource', 'test', '1.0.0', [
+            ConfigCommand(workflow: workflow, fileSystem: fs),
+          ]);
+          await expectLater(
+            executor.fake().execute([
+              'config',
+              'prefer',
+              '--scope',
+              'user',
+              '--user-config',
+              '/user/config.toml',
+              '--project-config',
+              '/project/config.toml',
+              '--cwd',
+              '/project/',
+              '--project-root',
+              '/project/',
+              '--set',
+              'cli.retention.snapshot_days=14',
+              '--apply',
+            ]),
+            throwsA(isA<StateError>()),
+          );
+          for (final resource in ['skill', 'agent']) {
+            final result = await createExecutor(fileSystem: fs).fake().execute([
+              resource,
+              'recover',
+              '--scope',
+              'project',
+              '--cwd',
+              '/project/',
+              '--project-root',
+              '/project/',
+              '--configuration-target',
+              '/user/config.toml',
+              '--format',
+              'json',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final output = jsonDecode(
+              (result as MambaSuccessResult).output as String,
+            ) as Map<String, dynamic>;
+            expect(
+              output['data']['transactions'],
+              contains(
+                isA<Map<String, dynamic>>().having(
+                  (v) => v['target'],
+                  'target',
+                  '/user/config.toml',
+                ),
+              ),
+            );
+          }
+        });
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');

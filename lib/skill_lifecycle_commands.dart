@@ -12,6 +12,7 @@ import 'lifecycle.dart'
 import 'src/installation/installation_plan.dart';
 import 'src/installation/installation_request.dart';
 import 'src/services/acquisition_service.dart';
+import 'src/services/configuration_publication_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
@@ -527,6 +528,10 @@ final class SkillRecoverCommand extends Command {
   final LifecycleConfirmation _confirmation;
 
   static final _id = NormalPositional.optional('transaction-id');
+  static final _configurationTarget = StringOption(
+    'configuration-target',
+    description: 'Inspect evidence for this explicit configuration path.',
+  );
   static final _action = ChoiceOption('action', choices: RecoveryAction.values);
   static final _plan = StringOption(
     'plan-id',
@@ -558,6 +563,7 @@ final class SkillRecoverCommand extends Command {
         options: [
           _action,
           _plan,
+          _configurationTarget,
           _scope,
           _format,
           _cwd,
@@ -596,6 +602,26 @@ final class SkillRecoverCommand extends Command {
       planned,
       approved,
     );
+    final configurationTarget = valueOf(_configurationTarget);
+    if (configurationTarget != null) {
+      final context = LifecycleContext.resolve(
+        options(dryRun, yes),
+        fileSystem: _service.state.io.fs,
+      );
+      final result =
+          ConfigurationPublicationService(
+            fileSystem: _service.state.io.fs,
+            state: _service.state,
+          ).inspectRecovery(
+            context: context,
+            targetPath: configurationTarget,
+            command: 'skill recover',
+            transactionId: valueOf(_id),
+            action: action,
+            planId: valueOf(_plan),
+          );
+      return _render(result, format);
+    }
     final approved = action == null
         ? yes
         : await _confirmDestruction(

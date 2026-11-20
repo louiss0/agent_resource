@@ -6,7 +6,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:mamba/mamba.dart' show MambaException;
 
 import 'lifecycle_state_service.dart'
-    show LifecycleContext, LifecycleIO, LifecycleStateService;
+    show LifecycleContext, LifecycleIO, LifecycleResult, LifecycleStateService;
 
 const maxConfigurationDocumentBytes = 8 * 1024 * 1024;
 
@@ -62,6 +62,100 @@ interface class ConfigurationPublicationService {
       context: request.context,
       locations: [target],
       body: () async => _publishLocked(request, target),
+    );
+  }
+
+  /// Inventories evidence only for the explicitly selected configuration target.
+  LifecycleResult inspectRecovery({
+    required LifecycleContext context,
+    required String targetPath,
+    required String command,
+    String? transactionId,
+    String? action,
+    String? planId,
+  }) {
+    if (action != null || planId != null) {
+      throw MambaException(
+        'Configuration recovery actions are not yet supported.',
+        exitCode: 6,
+      );
+    }
+    final target = context.resolvePath(targetPath);
+    _refuseUnsupportedTargetPath(target);
+    final directory = _io.fs.path.join(
+      _targetEvidenceRoot(target),
+      'configuration-transactions',
+    );
+    final type = _io.type(directory, followLinks: false);
+    final transactions = <Map<String, Object?>>[];
+    if (type != FileSystemEntityType.notFound) {
+      if (type != FileSystemEntityType.directory) {
+        _refusePublication(
+          directory,
+          'configuration transaction storage is not a regular directory',
+        );
+      }
+      for (final entry in _io.list(directory)) {
+        if (_io.type(entry.path, followLinks: false) !=
+                FileSystemEntityType.file ||
+            !entry.path.endsWith('.json')) {
+          _refusePublication(
+            directory,
+            'configuration transaction storage contains an unsafe entry',
+          );
+        }
+        final Object? decoded;
+        try {
+          decoded = jsonDecode(_readBounded(entry.path));
+        } on FormatException {
+          throw MambaException(
+            'Configuration evidence is unreadable: ${entry.path}.',
+            exitCode: 6,
+          );
+        }
+        if (decoded is! Map<String, dynamic> ||
+            decoded['schemaVersion'] != 1 ||
+            decoded['operation'] != 'config-prefer-apply' ||
+            decoded['target'] != target ||
+            decoded['transactionId'] is! String ||
+            decoded['phase'] is! String ||
+            _io.fs.path.basename(entry.path) !=
+                '${decoded['transactionId']}.json') {
+          throw MambaException(
+            'Configuration evidence is invalid: ${entry.path}.',
+            exitCode: 6,
+          );
+        }
+        if (transactionId != null &&
+            decoded['transactionId'] != transactionId) {
+          continue;
+        }
+        if (transactionId == null &&
+            const {
+              'committed',
+              'failed',
+              'failedRestored',
+            }.contains(decoded['phase'])) {
+          continue;
+        }
+        transactions.add(<String, Object?>{
+          'transactionId': decoded['transactionId'],
+          'target': target,
+          'phase': decoded['phase'],
+          'evidencePath': entry.path,
+        });
+      }
+    }
+    if (transactionId != null && transactions.isEmpty) {
+      throw MambaException(
+        'Configuration transaction not found: $transactionId.',
+        exitCode: 4,
+      );
+    }
+    return LifecycleResult(
+      command: command,
+      outcome: transactionId == null ? 'inventoried' : 'inspected',
+      data: {'configurationTarget': target, 'transactions': transactions},
     );
   }
 
