@@ -609,7 +609,7 @@ final class SkillRecoverCommand extends Command {
         fileSystem: _service.state.io.fs,
       );
       final result =
-          ConfigurationPublicationService(
+          await ConfigurationPublicationService(
             fileSystem: _service.state.io.fs,
             state: _service.state,
           ).inspectRecovery(

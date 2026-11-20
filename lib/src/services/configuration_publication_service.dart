@@ -66,19 +66,22 @@ interface class ConfigurationPublicationService {
   }
 
   /// Inventories evidence only for the explicitly selected configuration target.
-  LifecycleResult inspectRecovery({
+  Future<LifecycleResult> inspectRecovery({
     required LifecycleContext context,
     required String targetPath,
     required String command,
     String? transactionId,
     String? action,
     String? planId,
-  }) {
-    if (action != null || planId != null) {
+  }) async {
+    if (planId != null || (action != null && action != 'rollback')) {
       throw MambaException(
-        'Configuration recovery actions are not yet supported.',
-        exitCode: 6,
+        'Only configuration rollback is supported.',
+        exitCode: 4,
       );
+    }
+    if (action != null && transactionId == null) {
+      throw MambaException('--action requires a transaction ID.', exitCode: 4);
     }
     final target = context.resolvePath(targetPath);
     _refuseUnsupportedTargetPath(target);
@@ -150,6 +153,97 @@ interface class ConfigurationPublicationService {
       throw MambaException(
         'Configuration transaction not found: $transactionId.',
         exitCode: 4,
+      );
+    }
+    if (action != null) {
+      if (context.dryRun) {
+        return LifecycleResult(
+          command: command,
+          outcome: 'planned',
+          data: {
+            'configurationTarget': target,
+            'transactionId': transactionId,
+            'action': action,
+          },
+        );
+      }
+      if (!context.approved) {
+        throw MambaException(
+          'Configuration recovery requires --yes or interactive approval.',
+          exitCode: 4,
+        );
+      }
+      return _state.runMutation(
+        context: context,
+        locations: [target],
+        body: () async {
+          final evidencePath = transactions.single['evidencePath']! as String;
+          final decoded = jsonDecode(_readBounded(evidencePath));
+          if (decoded is! Map<String, dynamic> ||
+              decoded['transactionId'] != transactionId ||
+              decoded['target'] != target ||
+              decoded['operation'] != 'config-prefer-apply' ||
+              decoded['schemaVersion'] != 1 ||
+              decoded['expectedDigest'] is! String ||
+              !RegExp(r'^[0-9a-f]{64}$')
+                  .hasMatch(decoded['expectedDigest'] as String)) {
+            throw MambaException(
+              'Configuration recovery evidence is invalid: $evidencePath.',
+              exitCode: 6,
+            );
+          }
+          final phase = decoded['phase'];
+          if (phase != 'prepared' &&
+              phase != 'staged' &&
+              phase != 'recoveryRequired') {
+            throw MambaException(
+              'Configuration rollback is not supported for phase $phase.',
+              exitCode: 4,
+            );
+          }
+          final quarantine = _io.fs.path.join(
+            _io.fs.path.dirname(target),
+            '.agent-resource-prefer-$transactionId.quarantine',
+          );
+          if (decoded['quarantinePath'] != quarantine) {
+            throw MambaException(
+              'Configuration quarantine authority is invalid.',
+              exitCode: 6,
+            );
+          }
+          _refuseUnsupportedTargetPath(target);
+          final targetType = _io.type(target, followLinks: false);
+          final quarantineType = _io.type(quarantine, followLinks: false);
+          final expected = decoded['expectedDigest'] as String;
+          if (targetType == FileSystemEntityType.notFound &&
+              quarantineType == FileSystemEntityType.file &&
+              _digest(_readBounded(quarantine)) == expected) {
+            _io.rename(quarantine, target);
+          } else if (targetType == FileSystemEntityType.file &&
+              quarantineType == FileSystemEntityType.notFound &&
+              _digest(_readBounded(target)) == expected) {
+            // A previous recovery may have restored the target before interruption.
+          } else {
+            throw MambaException(
+              'Configuration rollback cannot prove the original bytes; evidence retained.',
+              exitCode: 6,
+            );
+          }
+          _advance(
+            evidencePath,
+            Map<String, Object?>.from(decoded),
+            'failedRestored',
+          );
+          return LifecycleResult(
+            command: command,
+            outcome: 'recovered',
+            data: {
+              'configurationTarget': target,
+              'transactionId': transactionId,
+              'action': action,
+            },
+          );
+        },
       );
     }
     return LifecycleResult(
