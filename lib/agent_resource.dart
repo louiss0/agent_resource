@@ -78,6 +78,8 @@ Executor createExecutor({
   InstallationApprovalComponent? contextInjectApproval,
   ContextTemplateSelection? contextTemplateSelection,
   bool Function()? contextHasTerminal,
+  Map<String, String>? configurationEnvironment,
+  String? configurationOperatingSystem,
 }) {
   final guidedService =
       guided ?? GuidedAuthoringService(fileSystem: fileSystem);
@@ -128,7 +130,12 @@ Executor createExecutor({
         guided: guidedService,
       ),
       PackCommand(service: packLifecycle, fileSystem: fileSystem),
-      ConfigCommand(service: packLifecycle, fileSystem: fileSystem),
+      ConfigCommand(
+        service: packLifecycle,
+        fileSystem: fileSystem,
+        environment: configurationEnvironment,
+        operatingSystem: configurationOperatingSystem,
+      ),
       McpCommand(
         inspection: mcpInspection,
         validation:
