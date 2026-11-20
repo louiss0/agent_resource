@@ -23,6 +23,8 @@ const List<String> secretLiterals = <String>[
   'LOCAL_SECRET_VALUE',
   'PI_USER_SECRET',
   'PI_PROJECT_SECRET',
+  'ANTIGRAVITY_PROJECT_SECRET',
+  'ANTIGRAVITY_USER_SECRET',
 ];
 
 void main() {
@@ -52,6 +54,7 @@ void main() {
           '/sandbox/claude',
           '/sandbox/codex',
           '/sandbox/pi',
+          '/sandbox/gemini',
           '/sandbox/state',
         ]) {
           fs.directory(dir).createSync(recursive: true);
@@ -138,6 +141,27 @@ void main() {
           },
         });
 
+        writeJson('/sandbox/project/.agents/mcp_config.json', <String, Object?>{
+          'mcpServers': <String, Object?>{
+            'antigravity-project-svc': <String, Object?>{
+              'command': 'agy-mcp',
+              'env': <String, Object?>{'API_KEY': 'ANTIGRAVITY_PROJECT_SECRET'},
+            },
+          },
+          'unrelatedTopLevel': 'keep-me',
+        });
+        writeJson('/sandbox/gemini/config/mcp_config.json', <String, Object?>{
+          'mcpServers': <String, Object?>{
+            'antigravity-user-svc': <String, Object?>{
+              'serverUrl':
+                  'https://user.example.com/mcp?token=ANTIGRAVITY_USER_SECRET',
+              'headers': <String, Object?>{
+                'Authorization': 'Bearer ANTIGRAVITY_USER_SECRET',
+              },
+            },
+          },
+        });
+
         // Ownership ledger: one matching baseline (managed), one drifted
         // baseline (ownership-unverified), one missing native entry
         // (ownership-unverified).
@@ -190,6 +214,8 @@ void main() {
         '/sandbox/codex/',
         '--pi-agent-dir',
         '/sandbox/pi/',
+        '--gemini-dir',
+        '/sandbox/gemini/',
         '--state-dir',
         '/sandbox/state/',
       ];
@@ -322,19 +348,27 @@ void main() {
           '--format',
           '--verify',
           '--cwd',
+          '--gemini-dir',
           '--state-dir',
         ]) {
           expect(output, contains(flag), reason: flag);
         }
+        expect(output, contains('antigravity'));
       });
 
       test('inspect declares its selection inputs', () async {
         final result = await exec(<String>['mcp', 'inspect', '--help']);
         expect(result, isA<MambaSuccessResult>());
         final output = (result as MambaSuccessResult).output!;
-        for (final flag in <String>['--name', '--harness', '--scope']) {
+        for (final flag in <String>[
+          '--name',
+          '--harness',
+          '--scope',
+          '--gemini-dir',
+        ]) {
           expect(output, contains(flag), reason: flag);
         }
+        expect(output, contains('antigravity'));
       });
 
       test('validate declares its selection and format inputs', () async {
@@ -346,44 +380,45 @@ void main() {
           '--harness',
           '--scope',
           '--format',
+          '--gemini-dir',
         ]) {
           expect(output, contains(flag), reason: flag);
         }
+        expect(output, contains('antigravity'));
       });
 
       group('list', () {
-        test(
-          'discovers all three harnesses and the requested scopes',
-          () async {
-            final envelope = successEnvelope(
-              await exec(listArgs(<String>['--format', 'json'])),
-            );
-            expect(envelope['schemaVersion'], 1);
-            expect(envelope['command'], 'mcp.list');
-            expect(envelope['outcome'], 'listed');
-            final combos = registrations(envelope)
-                .map((r) => '${r['harness']}/${r['scope']}')
-                .toSet();
-            for (final combo in <String>{
-              'claude/project',
-              'claude/user',
-              'claude/local',
-              'codex/user',
-              'codex/project',
-              'pi/user',
-              'pi/project',
-            }) {
-              expect(combos, contains(combo), reason: combo);
-            }
-            final data = envelope['data'] as Map<String, dynamic>;
-            expect(data['claim'], contains('not verified'));
-            final diagnostics = envelope['diagnostics'] as List;
-            expect(
-              diagnostics.map((d) => (d as Map)['code']),
-              contains('STATIC_CONFIGURATION_ONLY'),
-            );
-          },
-        );
+        test('discovers all four harnesses and the requested scopes', () async {
+          final envelope = successEnvelope(
+            await exec(listArgs(<String>['--format', 'json'])),
+          );
+          expect(envelope['schemaVersion'], 1);
+          expect(envelope['command'], 'mcp.list');
+          expect(envelope['outcome'], 'listed');
+          final combos = registrations(envelope)
+              .map((r) => '${r['harness']}/${r['scope']}')
+              .toSet();
+          for (final combo in <String>{
+            'claude/project',
+            'claude/user',
+            'claude/local',
+            'codex/user',
+            'codex/project',
+            'pi/user',
+            'pi/project',
+            'antigravity/project',
+            'antigravity/user',
+          }) {
+            expect(combos, contains(combo), reason: combo);
+          }
+          final data = envelope['data'] as Map<String, dynamic>;
+          expect(data['claim'], contains('not verified'));
+          final diagnostics = envelope['diagnostics'] as List;
+          expect(
+            diagnostics.map((d) => (d as Map)['code']),
+            contains('STATIC_CONFIGURATION_ONLY'),
+          );
+        });
 
         test(
           'classifies managed, unmanaged and ownership-unverified entries',
@@ -964,9 +999,10 @@ void main() {
               ),
             );
             final output = (result as MambaSuccessResult).output!;
-            for (final flag in child.flags) {
+            for (final flag in <String>[...child.flags, '--gemini-dir']) {
               expect(output, contains(flag), reason: flag);
             }
+            expect(output, contains('antigravity'));
           });
         });
       }
@@ -1007,7 +1043,9 @@ void main() {
               );
               final output = (result as MambaSuccessResult).output!;
               expect(output, contains('--format'));
+              expect(output, contains('--gemini-dir'));
               expect(output, contains('--state-dir'));
+              expect(output, contains('antigravity'));
             });
           });
         }

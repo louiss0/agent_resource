@@ -28,6 +28,7 @@ final class McpRecoveryInputs {
   final _claudeConfigDir = FolderPathOption('claude-config-dir');
   final _codexHome = FolderPathOption('codex-home');
   final _piAgentDir = FolderPathOption('pi-agent-dir');
+  final _geminiDir = FolderPathOption('gemini-dir');
   final _stateDir = FolderPathOption('state-dir');
   final _dryRun = BooleanFlag(
     'dry-run',
@@ -51,6 +52,7 @@ final class McpRecoveryInputs {
     _claudeConfigDir,
     _codexHome,
     _piAgentDir,
+    _geminiDir,
     _stateDir,
   ];
 
@@ -135,6 +137,7 @@ final class McpBackupListCommand extends Command {
         claudeConfigDir: valueOf(inputs._claudeConfigDir),
         codexHome: valueOf(inputs._codexHome),
         piAgentDir: valueOf(inputs._piAgentDir),
+        geminiDir: valueOf(inputs._geminiDir),
         stateDir: valueOf(inputs._stateDir),
       ),
     );
@@ -187,6 +190,7 @@ abstract class McpEvidenceCommand extends Command {
       claudeConfigDir: valueOf(inputs._claudeConfigDir),
       codexHome: valueOf(inputs._codexHome),
       piAgentDir: valueOf(inputs._piAgentDir),
+      geminiDir: valueOf(inputs._geminiDir),
       stateDir: valueOf(inputs._stateDir),
     );
   }
@@ -304,6 +308,7 @@ final class McpRecoverCommand extends Command {
         claudeConfigDir: valueOf(inputs._claudeConfigDir),
         codexHome: valueOf(inputs._codexHome),
         piAgentDir: valueOf(inputs._piAgentDir),
+        geminiDir: valueOf(inputs._geminiDir),
         stateDir: valueOf(inputs._stateDir),
       ),
     );

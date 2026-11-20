@@ -2,6 +2,7 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../harness/harness_catalog.dart';
 import '../mcp/mcp_envelope.dart';
 import '../mcp/mcp_native.dart';
 import '../mcp/mcp_ownership_ledger.dart';
@@ -22,6 +23,7 @@ final class McpInspectionRequest {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.stateDir,
     this.discloseDigest = false,
   });
@@ -36,6 +38,7 @@ final class McpInspectionRequest {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final String? stateDir;
 
   /// Whether the versioned list report discloses baseline digests. This is
@@ -73,6 +76,7 @@ interface class McpInspectionService {
         claudeConfigDir: request.claudeConfigDir,
         codexHome: request.codexHome,
         piAgentDir: request.piAgentDir,
+        geminiDir: request.geminiDir,
         stateDir: request.stateDir,
       );
 
@@ -235,22 +239,10 @@ interface class McpInspectionService {
       rawFields: raw,
       digest: digest,
       ownership: ownership,
-      transport: _transport(raw),
+      transport: HarnessCatalog.instance
+          .mcpSpec(identity.harness)
+          .transportOf(raw),
     );
-  }
-
-  McpTransport? _transport(Map<String, Object?> fields) {
-    if (fields['url'] != null) return McpTransport.http;
-    if (fields['command'] != null) return McpTransport.stdio;
-    final type = fields['type'];
-    if (type == 'http' ||
-        type == 'streamable-http' ||
-        type == 'sse' ||
-        type == 'ws') {
-      return McpTransport.http;
-    }
-    if (type == 'stdio') return McpTransport.stdio;
-    return null;
   }
 
   List<Map<String, Object?>> _staticDiagnostics() =>

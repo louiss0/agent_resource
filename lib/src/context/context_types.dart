@@ -1,3 +1,5 @@
+import '../harness/harness_id.dart';
+
 /// The portable name contract shared by every context template operation.
 final RegExp contextTemplateNamePattern = RegExp(r'^[a-z0-9][a-z0-9_-]{0,63}$');
 
@@ -35,7 +37,15 @@ bool isValidContextTemplateName(String value) =>
 enum ContextOutputFormat { text, json }
 
 /// The coding harnesses that consume injected context files.
-enum ContextHarness { claude, codex, pi }
+enum ContextHarness implements HarnessWireNamed {
+  claude,
+  codex,
+  pi,
+  antigravity;
+
+  @override
+  String get wireName => name;
+}
 
 /// Whether a context resource belongs to a project or the user's environment.
 enum ContextScope { project, user }
@@ -46,6 +56,8 @@ enum const ContextVariant(final String wireName) {
   local('local'),
   override('override'),
   dotClaude('dot-claude'),
+  gemini('gemini'),
+  dotAgents('dot-agents'),
 }
 
 /// The byte-level action taken when combining a template with a target file.

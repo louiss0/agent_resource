@@ -566,7 +566,7 @@ Future<void> main() async {
           ]) {
             expect(_containsToken(output, token), isTrue, reason: token);
           }
-          for (final harness in ['claude', 'codex', 'pi']) {
+          for (final harness in ['claude', 'codex', 'pi', 'antigravity']) {
             expect(output, contains(harness));
           }
         });

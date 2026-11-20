@@ -162,7 +162,7 @@ final class AgentInspectCommand(
             'Codex config-bound role selected by a version-1 request '
             'envelope. Supply either a native file positional or --request, '
             'never both. A native file requires an explicit --harness '
-            '(claude, codex, or pi); Markdown is never auto-detected '
+            '(claude, codex, pi, or antigravity); Markdown is never auto-detected '
             'between Claude and Pi. A request selects a Codex config-bound '
             'role and cannot be combined with --harness. Relative native and '
             'request paths resolve against --cwd when supplied. No harness, '
@@ -272,7 +272,7 @@ final class AgentValidateCommand(
             'one Codex config-bound role selected by a version-1 request '
             'envelope. Supply either a native file positional or --request, '
             'never both. A native file requires an explicit --harness '
-            '(claude, codex, or pi); Markdown is never auto-detected '
+            '(claude, codex, pi, or antigravity); Markdown is never auto-detected '
             'between Claude and Pi. A request selects a Codex config-bound '
             'role and cannot be combined with --harness. Relative native '
             'and request paths resolve against --cwd when supplied. No '
@@ -377,8 +377,8 @@ AgentInspectionInput _inspectionInput({
   }
   if (nativeFile != null && harness == null) {
     throw MambaException(
-      'A native file requires an explicit --harness (claude, codex, or pi); '
-      'Markdown is never auto-detected.',
+      'A native file requires an explicit --harness (claude, codex, pi, or '
+      'antigravity); Markdown is never auto-detected.',
     );
   }
 
@@ -407,6 +407,7 @@ final class AgentListCommand(
           _claudeConfigDir,
           _codexHome,
           _piAgentDir,
+          _geminiDir,
           _readRoots,
           _stateDir,
         ],
@@ -486,6 +487,11 @@ final class AgentListCommand(
     description: 'Pi user Agent directory.',
   );
 
+  static final _geminiDir = FolderPathOption(
+    'gemini-dir',
+    description: 'Antigravity user root; config/agents is its Agent root.',
+  );
+
   static final _readRoots = RepeatableFolderPathOption(
     'read-root',
     description: 'Additional read-only Claude project root.',
@@ -522,6 +528,7 @@ final class AgentListCommand(
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
+        geminiDir: valueOf(_geminiDir),
         readRoots: valueOf(_readRoots) ?? const <String>[],
         stateDir: valueOf(_stateDir),
       ),
@@ -541,6 +548,7 @@ final class AgentListCommand(
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
+        geminiDir: valueOf(_geminiDir),
         readRoots: valueOf(_readRoots) ?? const <String>[],
         stateDir: valueOf(_stateDir),
       ),

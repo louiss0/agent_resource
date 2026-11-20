@@ -8,6 +8,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
+import '../authoring/native_field_matrix.dart';
+import '../harness/harness_catalog.dart';
 import '../skill_files.dart';
 import '../skill_validation.dart';
 import 'conversion_coordinator_service.dart';
@@ -15,9 +17,16 @@ import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
 import 'prompt_read_service.dart';
 
-enum SkillHarness { claude, codex }
+enum SkillHarness implements HarnessWireNamed {
+  claude,
+  codex,
+  antigravity;
 
-enum SkillDestination { claude, codex, shared }
+  @override
+  String get wireName => name;
+}
+
+enum SkillDestination { claude, codex, shared, antigravity }
 
 enum SkillMode { copy, link }
 
@@ -82,6 +91,7 @@ interface class SkillLifecycleService implements LifecycleResource {
         fileSystem: state.io.fs,
       );
       final records = <InstallationRecord>[];
+      final seenRoots = <String>{};
       String? ownershipFailure;
       try {
         records.addAll(state.records(scopedContext));
@@ -90,6 +100,7 @@ interface class SkillLifecycleService implements LifecycleResource {
       }
       for (final selected in SkillDestination.values) {
         for (final root in _inventoryRoots(scopedContext, selected)) {
+          if (!seenRoots.add(state.io.fs.path.normalize(root))) continue;
           final type = skillEntityType(
             root,
             followLinks: false,
@@ -322,6 +333,51 @@ interface class SkillLifecycleService implements LifecycleResource {
     );
   }
 
+  /// The body-free native Skill view of one source for Antigravity.
+  ///
+  /// Antigravity has no Prompt facet, but it does consume ordinary Skills.
+  /// The view applies the Antigravity Skill field matrix instead of inventing
+  /// a manual-only Prompt classification.
+  Future<Map<String, Object?>> antigravityView(String path) async {
+    final diagnostics = <Map<String, Object?>>[];
+    final report = validateSkill(path, fs: state.io.fs);
+    for (final diagnostic in report.diagnostics) {
+      if (diagnostic.severity != DiagnosticSeverity.error) continue;
+      diagnostics.add(<String, Object?>{
+        'code': diagnostic.code,
+        'message': diagnostic.message,
+        'path': path,
+      });
+    }
+    try {
+      _validateAntigravityFields(path);
+    } on MambaException catch (error) {
+      diagnostics.add(<String, Object?>{
+        'code': 'UNSUPPORTED_FIELD',
+        'message': error.message,
+        'path': path,
+      });
+    }
+    return <String, Object?>{
+      'path': state.io.fs.path.normalize(
+        state.io.fs.directory(path).absolute.path,
+      ),
+      'form': 'skill',
+      'selectedConsumer': 'antigravity',
+      'globalCompatibility': 'notApplicable',
+      'placement': 'unknown',
+      'views': <Object?>[
+        <String, Object?>{
+          'consumer': 'antigravity',
+          'classification': 'nonPrompt',
+          'valid': diagnostics.isEmpty,
+          'installationSupported': diagnostics.isEmpty,
+          'diagnostics': diagnostics,
+        },
+      ],
+    };
+  }
+
   Future<Map<String, Object?>> _promptObservation(
     String path, {
     required bool canRead,
@@ -465,6 +521,9 @@ interface class SkillLifecycleService implements LifecycleResource {
     SkillDestination destination,
   ) {
     if (context.scope == LifecycleScope.user) {
+      if (destination == SkillDestination.antigravity) {
+        return _skillSpec(HarnessId.antigravity).discoveryRoots(context);
+      }
       return [_root(context, destination)];
     }
     final roots = <String>[];
@@ -482,11 +541,8 @@ interface class SkillLifecycleService implements LifecycleResource {
             '.codex',
             'skills',
           ),
-          SkillDestination.shared => state.io.fs.path.join(
-            current,
-            '.agents',
-            'skills',
-          ),
+          SkillDestination.shared || SkillDestination.antigravity =>
+            state.io.fs.path.join(current, '.agents', 'skills'),
         }),
       );
       if (state.io.fs.path.equals(current, context.projectRoot)) break;
@@ -786,12 +842,73 @@ interface class SkillLifecycleService implements LifecycleResource {
           }
         case 'codex':
           _validateCodexSidecar(path);
+        case 'antigravity':
+          _validateAntigravityFields(path);
         default:
           throw MambaException(
             'Unsupported Skill compatibility profile: $profile',
             exitCode: 2,
           );
       }
+    }
+  }
+
+  void _validateAntigravityFields(String path) {
+    final spec = _skillSpec(HarnessId.antigravity);
+    final marker = state.io.fs.path.join(path, 'SKILL.md');
+    final bytes = readBoundedSkillMarker(
+      marker,
+      maxBytes: 1048576,
+      fs: state.io.fs,
+    );
+    if (bytes.length > 1048576) {
+      throw MambaException('SKILL.md exceeds 1 MiB.', exitCode: 2);
+    }
+    final content = utf8.decode(bytes, allowMalformed: false);
+    final lines = content.split('\n');
+    if (lines.isEmpty || lines.first.trimRight() != '---') {
+      throw MambaException(
+        'Antigravity SKILL.md must start with frontmatter.',
+        exitCode: 2,
+      );
+    }
+    final closing = lines.indexWhere((line) => line.trimRight() == '---', 1);
+    if (closing < 0) {
+      throw MambaException(
+        'Antigravity SKILL.md frontmatter is unterminated.',
+        exitCode: 2,
+      );
+    }
+    final Object? document;
+    try {
+      document = loadYaml(lines.sublist(1, closing).join('\n'));
+    } on Exception catch (error) {
+      throw MambaException(
+        'SKILL.md frontmatter is invalid: $error',
+        exitCode: 2,
+      );
+    }
+    if (document is! Map) {
+      throw MambaException(
+        'Antigravity SKILL.md must contain a YAML mapping.',
+        exitCode: 2,
+      );
+    }
+    final supported = spec
+        .nativeSkillFields(AuthoringProfile.antigravity)
+        .supportedNames
+        .toSet();
+    final unsupported =
+        document.keys
+            .where((key) => key is String && !supported.contains(key))
+            .toList()
+          ..sort();
+    if (unsupported.isNotEmpty) {
+      throw MambaException(
+        'The antigravity Skill profile supports only ${supported.join(', ')}; '
+        'unsupported field(s): ${unsupported.join(', ')}.',
+        exitCode: 2,
+      );
     }
   }
 
@@ -975,12 +1092,20 @@ interface class SkillLifecycleService implements LifecycleResource {
         exitCode: 2,
       );
     }
-    final profiles = _profiles(context, _destinationForPath(context, path));
+    final destination = _destinationForPath(context, path);
+    final profiles = _profiles(context, destination);
+    final knownConsumers = switch (destination) {
+      SkillDestination.antigravity =>
+        context.scope == LifecycleScope.project
+            ? const <String>['codex', 'antigravity']
+            : const <String>['antigravity'],
+      _ => const <String>['claude', 'codex'],
+    };
     return LifecycleCandidate(
       name: declaredName,
       nativeForm: nativeForm,
       validatedProfiles: profiles,
-      knownConsumers: const ['claude', 'codex'],
+      knownConsumers: knownConsumers,
       nativeLinkKind: nativeLinkKind,
       linkTarget: linkTarget,
       targetResolved: nativeForm == 'skill-link' ? inspectedPath : null,
@@ -997,12 +1122,25 @@ interface class SkillLifecycleService implements LifecycleResource {
     Set<String> allowedPaths = const <String>{},
   }) async {
     final destinations = switch (nativeDestination) {
-      'claude' => const [SkillDestination.claude, SkillDestination.shared],
-      'codex' => const [SkillDestination.codex, SkillDestination.shared],
+      'claude' => const [
+        SkillDestination.claude,
+        SkillDestination.shared,
+        SkillDestination.antigravity,
+      ],
+      'codex' => const [
+        SkillDestination.codex,
+        SkillDestination.shared,
+        SkillDestination.antigravity,
+      ],
+      'antigravity' => const [
+        SkillDestination.antigravity,
+        SkillDestination.shared,
+      ],
       'shared' || 'canonical' => const [
         SkillDestination.claude,
         SkillDestination.codex,
         SkillDestination.shared,
+        SkillDestination.antigravity,
       ],
       _ => throw MambaException('Unsupported Skill destination.', exitCode: 4),
     };
@@ -1095,6 +1233,9 @@ interface class SkillLifecycleService implements LifecycleResource {
     // by install/adopt through the same deterministic destination inference.
     if (destination == SkillDestination.claude) return const ['claude'];
     if (destination == SkillDestination.codex) return const ['codex'];
+    if (destination == SkillDestination.antigravity) {
+      return const ['antigravity'];
+    }
     return const <String>[];
   }
 
@@ -1109,18 +1250,23 @@ interface class SkillLifecycleService implements LifecycleResource {
     return null;
   }
 
-  String _root(LifecycleContext context, SkillDestination destination) =>
-      switch (destination) {
-        SkillDestination.claude => state.io.fs.path.normalize(
-          context.claudeSkillsRoot(),
-        ),
-        SkillDestination.codex => state.io.fs.path.normalize(
-          context.codexSkillsRoot(),
-        ),
-        SkillDestination.shared => state.io.fs.path.normalize(
-          context.sharedSkillsRoot(),
-        ),
-      };
+  SkillHarnessSpec _skillSpec(HarnessId id) =>
+      HarnessCatalog.instance.requireFacet(id, HarnessFacet.skill)
+          as SkillHarnessSpec;
+
+  String _root(LifecycleContext context, SkillDestination destination) {
+    final id = switch (destination) {
+      SkillDestination.claude => HarnessId.claude,
+      SkillDestination.codex => HarnessId.codex,
+      SkillDestination.shared ||
+      SkillDestination.antigravity => HarnessId.antigravity,
+    };
+    final userScope = context.scope == LifecycleScope.user;
+    final root = destination == SkillDestination.shared
+        ? context.sharedSkillsRoot()
+        : _skillSpec(id).root(context, userScope: userScope);
+    return state.io.fs.path.normalize(root);
+  }
 
   List<String> _visibleRoots(
     LifecycleContext context,
@@ -1137,11 +1283,8 @@ interface class SkillLifecycleService implements LifecycleResource {
         '.codex',
         'skills',
       ),
-      SkillDestination.shared => state.io.fs.path.join(
-        boundary,
-        '.agents',
-        'skills',
-      ),
+      SkillDestination.shared || SkillDestination.antigravity =>
+        state.io.fs.path.join(boundary, '.agents', 'skills'),
     };
     final roots = <String>[];
     var current = context.cwd;
@@ -1167,6 +1310,9 @@ interface class SkillLifecycleService implements LifecycleResource {
       ),
       SkillDestination.shared => state.io.fs.path.normalize(
         state.io.fs.path.join(home, '.agents', 'skills'),
+      ),
+      SkillDestination.antigravity => state.io.fs.path.normalize(
+        state.io.fs.path.join(context.geminiConfigRoot(), 'skills'),
       ),
     });
     return roots;
@@ -1271,11 +1417,15 @@ final class _ProfiledSkillResource implements LifecycleResource {
       allowedExtraFolders: allowedExtraFolders,
     );
     delegate.validateProfiles(delegate.resolveContentTarget(path), profiles);
+    final knownConsumers = <String>{
+      ...candidate.knownConsumers,
+      ...profiles,
+    }.toList()..sort();
     return LifecycleCandidate(
       name: candidate.name,
       nativeForm: _kind.wireName,
       validatedProfiles: profiles,
-      knownConsumers: candidate.knownConsumers,
+      knownConsumers: knownConsumers,
       nativeLinkKind:
           candidate.nativeLinkKind ??
           (_kind == ArtifactKind.skillLink

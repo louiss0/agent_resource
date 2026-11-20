@@ -139,7 +139,7 @@ final class PromptNativeViews {
     'globalCompatibility': globalCompatibility.name,
     'placement': placement.name,
     'views': [
-      for (final consumer in PromptConsumer.values)
+      for (final consumer in PromptConsumer.inspectable)
         if (views[consumer] != null) views[consumer]!.toJson(),
     ],
   };

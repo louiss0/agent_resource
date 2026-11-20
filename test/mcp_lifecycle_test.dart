@@ -242,10 +242,12 @@ void main() {
             '--ack-mcp-risk',
             '--allow-drift',
             '--cwd',
+            '--gemini-dir',
             '--state-dir',
           ]) {
             expect(output, contains(flag), reason: flag);
           }
+          expect(output, contains('antigravity'));
         });
 
         test('occurrences and paths are never selectors', () async {

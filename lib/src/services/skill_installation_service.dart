@@ -13,6 +13,7 @@ import '../installation/installation_plan.dart';
 import '../installation/installation_request.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
+import '../harness/harness_catalog.dart';
 import 'acquisition_service.dart';
 import 'lifecycle_state_service.dart';
 import 'skill_lifecycle_service.dart';
@@ -269,11 +270,14 @@ interface class SkillInstallationService {
       if (_isDirectory(context.codexSkillsRoot()) ||
           _isDirectory(context.sharedSkillsRoot()))
         InstallationTarget.codex,
+      if (_isDirectory(_harnessRoot(context, InstallationTarget.antigravity)))
+        InstallationTarget.antigravity,
     };
     while (true) {
       final answer = await _interaction.selectTargets(const [
         InstallationTarget.claude,
         InstallationTarget.codex,
+        InstallationTarget.antigravity,
       ], detected);
       if (answer.status == InteractionAnswerStatus.cancelled) return null;
       if (answer.status == InteractionAnswerStatus.value) return answer.value;
@@ -316,7 +320,11 @@ interface class SkillInstallationService {
           path: canonicalPath,
           kind: InstallationEntryKind.content,
           action: InstallationEntryAction.createContent,
-          target: targets.contains(InstallationTarget.codex) ? 'codex' : null,
+          target: targets.contains(InstallationTarget.codex)
+              ? 'codex'
+              : targets.contains(InstallationTarget.antigravity)
+              ? 'antigravity'
+              : null,
           nativeRoot: canonicalRoot,
           nativeDestination: 'canonical',
           artifactKind: OwnedArtifactKind.skillCanonical,
@@ -338,23 +346,23 @@ interface class SkillInstallationService {
           ),
         );
       }
-      if (targets.contains(InstallationTarget.codex)) {
+      for (final direct in <InstallationTarget>[
+        InstallationTarget.codex,
+        InstallationTarget.antigravity,
+      ]) {
+        if (!targets.contains(direct)) continue;
         entries.add(
           InstallationEntryPlan(
             path: canonicalPath,
             kind: InstallationEntryKind.consumer,
             action: InstallationEntryAction.recordConsumer,
-            target: 'codex',
+            target: direct.name,
           ),
         );
       }
     } else {
       for (final target in targets) {
-        final root = _fileSystem.path.normalize(
-          target == InstallationTarget.claude
-              ? context.claudeSkillsRoot()
-              : context.sharedSkillsRoot(),
-        );
+        final root = _fileSystem.path.normalize(_harnessRoot(context, target));
         final location = _fileSystem.path.join(root, inspected.name);
         entries.add(
           InstallationEntryPlan(
@@ -375,6 +383,9 @@ interface class SkillInstallationService {
             nativeRoot: root,
             nativeDestination: target == InstallationTarget.claude
                 ? 'claude'
+                : target == InstallationTarget.antigravity &&
+                      context.scope == LifecycleScope.user
+                ? 'antigravity'
                 : 'shared',
             artifactKind: method == InstallationMethod.copy
                 ? OwnedArtifactKind.skillCopy
@@ -587,6 +598,20 @@ interface class SkillInstallationService {
         }
       }
     }
+  }
+
+  String _harnessRoot(LifecycleContext context, InstallationTarget target) {
+    final id = HarnessId.of(target);
+    if (context.scope == LifecycleScope.project &&
+        (target == InstallationTarget.codex ||
+            target == InstallationTarget.antigravity)) {
+      return context.sharedSkillsRoot();
+    }
+    final spec = HarnessCatalog.instance.requireFacet(
+      id,
+      HarnessFacet.skill,
+    ) as SkillHarnessSpec;
+    return spec.root(context, userScope: context.scope == LifecycleScope.user);
   }
 
   bool _isDirectory(String path) =>

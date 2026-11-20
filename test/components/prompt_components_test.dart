@@ -11,7 +11,7 @@ void main() {
     expect(
       await AgentProfileComponent(
         select: (p) {
-          expect(p.options, ['claude', 'codex', 'pi-common']);
+          expect(p.options, ['claude', 'codex', 'pi-common', 'antigravity']);
           return 1;
         },
       ).render(),

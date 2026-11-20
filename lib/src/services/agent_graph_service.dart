@@ -6,6 +6,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
+import '../harness/harness_catalog.dart';
 import '../skill_files.dart';
 
 final class AgentGraphReport {
@@ -126,6 +127,13 @@ interface class AgentGraphService {
                 _fileSystem.currentDirectory.path,
           )
         : _fileSystem.path.dirname(definition);
+    final extraction = _specFor(inspection).extractGraph(
+      nativeFields: inspection.nativeFields,
+      observedReferences: inspection.references,
+      observedCapabilities: inspection.capabilities,
+      nativeBase: _nativeBase(resolutionBase),
+      path: _fileSystem.path,
+    );
     final nodesById = <String, Map<String, Object?>>{
       rootId: <String, Object?>{
         'id': rootId,
@@ -200,7 +208,9 @@ interface class AgentGraphService {
         id: rootId,
         depth: 0,
         ancestors: <String>{rootId},
-        references: inspection.references,
+        references: <Map<String, Object?>>[
+          for (final reference in extraction.references) reference.toJson(),
+        ],
       ),
     );
     while (frontier.isNotEmpty) {
@@ -226,18 +236,12 @@ interface class AgentGraphService {
         }
         final kind = reference['kind']! as String;
         final name = reference['name']! as String;
-        final relationship = _relationship(inspection, kind);
+        final relationship = _relationship(extraction, kind);
         final id = '$kind:$name';
         final cyclic = work.ancestors.contains(id);
         final ({String status, String? path}) resolution = cyclic
             ? (status: 'cycle', path: null)
-            : _resolveReference(
-                inspection,
-                kind,
-                name,
-                relationship,
-                resolutionBase,
-              );
+            : _resolveReference(extraction, kind, name, relationship);
         var blocker = false;
         if (cyclic && relationship == 'skill-preload') {
           blocker = true;
@@ -324,9 +328,9 @@ interface class AgentGraphService {
 
     final nodes = nodesById.values.toList();
     final capabilities = <Map<String, Object?>>[
-      for (final capability in inspection.capabilities)
+      for (final capability in extraction.capabilities)
         <String, Object?>{
-          ...capability,
+          ...capability.toJson(),
           'sourceProfile': inspection.profile,
           'conditions': inspection.parentRequirements,
           'contraryEvidence': inspection.diagnostics
@@ -351,11 +355,10 @@ interface class AgentGraphService {
               '${capability['label']} ${capability['kind']} declaration from '
               '${inspection.profile}; runtime availability and enforcement are not verified.',
         },
-      for (final reference in inspection.references)
+      for (final reference in extraction.references)
         <String, Object?>{
-          'kind': reference['kind'],
-          'name': reference['name'],
-          'provenance': reference['label'],
+          ...reference.toJson(),
+          'provenance': reference.label,
           'sourceProfile': inspection.profile,
           'conditions': inspection.parentRequirements,
           'contraryEvidence': inspection.diagnostics
@@ -366,7 +369,7 @@ interface class AgentGraphService {
               .map((diagnostic) => diagnostic.toJson())
               .toList(),
           'note':
-              '${reference['label']} ${reference['kind']} association from '
+              '${reference.label} ${reference.kind} association from '
               '${inspection.profile}; no runtime connection or availability probe was performed.',
         },
     ];
@@ -401,6 +404,7 @@ interface class AgentGraphService {
           'binding': 'finite-expansion-blocker',
           'model': 'runtime-observation-only',
           'mcp-association': 'runtime-observation-only',
+          'tool-capability': 'runtime-observation-only',
           'potential-delegation': 'runtime-observation-only',
         },
         'exclusions': const <String>[
@@ -439,32 +443,20 @@ interface class AgentGraphService {
     }
   }
 
-  String _relationship(AgentInspectionReport inspection, String kind) {
-    if (kind == 'skill') {
-      return inspection.form == 'claude-agent-file'
-          ? 'skill-preload'
-          : 'skill-exclusion';
-    }
-    return switch (kind) {
-      'mcp-server' => 'mcp-association',
-      'hook' => 'hook-association',
-      'model' => 'model',
-      _ => kind,
-    };
-  }
+  String _relationship(AgentGraphExtraction extraction, String kind) =>
+      extraction.relationships[kind] ?? kind;
 
   ({String status, String? path}) _resolveReference(
-    AgentInspectionReport inspection,
+    AgentGraphExtraction extraction,
     String kind,
     String name,
     String relationship,
-    String base,
   ) {
-    if (kind == 'model' || kind == 'mcp-server' || kind == 'hook') {
+    if (extraction.runtimeDependentKinds.contains(kind)) {
       return (status: 'runtime-dependent', path: null);
     }
     if (kind != 'skill') return (status: 'unresolved', path: null);
-    for (final root in _skillRoots(inspection, base)) {
+    for (final root in extraction.skillRoots) {
       final candidate = _fileSystem.path.join(root, name, 'SKILL.md');
       final type = skillEntityType(
         candidate,
@@ -489,22 +481,19 @@ interface class AgentGraphService {
     );
   }
 
-  List<String> _skillRoots(AgentInspectionReport inspection, String base) {
-    final nativeBase = _nativeBase(base);
-    if (inspection.form == 'claude-agent-file') {
-      return <String>[
-        _fileSystem.path.join(nativeBase, '.claude', 'skills'),
-        _fileSystem.path.join(nativeBase, '.agents', 'skills'),
-      ];
-    }
-    if (inspection.form == 'codex-agent-file' ||
-        inspection.form == 'codex-config-bound-role') {
-      return <String>[
-        _fileSystem.path.join(nativeBase, '.codex', 'skills'),
-        _fileSystem.path.join(nativeBase, '.agents', 'skills'),
-      ];
-    }
-    return <String>[_fileSystem.path.join(nativeBase, '.agents', 'skills')];
+  AgentHarnessSpec _specFor(AgentInspectionReport inspection) {
+    final id = switch (inspection.form) {
+      'claude-agent-file' => HarnessId.claude,
+      'codex-agent-file' || 'codex-config-bound-role' => HarnessId.codex,
+      'pi-agent-file' || 'pi-provider-specific-file' => HarnessId.pi,
+      'antigravity-agent-file' => HarnessId.antigravity,
+      _ => throw MambaException(
+        'Unsupported native Agent graph form.',
+        exitCode: 4,
+      ),
+    };
+    return HarnessCatalog.instance.requireFacet(id, HarnessFacet.agent)
+        as AgentHarnessSpec;
   }
 
   String _nativeBase(String base) {
