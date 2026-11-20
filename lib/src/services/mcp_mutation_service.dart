@@ -32,7 +32,7 @@ enum McpMutationOperation {
 /// by name plus explicit harness and scope; occurrences and paths are never
 /// selectors - the path overrides only resolve the bounded native location.
 final class McpMutationRequest {
-  const McpMutationRequest({
+  McpMutationRequest({
     required this.operation,
     required this.environment,
     required this.harness,
@@ -58,7 +58,19 @@ final class McpMutationRequest {
     this.piAgentDir,
     this.geminiDir,
     this.stateDir,
-  });
+    LifecycleRootOverrides? roots,
+  }) : roots =
+           roots ??
+           LifecycleRootOverrides(
+             cwd: cwd,
+             projectRoot: projectRoot,
+             home: home,
+             claudeConfigDir: claudeConfigDir,
+             codexHome: codexHome,
+             piAgentDir: piAgentDir,
+             geminiDir: geminiDir,
+             stateDir: stateDir,
+           );
 
   final McpMutationOperation operation;
   final Map<String, String> environment;
@@ -88,6 +100,9 @@ final class McpMutationRequest {
   final String? piAgentDir;
   final String? geminiDir;
   final String? stateDir;
+
+  /// The same overrides as one value for services that thread them onward.
+  final LifecycleRootOverrides roots;
 }
 
 /// The injectable, scriptable review seam. It receives the complete, redacted
@@ -269,14 +284,14 @@ interface class McpMutationService {
     final context = McpNativeResolver.resolveLifecycleContext(
       fs,
       environment: request.environment,
-      cwd: request.cwd,
-      projectRoot: request.projectRoot,
-      home: request.home,
-      claudeConfigDir: request.claudeConfigDir,
-      codexHome: request.codexHome,
-      piAgentDir: request.piAgentDir,
-      geminiDir: request.geminiDir,
-      stateDir: request.stateDir,
+      cwd: request.roots.cwd,
+      projectRoot: request.roots.projectRoot,
+      home: request.roots.home,
+      claudeConfigDir: request.roots.claudeConfigDir,
+      codexHome: request.roots.codexHome,
+      piAgentDir: request.roots.piAgentDir,
+      geminiDir: request.roots.geminiDir,
+      stateDir: request.roots.stateDir,
     );
     final locations = _resolver.resolve(
       context,

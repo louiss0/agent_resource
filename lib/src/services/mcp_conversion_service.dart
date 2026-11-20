@@ -22,7 +22,7 @@ import 'mcp_validation_service.dart';
 /// selectors. The target harness is explicit and the target scope defaults to
 /// the preserved source scope.
 final class McpConversionRequest {
-  const McpConversionRequest({
+  McpConversionRequest({
     required this.environment,
     required this.harness,
     required this.scope,
@@ -43,7 +43,19 @@ final class McpConversionRequest {
     this.piAgentDir,
     this.geminiDir,
     this.stateDir,
-  });
+    LifecycleRootOverrides? roots,
+  }) : roots =
+           roots ??
+           LifecycleRootOverrides(
+             cwd: cwd,
+             projectRoot: projectRoot,
+             home: home,
+             claudeConfigDir: claudeConfigDir,
+             codexHome: codexHome,
+             piAgentDir: piAgentDir,
+             geminiDir: geminiDir,
+             stateDir: stateDir,
+           );
 
   final Map<String, String> environment;
   final McpHarness harness;
@@ -70,6 +82,9 @@ final class McpConversionRequest {
   final String? piAgentDir;
   final String? geminiDir;
   final String? stateDir;
+
+  /// The same overrides as one value for services that thread them onward.
+  final LifecycleRootOverrides roots;
 }
 
 /// The injectable, scriptable review seam. Production prints the complete
@@ -193,14 +208,14 @@ interface class McpConversionService {
       McpNativeResolver.resolveLifecycleContext(
         fs,
         environment: request.environment,
-        cwd: request.cwd,
-        projectRoot: request.projectRoot,
-        home: request.home,
-        claudeConfigDir: request.claudeConfigDir,
-        codexHome: request.codexHome,
-        piAgentDir: request.piAgentDir,
-        geminiDir: request.geminiDir,
-        stateDir: request.stateDir,
+        cwd: request.roots.cwd,
+        projectRoot: request.roots.projectRoot,
+        home: request.roots.home,
+        claudeConfigDir: request.roots.claudeConfigDir,
+        codexHome: request.roots.codexHome,
+        piAgentDir: request.roots.piAgentDir,
+        geminiDir: request.roots.geminiDir,
+        stateDir: request.roots.stateDir,
       );
 
   _Prepared _prepare(McpConversionRequest request) {

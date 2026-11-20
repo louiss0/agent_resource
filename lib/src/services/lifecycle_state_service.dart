@@ -93,6 +93,55 @@ enum ModificationStatus {
   notVerified,
 }
 
+/// The bundled native-root overrides threaded through bounded requests.
+///
+/// The CLI still exposes one flag per root; requests carry them as one value
+/// so adding a root is one declaration instead of a shotgunned constructor
+/// change across commands and services.
+final class LifecycleRootOverrides {
+  const LifecycleRootOverrides({
+    this.cwd,
+    this.projectRoot,
+    this.home,
+    this.claudeConfigDir,
+    this.codexHome,
+    this.piAgentDir,
+    this.geminiDir,
+    this.stateDir,
+  });
+
+  static const empty = LifecycleRootOverrides();
+
+  final String? cwd;
+  final String? projectRoot;
+  final String? home;
+  final String? claudeConfigDir;
+  final String? codexHome;
+  final String? piAgentDir;
+  final String? geminiDir;
+  final String? stateDir;
+
+  LifecycleRootOverrides copyWith({
+    String? cwd,
+    String? projectRoot,
+    String? home,
+    String? claudeConfigDir,
+    String? codexHome,
+    String? piAgentDir,
+    String? geminiDir,
+    String? stateDir,
+  }) => LifecycleRootOverrides(
+    cwd: cwd ?? this.cwd,
+    projectRoot: projectRoot ?? this.projectRoot,
+    home: home ?? this.home,
+    claudeConfigDir: claudeConfigDir ?? this.claudeConfigDir,
+    codexHome: codexHome ?? this.codexHome,
+    piAgentDir: piAgentDir ?? this.piAgentDir,
+    geminiDir: geminiDir ?? this.geminiDir,
+    stateDir: stateDir ?? this.stateDir,
+  );
+}
+
 /// Captured process and request context. No environment lookup is deferred
 /// until after a command has begun an operation.
 final class LifecycleOptions {

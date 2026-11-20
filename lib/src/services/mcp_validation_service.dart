@@ -4,13 +4,15 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import '../harness/harness_catalog.dart';
 import '../mcp/mcp_native.dart';
 import '../mcp/mcp_types.dart';
-import '../mcp/mcp_validation.dart';
+import '../mcp/mcp_validation_contract.dart';
+import 'lifecycle_state_service.dart';
 
 /// A bounded, read-only request to select one native MCP registration.
 final class McpValidationSelectionRequest {
-  const McpValidationSelectionRequest({
+  McpValidationSelectionRequest({
     required this.environment,
     required this.harness,
     required this.scope,
@@ -23,7 +25,19 @@ final class McpValidationSelectionRequest {
     this.piAgentDir,
     this.geminiDir,
     this.stateDir,
-  });
+    LifecycleRootOverrides? roots,
+  }) : roots =
+           roots ??
+           LifecycleRootOverrides(
+             cwd: cwd,
+             projectRoot: projectRoot,
+             home: home,
+             claudeConfigDir: claudeConfigDir,
+             codexHome: codexHome,
+             piAgentDir: piAgentDir,
+             geminiDir: geminiDir,
+             stateDir: stateDir,
+           );
 
   final Map<String, String> environment;
   final McpHarness harness;
@@ -37,6 +51,9 @@ final class McpValidationSelectionRequest {
   final String? piAgentDir;
   final String? geminiDir;
   final String? stateDir;
+
+  /// The same overrides as one value for services that thread them onward.
+  final LifecycleRootOverrides roots;
 }
 
 /// The one shared, static per-harness MCP contract.
@@ -61,11 +78,10 @@ interface class McpValidationService {
     required McpHarness harness,
     required Map<String, Object?> fields,
     McpScope? scope,
-  }) => const McpValidation().validate(
-    harness: harness,
-    fields: fields,
-    scope: scope,
-  );
+  }) => HarnessCatalog.instance
+      .mcpSpec(harness)
+      .validation
+      .validate(harness: harness, fields: fields, scope: scope);
 
   /// Reads one selected native entry and applies the same static contract.
   /// Missing files, unreadable files, malformed documents, and missing entries
@@ -81,14 +97,14 @@ interface class McpValidationService {
     final context = McpNativeResolver.resolveLifecycleContext(
       fileSystem,
       environment: request.environment,
-      cwd: request.cwd,
-      projectRoot: request.projectRoot,
-      home: request.home,
-      claudeConfigDir: request.claudeConfigDir,
-      codexHome: request.codexHome,
-      piAgentDir: request.piAgentDir,
-      geminiDir: request.geminiDir,
-      stateDir: request.stateDir,
+      cwd: request.roots.cwd,
+      projectRoot: request.roots.projectRoot,
+      home: request.roots.home,
+      claudeConfigDir: request.roots.claudeConfigDir,
+      codexHome: request.roots.codexHome,
+      piAgentDir: request.roots.piAgentDir,
+      geminiDir: request.roots.geminiDir,
+      stateDir: request.roots.stateDir,
     );
     final locations = _resolver.resolve(
       context,
