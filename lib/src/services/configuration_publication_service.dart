@@ -6,7 +6,12 @@ import 'package:file/file.dart' as fslib;
 import 'package:mamba/mamba.dart' show MambaException;
 
 import 'lifecycle_state_service.dart'
-    show LifecycleContext, LifecycleIO, LifecycleResult, LifecycleStateService;
+    show
+        LifecycleContext,
+        LifecycleIO,
+        LifecycleResult,
+        LifecycleScope,
+        LifecycleStateService;
 
 const maxConfigurationDocumentBytes = 8 * 1024 * 1024;
 
@@ -89,78 +94,87 @@ interface class ConfigurationPublicationService {
     _refuseUnsupportedTargetPath(
       _io.fs.path.join(_targetEvidenceRoot(target), 'evidence'),
     );
-    final directory = _io.fs.path.join(
-      _targetEvidenceRoot(target),
-      'configuration-transactions',
-    );
-    final type = _io.type(directory, followLinks: false);
     final transactions = <Map<String, Object?>>[];
-    if (type != FileSystemEntityType.notFound) {
-      if (type != FileSystemEntityType.directory) {
-        _refusePublication(
-          directory,
-          'configuration transaction storage is not a regular directory',
-        );
-      }
-      for (final entry in _io.list(directory)) {
-        if (_io.type(entry.path, followLinks: false) !=
-            FileSystemEntityType.file) {
+    final localRoot = _targetEvidenceRoot(target);
+    for (final root in {localRoot, context.stateRoot(LifecycleScope.project)}) {
+      final directory = _io.fs.path.join(root, 'configuration-transactions');
+      final type = _io.type(directory, followLinks: false);
+      if (type == FileSystemEntityType.notFound) continue;
+      {
+        if (type != FileSystemEntityType.directory) {
           _refusePublication(
             directory,
-            'configuration transaction storage contains an unsafe entry',
+            'configuration transaction storage is not a regular directory',
           );
         }
-        if (entry.path.endsWith('.json.previous')) {
-          final primary = entry.path.substring(
-            0,
-            entry.path.length - '.previous'.length,
-          );
-          if (_io.type(primary, followLinks: false) !=
+        for (final entry in _io.list(directory)) {
+          if (_io.type(entry.path, followLinks: false) !=
               FileSystemEntityType.file) {
             _refusePublication(
               directory,
-              'configuration evidence fallback has no primary',
+              'configuration transaction storage contains an unsafe entry',
             );
           }
-          continue;
+          if (entry.path.endsWith('.json.previous')) {
+            final primary = entry.path.substring(
+              0,
+              entry.path.length - '.previous'.length,
+            );
+            if (_io.type(primary, followLinks: false) !=
+                FileSystemEntityType.file) {
+              _refusePublication(
+                directory,
+                'configuration evidence fallback has no primary',
+              );
+            }
+            continue;
+          }
+          if (!entry.path.endsWith('.json')) {
+            _refusePublication(
+              directory,
+              'configuration transaction storage contains an unsafe entry',
+            );
+          }
+          final decoded = _readTransaction(entry.path);
+          if (decoded['schemaVersion'] != 1 ||
+              decoded['operation'] != 'config-prefer-apply' ||
+              decoded['transactionId'] is! String ||
+              decoded['phase'] is! String ||
+              _io.fs.path.basename(entry.path) !=
+                  '${decoded['transactionId']}.json') {
+            throw MambaException(
+              'Configuration evidence is invalid: ${entry.path}.',
+              exitCode: 6,
+            );
+          }
+          if (decoded['target'] != target) {
+            if (root == localRoot) {
+              throw MambaException(
+                'Configuration evidence target is invalid: ${entry.path}.',
+                exitCode: 6,
+              );
+            }
+            continue;
+          }
+          if (transactionId != null &&
+              decoded['transactionId'] != transactionId) {
+            continue;
+          }
+          if (transactionId == null &&
+              const {
+                'committed',
+                'failed',
+                'failedRestored',
+              }.contains(decoded['phase'])) {
+            continue;
+          }
+          transactions.add(<String, Object?>{
+            'transactionId': decoded['transactionId'],
+            'target': target,
+            'phase': decoded['phase'],
+            'evidencePath': entry.path,
+          });
         }
-        if (!entry.path.endsWith('.json')) {
-          _refusePublication(
-            directory,
-            'configuration transaction storage contains an unsafe entry',
-          );
-        }
-        final decoded = _readTransaction(entry.path);
-        if (decoded['schemaVersion'] != 1 ||
-            decoded['operation'] != 'config-prefer-apply' ||
-            decoded['target'] != target ||
-            decoded['transactionId'] is! String ||
-            decoded['phase'] is! String ||
-            _io.fs.path.basename(entry.path) !=
-                '${decoded['transactionId']}.json') {
-          throw MambaException(
-            'Configuration evidence is invalid: ${entry.path}.',
-            exitCode: 6,
-          );
-        }
-        if (transactionId != null &&
-            decoded['transactionId'] != transactionId) {
-          continue;
-        }
-        if (transactionId == null &&
-            const {
-              'committed',
-              'failed',
-              'failedRestored',
-            }.contains(decoded['phase'])) {
-          continue;
-        }
-        transactions.add(<String, Object?>{
-          'transactionId': decoded['transactionId'],
-          'target': target,
-          'phase': decoded['phase'],
-          'evidencePath': entry.path,
-        });
       }
     }
     if (transactionId != null && transactions.isEmpty) {
