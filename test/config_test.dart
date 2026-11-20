@@ -1180,6 +1180,99 @@ void main() {
           );
         });
 
+        test(
+          'completes an interrupted published configuration with approval',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+            _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
+            fs.directory('/project').createSync(recursive: true);
+            final lifecycleIO = _InterruptAfterPublishIO(fs: fs);
+            final workflow = ConfigurationWorkflowService(
+              fileSystem: fs,
+              environment: const {'HOME': '/user'},
+              publication: ConfigurationPublicationService(
+                fileSystem: fs,
+                io: lifecycleIO,
+              ),
+            );
+            final config = Executor('agent_resource', 'test', '1.0.0', [
+              ConfigCommand(workflow: workflow, fileSystem: fs),
+            ]);
+            await expectLater(
+              config.fake().execute([
+                'config',
+                'prefer',
+                '--scope',
+                'user',
+                '--user-config',
+                '/user/config.toml',
+                '--project-config',
+                '/project/config.toml',
+                '--cwd',
+                '/project/',
+                '--project-root',
+                '/project/',
+                '--set',
+                'cli.retention.snapshot_days=14',
+                '--apply',
+              ]),
+              throwsA(isA<StateError>()),
+            );
+            final recovery = createExecutor(fileSystem: fs).fake();
+            final common = [
+              '--scope',
+              'project',
+              '--cwd',
+              '/project/',
+              '--project-root',
+              '/project/',
+              '--configuration-target',
+              '/user/config.toml',
+              '--format',
+              'json',
+            ];
+            final listing = await recovery.execute([
+              'agent',
+              'recover',
+              ...common,
+            ]) as MambaSuccessResult;
+            final data =
+                jsonDecode(listing.output as String) as Map<String, dynamic>;
+            final id =
+                (data['data']['transactions'] as List<dynamic>)
+                        .single['transactionId']
+                    as String;
+            final result = await recovery.execute([
+              'agent',
+              'recover',
+              id,
+              ...common,
+              '--action',
+              'complete',
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              fs.file('/user/config.toml').readAsStringSync(),
+              contains('snapshot_days = 14'),
+            );
+            final after = await recovery.execute([
+              'agent',
+              'recover',
+              ...common,
+            ]) as MambaSuccessResult;
+            expect(
+              (jsonDecode(after.output as String)
+                  as Map<String, dynamic>)['data']['transactions'],
+              isEmpty,
+            );
+          },
+        );
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
@@ -2014,5 +2107,16 @@ final class _InterruptPhaseWriteIO extends LifecycleIO {
       }
     }
     super.write(path, bytes);
+  }
+}
+
+final class _InterruptAfterPublishIO extends LifecycleIO {
+  _InterruptAfterPublishIO({required super.fs});
+  @override
+  void rename(String source, String destination) {
+    super.rename(source, destination);
+    if (destination == '/user/config.toml' && source.endsWith('/config.toml')) {
+      throw StateError('simulated publication interruption');
+    }
   }
 }
