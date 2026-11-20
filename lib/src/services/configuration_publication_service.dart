@@ -306,9 +306,15 @@ interface class ConfigurationPublicationService {
             _digest(_readBounded(quarantine)) == expected) {
           if (!context.dryRun) _io.rename(quarantine, target);
         } else if (targetType == FileSystemEntityType.file &&
+            decoded['initiallyPresent'] != false &&
             quarantineType == FileSystemEntityType.notFound &&
             _digest(_readBounded(target)) == expected) {
           // A previous recovery may have restored the target before interruption.
+        } else if (targetType == FileSystemEntityType.notFound &&
+            quarantineType == FileSystemEntityType.notFound &&
+            decoded['initiallyPresent'] == false &&
+            expected == _digest('')) {
+          // The target was absent before publication and is still absent.
         } else {
           throw MambaException(
             'Configuration rollback cannot prove the original bytes; evidence retained.',
@@ -398,8 +404,6 @@ interface class ConfigurationPublicationService {
     try {
       _io.createDirectory(path.dirname(target));
       _refuseUnsupportedTargetPath(target);
-      _advance(transactionPath, transaction, 'prepared');
-      prepared = true;
       final initialType = _io.type(target, followLinks: false);
       if (initialType == FileSystemEntityType.link) {
         _refusePublication(target, 'configuration target is a symbolic link');
@@ -411,6 +415,10 @@ interface class ConfigurationPublicationService {
           'configuration target is not a regular file',
         );
       }
+      transaction['initiallyPresent'] =
+          initialType == FileSystemEntityType.file;
+      _advance(transactionPath, transaction, 'prepared');
+      prepared = true;
       if (initialType == FileSystemEntityType.file) {
         _io.rename(target, quarantinePath);
         quarantined = true;
