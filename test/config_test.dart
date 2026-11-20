@@ -2,6 +2,10 @@ import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/config.dart';
+import 'package:agent_resource/src/services/configuration_publication_service.dart';
+import 'package:agent_resource/src/services/configuration_workflow_service.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
@@ -822,6 +826,102 @@ void main() {
           },
         );
 
+        test(
+          'applies user preferences when project state is on another volume',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+            _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
+            fs.directory('/project').createSync(recursive: true);
+            final lifecycleIO = _SeparateVolumesIO(fs: fs);
+            final workflow = ConfigurationWorkflowService(
+              fileSystem: fs,
+              environment: const {'HOME': '/user'},
+              publication: ConfigurationPublicationService(
+                fileSystem: fs,
+                io: lifecycleIO,
+              ),
+            );
+            final executor = Executor('agent_resource', 'test', '1.0.0', [
+              ConfigCommand(workflow: workflow, fileSystem: fs),
+            ]);
+            final result = await executor.fake().execute([
+              'config',
+              'prefer',
+              '--scope',
+              'user',
+              '--user-config',
+              '/user/config.toml',
+              '--project-config',
+              '/project/config.toml',
+              '--cwd',
+              '/project/',
+              '--project-root',
+              '/project/',
+              '--set',
+              'cli.retention.snapshot_days=14',
+              '--apply',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              fs.file('/user/config.toml').readAsStringSync(),
+              contains('snapshot_days = 14'),
+            );
+          },
+        );
+
+        test('can retry after a pre-publication rename failure', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
+          fs.directory('/project').createSync(recursive: true);
+          final lifecycleIO = _FailOnceRenameIO(fs: fs);
+          final workflow = ConfigurationWorkflowService(
+            fileSystem: fs,
+            environment: const {'HOME': '/user'},
+            publication: ConfigurationPublicationService(
+              fileSystem: fs,
+              io: lifecycleIO,
+            ),
+          );
+          final executor = Executor('agent_resource', 'test', '1.0.0', [
+            ConfigCommand(workflow: workflow, fileSystem: fs),
+          ]);
+          final args = [
+            'config',
+            'prefer',
+            '--scope',
+            'user',
+            '--user-config',
+            '/user/config.toml',
+            '--project-config',
+            '/project/config.toml',
+            '--cwd',
+            '/project/',
+            '--project-root',
+            '/project/',
+            '--set',
+            'cli.retention.snapshot_days=14',
+            '--apply',
+          ];
+          expect(
+            await executor.fake().execute(args),
+            isA<MambaFailureResult>(),
+          );
+          expect(
+            fs.file('/user/config.toml').readAsStringSync(),
+            'schema_version = 1\n',
+          );
+          final retry = await executor.fake().execute(args);
+          expect(
+            retry,
+            isA<MambaSuccessResult>(),
+            reason: retry is MambaFailureResult ? retry.message : null,
+          );
+        });
+
         final applyCases =
             <
               ({
@@ -1548,6 +1648,32 @@ Executor _executor({
     configurationEnvironment: configurationEnvironment,
     configurationOperatingSystem: configurationOperatingSystem,
   );
+}
+
+final class _FailOnceRenameIO extends LifecycleIO {
+  _FailOnceRenameIO({required super.fs});
+  var failed = false;
+
+  @override
+  void rename(String source, String destination) {
+    if (!failed && source == '/user/config.toml') {
+      failed = true;
+      throw io.FileSystemException('Injected rename failure', source);
+    }
+    super.rename(source, destination);
+  }
+}
+
+final class _SeparateVolumesIO extends LifecycleIO {
+  _SeparateVolumesIO({required super.fs});
+
+  @override
+  void rename(String source, String destination) {
+    if (source.startsWith('/user/') && destination.startsWith('/project/')) {
+      throw io.FileSystemException('Cross-device rename', source);
+    }
+    super.rename(source, destination);
+  }
 }
 
 void _writeConfig(MemoryFileSystem fileSystem, String path, String source) {

@@ -85,9 +85,8 @@ interface class ConfigurationPublicationService {
       '$transactionId.bak',
     );
     final quarantinePath = path.join(
-      stateRoot,
-      'configuration-transactions',
-      '$transactionId.quarantine',
+      path.dirname(target),
+      '.agent-resource-prefer-$transactionId.quarantine',
     );
     final failedNewPath = '$quarantinePath.failed-new';
     final expectedDigest = _digest(request.expectedSource);
@@ -109,12 +108,14 @@ interface class ConfigurationPublicationService {
     var quarantined = false;
     var published = false;
     var liveChanged = false;
+    var prepared = false;
     String? retainedBackupPath;
     String currentSource = '';
     try {
       _io.createDirectory(path.dirname(target));
       _refuseUnsupportedTargetPath(target);
       _advance(transactionPath, transaction, 'prepared');
+      prepared = true;
       final initialType = _io.type(target, followLinks: false);
       if (initialType == FileSystemEntityType.link) {
         _refusePublication(target, 'configuration target is a symbolic link');
@@ -242,6 +243,17 @@ interface class ConfigurationPublicationService {
           targetChanged: false,
           original: failure,
         );
+      }
+      if (prepared &&
+          !liveChanged &&
+          _io.type(quarantinePath, followLinks: false) ==
+              FileSystemEntityType.notFound &&
+          ((_io.type(target, followLinks: false) == FileSystemEntityType.file &&
+                  _digest(_readBounded(target)) == expectedDigest) ||
+              (_io.type(target, followLinks: false) ==
+                      FileSystemEntityType.notFound &&
+                  request.expectedSource.isEmpty))) {
+        _advance(transactionPath, transaction, 'failed');
       }
       throw failure;
     } on FormatException catch (error) {
