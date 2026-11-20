@@ -1,3 +1,4 @@
+import 'dart:convert' show jsonEncode;
 import 'dart:io' show FileSystemException, Platform;
 
 import 'package:file/file.dart' as fslib;
@@ -13,6 +14,8 @@ import '../pack/pack_configuration.dart'
         packConfigurationFileName;
 import '../pack/pack_models.dart' show PackProcessStatus;
 import '../configuration/effective_configuration.dart';
+import 'lifecycle_state_service.dart'
+    show LifecycleContext, LifecycleOptions, LifecycleScope;
 
 /// Resolves effective configuration and deliberately saves eligible
 /// preferences at the selected user or project configuration path.
@@ -92,7 +95,7 @@ interface class ConfigurationWorkflowService {
         ? targetDocument
         : _ConfigDocument.absent();
     final proposedConfig = _proposeDocument(
-      targetDocument.map,
+      targetDocument,
       assignments,
       targetPath,
       request.scope,
@@ -265,33 +268,18 @@ interface class ConfigurationWorkflowService {
   }
 
   String _proposeDocument(
-    Map<String, Object?> existing,
+    _ConfigDocument document,
     Map<EligiblePreference, Object?> assignments,
     String configPath,
     PackConfigurationScope scope,
   ) {
-    final proposed = <String, Object?>{...existing, 'schema_version': 1};
-    final cli = _mapCopy(proposed['cli']);
-    final install = _mapCopy(cli['install']);
-    final retention = _mapCopy(cli['retention']);
-    for (final entry in assignments.entries) {
-      switch (entry.key) {
-        case EligiblePreference.installTargets:
-          install['targets'] = entry.value;
-        case EligiblePreference.installSkillMethod:
-          install['skill_method'] = entry.value;
-        case EligiblePreference.retentionSnapshotDays:
-          retention['snapshot_days'] = entry.value;
-      }
-    }
-    cli['install'] = install;
-    cli['retention'] = retention;
-    proposed['cli'] = cli;
+    final proposed = _focusedEdit(document.source, assignments, configPath);
     try {
-      final source =
-          '${TomlDocument.fromMap(proposed).toString().trimRight()}\n';
-      PackConfiguration.parse(source, configPath: configPath, scope: scope);
-      return source;
+      PackConfiguration.parse(proposed, configPath: configPath, scope: scope);
+      _verifyPreferenceEdits(document.map, proposed, assignments, configPath);
+      return proposed;
+    } on MambaException {
+      rethrow;
     } on PackConfigurationException catch (error) {
       throw MambaException(
         'Configuration validation failed for $configPath:\n${error.message}',
@@ -310,19 +298,75 @@ interface class ConfigurationWorkflowService {
     }
   }
 
-  Map<String, Object?> _mapCopy(Object? value) => switch (value) {
-    final Map<String, Object?> map => <String, Object?>{...map},
-    _ => <String, Object?>{},
-  };
+  void _verifyPreferenceEdits(
+    Map<String, Object?> original,
+    String proposed,
+    Map<EligiblePreference, Object?> assignments,
+    String configPath,
+  ) {
+    final normalized = _normalize(TomlDocument.parse(proposed).toMap());
+    if (normalized case final Map<String, Object?> map) {
+      for (final preference in EligiblePreference.values) {
+        final before = _lookup(original, preference.segments);
+        final after = _lookup(map, preference.segments);
+        final expected = assignments.containsKey(preference)
+            ? assignments[preference]
+            : before.value;
+        if (after.present !=
+                (assignments.containsKey(preference) || before.present) ||
+            !_samePreferenceValue(after.value, expected)) {
+          _refuseUnsafeLayout(configPath);
+        }
+      }
+      return;
+    }
+    _refuseUnsafeLayout(configPath);
+  }
+
+  bool _samePreferenceValue(Object? left, Object? right) {
+    if (left is List<dynamic> || right is List<dynamic>) {
+      return jsonEncode(left) == jsonEncode(right);
+    }
+    return left == right;
+  }
 
   void _writeDocument(String configPath, String source) {
+    final target = _fileSystem.file(configPath);
+    final temporary = _fileSystem.file('$configPath.prefer.tmp');
+    String? publicationError;
+    String? cleanupError;
     try {
-      final file = _fileSystem.file(configPath);
-      file.parent.createSync(recursive: true);
-      file.writeAsStringSync(source, flush: true);
+      target.parent.createSync(recursive: true);
+      if (temporary.existsSync()) temporary.deleteSync();
+      temporary.writeAsStringSync(source, flush: true);
+      if (temporary.readAsStringSync() != source) {
+        throw FileSystemException(
+          'staged configuration verification failed',
+          temporary.path,
+        );
+      }
+      temporary.renameSync(configPath);
     } on FileSystemException catch (error) {
+      publicationError = error.message;
+    } on FormatException catch (error) {
+      publicationError = error.message;
+    } finally {
+      try {
+        if (temporary.existsSync()) temporary.deleteSync();
+      } on FileSystemException catch (error) {
+        cleanupError = error.message;
+      }
+    }
+    if (publicationError != null) {
       throw MambaException(
-        'Could not write configuration $configPath: ${error.message}',
+        'Could not write configuration $configPath: $publicationError',
+        exitCode: PackProcessStatus.failure.code,
+      );
+    }
+    if (cleanupError != null) {
+      throw MambaException(
+        'Could not clean staged configuration for $configPath: '
+        '$cleanupError',
         exitCode: PackProcessStatus.failure.code,
       );
     }
@@ -436,18 +480,26 @@ interface class ConfigurationWorkflowService {
 
   _ResolvedPaths _resolvePaths(ConfigurationWorkflowRequest request) {
     final path = _fileSystem.path;
-    final processCwd = path.normalize(_fileSystem.currentDirectory.path);
+    final context = LifecycleContext.resolve(
+      LifecycleOptions(
+        processWorkingDirectory: _fileSystem.currentDirectory.path,
+        environment: _environment,
+        scope: request.scope == PackConfigurationScope.user
+            ? LifecycleScope.user
+            : LifecycleScope.project,
+        cwd: request.cwd,
+        projectRoot: request.projectRoot,
+        home: request.home,
+      ),
+      fileSystem: _fileSystem,
+    );
+    final cwd = context.cwd;
+    final projectRoot = context.projectRoot;
     final cwdOverride = request.cwd;
-    final cwd = cwdOverride == null
-        ? processCwd
-        : _resolveAgainst(cwdOverride, processCwd);
     final projectRootOverride = request.projectRoot;
-    final projectRoot = projectRootOverride == null
-        ? cwd
-        : _resolveAgainst(projectRootOverride, cwd);
     final userOverride = request.userConfigPath;
     final userPath = userOverride == null
-        ? _discoveredUserPath(request, processCwd)
+        ? _discoveredUserPath(context)
         : _resolveAgainst(userOverride, cwd);
     final projectOverride = request.projectConfigPath;
     final projectPath = projectOverride == null
@@ -467,6 +519,11 @@ interface class ConfigurationWorkflowService {
     final projectSource = projectOverride == null
         ? 'projectRoot'
         : '--project-config';
+    final projectRootSource = projectRootOverride == null
+        ? path.equals(projectRoot, cwd)
+              ? 'cwd'
+              : '.git'
+        : '--project-root';
     final descriptors = <ConfigurationPathValue>[
       ConfigurationPathValue(
         'userConfig',
@@ -516,25 +573,18 @@ interface class ConfigurationWorkflowService {
         projectRootOverride == null
             ? EffectiveValueOrigin.detection
             : EffectiveValueOrigin.explicitArgument,
-        projectRootOverride == null ? 'cwd' : '--project-root',
+        projectRootSource,
       ),
     ];
     return _ResolvedPaths(userPath, projectPath, selectedPath, descriptors);
   }
 
-  String _discoveredUserPath(
-    ConfigurationWorkflowRequest request,
-    String processCwd,
-  ) {
-    final homeOverride = request.home;
-    final home = homeOverride == null
-        ? null
-        : _resolveAgainst(homeOverride, processCwd);
+  String _discoveredUserPath(LifecycleContext context) {
     try {
       return PackConfiguration.userConfigPath(
         environment: _environment,
         operatingSystem: _operatingSystem,
-        home: home,
+        home: context.home,
       );
     } on PackConfigurationException catch (error) {
       throw MambaException(
@@ -580,7 +630,7 @@ interface class ConfigurationWorkflowService {
       if (normalized case final Map<String, Object?> map) {
         _rejectUnsafeKeys(map, configPath);
         PackConfiguration.parse(source, configPath: configPath, scope: scope);
-        return _ConfigDocument(map);
+        return _ConfigDocument(source, map);
       }
       throw MambaException(
         'Configuration $configPath must be a TOML table.',
@@ -679,6 +729,193 @@ bool _containsUnsafeFragment(String value, Set<String> fragments) {
 bool _hasControl(String value) =>
     value.runes.any((rune) => rune < 0x20 || rune == 0x7f);
 
+String _focusedEdit(
+  String source,
+  Map<EligiblePreference, Object?> assignments,
+  String configPath,
+) {
+  final hasCrlf = source.contains('\r\n');
+  final hasLoneLf = source.replaceAll('\r\n', '').contains('\n');
+  if (hasCrlf && hasLoneLf) _refuseUnsafeLayout(configPath);
+  final normalized = source.replaceAll('\r\n', '\n');
+  final lines = normalized.split('\n');
+  final trailing = <String>[];
+  while (lines.isNotEmpty && lines.last.isEmpty) {
+    trailing.add(lines.removeLast());
+  }
+  _rejectAmbiguousPreferenceLayout(lines, configPath);
+  final schemaPattern = RegExp(r'^\s*schema_version\s*=');
+  if (!lines.any((line) => schemaPattern.hasMatch(_withoutComment(line)))) {
+    lines.insert(0, 'schema_version = 1');
+  }
+  _editSection(lines, '[cli.install]', <String, Object?>{
+    if (assignments.containsKey(EligiblePreference.installTargets))
+      'targets': assignments[EligiblePreference.installTargets],
+    if (assignments.containsKey(EligiblePreference.installSkillMethod))
+      'skill_method': assignments[EligiblePreference.installSkillMethod],
+  }, configPath);
+  _editSection(lines, '[cli.retention]', <String, Object?>{
+    if (assignments.containsKey(EligiblePreference.retentionSnapshotDays))
+      'snapshot_days': assignments[EligiblePreference.retentionSnapshotDays],
+  }, configPath);
+  lines.addAll(trailing);
+  final joined = lines.join('\n');
+  return hasCrlf ? joined.replaceAll('\n', '\r\n') : joined;
+}
+
+void _editSection(
+  List<String> lines,
+  String header,
+  Map<String, Object?> updates,
+  String configPath,
+) {
+  if (updates.isEmpty) return;
+  var headerIndex = -1;
+  for (var index = 0; index < lines.length; index++) {
+    final code = _withoutComment(lines[index]).trim();
+    if (code != header) continue;
+    if (headerIndex >= 0) _refuseUnsafeLayout(configPath);
+    headerIndex = index;
+  }
+  if (headerIndex < 0) {
+    if (lines.isNotEmpty && _withoutComment(lines.last).trim().isNotEmpty) {
+      lines.add('');
+    }
+    lines.add(header);
+    for (final entry in updates.entries) {
+      lines.add('${entry.key} = ${_tomlValue(entry.value)}');
+    }
+    return;
+  }
+  var sectionEnd = lines.length;
+  for (var index = headerIndex + 1; index < lines.length; index++) {
+    if (_withoutComment(lines[index]).trim().startsWith('[')) {
+      sectionEnd = index;
+      break;
+    }
+  }
+  for (final entry in updates.entries) {
+    final pattern = RegExp(r'^(\s*)' + RegExp.escape(entry.key) + r'\s*=');
+    var replaced = false;
+    for (var index = headerIndex + 1; index < sectionEnd; index++) {
+      final code = _withoutComment(lines[index]);
+      final match = pattern.firstMatch(code);
+      if (match == null) continue;
+      final indentation = match.group(1) ?? '';
+      lines[index] =
+          '$indentation${entry.key} = ${_tomlValue(entry.value)}'
+          '${_commentSuffix(lines[index])}';
+      replaced = true;
+      break;
+    }
+    if (replaced) continue;
+    var insertAt = sectionEnd;
+    while (insertAt > headerIndex + 1 && lines[insertAt - 1].trim().isEmpty) {
+      insertAt--;
+    }
+    lines.insert(insertAt, '${entry.key} = ${_tomlValue(entry.value)}');
+    sectionEnd++;
+  }
+}
+
+void _rejectAmbiguousPreferenceLayout(List<String> lines, String configPath) {
+  var section = '';
+  var installHeaders = 0;
+  var retentionHeaders = 0;
+  for (final line in lines) {
+    final code = _withoutComment(line).trim();
+    if (code.startsWith('[')) {
+      section = code;
+      if (code == '[cli.install]') installHeaders++;
+      if (code == '[cli.retention]') retentionHeaders++;
+      if (code.startsWith('[cli') &&
+          !const <String>{
+            '[cli]',
+            '[cli.install]',
+            '[cli.retention]',
+          }.contains(code)) {
+        _refuseUnsafeLayout(configPath);
+      }
+      continue;
+    }
+    if (code.isEmpty) continue;
+    final inlineCli =
+        RegExp(r'^cli\s*=\s*\{').hasMatch(code) ||
+        RegExp(r'^cli\.install\s*=\s*\{').hasMatch(code) ||
+        RegExp(r'^cli\.retention\s*=\s*\{').hasMatch(code);
+    final dottedPreference =
+        RegExp(r'^cli\.install\.(?:targets|skill_method)\s*=').hasMatch(code) ||
+        RegExp(r'^cli\.retention\.snapshot_days\s*=').hasMatch(code);
+    final inlineUnderCli =
+        section == '[cli]' &&
+        (RegExp(r'^(?:install|retention)\s*=\s*\{').hasMatch(code) ||
+            RegExp(r'^install\.(?:targets|skill_method)\s*=').hasMatch(code) ||
+            RegExp(r'^retention\.snapshot_days\s*=').hasMatch(code));
+    if (inlineCli || dottedPreference || inlineUnderCli) {
+      _refuseUnsafeLayout(configPath);
+    }
+  }
+  if (installHeaders > 1 || retentionHeaders > 1) {
+    _refuseUnsafeLayout(configPath);
+  }
+}
+
+String _tomlValue(Object? value) => switch (value) {
+  final List<dynamic> list =>
+    '[${[for (final item in list) jsonEncode(item)].join(', ')}]',
+  final String string => jsonEncode(string),
+  final int integer => integer.toString(),
+  _ => throw StateError('Unsupported focused preference value.'),
+};
+
+String _withoutComment(String line) {
+  const singleQuote = 39;
+  const doubleQuote = 34;
+  const backslash = 92;
+  const hash = 35;
+  var quote = 0;
+  var escaped = false;
+  for (var index = 0; index < line.length; index++) {
+    final character = line.codeUnitAt(index);
+    if (quote == singleQuote) {
+      if (character == singleQuote) quote = 0;
+    } else if (quote == doubleQuote) {
+      if (escaped) {
+        escaped = false;
+      } else if (character == backslash) {
+        escaped = true;
+      } else if (character == doubleQuote) {
+        quote = 0;
+      }
+    } else if (character == singleQuote) {
+      quote = singleQuote;
+    } else if (character == doubleQuote) {
+      quote = doubleQuote;
+    } else if (character == hash) {
+      return line.substring(0, index);
+    }
+  }
+  return line;
+}
+
+String _commentSuffix(String line) {
+  final code = _withoutComment(line);
+  var start = code.length;
+  while (start > 0) {
+    final character = line.codeUnitAt(start - 1);
+    if (character != 32 && character != 9) break;
+    start--;
+  }
+  return line.substring(start);
+}
+
+Never _refuseUnsafeLayout(String configPath) => throw MambaException(
+  'Cannot safely preserve configuration formatting for $configPath. '
+  'Use table-form [cli.install] and [cli.retention] sections; no '
+  'configuration was written.',
+  exitCode: PackProcessStatus.invalidInput.code,
+);
+
 final class _ResolvedPaths(
   final String userPath,
   final String projectPath,
@@ -686,7 +923,10 @@ final class _ResolvedPaths(
   final List<ConfigurationPathValue> descriptors,
 );
 
-final class const _ConfigDocument(final Map<String, Object?> map) {
+final class const _ConfigDocument(
+  final String source,
+  final Map<String, Object?> map,
+) {
   factory _ConfigDocument.absent() =>
-      _ConfigDocument(const <String, Object?>{'schema_version': 1});
+      _ConfigDocument('', const <String, Object?>{'schema_version': 1});
 }

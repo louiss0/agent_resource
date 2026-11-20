@@ -260,9 +260,13 @@ final class ConfigPreferCommand extends Command {
         longDescription:
             'Previews eligible user- or project-level preference changes by '
             'default. --apply writes only the reviewed safe preferences to '
-            'the selected configuration. Approvals, adoption authority, '
-            'destructive consent, risk acknowledgements, and credentials are '
-            'refused and never remembered.',
+            'the selected configuration with focused, comment-preserving '
+            'table edits; ambiguous inline or dotted layouts are refused. '
+            'Publication is staged through a temporary file and rename, so '
+            'a failed write leaves the original configuration unchanged. '
+            'Approvals, adoption authority, destructive consent, risk '
+            'acknowledgements, and credentials are refused and never '
+            'remembered.',
       );
 
   final ConfigurationWorkflowService _service;

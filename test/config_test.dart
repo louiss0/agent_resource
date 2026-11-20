@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:io' as io;
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
@@ -10,7 +13,7 @@ void main() {
   group('agent_resource', () {
     group('config', () {
       test('shows its child commands', () async {
-        final result = await createExecutor(
+        final result = await _executor(
           fileSystem: MemoryFileSystem(style: FileSystemStyle.posix),
         ).fake().execute(['config', '--help']);
 
@@ -33,7 +36,7 @@ void main() {
       group('effective', () {
         test('shows default settings with explicit paths and origins', () async {
           final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
-          final result = await createExecutor(fileSystem: fileSystem)
+          final result = await _executor(fileSystem: fileSystem)
               .fake()
               .execute([
                 'config',
@@ -45,7 +48,7 @@ void main() {
                 '--project-config',
                 '/sandbox/project.toml',
                 '--cwd',
-                '/sandbox/',
+                '/sandbox/project/',
                 '--project-root',
                 '/sandbox/project/',
               ]);
@@ -67,7 +70,7 @@ void main() {
                         '[explicit-argument @ --project-config]',
                     '  selectedConfig: /sandbox/project.toml '
                         '[explicit-argument @ --project-config]',
-                    '  cwd: /sandbox [explicit-argument @ --cwd]',
+                    '  cwd: /sandbox/project [explicit-argument @ --cwd]',
                     '  projectRoot: /sandbox/project '
                         '[explicit-argument @ --project-root]',
                     'settings:',
@@ -104,7 +107,7 @@ void main() {
           );
 
           final result =
-              await createExecutor(
+              await _executor(
                 fileSystem: fileSystem,
                 configurationEnvironment: const <String, String>{
                   'HOME': '/sandbox/home',
@@ -116,7 +119,7 @@ void main() {
                 '--scope',
                 'project',
                 '--cwd',
-                '/sandbox/',
+                '/sandbox/project/',
                 '--project-root',
                 '/sandbox/project/',
                 '--home',
@@ -161,7 +164,7 @@ void main() {
               },
               {
                 'name': 'cwd',
-                'path': '/sandbox',
+                'path': '/sandbox/project',
                 'origin': 'explicit-argument',
                 'source': '--cwd',
               },
@@ -203,7 +206,7 @@ void main() {
         });
 
         test('describes read-only effective inspection in help', () async {
-          final result = await createExecutor(
+          final result = await _executor(
             fileSystem: MemoryFileSystem(style: FileSystemStyle.posix),
           ).fake().execute(['config', 'effective', '--help']);
 
@@ -226,7 +229,7 @@ void main() {
 
         test('shows explicit target and method origins', () async {
           final result =
-              await createExecutor(
+              await _executor(
                 fileSystem: MemoryFileSystem(style: FileSystemStyle.posix),
               ).fake().execute([
                 'config',
@@ -236,7 +239,7 @@ void main() {
                 '--project-config',
                 '/sandbox/project.toml',
                 '--cwd',
-                '/sandbox/',
+                '/sandbox/project/',
                 '--project-root',
                 '/sandbox/project/',
                 '--target',
@@ -283,7 +286,7 @@ void main() {
 
         test('uses --config as the selected scope path', () async {
           final result =
-              await createExecutor(
+              await _executor(
                 fileSystem: MemoryFileSystem(style: FileSystemStyle.posix),
                 configurationEnvironment: const <String, String>{
                   'HOME': '/sandbox/home',
@@ -297,7 +300,7 @@ void main() {
                 '--config',
                 '/sandbox/chosen.toml',
                 '--cwd',
-                '/sandbox/',
+                '/sandbox/project/',
                 '--project-root',
                 '/sandbox/project/',
                 '--home',
@@ -367,7 +370,7 @@ void main() {
 
         for (final testCase in effectiveRejections) {
           test('rejects ${testCase.name}', () async {
-            final result = await createExecutor(
+            final result = await _executor(
               fileSystem: MemoryFileSystem(style: FileSystemStyle.posix),
             ).fake().execute(testCase.arguments);
 
@@ -390,6 +393,86 @@ void main() {
             );
           });
         }
+
+        test(
+          'discovers the Git project root from a nested directory',
+          () async {
+            final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+            fileSystem.directory('/repo/.git').createSync(recursive: true);
+            fileSystem
+                .directory('/repo/src/nested')
+                .createSync(recursive: true);
+            _writeConfig(
+              fileSystem,
+              '/repo/agent-resources.toml',
+              'schema_version = 1\n'
+                  '[cli.install]\n'
+                  'targets = ["codex"]\n',
+            );
+            _writeConfig(
+              fileSystem,
+              '/sandbox/user.toml',
+              'schema_version = 1\n',
+            );
+
+            final result = await _executor(fileSystem: fileSystem)
+                .fake()
+                .execute([
+                  'config',
+                  'effective',
+                  '--scope',
+                  'project',
+                  '--cwd',
+                  '/repo/src/nested/',
+                  '--user-config',
+                  '/sandbox/user.toml',
+                  '--format',
+                  'json',
+                ]);
+
+            expect(
+              result,
+              isA<MambaSuccessResult>()
+                  .having((value) => value.exitCode, 'exit code', 0)
+                  .having((value) => value.output, 'output', isA<String>()),
+            );
+            final success = result as MambaSuccessResult;
+            final payload = jsonDecode(success.output as String);
+            expect(
+              payload['paths'],
+              contains(
+                equals(<String, Object?>{
+                  'name': 'projectRoot',
+                  'path': '/repo',
+                  'origin': 'detection',
+                  'source': '.git',
+                }),
+              ),
+            );
+            expect(
+              payload['paths'],
+              contains(
+                equals(<String, Object?>{
+                  'name': 'selectedConfig',
+                  'path': '/repo/agent-resources.toml',
+                  'origin': 'detection',
+                  'source': 'projectRoot',
+                }),
+              ),
+            );
+            expect(
+              payload['settings'],
+              contains(
+                equals(<String, Object?>{
+                  'key': 'cli.install.targets',
+                  'value': ['codex'],
+                  'origin': 'project-config',
+                  'source': '/repo/agent-resources.toml',
+                }),
+              ),
+            );
+          },
+        );
       });
 
       group('prefer', () {
@@ -411,7 +494,7 @@ void main() {
           _writeConfig(fileSystem, userPath, originalUser);
           _writeConfig(fileSystem, projectPath, originalProject);
 
-          final result = await createExecutor(fileSystem: fileSystem)
+          final result = await _executor(fileSystem: fileSystem)
               .fake()
               .execute([
                 'config',
@@ -423,7 +506,7 @@ void main() {
                 '--project-config',
                 projectPath,
                 '--cwd',
-                '/sandbox/',
+                '/sandbox/project/',
                 '--project-root',
                 '/sandbox/project/',
                 '--set',
@@ -551,7 +634,7 @@ void main() {
         for (final testCase in applyCases) {
           test('applies eligible preferences at ${testCase.scope} scope', () async {
             final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
-            final applyResult = await createExecutor(fileSystem: fileSystem)
+            final applyResult = await _executor(fileSystem: fileSystem)
                 .fake()
                 .execute([
                   'config',
@@ -563,7 +646,7 @@ void main() {
                   '--project-config',
                   '/sandbox/project.toml',
                   '--cwd',
-                  '/sandbox/',
+                  '/sandbox/project/',
                   '--project-root',
                   '/sandbox/project/',
                   '--set',
@@ -614,7 +697,7 @@ void main() {
             expect(writtenInstall['targets'], ['codex']);
             expect(writtenRetention['snapshot_days'], 14);
 
-            final effectiveResult = await createExecutor(fileSystem: fileSystem)
+            final effectiveResult = await _executor(fileSystem: fileSystem)
                 .fake()
                 .execute([
                   'config',
@@ -626,7 +709,7 @@ void main() {
                   '--project-config',
                   '/sandbox/project.toml',
                   '--cwd',
-                  '/sandbox/',
+                  '/sandbox/project/',
                   '--project-root',
                   '/sandbox/project/',
                   '--format',
@@ -697,7 +780,7 @@ void main() {
         for (final testCase in unsafeAssignments) {
           test('refuses ${testCase.name} without writing', () async {
             final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
-            final result = await createExecutor(fileSystem: fileSystem)
+            final result = await _executor(fileSystem: fileSystem)
                 .fake()
                 .execute([
                   'config',
@@ -709,7 +792,7 @@ void main() {
                   '--project-config',
                   '/sandbox/project.toml',
                   '--cwd',
-                  '/sandbox/',
+                  '/sandbox/project/',
                   '--project-root',
                   '/sandbox/project/',
                   '--set',
@@ -767,7 +850,7 @@ void main() {
               '[cli.approval]\n'
               'enabled = true\n';
           _writeConfig(fileSystem, projectPath, original);
-          final result = await createExecutor(fileSystem: fileSystem)
+          final result = await _executor(fileSystem: fileSystem)
               .fake()
               .execute([
                 'config',
@@ -779,7 +862,7 @@ void main() {
                 '--project-config',
                 projectPath,
                 '--cwd',
-                '/sandbox/',
+                '/sandbox/project/',
                 '--project-root',
                 '/sandbox/project/',
                 '--set',
@@ -826,7 +909,7 @@ void main() {
         });
 
         test('describes preview and unsafe refusal in help', () async {
-          final result = await createExecutor(
+          final result = await _executor(
             fileSystem: MemoryFileSystem(style: FileSystemStyle.posix),
           ).fake().execute(['config', 'prefer', '--help']);
 
@@ -841,7 +924,8 @@ void main() {
                     contains('--apply'),
                     contains('--set'),
                     contains('Previews'),
-                    contains('credentials are refused'),
+                    contains('credentials are'),
+                    contains('refused and never remembered'),
                   ),
                 ),
           );
@@ -891,7 +975,7 @@ void main() {
 
         for (final testCase in preferRejections) {
           test('rejects ${testCase.name}', () async {
-            final result = await createExecutor(
+            final result = await _executor(
               fileSystem: MemoryFileSystem(style: FileSystemStyle.posix),
             ).fake().execute(testCase.arguments);
 
@@ -914,13 +998,358 @@ void main() {
             );
           });
         }
+
+        test(
+          'applies at the Git project root from a nested directory',
+          () async {
+            final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+            fileSystem.directory('/repo/.git').createSync(recursive: true);
+            fileSystem
+                .directory('/repo/src/nested')
+                .createSync(recursive: true);
+            _writeConfig(
+              fileSystem,
+              '/repo/agent-resources.toml',
+              'schema_version = 1\n'
+                  '[cli.retention]\n'
+                  'snapshot_days = 45\n',
+            );
+            _writeConfig(
+              fileSystem,
+              '/sandbox/user.toml',
+              'schema_version = 1\n',
+            );
+
+            final result = await _executor(fileSystem: fileSystem)
+                .fake()
+                .execute([
+                  'config',
+                  'prefer',
+                  '--scope',
+                  'project',
+                  '--cwd',
+                  '/repo/src/nested/',
+                  '--user-config',
+                  '/sandbox/user.toml',
+                  '--set',
+                  'cli.retention.snapshot_days=21',
+                  '--apply',
+                  '--format',
+                  'json',
+                ]);
+
+            expect(
+              result,
+              isA<MambaSuccessResult>()
+                  .having((value) => value.exitCode, 'exit code', 0)
+                  .having((value) => value.output, 'output', isA<String>()),
+            );
+            final written = fileSystem.file('/repo/agent-resources.toml');
+            final writtenMap = TomlDocument.parse(written.readAsStringSync())
+                .toMap();
+            final writtenCli = writtenMap['cli'] as Map<String, dynamic>;
+            final writtenRetention =
+                writtenCli['retention'] as Map<String, dynamic>;
+            expect(writtenRetention['snapshot_days'], 21);
+            expect(
+              fileSystem
+                  .file('/repo/src/nested/agent-resources.toml')
+                  .existsSync(),
+              isFalse,
+            );
+            expect(
+              fileSystem
+                  .file('/repo/agent-resources.toml.prefer.tmp')
+                  .existsSync(),
+              isFalse,
+            );
+          },
+        );
+
+        test(
+          'preserves comments and formatting during focused apply',
+          () async {
+            final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+            const projectPath = '/sandbox/project.toml';
+            const original =
+                '# Consumer configuration\n'
+                'schema_version = 1   # keep schema\n'
+                '\n'
+                '[cli.install] # install table\n'
+                '  targets = ["claude"]    # old targets\n'
+                'skill_method = "canonical" # method\n'
+                '\n'
+                '[cli.retention]\n'
+                '# retention window\n'
+                'snapshot_days = 45  # days\n'
+                '\n'
+                '[packs."local/demo".source]\n'
+                'kind = "local"\n'
+                'path = "../source" # keep path\n';
+            const expected =
+                '# Consumer configuration\n'
+                'schema_version = 1   # keep schema\n'
+                '\n'
+                '[cli.install] # install table\n'
+                '  targets = ["codex", "shared"]    # old targets\n'
+                'skill_method = "canonical" # method\n'
+                '\n'
+                '[cli.retention]\n'
+                '# retention window\n'
+                'snapshot_days = 30  # days\n'
+                '\n'
+                '[packs."local/demo".source]\n'
+                'kind = "local"\n'
+                'path = "../source" # keep path\n';
+            _writeConfig(fileSystem, projectPath, original);
+
+            final result = await _executor(fileSystem: fileSystem)
+                .fake()
+                .execute([
+                  'config',
+                  'prefer',
+                  '--scope',
+                  'project',
+                  '--user-config',
+                  '/sandbox/user.toml',
+                  '--project-config',
+                  projectPath,
+                  '--cwd',
+                  '/sandbox/project/',
+                  '--project-root',
+                  '/sandbox/project/',
+                  '--set',
+                  'cli.install.targets=codex,shared',
+                  '--set',
+                  'cli.retention.snapshot_days=30',
+                  '--apply',
+                  '--format',
+                  'json',
+                ]);
+
+            expect(
+              result,
+              isA<MambaSuccessResult>()
+                  .having((value) => value.exitCode, 'exit code', 0)
+                  .having((value) => value.output, 'output', isA<String>()),
+            );
+            final success = result as MambaSuccessResult;
+            final payload = jsonDecode(success.output as String);
+            expect(payload['proposedConfig'], expected);
+            expect(fileSystem.file(projectPath).readAsStringSync(), expected);
+            expect(
+              fileSystem.file('$projectPath.prefer.tmp').existsSync(),
+              isFalse,
+            );
+          },
+        );
+
+        test('refuses layouts that cannot preserve safe formatting', () async {
+          final fileSystem = MemoryFileSystem(style: FileSystemStyle.posix);
+          const projectPath = '/sandbox/project.toml';
+          const original =
+              '# keep this comment\n'
+              'schema_version = 1\n'
+              'cli = { install = { targets = ["claude"] } }\n';
+          _writeConfig(fileSystem, projectPath, original);
+
+          final result = await _executor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'config',
+                'prefer',
+                '--scope',
+                'project',
+                '--user-config',
+                '/sandbox/user.toml',
+                '--project-config',
+                projectPath,
+                '--cwd',
+                '/sandbox/project/',
+                '--project-root',
+                '/sandbox/project/',
+                '--set',
+                'cli.install.skill_method=copy',
+                '--apply',
+              ]);
+
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', 2)
+                .having(
+                  (value) => value.message.contains('Cannot safely preserve'),
+                  'diagnostic names refusal',
+                  isTrue,
+                )
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.phase,
+                  'phase',
+                  MambaExecutionPhase.run,
+                )
+                .having((value) => value.error.commandPath, 'command path', [
+                  'agent_resource',
+                  'config',
+                  'prefer',
+                ]),
+          );
+          expect(fileSystem.file(projectPath).readAsStringSync(), original);
+          expect(
+            fileSystem.file('$projectPath.prefer.tmp').existsSync(),
+            isFalse,
+          );
+        });
+
+        test('keeps original bytes when atomic publication fails', () async {
+          final temporaryDirectory = io.Directory.systemTemp.createTempSync(
+            'agent_resource_config_test_',
+          );
+          addTearDown(() {
+            if (temporaryDirectory.existsSync()) {
+              temporaryDirectory.deleteSync(recursive: true);
+            }
+          });
+          final fileSystem = _RenameFailingFileSystem(local.LocalFileSystem());
+          final cwd =
+              '${temporaryDirectory.path}'
+              '${fileSystem.path.separator}';
+          final projectPath = fileSystem.path.join(
+            temporaryDirectory.path,
+            'project.toml',
+          );
+          final userPath = fileSystem.path.join(
+            temporaryDirectory.path,
+            'user.toml',
+          );
+          const original =
+              '# keep this comment\n'
+              'schema_version = 1\n'
+              '\n'
+              '[cli.retention]\n'
+              'snapshot_days = 45 # keep days\n';
+          fileSystem.file(projectPath).writeAsStringSync(original);
+
+          final result = await _executor(fileSystem: fileSystem)
+              .fake()
+              .execute([
+                'config',
+                'prefer',
+                '--scope',
+                'project',
+                '--user-config',
+                userPath,
+                '--project-config',
+                projectPath,
+                '--cwd',
+                cwd,
+                '--project-root',
+                cwd,
+                '--set',
+                'cli.retention.snapshot_days=30',
+                '--apply',
+              ]);
+
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', 1)
+                .having(
+                  (value) =>
+                      value.message.contains('Could not write configuration'),
+                  'diagnostic names publication failure',
+                  isTrue,
+                )
+                .having(
+                  (value) => value.message.contains('injected rename failure'),
+                  'diagnostic names cause',
+                  isTrue,
+                )
+                .having((value) => value.output, 'output', isNull)
+                .having(
+                  (value) => value.error.phase,
+                  'phase',
+                  MambaExecutionPhase.run,
+                )
+                .having((value) => value.error.commandPath, 'command path', [
+                  'agent_resource',
+                  'config',
+                  'prefer',
+                ]),
+          );
+          expect(fileSystem.file(projectPath).readAsStringSync(), original);
+          expect(
+            fileSystem.file('$projectPath.prefer.tmp').existsSync(),
+            isFalse,
+          );
+        });
       });
     });
   });
+}
+
+Executor _executor({
+  fslib.FileSystem? fileSystem,
+  Map<String, String>? configurationEnvironment,
+  String? configurationOperatingSystem,
+}) {
+  final resolved = fileSystem ?? MemoryFileSystem(style: FileSystemStyle.posix);
+  if (resolved is MemoryFileSystem) {
+    for (final path in const <String>[
+      '/sandbox',
+      '/sandbox/project',
+      '/sandbox/home',
+    ]) {
+      resolved.directory(path).createSync(recursive: true);
+    }
+  }
+  return createExecutor(
+    fileSystem: resolved,
+    configurationEnvironment: configurationEnvironment,
+    configurationOperatingSystem: configurationOperatingSystem,
+  );
 }
 
 void _writeConfig(MemoryFileSystem fileSystem, String path, String source) {
   final file = fileSystem.file(path);
   file.parent.createSync(recursive: true);
   file.writeAsStringSync(source);
+}
+
+final class _RenameFailingFileSystem extends fslib.ForwardingFileSystem {
+  _RenameFailingFileSystem(super.delegate);
+
+  @override
+  fslib.File file(dynamic path) {
+    final file = super.file(path);
+    if (!file.path.endsWith('.prefer.tmp')) return file;
+    return _FailingRenameFile(this, io.File(file.path));
+  }
+}
+
+final class _FailingRenameFile
+    extends fslib.ForwardingFileSystemEntity<fslib.File, io.File>
+    with fslib.ForwardingFile {
+  _FailingRenameFile(this.fileSystem, this.delegate);
+
+  @override
+  final fslib.FileSystem fileSystem;
+
+  @override
+  final io.File delegate;
+
+  @override
+  fslib.Directory wrapDirectory(io.Directory delegate) =>
+      fileSystem.directory(delegate.path);
+
+  @override
+  fslib.File wrapFile(io.File delegate) =>
+      _FailingRenameFile(fileSystem, delegate);
+
+  @override
+  fslib.Link wrapLink(io.Link delegate) => fileSystem.link(delegate.path);
+
+  @override
+  fslib.File renameSync(String newPath) =>
+      throw io.FileSystemException('injected rename failure', path);
 }

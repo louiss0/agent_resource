@@ -247,9 +247,13 @@ argument origins without changing configuration.
 `config prefer` previews eligible changes by default. Add `--apply` to write
 only the reviewed safe preferences to the selected `--scope project|user`
 configuration. The eligible keys are `cli.install.targets`,
-`cli.install.skill_method`, and `cli.retention.snapshot_days`. Approvals,
-adoption authority, destructive consent, risk acknowledgements, credentials,
-and credential-like values are refused without being echoed or remembered.
+`cli.install.skill_method`, and `cli.retention.snapshot_days`. Applies use
+focused table edits that preserve comments, indentation, and unrelated TOML
+sections; ambiguous inline or dotted layouts are refused. Publication is staged
+through a temporary file and rename, so a failed write leaves the original
+configuration unchanged. Approvals, adoption authority, destructive consent,
+risk acknowledgements, credentials, and credential-like values are refused
+without being echoed or remembered.
 
 ```text
 agent_resource config effective [--scope project|user] [--format text|json]
