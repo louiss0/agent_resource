@@ -1090,6 +1090,96 @@ void main() {
           },
         );
 
+        test('retains readable recovery evidence when a phase write is interrupted', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
+          fs.directory('/project').createSync(recursive: true);
+          final lifecycleIO = _InterruptPhaseWriteIO(fs: fs);
+          final workflow = ConfigurationWorkflowService(
+            fileSystem: fs,
+            environment: const {'HOME': '/user'},
+            publication: ConfigurationPublicationService(
+              fileSystem: fs,
+              io: lifecycleIO,
+            ),
+          );
+          final config = Executor('agent_resource', 'test', '1.0.0', [
+            ConfigCommand(workflow: workflow, fileSystem: fs),
+          ]);
+          await expectLater(
+            config.fake().execute([
+              'config',
+              'prefer',
+              '--scope',
+              'user',
+              '--user-config',
+              '/user/config.toml',
+              '--project-config',
+              '/project/config.toml',
+              '--cwd',
+              '/project/',
+              '--project-root',
+              '/project/',
+              '--set',
+              'cli.retention.snapshot_days=14',
+              '--apply',
+            ]),
+            throwsA(isA<StateError>()),
+          );
+          final result = await createExecutor(fileSystem: fs).fake().execute([
+            'agent',
+            'recover',
+            '--scope',
+            'project',
+            '--cwd',
+            '/project/',
+            '--project-root',
+            '/project/',
+            '--configuration-target',
+            '/user/config.toml',
+            '--format',
+            'json',
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          final data = jsonDecode(
+            (result as MambaSuccessResult).output as String,
+          ) as Map<String, dynamic>;
+          final transactions = data['data']['transactions'] as List<dynamic>;
+          expect(transactions, hasLength(1));
+          final id = transactions.single['transactionId'] as String;
+          final recovered = await createExecutor(fileSystem: fs)
+              .fake()
+              .execute([
+                'agent',
+                'recover',
+                id,
+                '--scope',
+                'project',
+                '--cwd',
+                '/project/',
+                '--project-root',
+                '/project/',
+                '--configuration-target',
+                '/user/config.toml',
+                '--action',
+                'rollback',
+                '--yes',
+              ]);
+          expect(
+            recovered,
+            isA<MambaSuccessResult>(),
+            reason: recovered is MambaFailureResult ? recovered.message : null,
+          );
+          expect(
+            fs.file('/user/config.toml').readAsStringSync(),
+            'schema_version = 1\n',
+          );
+        });
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
@@ -1907,5 +1997,22 @@ final class _InterruptAfterQuarantineIO extends LifecycleIO {
     if (source == '/user/config.toml') {
       throw StateError('simulated interruption');
     }
+  }
+}
+
+final class _InterruptPhaseWriteIO extends LifecycleIO {
+  _InterruptPhaseWriteIO({required super.fs});
+  int writes = 0;
+  @override
+  void write(String path, List<int> bytes) {
+    if (path.contains('/configuration-transactions/') &&
+        path.endsWith('.json')) {
+      writes++;
+      if (writes == 2) {
+        fs.file(path).writeAsStringSync('{');
+        throw StateError('simulated phase interruption');
+      }
+    }
+    super.write(path, bytes);
   }
 }

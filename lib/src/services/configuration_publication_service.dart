@@ -85,6 +85,9 @@ interface class ConfigurationPublicationService {
     }
     final target = context.resolvePath(targetPath);
     _refuseUnsupportedTargetPath(target);
+    _refuseUnsupportedTargetPath(
+      _io.fs.path.join(_targetEvidenceRoot(target), 'evidence'),
+    );
     final directory = _io.fs.path.join(
       _targetEvidenceRoot(target),
       'configuration-transactions',
@@ -100,24 +103,34 @@ interface class ConfigurationPublicationService {
       }
       for (final entry in _io.list(directory)) {
         if (_io.type(entry.path, followLinks: false) !=
-                FileSystemEntityType.file ||
-            !entry.path.endsWith('.json')) {
+            FileSystemEntityType.file) {
           _refusePublication(
             directory,
             'configuration transaction storage contains an unsafe entry',
           );
         }
-        final Object? decoded;
-        try {
-          decoded = jsonDecode(_readBounded(entry.path));
-        } on FormatException {
-          throw MambaException(
-            'Configuration evidence is unreadable: ${entry.path}.',
-            exitCode: 6,
+        if (entry.path.endsWith('.json.previous')) {
+          final primary = entry.path.substring(
+            0,
+            entry.path.length - '.previous'.length,
+          );
+          if (_io.type(primary, followLinks: false) !=
+              FileSystemEntityType.file) {
+            _refusePublication(
+              directory,
+              'configuration evidence fallback has no primary',
+            );
+          }
+          continue;
+        }
+        if (!entry.path.endsWith('.json')) {
+          _refusePublication(
+            directory,
+            'configuration transaction storage contains an unsafe entry',
           );
         }
-        if (decoded is! Map<String, dynamic> ||
-            decoded['schemaVersion'] != 1 ||
+        final decoded = _readTransaction(entry.path);
+        if (decoded['schemaVersion'] != 1 ||
             decoded['operation'] != 'config-prefer-apply' ||
             decoded['target'] != target ||
             decoded['transactionId'] is! String ||
@@ -178,9 +191,8 @@ interface class ConfigurationPublicationService {
         locations: [target],
         body: () async {
           final evidencePath = transactions.single['evidencePath']! as String;
-          final decoded = jsonDecode(_readBounded(evidencePath));
-          if (decoded is! Map<String, dynamic> ||
-              decoded['transactionId'] != transactionId ||
+          final decoded = _readTransaction(evidencePath);
+          if (decoded['transactionId'] != transactionId ||
               decoded['target'] != target ||
               decoded['operation'] != 'config-prefer-apply' ||
               decoded['schemaVersion'] != 1 ||
@@ -258,6 +270,9 @@ interface class ConfigurationPublicationService {
     String target,
   ) {
     _refuseUnsupportedTargetPath(target);
+    _refuseUnsupportedTargetPath(
+      _io.fs.path.join(_targetEvidenceRoot(target), 'evidence'),
+    );
     _refusePendingEvidence(request.context, target);
     final path = _io.fs.path;
     final stateRoot = _targetEvidenceRoot(target);
@@ -513,34 +528,36 @@ interface class ConfigurationPublicationService {
           'configuration transaction storage contains an unsafe entry',
         );
       }
-      if (!entry.path.endsWith('.json')) continue;
-      final Object? decoded;
-      try {
-        decoded = jsonDecode(_readBounded(entry.path)) as Object?;
-      } on FormatException {
-        throw MambaException(
-          'Configuration publication requires recovery; evidence '
-          '${entry.path} is unreadable.',
-          exitCode: 6,
+      if (entry.path.endsWith('.json.previous')) {
+        final primary = entry.path.substring(
+          0,
+          entry.path.length - '.previous'.length,
         );
-      }
-      if (decoded case final Map<String, dynamic> map) {
-        final phase = map['phase'];
-        if (phase is String &&
-            const <String>{
-              'prepared',
-              'staged',
-              'published',
-              'committedCleanupPending',
-              'recoveryRequired',
-            }.contains(phase)) {
-          throw MambaException(
-            'Configuration publication requires recovery; evidence '
-            '${entry.path}. Inspect and remove only validated terminal '
-            'evidence before retrying.',
-            exitCode: 6,
+        if (_io.type(primary, followLinks: false) !=
+            FileSystemEntityType.file) {
+          _refusePublication(
+            directory,
+            'configuration evidence fallback has no primary',
           );
         }
+        continue;
+      }
+      if (!entry.path.endsWith('.json')) {
+        _refusePublication(
+          directory,
+          'configuration transaction storage contains an unsafe entry',
+        );
+      }
+      final decoded = _readTransaction(entry.path);
+      if (!const {
+        'committed',
+        'failed',
+        'failedRestored',
+      }.contains(decoded['phase'])) {
+        throw MambaException(
+          'Configuration publication requires recovery; evidence ${entry.path}.',
+          exitCode: 6,
+        );
       }
     }
   }
@@ -590,11 +607,60 @@ interface class ConfigurationPublicationService {
     }
   }
 
+  Map<String, dynamic>? _tryReadTransaction(String path) {
+    if (_io.type(path, followLinks: false) != FileSystemEntityType.file) {
+      return null;
+    }
+    try {
+      final value = jsonDecode(_readBounded(path));
+      if (value is Map<String, dynamic> &&
+          value['schemaVersion'] == 1 &&
+          value['operation'] == 'config-prefer-apply' &&
+          value['transactionId'] is String &&
+          value['target'] is String &&
+          value['phase'] is String &&
+          value['expectedDigest'] is String) {
+        return value;
+      }
+    } on FormatException {
+      return null;
+    } on MambaException {
+      return null;
+    }
+    return null;
+  }
+
+  Map<String, dynamic> _readTransaction(String path) {
+    final current = _tryReadTransaction(path);
+    if (current != null) return current;
+    final previous = _tryReadTransaction('$path.previous');
+    if (previous != null) return previous;
+    throw MambaException(
+      'Configuration publication requires recovery; evidence $path is unreadable.',
+      exitCode: 6,
+    );
+  }
+
   void _advance(
     String transactionPath,
     Map<String, Object?> transaction,
     String phase,
   ) {
+    // Keep a complete prior record before overwriting the current one. If an
+    // earlier write was interrupted, preserve its already-valid fallback.
+    final current = _tryReadTransaction(transactionPath);
+    if (current != null) {
+      final previous = '$transactionPath.previous';
+      final type = _io.type(previous, followLinks: false);
+      if (type != FileSystemEntityType.notFound &&
+          type != FileSystemEntityType.file) {
+        _refusePublication(
+          previous,
+          'configuration evidence fallback is not a regular file',
+        );
+      }
+      _state.writeProtectedDocument(previous, utf8.encode(jsonEncode(current)));
+    }
     _state.writeProtectedDocument(
       transactionPath,
       utf8.encode(
