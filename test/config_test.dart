@@ -6,6 +6,8 @@ import 'package:agent_resource/config.dart';
 import 'package:agent_resource/src/services/configuration_publication_service.dart';
 import 'package:agent_resource/src/services/configuration_workflow_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
+import 'package:mamba/mamba.dart' show MambaException;
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
@@ -1429,6 +1431,101 @@ void main() {
           },
         );
 
+        test('skill lifecycle recovery respects a nested configuration reservation', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/project').createSync(recursive: true);
+          fs.directory('/home').createSync(recursive: true);
+          _writeConfig(
+            fs,
+            '/source/SKILL.md',
+            '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+          );
+          const live = '/project/.claude/skills/review';
+          final installIO = _InterruptSkillInstallIO(live, fs);
+          final skill = SkillLifecycleService(
+            state: LifecycleStateService(io: installIO),
+          );
+          String? id;
+          try {
+            await skill.install(
+              SkillInstallInput(
+                options: LifecycleOptions(
+                  processWorkingDirectory: '/',
+                  cwd: '/project',
+                  projectRoot: '/project',
+                  home: '/home',
+                  scope: LifecycleScope.project,
+                ),
+                source: '/source',
+                destination: SkillDestination.claude,
+              ),
+            );
+            fail('Expected interrupted install');
+          } on MambaException catch (error) {
+            id = RegExp(r'transaction (trx_[a-f0-9]{32})')
+                .firstMatch(error.message)
+                ?.group(1);
+          }
+          expect(id, isNotNull);
+          final target = '$live/agent-resources.toml';
+          _writeConfig(fs, target, 'schema_version = 1\n');
+          final workflow = ConfigurationWorkflowService(
+            fileSystem: fs,
+            environment: const {'HOME': '/home'},
+            publication: ConfigurationPublicationService(
+              fileSystem: fs,
+              io: _InterruptTargetIO(fs: fs, target: target),
+            ),
+          );
+          final config = Executor('agent_resource', 'test', '1.0.0', [
+            ConfigCommand(workflow: workflow, fileSystem: fs),
+          ]);
+          await expectLater(
+            config.fake().execute([
+              'config',
+              'prefer',
+              '--scope',
+              'project',
+              '--project-config',
+              target,
+              '--user-config',
+              '/home/config.toml',
+              '--cwd',
+              '/project/',
+              '--project-root',
+              '/project/',
+              '--set',
+              'cli.retention.snapshot_days=14',
+              '--apply',
+            ]),
+            throwsA(isA<StateError>()),
+          );
+          final result = await createExecutor(fileSystem: fs).fake().execute([
+            'skill',
+            'recover',
+            id!,
+            '--action',
+            'rollback',
+            '--yes',
+            '--scope',
+            'project',
+            '--cwd',
+            '/project/',
+            '--project-root',
+            '/project/',
+            '--home',
+            '/home/',
+          ]);
+          expect(
+            result,
+            isA<MambaFailureResult>().having(
+              (r) => r.message,
+              'message',
+              contains('configuration'),
+            ),
+          );
+        });
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
@@ -2284,6 +2381,42 @@ final class _InterruptBeforeStageIO extends LifecycleIO {
     if (path.endsWith('/config.toml') &&
         path.contains('agent-resource-prefer-')) {
       throw StateError('simulated staging interruption');
+    }
+    super.write(path, bytes);
+  }
+}
+
+final class _InterruptTargetIO extends LifecycleIO {
+  _InterruptTargetIO({required super.fs, required this.target});
+  final String target;
+  @override
+  void rename(String source, String destination) {
+    super.rename(source, destination);
+    if (source == target) throw StateError('simulated interruption');
+  }
+}
+
+final class _InterruptSkillInstallIO extends LifecycleIO {
+  _InterruptSkillInstallIO(this.live, fslib.FileSystem fs) : super(fs: fs);
+  final String live;
+  bool published = false;
+  bool failWrite = true;
+  bool failRollback = true;
+  @override
+  void rename(String source, String destination) {
+    if (published && source == live && failRollback) {
+      failRollback = false;
+      throw const io.FileSystemException('injected rollback failure');
+    }
+    super.rename(source, destination);
+    if (destination == live) published = true;
+  }
+
+  @override
+  void write(String path, List<int> bytes) {
+    if (published && path.contains('.json') && failWrite) {
+      failWrite = false;
+      throw const io.FileSystemException('injected journal failure');
     }
     super.write(path, bytes);
   }

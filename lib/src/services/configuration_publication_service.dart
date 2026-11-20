@@ -342,6 +342,9 @@ interface class ConfigurationPublicationService {
       return _state.runMutation(
         context: context,
         locations: [target],
+        excludedConfigurationEvidencePaths: {
+          transactions.single['evidencePath']! as String,
+        },
         body: perform,
       );
     }
@@ -593,6 +596,75 @@ interface class ConfigurationPublicationService {
     _digest(target),
   );
 
+  /// Refuses overlapping lifecycle writes while target-local evidence remains.
+  void checkReservations(
+    Iterable<String> locations, {
+    Set<String> excluded = const {},
+  }) {
+    final path = _io.fs.path;
+    var visited = 0;
+    void walk(String directory, int depth) {
+      if (++visited > 10000 || depth > 32) {
+        throw MambaException(
+          'Configuration reservation search exceeds its budget.',
+          exitCode: 6,
+        );
+      }
+      final storage = path.join(directory, '.agent-resource-configuration');
+      final storageType = _io.type(storage, followLinks: false);
+      if (storageType != FileSystemEntityType.notFound) {
+        if (storageType != FileSystemEntityType.directory) {
+          _refusePublication(
+            storage,
+            'configuration reservation storage is unsafe',
+          );
+        }
+        for (final entry in _io.list(storage)) {
+          if (++visited > 10000 ||
+              _io.type(entry.path, followLinks: false) !=
+                  FileSystemEntityType.directory) {
+            _refusePublication(
+              storage,
+              'configuration reservation storage is unsafe',
+            );
+          }
+          _refusePendingDirectory(
+            path.join(entry.path, 'configuration-transactions'),
+            excluded: excluded,
+          );
+        }
+      }
+      for (final entry in _io.list(directory)) {
+        if (path.basename(entry.path) == '.agent-resource-configuration') {
+          continue;
+        }
+        final type = _io.type(entry.path, followLinks: false);
+        if (type == FileSystemEntityType.directory) {
+          walk(entry.path, depth + 1);
+        } else if (++visited > 10000) {
+          throw MambaException(
+            'Configuration reservation search exceeds its budget.',
+            exitCode: 6,
+          );
+        }
+      }
+    }
+
+    for (final raw in locations) {
+      final location = path.normalize(
+        path.isAbsolute(raw) ? raw : path.absolute(raw),
+      );
+      _refusePendingDirectory(
+        path.join(_targetEvidenceRoot(location), 'configuration-transactions'),
+        excluded: excluded,
+      );
+      if (_io.type(location, followLinks: false) ==
+          FileSystemEntityType.directory) {
+        walk(location, 0);
+      }
+    }
+  }
+
   void _refusePendingEvidence(LifecycleContext context, String target) {
     final path = _io.fs.path;
     for (final root in [context.stateRoot(), _targetEvidenceRoot(target)]) {
@@ -600,7 +672,10 @@ interface class ConfigurationPublicationService {
     }
   }
 
-  void _refusePendingDirectory(String directory) {
+  void _refusePendingDirectory(
+    String directory, {
+    Set<String> excluded = const {},
+  }) {
     final type = _io.type(directory, followLinks: false);
     if (type == FileSystemEntityType.notFound) return;
     if (type != FileSystemEntityType.directory) {
@@ -638,6 +713,7 @@ interface class ConfigurationPublicationService {
         );
       }
       final decoded = _readTransaction(entry.path);
+      if (excluded.contains(entry.path)) continue;
       if (!const {
         'committed',
         'failed',
