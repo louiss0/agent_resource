@@ -601,12 +601,7 @@ interface class SkillInstallationService {
   }
 
   String _harnessRoot(LifecycleContext context, InstallationTarget target) {
-    final id = switch (target) {
-      InstallationTarget.claude => HarnessId.claude,
-      InstallationTarget.codex => HarnessId.codex,
-      InstallationTarget.antigravity => HarnessId.antigravity,
-      InstallationTarget.pi => HarnessId.pi,
-    };
+    final id = HarnessId.of(target);
     if (context.scope == LifecycleScope.project &&
         (target == InstallationTarget.codex ||
             target == InstallationTarget.antigravity)) {

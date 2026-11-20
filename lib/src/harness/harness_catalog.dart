@@ -92,7 +92,7 @@ final class HarnessCatalog {
 
   /// The composed MCP facet selected by the MCP wire name.
   McpHarnessSpec mcpSpec(McpHarness harness) =>
-      mcpSpecById(HarnessId.fromWire(harness.wireName));
+      mcpSpecById(HarnessId.of(harness));
 
   HarnessFacetRefusal? refusal(
     HarnessId id,

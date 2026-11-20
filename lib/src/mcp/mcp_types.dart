@@ -1,7 +1,9 @@
 import 'dart:convert';
 
+import '../harness/harness_id.dart';
+
 /// The consuming harness whose native configuration declares an MCP server.
-enum McpHarness {
+enum McpHarness implements HarnessWireNamed {
   claude('claude'),
   codex('codex'),
   pi('pi'),
@@ -10,6 +12,7 @@ enum McpHarness {
   const McpHarness(this.wireName);
 
   /// Stable wire name used in envelopes and management state.
+  @override
   final String wireName;
 
   String toJson() => wireName;

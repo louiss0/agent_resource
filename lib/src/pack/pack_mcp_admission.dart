@@ -182,7 +182,7 @@ interface class PackMcpAdmissionService {
     for (final declaration in request.declarations) {
       for (final harness in request.targetHarnesses) {
         HarnessCatalog.instance.requireFacet(
-          HarnessId.fromWire(harness.wireName),
+          HarnessId.of(harness),
           HarnessFacet.mcp,
           refusalExitCode: PackProcessStatus.invalidInput.code,
         );

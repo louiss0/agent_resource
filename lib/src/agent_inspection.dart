@@ -31,7 +31,15 @@ import 'harness/harness_catalog.dart';
 import 'skill_files.dart';
 
 /// The harness whose native contract a definition file follows.
-enum AgentHarness { claude, codex, pi, antigravity }
+enum AgentHarness implements HarnessWireNamed {
+  claude,
+  codex,
+  pi,
+  antigravity;
+
+  @override
+  String get wireName => name;
+}
 
 /// The command operation an inspection serves.
 enum AgentOperation { inspect, validate }
@@ -431,7 +439,7 @@ AgentInspectionReport inspectNativeAgentContent({
 
 AgentHarnessSpec _agentSpec(AgentHarness harness) =>
     HarnessCatalog.instance.requireFacet(
-      HarnessId.fromWire(harness.name),
+      HarnessId.of(harness),
       HarnessFacet.agent,
     ) as AgentHarnessSpec;
 

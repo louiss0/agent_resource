@@ -82,7 +82,7 @@ String resolveContextTargetPath({
   required ContextVariant variant,
   required String projectTargetDir,
 }) {
-  final id = HarnessId.fromWire(harness.name);
+  final id = HarnessId.of(harness);
   final catalog = HarnessCatalog.instance;
   final spec = catalog.byId(id).context;
   if (spec == null) {

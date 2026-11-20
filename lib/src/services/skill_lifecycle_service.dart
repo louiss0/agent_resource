@@ -17,7 +17,14 @@ import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
 import 'prompt_read_service.dart';
 
-enum SkillHarness { claude, codex, antigravity }
+enum SkillHarness implements HarnessWireNamed {
+  claude,
+  codex,
+  antigravity;
+
+  @override
+  String get wireName => name;
+}
 
 enum SkillDestination { claude, codex, shared, antigravity }
 

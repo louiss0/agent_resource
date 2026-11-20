@@ -315,12 +315,8 @@ interface class AgentConversionService {
       _ => throw MambaException('Unsupported native source form.', exitCode: 4),
     };
     final catalog = HarnessCatalog.instance;
-    final sourceSpec = catalog.agentSpecById(
-      HarnessId.fromWire(sourceHarness.name),
-    );
-    final targetSpec = catalog.agentSpecById(
-      HarnessId.fromWire(targetHarness.name),
-    );
+    final sourceSpec = catalog.agentSpecById(HarnessId.of(sourceHarness));
+    final targetSpec = catalog.agentSpecById(HarnessId.of(targetHarness));
     if (sourceHarness == targetHarness) {
       throw MambaException(
         'Conversion requires different source and target profiles; use clone or edit.',
