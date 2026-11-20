@@ -245,6 +245,13 @@ install targets, Skill installation method, or snapshot retention. Approvals,
 adoption authority, destructive consent, risk acknowledgements, and
 credentials are not eligible remembered values.
 
+**Configuration publication**:
+The trusted-local, cooperating-writer handoff of a reviewed configuration to a
+live path through lifecycle coordination, private staging, backup/quarantine
+evidence, and same-filesystem rename. It refuses detected unsafe or stale
+conditions and makes no crash, power-loss, hostile-writer, or universal
+metadata-fidelity guarantee.
+
 **Value origin**:
 Where one effective value came from: an explicit argument, project
 configuration, user configuration, pack configuration, path detection, or a

@@ -3,7 +3,6 @@ import 'dart:io' as io;
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:file/file.dart' as fslib;
-import 'package:file/local.dart' as local;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
@@ -1107,8 +1106,13 @@ void main() {
                     contains('--apply'),
                     contains('--set'),
                     contains('Previews'),
-                    contains('credentials are'),
-                    contains('refused and never remembered'),
+                    contains('rename'),
+                    contains('recovery'),
+                    contains('power-loss'),
+                    allOf(
+                      contains('credentials are'),
+                      contains('refused and never remembered'),
+                    ),
                   ),
                 ),
           );
@@ -1463,7 +1467,7 @@ void main() {
           expect(
             result,
             isA<MambaFailureResult>()
-                .having((value) => value.exitCode, 'exit code', 2)
+                .having((value) => value.exitCode, 'exit code', 4)
                 .having(
                   (value) => value.message.contains('Cannot safely publish'),
                   'diagnostic names safety refusal',
@@ -1487,147 +1491,6 @@ void main() {
             io.FileSystemEntityType.link,
           );
         });
-
-        test('preserves target identity without rename replacement', () async {
-          final temporaryDirectory = io.Directory.systemTemp.createTempSync(
-            'agent_resource_config_test_',
-          );
-          addTearDown(() {
-            if (temporaryDirectory.existsSync()) {
-              temporaryDirectory.deleteSync(recursive: true);
-            }
-          });
-          final projectPath = io.Directory(temporaryDirectory.path).uri
-              .resolve('project.toml')
-              .toFilePath();
-          final fileSystem = _PublicationProbeFileSystem(
-            local.LocalFileSystem(),
-            projectPath,
-          );
-          final cwd = '${temporaryDirectory.path}${fileSystem.path.separator}';
-          const original =
-              '# keep this comment\n'
-              'schema_version = 1\n'
-              '[cli.retention]\n'
-              'snapshot_days = 45 # keep days\n';
-          fileSystem.file(projectPath).writeAsStringSync(original);
-
-          final result = await _executor(fileSystem: fileSystem)
-              .fake()
-              .execute([
-                'config',
-                'prefer',
-                '--scope',
-                'project',
-                '--user-config',
-                fileSystem.path.join(temporaryDirectory.path, 'user.toml'),
-                '--project-config',
-                projectPath,
-                '--cwd',
-                cwd,
-                '--project-root',
-                cwd,
-                '--set',
-                'cli.retention.snapshot_days=30',
-                '--apply',
-              ]);
-
-          expect(result, isA<MambaSuccessResult>());
-          expect(fileSystem.openCount, greaterThan(0));
-          expect(
-            fileSystem.file(projectPath).readAsStringSync(),
-            contains('snapshot_days = 30'),
-          );
-          expect(
-            temporaryDirectory.listSync().where(
-              (entity) => entity.path.contains('agent-resource-prefer-'),
-            ),
-            isEmpty,
-          );
-        });
-
-        for (final failure in _PublicationFailure.values) {
-          test('keeps original bytes when ${failure.name} fails', () async {
-            final temporaryDirectory = io.Directory.systemTemp.createTempSync(
-              'agent_resource_config_test_',
-            );
-            addTearDown(() {
-              if (temporaryDirectory.existsSync()) {
-                temporaryDirectory.deleteSync(recursive: true);
-              }
-            });
-            final projectPath = io.Directory(temporaryDirectory.path).uri
-                .resolve('project.toml')
-                .toFilePath();
-            final fileSystem = _FailingPublicationFileSystem(
-              local.LocalFileSystem(),
-              projectPath,
-              failure,
-            );
-            final cwd =
-                '${temporaryDirectory.path}${fileSystem.path.separator}';
-            const original =
-                '# keep this comment\n'
-                'schema_version = 1\n'
-                '[cli.retention]\n'
-                'snapshot_days = 45 # keep days\n';
-            fileSystem.file(projectPath).writeAsStringSync(original);
-
-            final result = await _executor(fileSystem: fileSystem)
-                .fake()
-                .execute([
-                  'config',
-                  'prefer',
-                  '--scope',
-                  'project',
-                  '--user-config',
-                  fileSystem.path.join(temporaryDirectory.path, 'user.toml'),
-                  '--project-config',
-                  projectPath,
-                  '--cwd',
-                  cwd,
-                  '--project-root',
-                  cwd,
-                  '--set',
-                  'cli.retention.snapshot_days=30',
-                  '--apply',
-                ]);
-
-            expect(
-              result,
-              isA<MambaFailureResult>()
-                  .having((value) => value.exitCode, 'exit code', 1)
-                  .having(
-                    (value) =>
-                        value.message.contains('Could not write configuration'),
-                    'diagnostic names publication failure',
-                    isTrue,
-                  )
-                  .having((value) => value.output, 'output', isNull)
-                  .having(
-                    (value) => value.error.phase,
-                    'phase',
-                    MambaExecutionPhase.run,
-                  )
-                  .having((value) => value.error.commandPath, 'command path', [
-                    'agent_resource',
-                    'config',
-                    'prefer',
-                  ]),
-            );
-            expect(fileSystem.file(projectPath).readAsStringSync(), original);
-            expect(
-              fileSystem.file('$projectPath.prefer.tmp').existsSync(),
-              isFalse,
-            );
-            expect(
-              temporaryDirectory.listSync().where(
-                (entity) => entity.path.contains('agent-resource-prefer-'),
-              ),
-              isEmpty,
-            );
-          });
-        }
       });
     });
   });
@@ -1638,8 +1501,7 @@ Executor _executor({
   Map<String, String>? configurationEnvironment,
   String? configurationOperatingSystem,
 }) {
-  fslib.FileSystem resolved =
-      fileSystem ?? MemoryFileSystem(style: FileSystemStyle.posix);
+  final resolved = fileSystem ?? MemoryFileSystem(style: FileSystemStyle.posix);
   if (resolved is MemoryFileSystem) {
     for (final path in const <String>[
       '/sandbox',
@@ -1648,7 +1510,6 @@ Executor _executor({
     ]) {
       resolved.directory(path).createSync(recursive: true);
     }
-    resolved = _LockEnabledFileSystem(resolved);
   }
   return createExecutor(
     fileSystem: resolved,
@@ -1661,195 +1522,4 @@ void _writeConfig(MemoryFileSystem fileSystem, String path, String source) {
   final file = fileSystem.file(path);
   file.parent.createSync(recursive: true);
   file.writeAsStringSync(source);
-}
-
-enum _PublicationFailure { lock, write }
-
-final class _LockEnabledFileSystem extends fslib.ForwardingFileSystem {
-  _LockEnabledFileSystem(super.delegate);
-
-  @override
-  fslib.File file(dynamic path) => _LockEnabledFile(this, super.file(path));
-}
-
-final class _LockEnabledFile
-    extends fslib.ForwardingFileSystemEntity<fslib.File, io.File>
-    with fslib.ForwardingFile {
-  _LockEnabledFile(this.fileSystem, this.delegate);
-
-  @override
-  final fslib.FileSystem fileSystem;
-
-  @override
-  final io.File delegate;
-
-  @override
-  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) =>
-      _LockEnabledRandomAccessFile(delegate.openSync(mode: mode));
-
-  @override
-  fslib.Directory wrapDirectory(io.Directory delegate) =>
-      fileSystem.directory(delegate.path);
-
-  @override
-  fslib.File wrapFile(io.File delegate) =>
-      _LockEnabledFile(fileSystem, delegate);
-
-  @override
-  fslib.Link wrapLink(io.Link delegate) => fileSystem.link(delegate.path);
-}
-
-final class _LockEnabledRandomAccessFile with fslib.ForwardingRandomAccessFile {
-  _LockEnabledRandomAccessFile(this.delegate);
-
-  @override
-  final io.RandomAccessFile delegate;
-
-  @override
-  void lockSync([
-    io.FileLock mode = io.FileLock.exclusive,
-    int start = 0,
-    int end = -1,
-  ]) {}
-
-  @override
-  void unlockSync([int start = 0, int end = -1]) {}
-}
-
-final class _PublicationProbeFileSystem extends _LockEnabledFileSystem {
-  _PublicationProbeFileSystem(super.delegate, this.targetPath);
-
-  final String targetPath;
-  var openCount = 0;
-
-  @override
-  fslib.File file(dynamic path) => _PublicationProbeFile(
-    this,
-    super.file(path),
-    targetPath,
-    () => openCount++,
-  );
-}
-
-final class _PublicationProbeFile
-    extends fslib.ForwardingFileSystemEntity<fslib.File, io.File>
-    with fslib.ForwardingFile {
-  _PublicationProbeFile(
-    this.fileSystem,
-    this.delegate,
-    this.targetPath,
-    this._onOpen,
-  );
-
-  @override
-  final fslib.FileSystem fileSystem;
-
-  @override
-  final io.File delegate;
-
-  final String targetPath;
-  final void Function() _onOpen;
-
-  @override
-  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) {
-    if (path == targetPath) _onOpen();
-    return delegate.openSync(mode: mode);
-  }
-
-  @override
-  fslib.File renameSync(String newPath) =>
-      throw io.FileSystemException('unsafe replacement', path);
-
-  @override
-  fslib.Directory wrapDirectory(io.Directory delegate) =>
-      fileSystem.directory(delegate.path);
-
-  @override
-  fslib.File wrapFile(io.File delegate) =>
-      _PublicationProbeFile(fileSystem, delegate, targetPath, _onOpen);
-
-  @override
-  fslib.Link wrapLink(io.Link delegate) => fileSystem.link(delegate.path);
-}
-
-final class _FailingPublicationFileSystem extends _LockEnabledFileSystem {
-  _FailingPublicationFileSystem(super.delegate, this.targetPath, this.failure);
-
-  final String targetPath;
-  final _PublicationFailure failure;
-
-  @override
-  fslib.File file(dynamic path) {
-    final file = super.file(path);
-    if (file.path != targetPath) return file;
-    return _FailingPublicationFile(this, file, failure);
-  }
-}
-
-final class _FailingPublicationFile
-    extends fslib.ForwardingFileSystemEntity<fslib.File, io.File>
-    with fslib.ForwardingFile {
-  _FailingPublicationFile(this.fileSystem, this.delegate, this.failure);
-
-  @override
-  final fslib.FileSystem fileSystem;
-
-  @override
-  final io.File delegate;
-
-  final _PublicationFailure failure;
-
-  @override
-  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) =>
-      _FailingPublicationRandomAccessFile(
-        delegate.openSync(mode: mode),
-        failure,
-      );
-
-  @override
-  fslib.Directory wrapDirectory(io.Directory delegate) =>
-      fileSystem.directory(delegate.path);
-
-  @override
-  fslib.File wrapFile(io.File delegate) =>
-      _FailingPublicationFile(fileSystem, delegate, failure);
-
-  @override
-  fslib.Link wrapLink(io.Link delegate) => fileSystem.link(delegate.path);
-}
-
-final class _FailingPublicationRandomAccessFile
-    with fslib.ForwardingRandomAccessFile {
-  _FailingPublicationRandomAccessFile(this.delegate, this.failure);
-
-  @override
-  final io.RandomAccessFile delegate;
-
-  final _PublicationFailure failure;
-  var _failedWrite = false;
-
-  @override
-  void lockSync([
-    io.FileLock mode = io.FileLock.exclusive,
-    int start = 0,
-    int end = -1,
-  ]) {
-    if (failure == _PublicationFailure.lock) {
-      throw io.FileSystemException('concurrent configuration update', path);
-    }
-    delegate.lockSync(mode, start, end);
-  }
-
-  @override
-  void writeFromSync(List<int> buffer, [int start = 0, int? end]) {
-    if (failure == _PublicationFailure.write && !_failedWrite) {
-      _failedWrite = true;
-      throw io.FileSystemException('injected publication write failure', path);
-    }
-    delegate.writeFromSync(buffer, start, end);
-  }
-
-  @override
-  void unlockSync([int start = 0, int end = -1]) =>
-      delegate.unlockSync(start, end);
 }

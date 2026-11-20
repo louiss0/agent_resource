@@ -251,11 +251,13 @@ only the reviewed safe preferences to the selected `--scope project|user`
 configuration. The eligible keys are `cli.install.targets`,
 `cli.install.skill_method`, and `cli.retention.snapshot_days`. Applies use
 focused table edits that preserve comments, indentation, and unrelated TOML
-sections; ambiguous inline or dotted layouts are refused. Publication uses a
-unique staging directory, an exclusive target-file lock, and in-place writes
-so file identity and ACLs are preserved; symlink parents and targets are
-refused, and a failed write restores the original bytes. Approvals, adoption
-authority, destructive consent,
+sections; ambiguous inline or dotted layouts are refused. Publication uses
+lifecycle coordination, a private same-filesystem staging directory, backup
+and quarantine evidence, and rename. Stale sources, symlink parents or
+targets, creation races, and unsupported publication conditions refuse; an
+interruption may require evidence-backed recovery inspection. No crash,
+power-loss, hostile-writer, or universal metadata guarantee is claimed.
+Approvals, adoption authority, destructive consent,
 risk acknowledgements, credentials, and credential-like values are refused
 without being echoed or remembered.
 

@@ -222,8 +222,8 @@ final class ConfigEffectiveCommand extends Command {
       'Show effective settings, paths, and value origins.';
 
   @override
-  String run(ValueOf valueOf, List<String> args) {
-    final result = _service.execute(
+  Future<String> run(ValueOf valueOf, List<String> args) async {
+    final result = await _service.execute(
       ConfigurationWorkflowRequest(
         operation: ConfigurationWorkflowOperation.effective,
         scope: valueOf(_ConfigWorkflowOptions.effectiveScope),
@@ -270,11 +270,13 @@ final class ConfigPreferCommand extends Command {
             'default. --apply writes only the reviewed safe preferences to '
             'the selected configuration with focused, comment-preserving '
             'table edits; ambiguous inline or dotted layouts are refused. '
-            'Publication is staged through a temporary file and rename, so '
-            'a failed write leaves the original configuration unchanged. '
-            'Approvals, adoption authority, destructive consent, risk '
-            'acknowledgements, and credentials are refused and never '
-            'remembered.',
+            'Publication uses lifecycle coordination, private staging, '
+            'backup/quarantine evidence, and same-filesystem rename. Unsafe '
+            'conditions refuse; interruption may require recovery inspection. '
+            'No crash, power-loss, hostile-writer, or universal metadata '
+            'guarantee is claimed. Approvals, adoption authority, '
+            'destructive consent, risk acknowledgements, and credentials are '
+            'refused and never remembered.',
       );
 
   final ConfigurationWorkflowService _service;
@@ -287,8 +289,8 @@ final class ConfigPreferCommand extends Command {
       'Preview or apply eligible user or project preferences.';
 
   @override
-  String run(ValueOf valueOf, List<String> args) {
-    final result = _service.execute(
+  Future<String> run(ValueOf valueOf, List<String> args) async {
+    final result = await _service.execute(
       ConfigurationWorkflowRequest(
         operation: ConfigurationWorkflowOperation.prefer,
         scope: valueOf(_ConfigWorkflowOptions.requiredScope),

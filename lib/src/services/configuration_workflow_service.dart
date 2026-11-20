@@ -1,12 +1,5 @@
-import 'dart:convert' show jsonEncode, utf8;
-import 'dart:io'
-    show
-        FileLock,
-        FileMode,
-        FileSystemEntityType,
-        FileSystemException,
-        Platform,
-        RandomAccessFile;
+import 'dart:convert' show jsonEncode;
+import 'dart:io' show FileSystemException, Platform;
 
 import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
@@ -23,8 +16,14 @@ import '../pack/pack_configuration.dart'
         packConfigurationFileName;
 import '../pack/pack_models.dart' show PackProcessStatus;
 import '../configuration/effective_configuration.dart';
+import 'configuration_publication_service.dart';
 import 'lifecycle_state_service.dart'
-    show LifecycleContext, LifecycleOptions, LifecycleScope;
+    show
+        LifecycleContext,
+        LifecycleIO,
+        LifecycleOptions,
+        LifecycleScope,
+        LifecycleStateService;
 
 /// Resolves effective configuration and deliberately saves eligible
 /// preferences at the selected user or project configuration path.
@@ -33,20 +32,35 @@ interface class ConfigurationWorkflowService {
     this._fileSystem = const local.LocalFileSystem(),
     Map<String, String>? environment,
     String? operatingSystem,
+    ConfigurationPublicationService? publication,
   }) : _environment = Map<String, String>.unmodifiable(
          environment ?? Platform.environment,
        ),
-       _operatingSystem = operatingSystem ?? Platform.operatingSystem;
+       _operatingSystem = operatingSystem ?? Platform.operatingSystem,
+       _publication = publication ?? _defaultPublication(_fileSystem);
 
   final fslib.FileSystem _fileSystem;
   final Map<String, String> _environment;
   final String _operatingSystem;
+  final ConfigurationPublicationService _publication;
 
-  ConfigurationWorkflowResult execute(ConfigurationWorkflowRequest request) =>
-      switch (request.operation) {
-        ConfigurationWorkflowOperation.effective => _effective(request),
-        ConfigurationWorkflowOperation.prefer => _prefer(request),
-      };
+  static ConfigurationPublicationService _defaultPublication(
+    fslib.FileSystem fileSystem,
+  ) {
+    final io = LifecycleIO(fs: fileSystem);
+    return ConfigurationPublicationService(
+      fileSystem: fileSystem,
+      io: io,
+      state: LifecycleStateService(io: io),
+    );
+  }
+
+  Future<ConfigurationWorkflowResult> execute(
+    ConfigurationWorkflowRequest request,
+  ) async => switch (request.operation) {
+    ConfigurationWorkflowOperation.effective => _effective(request),
+    ConfigurationWorkflowOperation.prefer => await _prefer(request),
+  };
 
   ConfigurationWorkflowResult _effective(ConfigurationWorkflowRequest request) {
     final paths = _resolvePaths(request);
@@ -102,7 +116,9 @@ interface class ConfigurationWorkflowService {
     );
   }
 
-  ConfigurationWorkflowResult _prefer(ConfigurationWorkflowRequest request) {
+  Future<ConfigurationWorkflowResult> _prefer(
+    ConfigurationWorkflowRequest request,
+  ) async {
     final assignments = _parseAssignments(request.preferences);
     final paths = _resolvePaths(request);
     final targetPath = paths.selectedPath;
@@ -119,15 +135,51 @@ interface class ConfigurationWorkflowService {
     final projectDocument = request.scope == PackConfigurationScope.project
         ? targetDocument
         : _ConfigDocument.absent();
-    final proposedConfig = _proposeDocument(
-      targetDocument,
-      assignments,
-      targetPath,
-      request.scope,
-    );
+    late final String proposedConfig;
+    late final Map<String, Object?> effectiveTargetMap;
     if (request.apply) {
-      _writeDocument(targetPath, proposedConfig);
+      final published = await _publication.publish(
+        ConfigurationPublicationRequest(
+          context: paths.context,
+          targetPath: targetPath,
+          expectedSource: targetDocument.source,
+          propose: (String currentSource) {
+            final currentDocument = _documentFromSource(
+              currentSource,
+              targetPath,
+              request.scope,
+            );
+            return _proposeDocument(
+              currentDocument,
+              assignments,
+              targetPath,
+              request.scope,
+            );
+          },
+        ),
+      );
+      proposedConfig = published.publishedSource;
+      effectiveTargetMap = _documentFromSource(
+        proposedConfig,
+        targetPath,
+        request.scope,
+      ).map;
+    } else {
+      proposedConfig = _proposeDocument(
+        targetDocument,
+        assignments,
+        targetPath,
+        request.scope,
+      );
+      effectiveTargetMap = targetDocument.map;
     }
+    final effectiveUserDocument = request.scope == PackConfigurationScope.user
+        ? effectiveTargetMap
+        : userDocument.map;
+    final effectiveProjectDocument =
+        request.scope == PackConfigurationScope.project
+        ? effectiveTargetMap
+        : projectDocument.map;
     final changes = <EffectiveSetting>[
       for (final preference in EligiblePreference.values)
         if (assignments.containsKey(preference))
@@ -144,8 +196,8 @@ interface class ConfigurationWorkflowService {
           preference,
           request,
           assignments,
-          userDocument.map,
-          projectDocument.map,
+          effectiveUserDocument,
+          effectiveProjectDocument,
           userLayerPath,
           projectLayerPath,
         ),
@@ -430,180 +482,6 @@ interface class ConfigurationWorkflowService {
     null => null,
   };
 
-  void _writeDocument(String configPath, String source) {
-    final path = _fileSystem.path;
-    final absolute = path.normalize(
-      path.isAbsolute(configPath)
-          ? configPath
-          : path.join(_fileSystem.currentDirectory.path, configPath),
-    );
-    _refuseUnsafeTargetPath(absolute);
-    final target = _fileSystem.file(absolute);
-    target.parent.createSync(recursive: true);
-    fslib.Directory? stagingDirectory;
-    RandomAccessFile? lockHandle;
-    RandomAccessFile? writeHandle;
-    var createdTarget = !target.existsSync();
-    if (createdTarget) {
-      try {
-        target.createSync(exclusive: true);
-      } on FileSystemException {
-        createdTarget = false;
-      }
-    }
-    var publicationStarted = false;
-    List<int> originalBytes = const <int>[];
-    String? publicationError;
-    String? cleanupError;
-    MambaException? safetyError;
-    try {
-      stagingDirectory = target.parent.createTempSync('agent-resource-prefer-');
-      final stagedFile = _fileSystem.file(
-        path.join(stagingDirectory.path, 'config.toml'),
-      );
-      stagedFile.writeAsStringSync(source, flush: true);
-      if (stagedFile.readAsStringSync() != source) {
-        throw FileSystemException(
-          'staged configuration verification failed',
-          stagedFile.path,
-        );
-      }
-      lockHandle = target.openSync(mode: FileMode.read);
-      lockHandle.lockSync(FileLock.exclusive);
-      _refuseUnsafeTargetPath(absolute);
-      originalBytes = target.readAsBytesSync();
-      final bytes = utf8.encode(source);
-      publicationStarted = true;
-      writeHandle = target.openSync(mode: FileMode.write);
-      writeHandle.setPositionSync(0);
-      writeHandle.writeFromSync(bytes);
-      writeHandle.flushSync();
-      if (target.readAsStringSync() != source) {
-        throw FileSystemException('publication verification failed', absolute);
-      }
-    } on MambaException catch (error) {
-      safetyError = error;
-    } on FileSystemException catch (error) {
-      publicationError = error.message;
-    } on FormatException catch (error) {
-      publicationError = error.message;
-    } on UnimplementedError catch (error) {
-      publicationError =
-          'exclusive file locking is unsupported: ${error.message}';
-    } finally {
-      if (publicationError != null && publicationStarted && !createdTarget) {
-        try {
-          if (writeHandle != null) {
-            writeHandle.truncateSync(originalBytes.length);
-            writeHandle.setPositionSync(0);
-            writeHandle.writeFromSync(originalBytes);
-            writeHandle.flushSync();
-          } else {
-            target.writeAsBytesSync(originalBytes, flush: true);
-          }
-        } on FileSystemException catch (error) {
-          cleanupError = error.message;
-        } on UnimplementedError catch (error) {
-          cleanupError = error.message;
-        }
-      }
-      if (writeHandle != null) {
-        try {
-          writeHandle.closeSync();
-        } on FileSystemException catch (error) {
-          cleanupError ??= error.message;
-        }
-      }
-      if (lockHandle != null) {
-        try {
-          lockHandle.unlockSync();
-        } on FileSystemException catch (error) {
-          cleanupError ??= error.message;
-        } on UnimplementedError catch (error) {
-          cleanupError ??= error.message;
-        }
-        try {
-          lockHandle.closeSync();
-        } on FileSystemException catch (error) {
-          cleanupError ??= error.message;
-        }
-      }
-      if (createdTarget && (publicationError != null || safetyError != null)) {
-        try {
-          if (target.existsSync()) target.deleteSync();
-        } on FileSystemException catch (error) {
-          cleanupError ??= error.message;
-        }
-      }
-      if (stagingDirectory != null) {
-        try {
-          if (stagingDirectory.existsSync()) {
-            stagingDirectory.deleteSync(recursive: true);
-          }
-        } on FileSystemException catch (error) {
-          cleanupError ??= error.message;
-        }
-      }
-    }
-    if (safetyError != null) throw safetyError;
-    if (publicationError != null) {
-      throw MambaException(
-        'Could not write configuration $absolute: $publicationError',
-        exitCode: PackProcessStatus.failure.code,
-      );
-    }
-    if (cleanupError != null) {
-      throw MambaException(
-        'Could not clean staged configuration for $absolute: $cleanupError',
-        exitCode: PackProcessStatus.failure.code,
-      );
-    }
-  }
-
-  void _refuseUnsafeTargetPath(String configPath) {
-    final path = _fileSystem.path;
-    final absolute = path.normalize(
-      path.isAbsolute(configPath)
-          ? configPath
-          : path.join(_fileSystem.currentDirectory.path, configPath),
-    );
-    final targetType = _fileSystem.typeSync(absolute, followLinks: false);
-    if (targetType == FileSystemEntityType.link) {
-      _refusePublication(absolute, 'configuration target is a symbolic link');
-    }
-    if (targetType != FileSystemEntityType.file &&
-        targetType != FileSystemEntityType.notFound) {
-      _refusePublication(
-        absolute,
-        'configuration target is not a regular file',
-      );
-    }
-    var parent = path.dirname(absolute);
-    for (var step = 0; step < 64; step++) {
-      final type = _fileSystem.typeSync(parent, followLinks: false);
-      if (type == FileSystemEntityType.link) {
-        _refusePublication(
-          absolute,
-          'configuration parent chain contains a symbolic link',
-        );
-      }
-      if (type != FileSystemEntityType.directory &&
-          type != FileSystemEntityType.notFound) {
-        _refusePublication(
-          absolute,
-          'configuration parent chain is not a regular directory',
-        );
-      }
-      final next = path.dirname(parent);
-      if (path.equals(next, parent)) return;
-      parent = next;
-    }
-    _refusePublication(
-      absolute,
-      'configuration parent chain exceeds the 64-step budget',
-    );
-  }
-
   EffectiveSetting _setting(
     EligiblePreference preference,
     ConfigurationWorkflowRequest request,
@@ -726,9 +604,9 @@ interface class ConfigurationWorkflowService {
       LifecycleOptions(
         processWorkingDirectory: _fileSystem.currentDirectory.path,
         environment: _environment,
-        scope: request.scope == PackConfigurationScope.user
-            ? LifecycleScope.user
-            : LifecycleScope.project,
+        // Publication evidence uses the project coordination root even for
+        // user-scope configuration; user paths still resolve through home.
+        scope: LifecycleScope.project,
         cwd: request.cwd,
         projectRoot: request.projectRoot,
         home: request.home,
@@ -818,7 +696,13 @@ interface class ConfigurationWorkflowService {
         projectRootSource,
       ),
     ];
-    return _ResolvedPaths(userPath, projectPath, selectedPath, descriptors);
+    return _ResolvedPaths(
+      userPath,
+      projectPath,
+      selectedPath,
+      descriptors,
+      context,
+    );
   }
 
   String _discoveredUserPath(LifecycleContext context) {
@@ -871,6 +755,15 @@ interface class ConfigurationWorkflowService {
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
+    return _documentFromSource(source, configPath, scope);
+  }
+
+  _ConfigDocument _documentFromSource(
+    String source,
+    String configPath,
+    PackConfigurationScope scope,
+  ) {
+    if (source.isEmpty) return _ConfigDocument.absent();
     try {
       final normalized = _normalize(TomlDocument.parse(source).toMap());
       if (normalized case final Map<String, Object?> map) {
@@ -1162,17 +1055,12 @@ Never _refuseUnsafeLayout(String configPath) => throw MambaException(
   exitCode: PackProcessStatus.invalidInput.code,
 );
 
-Never _refusePublication(String configPath, String reason) =>
-    throw MambaException(
-      'Cannot safely publish configuration $configPath: $reason.',
-      exitCode: PackProcessStatus.invalidInput.code,
-    );
-
 final class _ResolvedPaths(
   final String userPath,
   final String projectPath,
   final String selectedPath,
   final List<ConfigurationPathValue> descriptors,
+  final LifecycleContext context,
 );
 
 final class const _ConfigDocument(
