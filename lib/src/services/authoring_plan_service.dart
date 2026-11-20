@@ -1517,7 +1517,7 @@ interface class AuthoringPlanService {
   ) {
     final harness = agentHarnessForProfile(profile);
     final spec = HarnessCatalog.instance.requireFacet(
-      HarnessId.fromWire(harness.name),
+      HarnessId.of(harness),
       HarnessFacet.agent,
     ) as AgentHarnessSpec;
     return spec.serializeNativeAgent(profile, fields, body, matrix: matrix);

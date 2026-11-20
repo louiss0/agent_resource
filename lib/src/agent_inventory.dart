@@ -369,7 +369,7 @@ final class _Inventory {
 
   AgentHarnessSpec _spec(AgentHarness harness) =>
       HarnessCatalog.instance.requireFacet(
-        HarnessId.fromWire(harness.name),
+        HarnessId.of(harness),
         HarnessFacet.agent,
       ) as AgentHarnessSpec;
 

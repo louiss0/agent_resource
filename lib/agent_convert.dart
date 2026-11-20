@@ -31,6 +31,7 @@ final class AgentConvertCommand extends Command {
            _geminiDir,
            _stateDir,
            _planId,
+           authoringHarnessOption,
          ],
          flags: const [_apply, _dryRun, _yes, _interactive, _showInstructions],
          conflicts: const {
@@ -134,6 +135,7 @@ final class AgentConvertCommand extends Command {
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
       fileSystem: _fileSystem,
+      harnessOverride: authoringHarnessOverride(valueOf),
     );
     final apply = valueOf(_apply);
     var planId = valueOf(_planId);

@@ -17,7 +17,14 @@ import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
 import 'prompt_read_service.dart';
 
-enum SkillHarness { claude, codex, antigravity }
+enum SkillHarness implements HarnessWireNamed {
+  claude,
+  codex,
+  antigravity;
+
+  @override
+  String get wireName => name;
+}
 
 enum SkillDestination { claude, codex, shared, antigravity }
 
@@ -515,7 +522,7 @@ interface class SkillLifecycleService implements LifecycleResource {
   ) {
     if (context.scope == LifecycleScope.user) {
       if (destination == SkillDestination.antigravity) {
-        return _skillSpec(HarnessId.antigravity).userDiscoveryRoots(context);
+        return _skillSpec(HarnessId.antigravity).discoveryRoots(context);
       }
       return [_root(context, destination)];
     }

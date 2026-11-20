@@ -40,6 +40,7 @@ final class SkillCreateCommand extends GuidedCreateCommand {
     AuthoringProfile.claude,
     AuthoringProfile.codex,
     AuthoringProfile.pi,
+    AuthoringProfile.antigravity,
   ];
 
   @override

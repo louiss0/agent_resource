@@ -26,17 +26,20 @@ final class HarnessDescriptor {
     HarnessId id, {
     required HarnessRootResolver userRoot,
     HarnessRootResolver? userConfigRoot,
+    required ContextHarnessSpec context,
+    required SkillHarnessSpec skill,
+    required AgentHarnessSpec agent,
     McpHarnessSpec? mcp,
-    bool prompt = true,
+    PromptHarnessSpec? prompt,
   }) => HarnessDescriptor(
     id: id,
     rootResolver: userRoot,
     configRootResolver: userConfigRoot ?? userRoot,
-    context: _HarnessCapability(id, HarnessFacet.context),
+    context: context,
     mcp: mcp,
-    skill: _HarnessCapability(id, HarnessFacet.skill),
-    prompt: prompt ? _HarnessCapability(id, HarnessFacet.prompt) : null,
-    agent: _HarnessCapability(id, HarnessFacet.agent),
+    skill: skill,
+    prompt: prompt,
+    agent: agent,
   );
 
   final HarnessId id;
@@ -63,15 +66,4 @@ final class HarnessDescriptor {
   };
 
   bool supports(HarnessFacet category) => facet(category) != null;
-}
-
-final class _HarnessCapability extends AgentHarnessSpec
-    implements ContextHarnessSpec, SkillHarnessSpec, PromptHarnessSpec {
-  const _HarnessCapability(this.harness, this.facet);
-
-  @override
-  final HarnessId harness;
-
-  @override
-  final HarnessFacet facet;
 }

@@ -56,6 +56,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   /// The shared named options of the guided create commands.
   static final List<Option<Object?>> sharedOptions = <Option<Object?>>[
     GuidedCreateFields.profile,
+    GuidedCreateFields.harness,
     GuidedCreateFields.scope,
     GuidedCreateFields.format,
     GuidedCreateFields.cwd,
@@ -106,6 +107,12 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
 
   /// The canonical command path of the create route.
   String get commandPath;
+
+  /// The authoring operation performed by this route.
+  AuthoringOperation get operation => AuthoringOperation.create;
+
+  /// The selected source of an edit, clone or compose route.
+  String? sourcePath(ValueOf valueOf) => null;
 
   /// The question that confirms the publication.
   ///
@@ -201,10 +208,12 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
 
   /// The named native inputs of the run.
   AuthoringInputs buildInputs(ValueOf valueOf) {
-    final profile = valueOf(GuidedCreateFields.profile);
+    final profile =
+        valueOf(GuidedCreateFields.profile) ??
+        valueOf(GuidedCreateFields.harness);
     if (profile == null) {
       throw MambaException(
-        'Select the native profile explicitly with --profile '
+        'Select the native profile explicitly with --profile or --harness '
         '(${supportedProfiles.map((value) => value.name).join(', ')}).',
         exitCode: 4,
       );
@@ -223,10 +232,11 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       );
     }
     return parseAuthoringInputs(
-      operation: AuthoringOperation.create,
+      operation: operation,
       kind: kind,
       profile: profile,
       scope: valueOf(GuidedCreateFields.scope),
+      sourcePath: sourcePath(valueOf),
       bodyFile: valueOf(GuidedCreateFields.bodyFile),
       bodyStandardInput: valueOf(GuidedCreateFields.bodyStdin),
       bodyText: valueOf(GuidedCreateFields.bodyText),

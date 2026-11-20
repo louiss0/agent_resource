@@ -38,6 +38,7 @@ ConversionRequest parseConversionRequest(
   String requestFile,
   String workingDirectory, {
   fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  String? harnessOverride,
 }) {
   final path = fileSystem.path.normalize(
     fileSystem.path.isAbsolute(requestFile)
@@ -114,6 +115,9 @@ ConversionRequest parseConversionRequest(
     throw MambaException('Unsupported conversion source kind: $kind');
   }
   final target = _map(map['target'], 'target');
+  if (harnessOverride != null) {
+    target['harness'] = harnessOverride;
+  }
   _known(target, const {
     'harness',
     'output',
@@ -311,12 +315,8 @@ interface class AgentConversionService {
       _ => throw MambaException('Unsupported native source form.', exitCode: 4),
     };
     final catalog = HarnessCatalog.instance;
-    final sourceSpec = catalog.agentSpecById(
-      HarnessId.fromWire(sourceHarness.name),
-    );
-    final targetSpec = catalog.agentSpecById(
-      HarnessId.fromWire(targetHarness.name),
-    );
+    final sourceSpec = catalog.agentSpecById(HarnessId.of(sourceHarness));
+    final targetSpec = catalog.agentSpecById(HarnessId.of(targetHarness));
     if (sourceHarness == targetHarness) {
       throw MambaException(
         'Conversion requires different source and target profiles; use clone or edit.',

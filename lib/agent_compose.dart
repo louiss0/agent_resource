@@ -31,6 +31,7 @@ final class AgentComposeCommand extends Command {
            _geminiDir,
            _stateDir,
            _planId,
+           authoringHarnessOption,
          ],
          flags: const [_apply, _dryRun, _yes, _interactive, _showInstructions],
          conflicts: const {
@@ -138,6 +139,7 @@ final class AgentComposeCommand extends Command {
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
       fileSystem: _fileSystem,
+      harnessOverride: authoringHarnessOverride(valueOf),
     );
     if (request.operation != AuthoringOperation.compose) {
       throw MambaException('The request operation must be compose.');

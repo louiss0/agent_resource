@@ -26,6 +26,16 @@ final class GuidedCreateFields {
         'The native profile of the created resource; it is never inferred.',
   );
 
+  /// The harness spelling of the native profile.
+  ///
+  /// It selects the same profile as `--profile` so scripts can name the
+  /// consuming harness directly. The two selections are mutually exclusive.
+  static final harness = ChoiceOption(
+    'harness',
+    choices: AuthoringProfile.values,
+    description: 'The harness whose native profile is authored.',
+  );
+
   /// The scope of the created output.
   static final scope = ChoiceOption.withDefault(
     'scope',
@@ -196,6 +206,7 @@ final class GuidedCreateFields {
   ///
   /// A conflict is undirected: every pair is declared once.
   static const conflicts = <String, List<String>>{
+    'profile': ['harness'],
     'body-file': ['body-stdin', 'body-text'],
     'body-stdin': ['body-text'],
     'interactive': ['unattended'],

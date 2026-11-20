@@ -1,6 +1,6 @@
-import '../authoring/native_field_matrix.dart';
 import 'agent_harness_spec.dart';
 import 'harness_id.dart';
+import 'hub_claim_types.dart';
 
 /// The closed categories of canonical Agent claims.
 enum AgentClaimKind {
@@ -16,21 +16,22 @@ enum AgentClaimKind {
 }
 
 /// Where one canonical claim came from. It never carries a native value.
-final class AgentClaimProvenance {
+final class AgentClaimProvenance extends HubClaimProvenance<HarnessId> {
   const AgentClaimProvenance({
-    required this.sourceHarness,
-    required this.sourceProfile,
+    required super.sourceHarness,
+    required super.sourceProfile,
     required this.sourceForm,
-    required this.sourcePath,
+    required super.sourcePath,
   });
 
-  final HarnessId sourceHarness;
-  final String sourceProfile;
   final String sourceForm;
-  final String sourcePath;
 
+  @override
+  String get sourceHarnessWire => sourceHarness.wireName;
+
+  @override
   Map<String, Object?> toJson() => <String, Object?>{
-    'sourceHarness': sourceHarness.wireName,
+    'sourceHarness': sourceHarnessWire,
     'sourceProfile': sourceProfile,
     'sourceForm': sourceForm,
     'sourcePath': sourcePath,
@@ -38,56 +39,44 @@ final class AgentClaimProvenance {
 }
 
 /// One canonical claim plus the provenance of its native declaration.
-final class AgentCanonicalClaim {
+final class AgentCanonicalClaim
+    extends HubClaim<AgentClaimKind, AgentClaimProvenance> {
   const AgentCanonicalClaim({
-    required this.canonicalPath,
-    required this.sourcePath,
-    required this.kind,
-    required this.value,
-    required this.provenance,
-    this.detail,
+    required super.canonicalPath,
+    required super.sourcePath,
+    required super.kind,
+    required super.value,
+    required super.provenance,
+    super.detail,
   });
 
-  final String canonicalPath;
-  final String sourcePath;
-  final AgentClaimKind kind;
-  final Object? value;
-  final AgentClaimProvenance provenance;
-  final String? detail;
-
-  Map<String, Object?> toJson() => <String, Object?>{
-    'canonicalPath': canonicalPath,
-    'sourcePath': sourcePath,
-    'kind': kind.name,
-    'provenance': provenance.toJson(),
-    if (detail != null) 'detail': detail,
-  };
+  Map<String, Object?> toJson() => toJsonBase();
 }
 
 /// The hub representation of one native Agent definition.
-final class AgentCanonicalClaims {
+final class AgentCanonicalClaims
+    extends HubClaims<HarnessId, AgentCanonicalClaim> {
   const AgentCanonicalClaims({
-    required this.sourceHarness,
-    required this.sourceProfile,
+    required super.sourceHarness,
     required this.sourceForm,
-    required this.claims,
-    required this.nativeFields,
+    required super.sourceProfile,
+    required super.claims,
+    required super.nativeFields,
     required this.instructions,
   });
 
-  final HarnessId sourceHarness;
-  final String sourceProfile;
   final String sourceForm;
-  final List<AgentCanonicalClaim> claims;
-  final Map<String, Object?> nativeFields;
   final String? instructions;
+
+  @override
+  String get sourceHarnessWire => sourceHarness.wireName;
 
   /// A value-free account suitable for binding a reviewed plan identity.
   Map<String, Object?> toJson() => <String, Object?>{
-    'sourceHarness': sourceHarness.wireName,
+    'sourceHarness': sourceHarnessWire,
     'sourceProfile': sourceProfile,
     'sourceForm': sourceForm,
-    'claims': <Object?>[for (final claim in claims) claim.toJson()],
+    'claims': <Object?>[for (final claim in claims) claim.toJsonBase()],
   };
 }
 
@@ -218,9 +207,9 @@ AgentExportResult agentExportCanonical(
   final canonical = request.canonical;
   final definition = request.definition;
   final decisions = request.decisions;
-  final profile = _profileFor(target.harness);
+  final profile = target.authoringProfile;
   final matrix = target.nativeAgentFields(profile);
-  final effortKey = _effortKey(target.harness);
+  final effortKey = target.effortKey;
   String? targetKeyFor(AgentCanonicalClaim claim) => switch (claim.kind) {
     AgentClaimKind.model => matrix.specFor('model') == null ? null : 'model',
     AgentClaimKind.effort => effortKey,
@@ -348,16 +337,14 @@ AgentExportResult agentExportCanonical(
       case AgentClaimKind.toolSurface:
         if (defined) {
           add(key, targetKey, mapped ? 'altered' : 'unresolved', 'map:$key');
-          if (mapped &&
-              !decisions.contains('widen:$key') &&
-              _broadensTools(claim.value, definition[targetKey])) {
-            requireDecision(
-              key,
-              targetKey,
-              'widen:$key',
-              'CONVERSION_TOOL_EXPOSURE',
-              'The proposed tool list exposes tools absent from the source; '
-                  'an explicit widen:tools decision is required.',
+          if (mapped) {
+            requireReviewedToolExposure(
+              source: claim.value,
+              target: definition[targetKey],
+              decisions: decisions,
+              requireDecision: requireDecision,
+              sourcePath: key,
+              targetPath: targetKey,
             );
           }
         } else if (omit) {
@@ -407,20 +394,12 @@ AgentExportResult agentExportCanonical(
         'map:$key',
       );
       if (key == 'tools' && decision) {
-        final sourceTools = _toolNames(canonical.nativeFields['tools']);
-        final targetTools = _toolNames(definition[key]);
-        if (sourceTools.isNotEmpty &&
-            !decisions.contains('widen:tools') &&
-            targetTools.difference(sourceTools).isNotEmpty) {
-          requireDecision(
-            'tools',
-            'tools',
-            'widen:tools',
-            'CONVERSION_TOOL_EXPOSURE',
-            'The proposed tool list exposes tools absent from the source; '
-                'an explicit widen:tools decision is required.',
-          );
-        }
+        requireReviewedToolExposure(
+          source: canonical.nativeFields['tools'],
+          target: definition[key],
+          decisions: decisions,
+          requireDecision: requireDecision,
+        );
       }
       continue;
     }
@@ -447,7 +426,7 @@ AgentExportResult agentExportCanonical(
   return AgentExportResult(
     fields: List<Map<String, Object?>>.unmodifiable(fields),
     diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
-    targetProfile: _conversionProfile(target.harness),
+    targetProfile: target.profile,
   );
 }
 
@@ -456,27 +435,6 @@ int _compare(Object? left, Object? right) =>
 
 List<String> _sorted(Iterable<String> values) =>
     List<String>.unmodifiable(values.toList()..sort());
-
-String _conversionProfile(HarnessId harness) => switch (harness) {
-  HarnessId.claude => 'claude-agent-native-v1',
-  HarnessId.codex => 'codex-agent-native-v1',
-  HarnessId.pi => 'pi-agent-common-v1',
-  HarnessId.antigravity => 'antigravity-agent-native-v1',
-};
-
-AuthoringProfile _profileFor(HarnessId harness) => switch (harness) {
-  HarnessId.claude => AuthoringProfile.claude,
-  HarnessId.codex => AuthoringProfile.codex,
-  HarnessId.pi => AuthoringProfile.pi,
-  HarnessId.antigravity => AuthoringProfile.antigravity,
-};
-
-String? _effortKey(HarnessId harness) => switch (harness) {
-  HarnessId.claude => 'effort',
-  HarnessId.codex => 'model_reasoning_effort',
-  HarnessId.pi => 'thinking',
-  HarnessId.antigravity => null,
-};
 
 Set<String> _toolNames(Object? value) {
   final names = <String>[];
@@ -496,4 +454,34 @@ bool _broadensTools(Object? source, Object? target) {
   final targetNames = _toolNames(target);
   return sourceNames.isNotEmpty &&
       targetNames.difference(sourceNames).isNotEmpty;
+}
+
+/// The one tool-exposure guard shared by both import and export spokes.
+typedef ToolDecisionRequester = void Function(
+  String? sourcePath,
+  String? targetPath,
+  String? decision,
+  String code,
+  String message,
+);
+
+void requireReviewedToolExposure({
+  required Object? source,
+  required Object? target,
+  required Set<String> decisions,
+  required ToolDecisionRequester requireDecision,
+  String sourcePath = 'tools',
+  String? targetPath = 'tools',
+}) {
+  if (decisions.contains('widen:tools') || !_broadensTools(source, target)) {
+    return;
+  }
+  requireDecision(
+    sourcePath,
+    targetPath,
+    'widen:tools',
+    'CONVERSION_TOOL_EXPOSURE',
+    'The proposed tool list exposes tools absent from the source; an '
+        'explicit widen:tools decision is required.',
+  );
 }
