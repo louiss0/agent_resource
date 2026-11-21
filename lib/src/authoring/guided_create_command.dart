@@ -156,11 +156,17 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     GuidedAuthoringOutcome outcome,
   ) {
     final body = inputs.body;
-    if (operation != AuthoringOperation.create) {
+    if (operation != AuthoringOperation.create &&
+        operation != AuthoringOperation.clone &&
+        operation != AuthoringOperation.edit) {
       return 'Explicit command omitted: this authoring operation cannot be represented safely.';
+    }
+    if (operation != AuthoringOperation.create && inputs.source.path == null) {
+      return 'Explicit command omitted: the selected source cannot be represented safely.';
     }
     final useBodyFile =
         body?.kind == BodyInputKind.file && body?.filePath != null;
+    final needsBody = operation != AuthoringOperation.clone;
     final fields = outcome.data['fields'];
     if (fields is! Map) {
       return 'Explicit command omitted: selected fields cannot be represented safely.';
@@ -179,7 +185,11 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       'license',
       'compatibility',
     };
-    if (fields.keys.any((key) => key is! String || !supported.contains(key))) {
+    final intents = outcome.data['fieldIntents'];
+    if (intents is! Map || intents.values.any((value) => value != 'supplied')) {
+      return 'Explicit command omitted: selected field intents cannot be represented safely.';
+    }
+    if (intents.keys.any((key) => key is! String || !supported.contains(key))) {
       return 'Explicit command omitted: selected fields cannot be represented safely.';
     }
     final words = <String>[
@@ -188,9 +198,18 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       inputs.profile.name,
       '--scope',
       options.scope.name,
-      if (useBodyFile) ...['--body-file', body!.filePath!] else '--body-stdin',
+      if (operation != AuthoringOperation.create) ...[
+        '--source',
+        inputs.source.path!,
+      ],
+      if (needsBody && useBodyFile) ...[
+        '--body-file',
+        body!.filePath!,
+      ] else if (needsBody)
+        '--body-stdin',
     ];
     for (final entry in fields.entries) {
+      if (intents[entry.key] != 'supplied') continue;
       final name = entry.key as String;
       final value = entry.value;
       final option = name == 'mainAgent' ? 'main-agent' : name;
@@ -238,7 +257,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
           : "'${value.replaceAll("'", "'\\''")}'";
     }
 
-    final guidance = useBodyFile
+    final guidance = !needsBody || useBodyFile
         ? ''
         : 'To replay, provide the original instruction text on stdin; it is not disclosed here.\n';
     return '${guidance}Explicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
