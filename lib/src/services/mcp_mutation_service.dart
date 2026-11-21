@@ -529,15 +529,17 @@ interface class McpMutationService {
   Map<String, String> _codexReferences(Map<String, Object?> references) {
     final result = <String, String>{};
     for (final entry in references.entries) {
-      final match = RegExp(r'^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$')
-          .firstMatch(entry.value as String);
-      if (match == null) {
+      final encoded = McpRedaction.nativeReference(
+        McpHarness.codex,
+        entry.value as String,
+      );
+      if (encoded == null) {
         throw MambaException(
           'Codex requires a simple environment-variable reference.',
           exitCode: 2,
         );
       }
-      result[entry.key] = match.group(1)!;
+      result[entry.key] = encoded;
     }
     return result;
   }
@@ -547,15 +549,8 @@ interface class McpMutationService {
     Map<String, Object?> references,
   ) {
     for (final value in references.values.cast<String>()) {
-      final valid = switch (request.harness) {
-        McpHarness.claude => RegExp(
-          r'^\$\{[A-Za-z_][A-Za-z0-9_]*\}$',
-        ).hasMatch(value),
-        McpHarness.pi =>
-          RegExp(r'^\$\{[A-Za-z_][A-Za-z0-9_]*\}$').hasMatch(value) ||
-              (value.startsWith('!') && value.substring(1).trim().isNotEmpty),
-        _ => false,
-      };
+      final valid =
+          McpRedaction.nativeReference(request.harness, value) != null;
       if (!valid) {
         throw MambaException(
           'Unsupported credential reference for ${request.harness.wireName}.',

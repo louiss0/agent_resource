@@ -559,7 +559,11 @@ void _exportReferenceMap({
     refuse(key, 'wrong-shape');
     return;
   }
-  final targetKey = claim.canonicalPath == 'env' ? 'env' : target.headerKey;
+  final isEnv = claim.canonicalPath == 'env';
+  final codex = target.mcpHarness == McpHarness.codex;
+  final targetKey = codex
+      ? (isEnv ? 'env_vars' : 'env_http_headers')
+      : (isEnv ? 'env' : target.headerKey);
   final copied = <String, Object?>{};
   var narrowed = false;
   for (final entry in value.entries) {
@@ -577,19 +581,28 @@ void _exportReferenceMap({
     }
     final scalar = entry.value;
     if (scalar is String && McpRedaction.isReference(scalar)) {
-      copied[entry.key.toString()] = scalar;
+      final native = McpRedaction.nativeReference(target.mcpHarness, scalar);
+      if (native == null || (codex && isEnv && native != entry.key)) {
+        refuse(path, 'unsupported-native-reference');
+        narrowed = true;
+        continue;
+      }
+      copied[entry.key.toString()] = native;
       add(
         path,
         '$targetKey.${entry.key}',
-        McpFieldOutcome.represented,
+        codex ? McpFieldOutcome.altered : McpFieldOutcome.represented,
         'reference-only',
+        decision: codex ? 'native:reference' : null,
       );
     } else {
       policyOmit(path, 'literal-value-not-copied');
       narrowed = true;
     }
   }
-  if (copied.isNotEmpty) proposed[targetKey] = copied;
+  if (copied.isNotEmpty) {
+    proposed[targetKey] = codex && isEnv ? copied.keys.toList() : copied;
+  }
   add(
     key,
     copied.isEmpty ? null : targetKey,

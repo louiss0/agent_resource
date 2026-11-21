@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:mamba/mamba.dart';
+import 'package:toml/toml.dart';
 
 import 'mcp_native.dart' show McpNativeFormat;
 
@@ -638,6 +639,18 @@ bool _isMcpServerDescendant(_TomlHeader header, String name) =>
     header.segments.first == 'mcp_servers' &&
     header.segments[1] == name;
 
+// Trivia immediately before the next header may document that table.
+int _preserveTrailingTomlTrivia(List<_TomlLine> lines, int start, int end) {
+  var result = end;
+  for (final line in lines.reversed) {
+    if (line.start < start || line.end > end) continue;
+    final trimmed = line.raw.trim();
+    if (trimmed.isNotEmpty && !trimmed.startsWith('#')) break;
+    result = line.start;
+  }
+  return result;
+}
+
 /// (regionStart, regionEnd, headerEnd, hasTable).
 ({int start, int end, int headerEnd, bool found}) _tomlTable(
   String source,
@@ -666,7 +679,11 @@ bool _isMcpServerDescendant(_TomlHeader header, String name) =>
     if (!lines[i].isHeader) continue;
     final header = _tomlHeader(lines[i].raw);
     if (header != null && _isMcpServerDescendant(header, name)) continue;
-    regionEnd = lines[i].start;
+    regionEnd = _preserveTrailingTomlTrivia(
+      lines,
+      lines[headerIndex].end,
+      lines[i].start,
+    );
     break;
   }
   return (
@@ -805,6 +822,28 @@ final class _TomlEntryEditor {
   String apply(String name, McpEntryMutation mutation) {
     _rejectAmbiguousToml(text);
     final newline = text.contains('\r\n') ? '\r\n' : '\n';
+    final result = _render(name, mutation, newline);
+    try {
+      final document = TomlDocument.parse(result).toMap();
+      final servers = document['mcp_servers'];
+      final entry = servers is Map ? servers[name] : null;
+      final desired = switch (mutation) {
+        McpInsertEntry() => mutation.fields,
+        McpPatchEntry() => mutation.proposed,
+        McpRemoveEntry() => null,
+      };
+      if (!_same(entry, desired)) {
+        throw _invalid('rendered TOML does not match the requested entry.');
+      }
+    } on MambaException {
+      rethrow;
+    } catch (_) {
+      throw _invalid('rendered TOML is invalid.');
+    }
+    return result;
+  }
+
+  String _render(String name, McpEntryMutation mutation, String newline) {
     switch (mutation) {
       case McpInsertEntry():
         return _insertTable(name, mutation.fields, newline);
@@ -867,7 +906,11 @@ final class _TomlEntryEditor {
       var end = result.length;
       for (var j = i + 1; j < lines.length; j++) {
         if (lines[j].isHeader) {
-          end = lines[j].start;
+          end = _preserveTrailingTomlTrivia(
+            lines,
+            lines[i].end,
+            lines[j].start,
+          );
           break;
         }
       }

@@ -126,7 +126,7 @@ void main() {
                 ? <String, Object?>{
                     'command': 'node',
                     'args': <Object?>['server.js'],
-                    'env': <String, Object?>{'TOKEN': ref('SOURCE_TOKEN')},
+                    'env': <String, Object?>{'TOKEN': ref('TOKEN')},
                   }
                 : <String, Object?>{
                     'serverUrl': 'https://source.example.test/mcp',
@@ -140,7 +140,7 @@ void main() {
               'type': 'stdio',
               'command': 'node',
               'args': <Object?>['server.js'],
-              'env': <String, Object?>{'TOKEN': ref('SOURCE_TOKEN')},
+              'env': <String, Object?>{'TOKEN': ref('TOKEN')},
             };
           }
           return <String, Object?>{
@@ -290,6 +290,56 @@ void main() {
           };
         });
 
+        test(
+          'converts HTTP references to Codex native environment headers',
+          () async {
+            final source = location(McpHarness.claude, McpScope.project);
+            final target = location(McpHarness.codex, McpScope.project);
+            seedSource(source, {
+              'url': 'https://example.com/mcp',
+              'headers': {'Authorization': ref('TOKEN')},
+            });
+            success(
+              await exec(
+                convertArgs(
+                  McpHarness.claude,
+                  McpHarness.codex,
+                  extra: const ['--apply', '--format', 'json'],
+                ),
+              ),
+            );
+            expect(entryAt(target, sourceName), {
+              'url': 'https://example.com/mcp',
+              'env_http_headers': {'Authorization': 'TOKEN'},
+            });
+          },
+        );
+
+        test(
+          'refuses unsupported Antigravity substitutions without writes',
+          () async {
+            final source = location(McpHarness.claude, McpScope.project);
+            final target = location(McpHarness.antigravity, McpScope.project);
+            seedSource(source, {
+              'url': 'https://example.com/mcp',
+              'headers': {'Authorization': ref('TOKEN')},
+            });
+            final result = await exec(
+              convertArgs(
+                McpHarness.claude,
+                McpHarness.antigravity,
+                extra: const ['--apply', '--format', 'json'],
+              ),
+            );
+            expect(result, isA<MambaFailureResult>());
+            expect(fs.file(target.path).existsSync(), isFalse);
+            expect(
+              (result as MambaFailureResult).message,
+              isNot(contains('TOKEN')),
+            );
+          },
+        );
+
         test('declares every conversion input', () async {
           final result = await exec(<String>['mcp', 'convert', '--help']);
           expect(result, isA<MambaSuccessResult>());
@@ -379,6 +429,12 @@ void main() {
               final entry = sourceEntry(direction.source, transport);
               if (direction.target == McpHarness.antigravity) {
                 entry.remove('type');
+                entry.remove(transport == 'stdio' ? 'env' : 'headers');
+                entry.remove('http_headers');
+              }
+              if (direction.target == McpHarness.codex &&
+                  transport == 'stdio') {
+                entry['env'] = <String, Object?>{'TOKEN': ref('TOKEN')};
               }
               seedSource(source, entry);
               final sourceBefore = readText(source.path);
@@ -594,12 +650,12 @@ void main() {
           ]) {
             expect(targetText, isNot(contains(forbidden)), reason: forbidden);
           }
-          expect(written!.containsKey('http_headers'), isTrue);
+          expect(written!.containsKey('env_http_headers'), isTrue);
           expect(
-            (written['http_headers'] as Map).containsKey('Authorization'),
+            (written['env_http_headers'] as Map).containsKey('Authorization'),
             isFalse,
           );
-          expect((written['http_headers'] as Map)['X-Ref'], ref('HEADER_REF'));
+          expect((written['env_http_headers'] as Map)['X-Ref'], 'HEADER_REF');
           final data = envelope['data'] as Map<String, dynamic>;
           final refusals = (data['credentialRefusals'] as List)
               .cast<Map<String, dynamic>>();

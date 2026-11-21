@@ -830,6 +830,33 @@ void main() {
         });
 
         test(
+          'refuses replacement of parent dotted server keys without writes',
+          () async {
+            const original = '[mcp_servers]\nsvc.command = "node"\n';
+            writeText(codexUserPath, original);
+            seedManaged(codexUser(), 'svc');
+            final ledger = readText(ledgerPath);
+            final result = await exec(
+              cmd('replace', <String>[
+                ...sel('svc', harness: 'codex', scope: 'user'),
+                '--url',
+                'https://example.com/mcp',
+                '--format',
+                'json',
+              ]),
+            );
+            failure(
+              result,
+              exitCode: 1,
+              token: 'cannot be edited',
+              command: 'replace',
+            );
+            expect(readText(codexUserPath), original);
+            expect(readText(ledgerPath), ledger);
+          },
+        );
+
+        test(
           'TOML replacement removes dotted obsolete transport fields',
           () async {
             writeText(
@@ -858,6 +885,31 @@ void main() {
             );
           },
         );
+
+        test('preserves comments before an unrelated table when pruning descendants', () async {
+          writeText(
+            codexUserPath,
+            '[mcp_servers.svc]\ncommand = "node"\n'
+            '[mcp_servers.svc.env]\nTOKEN = "old"\n'
+            '# belongs to other\n[other]\nvalue = "keep"\n',
+          );
+          seedManaged(codexUser(), 'svc');
+          success(
+            await exec(
+              cmd('replace', <String>[
+                ...sel('svc', harness: 'codex', scope: 'user'),
+                '--url',
+                'https://example.com/mcp',
+                '--format',
+                'json',
+              ]),
+            ),
+          );
+          expect(
+            readText(codexUserPath),
+            contains('# belongs to other\n[other]'),
+          );
+        });
 
         test(
           'TOML replacement changes a descendant table into native header map',

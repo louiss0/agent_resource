@@ -1,3 +1,5 @@
+import 'mcp_types.dart';
+
 /// Central, value-free redaction for MCP reports (stories 4, 42, 43).
 ///
 /// Literal credential values under credential-bearing keys are never
@@ -71,6 +73,22 @@ final class McpRedaction {
     final trimmed = value.trim();
     return _wholeReference.hasMatch(trimmed) ||
         _commandReference.hasMatch(trimmed);
+  }
+
+  /// Encode a substitution only when the target harness supports it.
+  /// Codex stores environment-variable names rather than substitution syntax.
+  static String? nativeReference(McpHarness harness, String value) {
+    final match = RegExp(r'^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$').firstMatch(value);
+    return switch (harness) {
+      McpHarness.codex => match?.group(1),
+      McpHarness.claude => match == null ? null : value,
+      McpHarness.pi =>
+        match != null ||
+                (value.startsWith('!') && value.substring(1).trim().isNotEmpty)
+            ? value
+            : null,
+      McpHarness.antigravity => null,
+    };
   }
 
   // A fallback may itself contain a literal secret, even in a reference.
