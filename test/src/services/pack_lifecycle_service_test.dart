@@ -146,6 +146,44 @@ track = { kind = "local" }
     }
 
     test(
+      'interactive Skill pack ignores ineligible preferred targets',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst(
+            'targets = ["codex"]',
+            'targets = ["pi"]',
+          ),
+        );
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(choice: (_, _) async => 'codex'),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(
+          result.plan!.resources.single.targetOrigin,
+          'interactive-selection',
+        );
+      },
+    );
+
+    test(
       'interactive Skill pack uses a single detected target default',
       () async {
         final config = fs.file(

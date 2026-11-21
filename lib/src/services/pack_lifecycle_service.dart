@@ -1754,10 +1754,26 @@ interface class PackLifecycleService {
       final targetSetting = effectiveInstall.settings.singleWhere(
         (setting) => setting.key == EligiblePreference.installTargets.wireName,
       );
+      final requestedTargets = (targetSetting.value as List<Object?>)
+          .cast<String>();
+      final eligibleTargets =
+          request.interactive &&
+              request.target == null &&
+              request.resourceType == PackResourceType.skill
+          ? requestedTargets
+                .where(
+                  (target) =>
+                      target == 'shared' ||
+                      HarnessCatalog.instance.skillInstallationTargets.any(
+                        (id) => id.wireName == target,
+                      ),
+                )
+                .toList()
+          : requestedTargets;
       final detectedTargets =
           request.interactive &&
               request.resourceType == PackResourceType.skill &&
-              (targetSetting.value as List).isEmpty
+              eligibleTargets.isEmpty
           ? detectSkillInstallationTargets(context, _fileSystem)
           : <InstallationTarget>{};
       var selected =
@@ -1926,7 +1942,7 @@ interface class PackLifecycleService {
             configuration,
             candidate,
             null,
-            effectiveInstall,
+            eligibleTargets,
             detectedTargets,
           );
           final method = await _method(
@@ -1984,17 +2000,7 @@ interface class PackLifecycleService {
                       request.target == null &&
                       !request.interactive
                   ? 'native-profile'
-                  : (effectiveInstall.settings
-                                .singleWhere(
-                                  (setting) =>
-                                      setting.key ==
-                                      EligiblePreference
-                                          .installTargets
-                                          .wireName,
-                                )
-                                .value
-                            as List)
-                        .isEmpty
+                  : eligibleTargets.isEmpty
                   ? candidate.type == PackResourceType.agent
                         ? 'native-profile'
                         : detectedTargets.length == 1 &&
@@ -4920,7 +4926,7 @@ interface class PackLifecycleService {
     PackConfiguration configuration,
     _PackCandidate candidate,
     InstallationRecord? record,
-    ConfigurationWorkflowResult effective,
+    List<String> targets,
     Set<InstallationTarget> detectedTargets,
   ) async {
     if (candidate.type == PackResourceType.agent) {
@@ -4933,16 +4939,6 @@ interface class PackLifecycleService {
       }
       return [target];
     }
-    final targets =
-        (effective.settings
-                    .singleWhere(
-                      (setting) =>
-                          setting.key ==
-                          EligiblePreference.installTargets.wireName,
-                    )
-                    .value
-                as List<Object?>)
-            .cast<String>();
     if (targets.isEmpty && record != null) return record.validatedProfiles;
     if (targets.isEmpty && request.interactive && !request.yes) {
       if (detectedTargets.length == 1) return [detectedTargets.single.name];
