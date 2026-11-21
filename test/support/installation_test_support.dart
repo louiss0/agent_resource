@@ -15,6 +15,10 @@ final class ScriptedInstallationInteraction implements InstallationInteraction {
   final targetSelections = <List<InstallationTarget>>[];
   final profiles = <NativeAgentProfile?>[];
   final approvals = <bool>[];
+  final userScopeFallbacks = <bool>[];
+
+  @override
+  Future<bool> offerUserScope() async => userScopeFallbacks.removeAt(0);
   final presentedPlans = <String>[];
 
   @override

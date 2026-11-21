@@ -1115,6 +1115,40 @@ path = "skills/review"
           },
         );
 
+        test(
+          'offers user scope when the project root cannot be used',
+          () async {
+            final source = skill('fallback-user');
+            interaction.userScopeFallbacks.add(true);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              '--dry-run',
+              '--cwd',
+              '${project.path}/',
+              '--project-root',
+              '${sandbox.path}/missing/',
+              '--home',
+              '${home.path}/',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              (result as MambaSuccessResult).output,
+              contains('Scope: user'),
+            );
+            expect(interaction.userScopeFallbacks, isEmpty);
+          },
+        );
+
         test('interactive installation defaults to project scope', () async {
           final source = skill('default-project');
           final result = await executor().fake().execute([

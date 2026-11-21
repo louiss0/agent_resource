@@ -77,6 +77,12 @@ interface class SkillInstallationService {
         );
       }
     }
+    request = await resolveInstallationScope(
+      request,
+      _interaction,
+      _fileSystem,
+      interactive: interactive,
+    );
     final source = await _source(request, interactive);
     if (source == null) {
       return const InstallationCancelledResult('skill install');

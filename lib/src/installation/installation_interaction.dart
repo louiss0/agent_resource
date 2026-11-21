@@ -30,6 +30,8 @@ final class InteractionAnswer<T> {
 abstract interface class InstallationInteraction {
   bool get isInteractive;
 
+  Future<bool> offerUserScope();
+
   Future<InteractionAnswer<String>> requestSource();
 
   Future<InteractionAnswer<List<CatalogOffering>>> selectResources(
@@ -57,6 +59,11 @@ final class InteractInstallationInteraction implements InstallationInteraction {
 
   @override
   bool get isInteractive => _terminal();
+
+  @override
+  Future<bool> offerUserScope() => const InstallationApprovalComponent(
+    label: 'Project context is unavailable. Use user scope instead?',
+  ).render();
 
   @override
   Future<InteractionAnswer<String>> requestSource() => _guard(() async {

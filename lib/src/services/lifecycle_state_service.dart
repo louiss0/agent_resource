@@ -180,6 +180,7 @@ final class LifecycleOptions {
 
   LifecycleOptions copyWith({
     LifecycleScope? scope,
+    bool clearProjectRoot = false,
     String? geminiDir,
     bool? dryRun,
     bool? approved,
@@ -188,7 +189,7 @@ final class LifecycleOptions {
     environment: environment,
     scope: scope ?? this.scope,
     cwd: cwd,
-    projectRoot: projectRoot,
+    projectRoot: clearProjectRoot ? null : projectRoot,
     home: home,
     claudeConfigDir: claudeConfigDir,
     codexHome: codexHome,

@@ -38,6 +38,54 @@ final class InstallationWorkflowRequest {
   final String? ref;
   final String? subpath;
   final bool scopeExplicit;
+
+  InstallationWorkflowRequest withOptions(LifecycleOptions value) =>
+      InstallationWorkflowRequest(
+        source: source,
+        options: value,
+        sourceKind: sourceKind,
+        resourceIds: resourceIds,
+        allResources: allResources,
+        targets: targets,
+        method: method,
+        profile: profile,
+        ref: ref,
+        subpath: subpath,
+        scopeExplicit: scopeExplicit,
+      );
+}
+
+/// Offers user scope only when removing the invalid project root resolves the
+/// context and the operator has not explicitly selected a scope.
+Future<InstallationWorkflowRequest> resolveInstallationScope(
+  InstallationWorkflowRequest request,
+  InstallationInteraction interaction,
+  fslib.FileSystem fileSystem, {
+  required bool interactive,
+}) async {
+  if (!interactive ||
+      request.scopeExplicit ||
+      request.options.projectRoot == null) {
+    return request;
+  }
+  try {
+    LifecycleContext.resolve(request.options, fileSystem: fileSystem);
+    return request;
+  } on MambaException catch (error, stack) {
+    final options = request.options.copyWith(
+      scope: LifecycleScope.user,
+      clearProjectRoot: true,
+    );
+    try {
+      LifecycleContext.resolve(options, fileSystem: fileSystem);
+    } on MambaException {
+      Error.throwWithStackTrace(error, stack);
+    }
+    if (!await interaction.offerUserScope()) {
+      throw MambaException('Scope selection cancelled.', exitCode: 7);
+    }
+    return request.withOptions(options);
+  }
 }
 
 sealed class InstallationWorkflowResult {
