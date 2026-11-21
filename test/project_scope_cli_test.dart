@@ -212,6 +212,41 @@ void main() {
               expect(asked, isFalse);
             },
           );
+          test(
+            'does not silently override scope or prompt in JSON mode',
+            () async {
+              for (final extra in [
+                <String>['--scope', 'project'],
+                <String>['--format', 'json'],
+              ]) {
+                final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+                fs.directory('/home').createSync();
+                var asked = false;
+                final result =
+                    await createExecutor(
+                      fileSystem: fs,
+                      guided: GuidedAuthoringService(
+                        fileSystem: fs,
+                        terminal: () => true,
+                        ask: (_) async {
+                          asked = true;
+                          return 'user';
+                        },
+                      ),
+                    ).fake().execute([
+                      kind,
+                      'list',
+                      '--cwd',
+                      '/missing/',
+                      '--home',
+                      '/home/',
+                      ...extra,
+                    ]);
+                expect(result, isA<MambaFailureResult>());
+                expect(asked, isFalse);
+              }
+            },
+          );
           test('defaults to project inventory', () async {
             final fs = MemoryFileSystem(style: FileSystemStyle.posix);
             fs
