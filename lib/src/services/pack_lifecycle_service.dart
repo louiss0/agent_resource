@@ -3100,7 +3100,8 @@ interface class PackLifecycleService {
             action: selectedMethod == SkillInstallMethod.copy
                 ? InstallationEntryAction.createCopy
                 : InstallationEntryAction.createLink,
-            target: target,
+            // Shared is a storage destination, not a compatibility profile.
+            target: target == 'shared' ? null : target,
             linkTarget: selectedMethod == SkillInstallMethod.sourceLink
                 ? candidate.originalPath ?? candidate.path
                 : null,
@@ -4584,15 +4585,12 @@ interface class PackLifecycleService {
   }
 
   String _skillRoot(LifecycleContext context, String target) {
-    if (context.scope == LifecycleScope.project && target != 'claude') {
-      return context.sharedSkillsRoot();
-    }
     final id = switch (target) {
       'claude' => HarnessId.claude,
-      'codex' => HarnessId.codex,
       'antigravity' => HarnessId.antigravity,
-      _ => HarnessId.pi,
+      _ => null,
     };
+    if (id == null) return context.sharedSkillsRoot();
     final spec = HarnessCatalog.instance.requireFacet(
       id,
       HarnessFacet.skill,

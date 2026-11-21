@@ -268,6 +268,82 @@ void main() {
           expect(project.listSync(recursive: true), isEmpty);
         });
 
+        for (final method in ['copy', 'source-link']) {
+          test(
+            'user Codex $method installs and removes from shared storage',
+            () async {
+              if (method == 'source-link') useLocalFileSystem();
+              final source = skill('source');
+              final command = executor().fake();
+              final installed = await command.execute([
+                'skill',
+                'install',
+                source.path,
+                '--source-kind',
+                'resource',
+                '--target',
+                'codex',
+                '--method',
+                method,
+                ...context(scope: 'user'),
+                '--yes',
+                '--format',
+                'json',
+              ]);
+              expect(
+                installed,
+                isA<MambaSuccessResult>().having(
+                  (r) => r.exitCode,
+                  'status',
+                  0,
+                ),
+                reason: installed is MambaFailureResult
+                    ? installed.message
+                    : null,
+              );
+              final result = jsonDecode(
+                (installed as MambaSuccessResult).output!,
+              ) as Map<String, Object?>;
+              expect(result['outcome'], 'installed');
+              final data = result['data']! as Map<String, Object?>;
+              final unit =
+                  (data['units']! as List<Object?>).single!
+                      as Map<String, Object?>;
+              final id =
+                  (unit['installationIds']! as List<Object?>).single! as String;
+              final nativeFile = fs.file(
+                fs.path.join(
+                  home.path,
+                  '.agents',
+                  'skills',
+                  'review',
+                  'SKILL.md',
+                ),
+              );
+              expect(nativeFile.existsSync(), isTrue);
+
+              final removed = await command.execute([
+                'skill',
+                'remove',
+                id,
+                ...context(scope: 'user'),
+                '--yes',
+              ]);
+              expect(
+                removed,
+                isA<MambaSuccessResult>().having(
+                  (r) => r.exitCode,
+                  'status',
+                  0,
+                ),
+                reason: removed is MambaFailureResult ? removed.message : null,
+              );
+              expect(nativeFile.existsSync(), isFalse);
+              expect(source.existsSync(), isTrue);
+            },
+          );
+        }
+
         test('initializes user state containing only coordination', () async {
           final source = skill('source');
           final coordination = fs.directory(

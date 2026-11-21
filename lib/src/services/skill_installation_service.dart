@@ -601,14 +601,11 @@ interface class SkillInstallationService {
   }
 
   String _harnessRoot(LifecycleContext context, InstallationTarget target) {
-    final id = HarnessId.of(target);
-    if (context.scope == LifecycleScope.project &&
-        (target == InstallationTarget.codex ||
-            target == InstallationTarget.antigravity)) {
+    if (target == InstallationTarget.codex) {
       return context.sharedSkillsRoot();
     }
     final spec = HarnessCatalog.instance.requireFacet(
-      id,
+      HarnessId.of(target),
       HarnessFacet.skill,
     ) as SkillHarnessSpec;
     return spec.root(context, userScope: context.scope == LifecycleScope.user);
