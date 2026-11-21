@@ -317,6 +317,39 @@ void main() {
           },
         );
 
+        test('refuses an oversized append before writing any target', () async {
+          writeTemplate('more rules\n');
+          final original = 'a' * (1024 * 1024);
+          final first = fs.file('/sandbox/project/CLAUDE.md')
+            ..writeAsStringSync(original);
+          final result = await createExecutor(fileSystem: fs).fake().execute(
+            command(const <String>[
+              'notes',
+              '--harness',
+              'codex',
+              '--harness',
+              'claude',
+              '--apply',
+              '--yes',
+              '--unattended',
+            ]),
+          );
+          expect(
+            result,
+            isA<MambaFailureResult>().having(
+              (value) => value.message,
+              'message',
+              contains('TARGET_TOO_LARGE: Proposed Context file'),
+            ),
+          );
+          expect(first.readAsStringSync(), original);
+          expect(fs.file('/sandbox/project/AGENTS.md').existsSync(), isFalse);
+          expect(
+            fs.directory('/sandbox/state/authoring-receipts').existsSync(),
+            isFalse,
+          );
+        });
+
         test('removes committed receipts when a later receipt fails', () async {
           writeTemplate('rules\n');
           final injection = ContextInjectionService(

@@ -162,6 +162,13 @@ final class ContextInjectionService {
         replace: replace,
       );
       final proposedBytes = utf8.encode(proposed);
+      if (proposedBytes.length > maxInstructionDraftBodyBytes) {
+        throw MambaException(
+          'TARGET_TOO_LARGE: Proposed Context file exceeds the 1 MiB limit: '
+          '${target.path}',
+          exitCode: 4,
+        );
+      }
       targets.add(
         ContextInjectionTarget(
           path: target.path,
