@@ -11,8 +11,11 @@ import 'package:yaml/yaml.dart';
 import '../authoring/native_field_matrix.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
+import '../installation/installation_plan.dart';
+import '../installation/installation_route.dart';
 import '../skill_files.dart';
 import '../skill_validation.dart';
+import 'acquisition_service.dart';
 import 'conversion_coordinator_service.dart';
 import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
@@ -638,6 +641,31 @@ interface class SkillLifecycleService implements LifecycleResource {
       location: location,
       nativeRoot: root,
       nativeDestination: input.destination.name,
+      installationRoute: InstallationRoute(
+        source: AcquisitionProvenance(
+          kind: AcquisitionLocatorKind.local,
+          requestedLocator: input.source,
+          resolvedLocator: source,
+          subpath: null,
+          temporary: false,
+          directFile: false,
+          durableLocalDirectory:
+              state.io.type(source, followLinks: false) ==
+              FileSystemEntityType.directory,
+        ),
+        sourceKind: AcquisitionSourceKind.resource,
+        sourceRelativePath: '.',
+        scope: context.scope,
+        targets: <InstallationRouteTarget>{
+          InstallationRouteTarget.values.byName(input.destination.name),
+          for (final harness in input.harnesses)
+            InstallationRouteTarget.values.byName(harness.name),
+        }.toList()..sort((a, b) => a.name.compareTo(b.name)),
+        method: input.mode == SkillMode.copy
+            ? InstallationMethod.copy
+            : InstallationMethod.sourceLink,
+        derivedArtifacts: const [],
+      ),
     );
   }
 

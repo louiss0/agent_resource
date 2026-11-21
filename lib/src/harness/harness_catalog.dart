@@ -1,3 +1,5 @@
+import 'package:mamba/mamba.dart';
+
 import '../mcp/mcp_types.dart';
 import 'agent_harness_spec.dart';
 import 'context_harness_spec.dart';
@@ -78,6 +80,23 @@ final class HarnessCatalog {
       ]);
 
   bool supports(HarnessId id, HarnessFacet facet) => byId(id).supports(facet);
+
+  /// Harnesses whose Skill facet supports direct installation.
+  List<HarnessId> get skillInstallationTargets => List.unmodifiable([
+    for (final descriptor in _descriptors)
+      if (descriptor.skill?.installationRoot != null) descriptor.id,
+  ]);
+
+  SkillHarnessSpec requireSkillInstallation(HarnessId id) {
+    final spec = byId(id).skill;
+    if (spec?.installationRoot == null) {
+      throw MambaException(
+        '${id.wireName} does not support direct Skill installation; choose a supported Skill target.',
+        exitCode: 4,
+      );
+    }
+    return spec!;
+  }
 
   HarnessFacetSpec? facet(HarnessId id, HarnessFacet facet) =>
       byId(id).facet(facet);

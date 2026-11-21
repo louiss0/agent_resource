@@ -5,6 +5,7 @@ import 'package:mamba/mamba.dart';
 
 import '../harness/harness_id.dart';
 import '../services/acquisition_service.dart';
+import 'installation_route.dart';
 
 enum InstallationResourceType { skill, agent }
 
@@ -148,6 +149,7 @@ final class InstallationUnitPlan {
     required this.sourcePath,
     required this.sourceDigest,
     required this.origin,
+    this.installationRoute,
   }) : entries = List<InstallationEntryPlan>.unmodifiable(entries);
 
   final InstallationResourceType resourceType;
@@ -161,6 +163,7 @@ final class InstallationUnitPlan {
   final String sourcePath;
   final String sourceDigest;
   final Map<String, Object?> origin;
+  final InstallationRoute? installationRoute;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'resourceType': resourceType.name,
@@ -182,6 +185,8 @@ final class InstallationUnitPlan {
     'entries': [for (final entry in entries) entry.identityJson()],
     'sourceDigest': sourceDigest,
     'origin': origin,
+    if (installationRoute != null)
+      'installationRoute': installationRoute!.toJson(),
   };
 
   InstallationUnitPlan copyWith({
@@ -202,6 +207,7 @@ final class InstallationUnitPlan {
     sourcePath: sourcePath,
     sourceDigest: sourceDigest,
     origin: origin,
+    installationRoute: installationRoute,
   );
 }
 

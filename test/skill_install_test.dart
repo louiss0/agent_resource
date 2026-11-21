@@ -7,6 +7,7 @@ import 'package:file/memory.dart';
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
+import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_installation_service.dart';
@@ -102,6 +103,50 @@ void main() {
           '--state-dir',
           '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
         ];
+
+        test(
+          'refuses an unsupported Skill target before acquisition',
+          () async {
+            final source = skill('unsupported-target');
+            final service = SkillInstallationService(
+              fileSystem: fs,
+              acquisition: acquisition,
+              interaction: interaction,
+              progress: noInstallationProgress,
+            );
+            final request = InstallationWorkflowRequest(
+              source: source.path,
+              options: LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                approved: true,
+              ),
+              sourceKind: AcquisitionSourceKind.resource,
+              resourceIds: const [],
+              allResources: false,
+              targets: const [InstallationTarget.pi],
+              method: InstallationMethod.copy,
+              profile: null,
+              ref: null,
+              subpath: null,
+              scopeExplicit: true,
+            );
+            await expectLater(
+              service.run(request, interactive: false),
+              throwsA(
+                predicate(
+                  (error) =>
+                      error.toString().contains('pi') &&
+                      error.toString().contains('Skill'),
+                ),
+              ),
+            );
+            expect(acquisition.calls, 0);
+          },
+        );
 
         for (final entry in ['metadata.json', 'rules']) {
           test('rejects unsupported root entry $entry before writes', () async {
@@ -1202,6 +1247,79 @@ path = "skills/other"
           },
         );
 
+        test(
+          'records the source route and migrated artifacts for replay',
+          () async {
+            final source = skill('route-source');
+            fs
+                .file(fs.path.join(source.path, 'guide.md'))
+                .writeAsStringSync('Guide');
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final state = LifecycleStateService(io: LifecycleIO(fs: fs));
+            final records = state.records(
+              LifecycleContext.resolve(
+                LifecycleOptions(
+                  processWorkingDirectory: project.path,
+                  scope: LifecycleScope.project,
+                  cwd: project.path,
+                  projectRoot: project.path,
+                  home: home.path,
+                  stateDir: fs.path.join(sandbox.path, 'state'),
+                ),
+                fileSystem: fs,
+              ),
+            );
+            final route = records.single.toJson()['installationRoute'] as Map;
+            expect(
+              records.single.installationRoute!.source.resolvedLocator,
+              source.path,
+            );
+            expect(route['sourceKind'], 'resource');
+            expect(route['scope'], 'project');
+            expect(route['targets'], ['codex']);
+            expect(route['method'], 'copy');
+            expect((route['source'] as Map)['requestedLocator'], source.path);
+            expect(route['sourceRelativePath'], '.');
+            final bad = records.single.toJson();
+            bad['installationRoute'] = {
+              ...route,
+              'sourceRelativePath': '../escape',
+            };
+            expect(
+              () => InstallationRecord.fromJson(bad),
+              throwsFormatException,
+            );
+            expect(
+              route['derivedArtifacts'],
+              contains(
+                predicate(
+                  (item) =>
+                      item is Map &&
+                      item['sourcePath'] == 'guide.md' &&
+                      item['outputPath'] == 'references/guide.md',
+                ),
+              ),
+            );
+          },
+        );
+
         test('consumer-only canonical addition records Codex without rewriting content', () async {
           useLocalFileSystem();
           final source = skill('consumer-addition');
@@ -1261,6 +1379,10 @@ path = "skills/other"
             records.single.knownConsumers,
             containsAll(['claude', 'codex']),
           );
+          expect(records.single.installationRoute!.targets.map((t) => t.name), [
+            'claude',
+            'codex',
+          ]);
         });
 
         test(

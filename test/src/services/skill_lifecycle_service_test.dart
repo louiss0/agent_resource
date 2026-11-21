@@ -260,6 +260,12 @@ void main() {
             ),
           );
           final id = installed.data['installationId']! as String;
+          final context = LifecycleContext.resolve(options(), fileSystem: fs);
+          final route = service.state.recordById(context, id).installationRoute;
+          expect(route, isNotNull);
+          expect(route!.source.resolvedLocator, source.path);
+          expect(route.targets.map((target) => target.name), ['claude']);
+          expect(route.method.wireName, 'copy');
           fs
               .file(fs.path.join(source.path, 'README.md'))
               .writeAsStringSync('unsupported');
