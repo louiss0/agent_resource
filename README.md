@@ -249,7 +249,11 @@ discovered from `XDG_CONFIG_HOME` reports that variable as its source.
 `config prefer` previews eligible changes by default. Add `--apply` to write
 only the reviewed safe preferences to the selected `--scope project|user`
 configuration. The eligible keys are `cli.install.targets`,
-`cli.install.skill_method`, and `cli.retention.snapshot_days`. Applies use
+`cli.install.skill_method`, and `cli.retention.snapshot_days`. Remembered
+targets may be `claude`, `codex`, `shared`, or `pi`: Skill-backed pack
+installations support the first three, while MCP also supports `pi`. Agent
+installations derive their target from the Agent's native profile. A target
+accepted here is not necessarily supported by every resource type. Applies use
 focused table edits that preserve comments, indentation, and unrelated TOML
 sections; ambiguous inline or dotted layouts are refused. Publication uses
 lifecycle coordination, a private same-filesystem staging directory, backup

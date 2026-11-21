@@ -15,8 +15,10 @@ import '../pack/pack_configuration.dart'
         SkillInstallMethod,
         packConfigurationFileName;
 import '../pack/pack_models.dart' show PackProcessStatus;
+import '../mcp/mcp_types.dart' show McpHarness;
 import '../configuration/effective_configuration.dart';
 import 'configuration_publication_service.dart';
+import 'skill_lifecycle_service.dart' show SkillDestination;
 import 'lifecycle_state_service.dart'
     show
         LifecycleContext,
@@ -314,13 +316,15 @@ interface class ConfigurationWorkflowService {
     switch (preference) {
       case EligiblePreference.installTargets:
         final targets = [for (final part in value.split(',')) part.trim()];
-        final valid = RegExp(r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$');
-        if (targets.isEmpty ||
-            targets.any((target) => !valid.hasMatch(target)) ||
+        final supported = {
+          for (final target in SkillDestination.values) target.name,
+          for (final target in McpHarness.values) target.wireName,
+        };
+        if (targets.any((target) => !supported.contains(target)) ||
             targets.toSet().length != targets.length) {
           throw MambaException(
-            'Eligible preference \'$key\' requires unique lowercase '
-            'kebab-case targets.',
+            'Eligible preference \'$key\' requires unique supported targets: '
+            'claude, codex, shared, or pi.',
             exitCode: PackProcessStatus.invalidInput.code,
           );
         }

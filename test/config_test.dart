@@ -2067,6 +2067,114 @@ void main() {
           );
         });
 
+        for (final apply in [false, true]) {
+          for (final targets in [
+            'not-a-harness',
+            'claude,not-a-harness',
+            'codex,codex',
+            'claude,',
+          ]) {
+            test(
+              'rejects $targets in ${apply ? 'apply' : 'preview'} without writing',
+              () async {
+                final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+                const path = '/sandbox/project.toml';
+                const original = 'schema_version = 1\n';
+                _writeConfig(fs, path, original);
+                final result = await _executor(fileSystem: fs).fake().execute([
+                  'config',
+                  'prefer',
+                  '--scope',
+                  'project',
+                  '--user-config',
+                  '/sandbox/user.toml',
+                  '--project-config',
+                  path,
+                  '--cwd',
+                  '/sandbox/project/',
+                  '--project-root',
+                  '/sandbox/project/',
+                  '--set',
+                  'cli.install.targets=$targets',
+                  if (apply) '--apply',
+                ]);
+                expect(
+                  result,
+                  isA<MambaFailureResult>()
+                      .having((r) => r.exitCode, 'exit code', 2)
+                      .having(
+                        (r) => r.message,
+                        'message',
+                        contains('requires unique supported targets'),
+                      )
+                      .having((r) => r.output, 'output', isNull)
+                      .having(
+                        (r) => r.error.phase,
+                        'phase',
+                        MambaExecutionPhase.run,
+                      )
+                      .having((r) => r.error.commandPath, 'command path', [
+                        'agent_resource',
+                        'config',
+                        'prefer',
+                      ]),
+                );
+                expect(fs.file(path).readAsStringSync(), original);
+              },
+            );
+          }
+          test(
+            'accepts supported targets in ${apply ? 'apply' : 'preview'}',
+            () async {
+              final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+              const path = '/sandbox/project.toml';
+              final result = await _executor(fileSystem: fs).fake().execute([
+                'config',
+                'prefer',
+                '--scope',
+                'project',
+                '--user-config',
+                '/sandbox/user.toml',
+                '--project-config',
+                path,
+                '--cwd',
+                '/sandbox/project/',
+                '--project-root',
+                '/sandbox/project/',
+                '--set',
+                'cli.install.targets=claude,codex,shared,pi',
+                if (apply) '--apply',
+              ]);
+              expect(
+                result,
+                isA<MambaSuccessResult>()
+                    .having((r) => r.exitCode, 'exit code', 0)
+                    .having(
+                      (r) => r.output,
+                      'output',
+                      contains(
+                        apply
+                            ? 'config.prefer: applied'
+                            : 'config.prefer: preview',
+                      ),
+                    ),
+              );
+              if (apply) {
+                final map = TomlDocument.parse(fs.file(path).readAsStringSync())
+                    .toMap();
+                expect((map['cli'] as Map)['install']['targets'], [
+                  'claude',
+                  'codex',
+                  'shared',
+                  'pi',
+                ]);
+              } else {
+                expect(fs.file(path).existsSync(), isFalse);
+              }
+            },
+          );
+        }
+
         final applyCases =
             <
               ({
