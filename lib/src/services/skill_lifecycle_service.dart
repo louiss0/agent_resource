@@ -333,6 +333,35 @@ interface class SkillLifecycleService implements LifecycleResource {
     );
   }
 
+  /// Checks the source-level admission rules shared by Skill installations.
+  /// Destination, ownership and publication checks are performed separately.
+  Map<String, Object?> installationAdmission(String path) {
+    try {
+      state.validateSkillTree(path);
+      final name = readDeclaredSkillName(path, fs: state.io.fs);
+      final report = validateSkill(
+        path,
+        expectedDirectoryName: name,
+        fs: state.io.fs,
+      );
+      return <String, Object?>{
+        'eligible': report.valid,
+        'scope': 'source-only',
+        'diagnostics': [
+          for (final diagnostic in report.diagnostics) diagnostic.toJson(),
+        ],
+      };
+    } on MambaException catch (error) {
+      return <String, Object?>{
+        'eligible': false,
+        'scope': 'source-only',
+        'diagnostics': [
+          <String, Object?>{'message': error.message},
+        ],
+      };
+    }
+  }
+
   /// The body-free native Skill view of one source for Antigravity.
   ///
   /// Antigravity has no Prompt facet, but it does consume ordinary Skills.

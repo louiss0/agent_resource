@@ -175,6 +175,11 @@ void main() {
       expect(view['valid'], true);
       expect(view, isNot(contains('skillValidation')));
       expect(report, isNot(contains('valid')));
+      expect(report['installationAdmission'], {
+        'eligible': true,
+        'scope': 'source-only',
+        'diagnostics': isEmpty,
+      });
     });
 
     test(
@@ -198,6 +203,37 @@ void main() {
         final view = (report['views'] as List).single as Map;
         expect(view['classification'], 'nonPrompt');
         expect(view['valid'], true);
+        final admission = report['installationAdmission'] as Map;
+        expect(admission['eligible'], false);
+        expect(admission['diagnostics'], isNotEmpty);
+        expect('${admission['diagnostics']}', contains('argument-hint'));
+      },
+    );
+
+    test(
+      'reports unsafe source trees separately from native validity',
+      () async {
+        fs
+            .file('$directory/SKILL.md')
+            .writeAsStringSync(
+              '---\nname: prompt\ndescription: ordinary\n---\nbody\n',
+            );
+        fs.directory('$directory/unexpected').createSync();
+        fs.file('$directory/unexpected/file.txt').writeAsStringSync('content');
+        final result = await run([
+          'validate',
+          '--skill',
+          directory,
+          '--target',
+          'claude',
+        ]);
+        expect(result, isA<MambaSuccessResult>());
+        final report =
+            jsonDecode((result as MambaSuccessResult).output!) as Map;
+        expect((report['views'] as List).single['valid'], true);
+        final admission = report['installationAdmission'] as Map;
+        expect(admission['eligible'], false);
+        expect(admission['diagnostics'], isNotEmpty);
       },
     );
 
