@@ -473,6 +473,26 @@ final class ContextInjectionService {
   ({bool exists, String? sha256, int byteLength, String? content}) _observe(
     String path,
   ) {
+    var parent = fileSystem.path.dirname(path);
+    while (true) {
+      final parentType = fileSystem.typeSync(parent, followLinks: false);
+      if (parentType == FileSystemEntityType.link) {
+        throw MambaException(
+          'SYMLINK_REFUSED: Context path traverses a link: $parent',
+          exitCode: 4,
+        );
+      }
+      if (parentType != FileSystemEntityType.directory &&
+          parentType != FileSystemEntityType.notFound) {
+        throw MambaException(
+          'NON_REGULAR_TARGET_REFUSED: Context parent is not a directory: $parent',
+          exitCode: 4,
+        );
+      }
+      final next = fileSystem.path.dirname(parent);
+      if (next == parent) break;
+      parent = next;
+    }
     final type = fileSystem.typeSync(path, followLinks: false);
     if (type == FileSystemEntityType.link) {
       throw MambaException(

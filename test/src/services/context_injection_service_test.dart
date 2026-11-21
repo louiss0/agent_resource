@@ -72,6 +72,37 @@ void main() {
           }
         });
 
+        test('refuses a linked intermediate destination directory', () async {
+          writeTemplate('rules\n');
+          fs.directory('/sandbox/outside').createSync(recursive: true);
+          fs.link('/sandbox/project/.claude').createSync('/sandbox/outside');
+
+          final result = await createExecutor(fileSystem: fs).fake().execute(
+            command(const <String>[
+              'notes',
+              '--harness',
+              'claude',
+              '--variant',
+              'dot-claude',
+              '--apply',
+              '--yes',
+              '--unattended',
+            ]),
+          );
+
+          expect(
+            result,
+            isA<MambaFailureResult>()
+                .having((value) => value.exitCode, 'exit code', 4)
+                .having(
+                  (value) => value.message,
+                  'message',
+                  contains('SYMLINK_REFUSED'),
+                ),
+          );
+          expect(fs.file('/sandbox/outside/CLAUDE.md').existsSync(), isFalse);
+        });
+
         test('writes a shared AGENTS.md once with both harnesses', () async {
           writeTemplate('shared rules\n');
 
