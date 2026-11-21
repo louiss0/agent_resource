@@ -156,11 +156,11 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     GuidedAuthoringOutcome outcome,
   ) {
     final body = inputs.body;
-    if (operation != AuthoringOperation.create ||
-        body?.kind != BodyInputKind.file ||
-        body?.filePath == null) {
-      return 'Explicit command omitted: replay requires a persistent --body-file and a create operation; instruction content is not disclosed.';
+    if (operation != AuthoringOperation.create) {
+      return 'Explicit command omitted: this authoring operation cannot be represented safely.';
     }
+    final useBodyFile =
+        body?.kind == BodyInputKind.file && body?.filePath != null;
     final fields = outcome.data['fields'];
     if (fields is! Map) {
       return 'Explicit command omitted: selected fields cannot be represented safely.';
@@ -188,8 +188,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       inputs.profile.name,
       '--scope',
       options.scope.name,
-      '--body-file',
-      body!.filePath!,
+      if (useBodyFile) ...['--body-file', body!.filePath!] else '--body-stdin',
     ];
     for (final entry in fields.entries) {
       final name = entry.key as String;
@@ -239,7 +238,10 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
           : "'${value.replaceAll("'", "'\\''")}'";
     }
 
-    return 'Explicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
+    final guidance = useBodyFile
+        ? ''
+        : 'To replay, provide the original instruction text on stdin; it is not disclosed here.\n';
+    return '${guidance}Explicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
         'agent_resource ${words.map(quote).join(' ')}';
   }
 

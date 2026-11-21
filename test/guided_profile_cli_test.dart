@@ -5,6 +5,7 @@ import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/services/guided_authoring_service.dart';
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
+import 'package:mamba/mamba.dart' show ProcessedStandardInput;
 import 'package:test/test.dart';
 
 void main() {
@@ -313,7 +314,49 @@ void main() {
           expect(questions.single, contains('codex'));
           expect(questions.single, contains('pi'));
           expect(questions.single, contains('antigravity'));
-          expect((result as MambaSuccessResult).output, contains('planned'));
+          final output = (result as MambaSuccessResult).output!;
+          expect(output, contains('planned'));
+          expect(output, contains('--body-stdin'));
+          expect(
+            output,
+            contains('provide the original instruction text on stdin'),
+          );
+          expect(output, isNot(contains('--body-text Body.')));
+          final command = output.split('\n').last.split('): ').last;
+          final shell = await Process.run(
+            Platform.isWindows ? 'powershell.exe' : 'sh',
+            Platform.isWindows
+                ? [
+                    '-NoProfile',
+                    '-Command',
+                    'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+                  ]
+                : [
+                    '-c',
+                    'agent_resource() { printf "%s\\n" "\$@"; }; $command',
+                  ],
+          );
+          expect(shell.exitCode, 0, reason: '${shell.stderr}');
+          final args = Platform.isWindows
+              ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+              : (shell.stdout as String).trimRight().split('\n');
+          final replay =
+              await createExecutor(
+                    fileSystem: fs,
+                    guided: GuidedAuthoringService(
+                      fileSystem: fs,
+                      terminal: () => false,
+                    ),
+                  )
+                  .fake(
+                    standardInput: ProcessedStandardInput(utf8.encode('Body.')),
+                  )
+                  .execute(args);
+          expect(
+            replay,
+            isA<MambaSuccessResult>(),
+            reason: replay is MambaFailureResult ? replay.message : null,
+          );
         });
       });
     });
