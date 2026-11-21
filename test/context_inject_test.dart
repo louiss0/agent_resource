@@ -1507,6 +1507,30 @@ void main() {
             },
           );
 
+          test('refuses destination changes made during approval', () async {
+            writeTemplate('styles', 'rules\n');
+            final target = fs.file('/sandbox/project/CLAUDE.md')
+              ..writeAsStringSync('before\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              hasTerminal: () => true,
+              confirm: () async {
+                target.writeAsStringSync('changed by another writer\n');
+                return true;
+              },
+            );
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--apply',
+              '--interactive',
+            ]);
+            expectFailure(result, 'CONTEXT_PLAN_DRIFT');
+            expect(target.readAsStringSync(), 'changed by another writer\n');
+          });
+
           test('refuses a cancelled harness selection', () async {
             writeTemplate('styles', 'rules\n');
             final injected = ContextInjectCommand(
