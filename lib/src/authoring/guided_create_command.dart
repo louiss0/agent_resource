@@ -226,16 +226,20 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
         valueOf(GuidedCreateFields.profile) ??
         valueOf(GuidedCreateFields.harness);
     if (profile == null && interactive) {
-      final answer = await guided.valueQuestion?.call(
-        'Select a native profile '
-        '(${supportedProfiles.map((value) => value.name).join(', ')}):',
-      );
-      if (answer == null || answer.trim().isEmpty) {
-        throw MambaException('Profile selection cancelled.', exitCode: 7);
+      for (var attempt = 0; attempt < maxGuidedCorrectionAttempts; attempt++) {
+        final answer = await guided.valueQuestion?.call(
+          '${attempt == 0 ? '' : 'Invalid profile. '}'
+          'Select a native profile '
+          '(${supportedProfiles.map((value) => value.name).join(', ')}):',
+        );
+        if (answer == null || answer.trim().isEmpty) {
+          throw MambaException('Profile selection cancelled.', exitCode: 7);
+        }
+        profile = supportedProfiles
+            .where((value) => value.name == answer.trim())
+            .firstOrNull;
+        if (profile != null) break;
       }
-      profile = supportedProfiles
-          .where((value) => value.name == answer.trim())
-          .firstOrNull;
     }
     if (profile == null) {
       throw MambaException(

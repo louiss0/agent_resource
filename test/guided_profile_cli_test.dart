@@ -72,6 +72,46 @@ void main() {
           expect((result as MambaFailureResult).message, contains('--scope'));
           expect(fs.directory('/project/.claude').existsSync(), isFalse);
         });
+        test('re-prompts with the choices after an invalid profile', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/project').createSync();
+          fs.directory('/home').createSync();
+          final answers = ['invalid', 'claude'].iterator;
+          final questions = <String>[];
+          final result =
+              await createExecutor(
+                fileSystem: fs,
+                guided: GuidedAuthoringService(
+                  fileSystem: fs,
+                  terminal: () => true,
+                  ask: (question) async {
+                    questions.add(question);
+                    answers.moveNext();
+                    return answers.current;
+                  },
+                ),
+              ).fake().execute([
+                'skill',
+                'create',
+                '--cwd',
+                '/project/',
+                '--home',
+                '/home/',
+                '--name',
+                'demo',
+                '--description',
+                'Demo.',
+                '--body-text',
+                'Body.',
+              ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          expect(questions, hasLength(2));
+          expect(questions.last, contains('claude'));
+        });
         test('guides the missing native profile', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           fs.directory('/project').createSync();
