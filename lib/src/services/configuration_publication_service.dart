@@ -295,9 +295,13 @@ interface class ConfigurationPublicationService {
             },
           );
         }
-        if (phase != 'prepared' &&
-            phase != 'staged' &&
-            phase != 'recoveryRequired') {
+        if (!const {
+          'prepared',
+          'staged',
+          'published',
+          'recoveryRequired',
+          'rollbackStarted',
+        }.contains(phase)) {
           throw MambaException(
             'Configuration rollback is not supported for phase $phase.',
             exitCode: 4,
@@ -307,6 +311,7 @@ interface class ConfigurationPublicationService {
           _io.fs.path.dirname(target),
           '.agent-resource-prefer-$transactionId.quarantine',
         );
+        final failedNew = '$quarantine.failed-new';
         if (decoded['quarantinePath'] != quarantine) {
           throw MambaException(
             'Configuration quarantine authority is invalid.',
@@ -316,28 +321,67 @@ interface class ConfigurationPublicationService {
         _refuseUnsupportedTargetPath(target);
         final targetType = _io.type(target, followLinks: false);
         final quarantineType = _io.type(quarantine, followLinks: false);
+        final failedType = _io.type(failedNew, followLinks: false);
         final expected = decoded['expectedDigest'] as String;
-        if (targetType == FileSystemEntityType.notFound &&
+        final candidate = decoded['candidateDigest'];
+        bool matches(String path, Object? digest) =>
+            digest is String && _digest(_readBounded(path)) == digest;
+        final oldQuarantined =
             quarantineType == FileSystemEntityType.file &&
-            _digest(_readBounded(quarantine)) == expected) {
-          if (!context.dryRun) _io.rename(quarantine, target);
-        } else if (targetType == FileSystemEntityType.file &&
+            matches(quarantine, expected);
+        final oldRestored =
+            targetType == FileSystemEntityType.file &&
             decoded['initiallyPresent'] != false &&
-            quarantineType == FileSystemEntityType.notFound &&
-            _digest(_readBounded(target)) == expected) {
-          // A previous recovery may have restored the target before interruption.
-        } else if (targetType == FileSystemEntityType.notFound &&
-            quarantineType == FileSystemEntityType.notFound &&
-            decoded['initiallyPresent'] == false &&
-            expected == _digest('')) {
-          // The target was absent before publication and is still absent.
-        } else {
+            matches(target, expected);
+        final candidateLive =
+            targetType == FileSystemEntityType.file &&
+            matches(target, candidate);
+        final candidateRetained =
+            failedType == FileSystemEntityType.file &&
+            matches(failedNew, candidate);
+        if ((quarantineType != FileSystemEntityType.notFound &&
+                !oldQuarantined) ||
+            (failedType != FileSystemEntityType.notFound &&
+                !candidateRetained)) {
+          throw MambaException(
+            'Configuration rollback evidence changed; evidence retained.',
+            exitCode: 6,
+          );
+        }
+        final originallyAbsent =
+            decoded['initiallyPresent'] == false && expected == _digest('');
+        final canMoveCandidate =
+            candidateLive &&
+            failedType == FileSystemEntityType.notFound &&
+            (oldQuarantined || originallyAbsent);
+        final canRestore =
+            targetType == FileSystemEntityType.notFound && oldQuarantined;
+        final alreadyRestored =
+            oldRestored && quarantineType == FileSystemEntityType.notFound;
+        final alreadyAbsent =
+            originallyAbsent &&
+            targetType == FileSystemEntityType.notFound &&
+            quarantineType == FileSystemEntityType.notFound;
+        if (!canMoveCandidate &&
+            !canRestore &&
+            !alreadyRestored &&
+            !alreadyAbsent) {
           throw MambaException(
             'Configuration rollback cannot prove the original bytes; evidence retained.',
             exitCode: 6,
           );
         }
         if (context.dryRun) return planned();
+        if (canMoveCandidate) {
+          _advance(
+            evidencePath,
+            Map<String, Object?>.from(decoded),
+            'rollbackStarted',
+          );
+          _io.rename(target, failedNew);
+        }
+        if (oldQuarantined) _io.rename(quarantine, target);
+        if (candidateRetained || canMoveCandidate) _io.delete(failedNew);
         _cleanupStaging(retainedStage);
         _advance(
           evidencePath,
