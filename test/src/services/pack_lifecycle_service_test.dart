@@ -540,6 +540,38 @@ path = "skills/moved"
       },
     );
 
+    test('update refuses a legacy Skill without recorded route', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final ledger = fs.file(
+        fs.path.join(project.path, '.agent-resource', 'installations.json'),
+      );
+      final document =
+          jsonDecode(ledger.readAsStringSync()) as Map<String, dynamic>;
+      final installation =
+          (document['installations'] as List).single as Map<String, dynamic>;
+      installation.remove('installationRoute');
+      ledger.writeAsStringSync(jsonEncode(document));
+      final before = ledger.readAsStringSync();
+      final installed = fs.file(
+        fs.path.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+      );
+      final installedBefore = installed.readAsStringSync();
+      fs
+          .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+          .writeAsStringSync(
+            installedBefore.replaceFirst('# Reviewer', '# Changed'),
+          );
+      await expectLater(
+        service.execute(request(PackOperation.update, PackResourceType.skill)),
+        throwsA(isA<MambaException>()),
+      );
+      expect(ledger.readAsStringSync(), before);
+      expect(installed.readAsStringSync(), installedBefore);
+    });
+
     test('installs a native Skill and Agent with source evidence', () async {
       final service = PackLifecycleService(fileSystem: fs);
       final skills = await service.execute(

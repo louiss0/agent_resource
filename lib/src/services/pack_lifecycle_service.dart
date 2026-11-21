@@ -1696,6 +1696,17 @@ interface class PackLifecycleService {
       request,
       _packRecords(context, pack.key, request.resourceType),
     ).where((record) => record.lifecycle == 'live').toList();
+    if (request.operation == PackOperation.update &&
+        _isSkillFamily(request.resourceType)) {
+      for (final record in existing) {
+        if (record.installationRoute == null) {
+          throw MambaException(
+            'Cannot update ${record.name}: its legacy installation has no recorded route to verify. Review its source and installation before changing it.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+      }
+    }
     if (request.operation == PackOperation.install) {
       final replay = _exactLockReplay(
         request,
