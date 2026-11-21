@@ -145,7 +145,102 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     if (outcome.rejected) {
       throw MambaException(rendered, exitCode: 4);
     }
-    return rendered;
+    if (!interactive || format != LifecycleOutputFormat.text) return rendered;
+    return '$rendered\n${_explicitCommand(valueOf, inputs, options, outcome)}';
+  }
+
+  String _explicitCommand(
+    ValueOf valueOf,
+    AuthoringInputs inputs,
+    LifecycleOptions options,
+    GuidedAuthoringOutcome outcome,
+  ) {
+    final body = inputs.body;
+    if (operation != AuthoringOperation.create ||
+        body?.kind != BodyInputKind.file ||
+        body?.filePath == null) {
+      return 'Explicit command omitted: replay requires a persistent --body-file and a create operation; instruction content is not disclosed.';
+    }
+    final fields = outcome.data['fields'];
+    if (fields is! Map) {
+      return 'Explicit command omitted: selected fields cannot be represented safely.';
+    }
+    const supported = {
+      'name',
+      'description',
+      'model',
+      'tools',
+      'mainAgent',
+      'skills',
+      'allowed-tools',
+      'disallowed-tools',
+      'metadata',
+      'argument-hint',
+      'license',
+      'compatibility',
+    };
+    if (fields.keys.any((key) => key is! String || !supported.contains(key))) {
+      return 'Explicit command omitted: selected fields cannot be represented safely.';
+    }
+    final words = <String>[
+      ...commandPath.split(' '),
+      '--profile',
+      inputs.profile.name,
+      '--scope',
+      options.scope.name,
+      '--body-file',
+      body!.filePath!,
+    ];
+    for (final entry in fields.entries) {
+      final name = entry.key as String;
+      final value = entry.value;
+      final option = name == 'mainAgent' ? 'main-agent' : name;
+      if (value is String) {
+        words.addAll(['--$option', value]);
+      } else if (value is List && value.every((item) => item is String)) {
+        for (final item in value) {
+          words.addAll(['--$option', item as String]);
+        }
+      } else if (name == 'mainAgent' && value == true) {
+        words.add('--main-agent');
+      } else if (name == 'metadata' &&
+          value is Map &&
+          value.values.every((item) => item is String)) {
+        for (final item in value.entries) {
+          words.addAll(['--metadata', '${item.key}=${item.value}']);
+        }
+      } else {
+        return 'Explicit command omitted: selected fields cannot be represented safely.';
+      }
+    }
+    if (inputs.output != null) words.addAll(['--output', inputs.output!]);
+    if (inputs.manage) words.add('--manage');
+    for (final pair in <(String, String?)>[
+      ('cwd', options.cwd),
+      ('project-root', options.projectRoot),
+      ('home', options.home),
+      ('claude-config-dir', options.claudeConfigDir),
+      ('codex-home', options.codexHome),
+      ('pi-agent-dir', options.piAgentDir),
+      ('gemini-dir', options.geminiDir),
+      ('state-dir', options.stateDir),
+    ]) {
+      if (pair.$2 != null) words.addAll(['--${pair.$1}', pair.$2!]);
+    }
+    if (options.dryRun) words.add('--dry-run');
+    if (valueOf(GuidedCreateFields.apply) && !options.dryRun) {
+      words.addAll(['--apply', '--yes']);
+    }
+    words.add('--unattended');
+    String quote(String value) {
+      if (RegExp(r'^[A-Za-z0-9_./:-]+$').hasMatch(value)) return value;
+      return Platform.isWindows
+          ? "'${value.replaceAll("'", "''")}'"
+          : "'${value.replaceAll("'", "'\\''")}'";
+    }
+
+    return 'Explicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
+        'agent_resource ${words.map(quote).join(' ')}';
   }
 
   @override
