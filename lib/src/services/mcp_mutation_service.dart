@@ -174,7 +174,7 @@ final class _Prepared {
 /// Every mutation is interactive by default with a complete redacted review
 /// plan and explicit approval. Unattended runs require complete explicit
 /// inputs plus a dedicated MCP-risk acknowledgment. Credentials may only be
-/// introduced as references; existing literals are retained and never shown.
+/// introduced only in supported native reference forms; review redacts literals.
 /// Native files are edited entry-by-entry (source-range patching), and the
 /// Wave A ownership ledger baseline is kept in sync.
 interface class McpMutationService {
@@ -257,7 +257,6 @@ interface class McpMutationService {
           exitCode: 2,
         );
       }
-      _requireCompleteInputs(request);
     }
 
     return _apply(first, request);
@@ -373,7 +372,7 @@ interface class McpMutationService {
           );
         }
         drift = record.baselineDigest != currentDigest;
-        proposed = _buildReplaceFields(request, current);
+        proposed = _buildRegisterFields(request);
         entryMutation = McpPatchEntry(current, proposed);
         nativeWritten = true;
       case McpMutationOperation.unregister:
@@ -472,8 +471,16 @@ interface class McpMutationService {
     final url = request.url;
     if ((command == null) == (url == null)) {
       throw MambaException(
-        'Registering an MCP server requires exactly one transport: --command '
+        'MCP registration requires exactly one transport: --command '
         '(stdio) or --url (http). Incomplete explicit inputs are refused.',
+        exitCode: 2,
+      );
+    }
+    if ((command != null && request.headerValues.isNotEmpty) ||
+        (url != null &&
+            (request.envValues.isNotEmpty || request.args.isNotEmpty))) {
+      throw MambaException(
+        'Inputs do not match the selected transport.',
         exitCode: 2,
       );
     }
@@ -483,13 +490,32 @@ interface class McpMutationService {
       fields['command'] = command;
       if (request.args.isNotEmpty) fields['args'] = request.args;
       final env = _parseReferences(request.envValues, 'env');
-      if (env.isNotEmpty) fields['env'] = env;
+      if (env.isNotEmpty) {
+        if (request.harness == McpHarness.codex) {
+          final names = _codexReferences(env);
+          if (names.entries.any((entry) => entry.key != entry.value)) {
+            throw MambaException(
+              'Codex env_vars only forwards matching variable names.',
+              exitCode: 2,
+            );
+          }
+          fields['env_vars'] = names.keys.toList();
+        } else {
+          _checkReferences(request, env);
+          fields['env'] = env;
+        }
+      }
       if (request.type != null) fields['type'] = request.type;
     } else {
       fields[spec.httpEndpointKey] = url;
       final headers = _parseReferences(request.headerValues, 'header');
       if (headers.isNotEmpty) {
-        fields[spec.headerKey] = headers;
+        if (request.harness == McpHarness.codex) {
+          fields['env_http_headers'] = _codexReferences(headers);
+        } else {
+          _checkReferences(request, headers);
+          fields[spec.headerKey] = headers;
+        }
       }
       if (request.type != null) {
         fields['type'] = request.type;
@@ -500,37 +526,43 @@ interface class McpMutationService {
     return fields;
   }
 
-  Map<String, Object?> _buildReplaceFields(
-    McpMutationRequest request,
-    Map<String, Object?> current,
-  ) {
-    final spec = HarnessCatalog.instance.mcpSpec(request.harness);
-    final fields = Map<String, Object?>.from(current);
-    if (request.command != null) fields['command'] = request.command;
-    if (request.url != null) {
-      for (final key in spec.httpTransportKeys) {
-        fields.remove(key);
+  Map<String, String> _codexReferences(Map<String, Object?> references) {
+    final result = <String, String>{};
+    for (final entry in references.entries) {
+      final match = RegExp(r'^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$')
+          .firstMatch(entry.value as String);
+      if (match == null) {
+        throw MambaException(
+          'Codex requires a simple environment-variable reference.',
+          exitCode: 2,
+        );
       }
-      fields[spec.httpEndpointKey] = request.url;
+      result[entry.key] = match.group(1)!;
     }
-    if (request.args.isNotEmpty) fields['args'] = request.args;
-    if (request.type != null) fields['type'] = request.type;
-    if (request.envValues.isNotEmpty) {
-      final merged = <String, Object?>{};
-      final existing = fields['env'];
-      if (existing is Map) merged.addAll(Map<String, Object?>.from(existing));
-      merged.addAll(_parseReferences(request.envValues, 'env'));
-      fields['env'] = merged;
+    return result;
+  }
+
+  void _checkReferences(
+    McpMutationRequest request,
+    Map<String, Object?> references,
+  ) {
+    for (final value in references.values.cast<String>()) {
+      final valid = switch (request.harness) {
+        McpHarness.claude => RegExp(
+          r'^\$\{[A-Za-z_][A-Za-z0-9_]*\}$',
+        ).hasMatch(value),
+        McpHarness.pi =>
+          RegExp(r'^\$\{[A-Za-z_][A-Za-z0-9_]*\}$').hasMatch(value) ||
+              (value.startsWith('!') && value.substring(1).trim().isNotEmpty),
+        _ => false,
+      };
+      if (!valid) {
+        throw MambaException(
+          'Unsupported credential reference for ${request.harness.wireName}.',
+          exitCode: 2,
+        );
+      }
     }
-    if (request.headerValues.isNotEmpty) {
-      final key = spec.headerKey;
-      final merged = <String, Object?>{};
-      final existing = fields[key];
-      if (existing is Map) merged.addAll(Map<String, Object?>.from(existing));
-      merged.addAll(_parseReferences(request.headerValues, 'header'));
-      fields[key] = merged;
-    }
-    return fields;
   }
 
   /// Newly supplied credential values must be environment-variable or command
@@ -555,21 +587,6 @@ interface class McpMutationService {
       result[key] = value;
     }
     return result;
-  }
-
-  void _requireCompleteInputs(McpMutationRequest request) {
-    if (request.operation == McpMutationOperation.replace &&
-        request.command == null &&
-        request.url == null &&
-        request.args.isEmpty &&
-        request.envValues.isEmpty &&
-        request.headerValues.isEmpty &&
-        request.type == null) {
-      throw MambaException(
-        'Unattended replace requires at least one explicit field to change.',
-        exitCode: 2,
-      );
-    }
   }
 
   String _transport(Map<String, Object?>? fields, McpHarness harness) {
@@ -619,8 +636,8 @@ interface class McpMutationService {
       'proposedEntry': proposed,
       'observedEntry': snapshot.currentFields,
       'credentialPolicy':
-          'new/copied values are references only; existing literals are '
-          'retained and never displayed',
+          'new values require supported native references; replacement removes '
+          'omitted fields; observed literals are redacted',
       'claims': 'static configuration review only; no server is launched',
     },
     diagnostics: const <Map<String, Object?>>[

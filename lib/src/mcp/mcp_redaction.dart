@@ -73,6 +73,11 @@ final class McpRedaction {
         _commandReference.hasMatch(trimmed);
   }
 
+  // A fallback may itself contain a literal secret, even in a reference.
+  static bool _safeReference(String value) =>
+      isReference(value) &&
+      !(value.trim().startsWith(r'${') && value.contains(':-'));
+
   /// Redact an entire credential-bearing subtree.
   static Object? redactDeep(Object? value) {
     if (value is Map) {
@@ -84,7 +89,7 @@ final class McpRedaction {
     if (value is List) {
       return <Object?>[for (final item in value) redactDeep(item)];
     }
-    if (value is String && isReference(value)) return value;
+    if (value is String && _safeReference(value)) return value;
     return redactionPlaceholder;
   }
 
@@ -98,6 +103,21 @@ final class McpRedaction {
     final sensitive = sensitiveContext || (key != null && _isSensitive(key));
     final endpoint = key != null && _isEndpoint(key);
     if (value is Map) {
+      // Codex env_http_headers values are variable names, not header values.
+      // Disclose only identifier-shaped names; malformed values stay redacted.
+      if (!sensitiveContext &&
+          key != null &&
+          _normalize(key) == 'envhttpheaders') {
+        final variable = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
+        return <String, Object?>{
+          for (final entry in value.entries)
+            entry.key.toString():
+                entry.value is String &&
+                    variable.hasMatch(entry.value as String)
+                ? entry.value
+                : redactionPlaceholder,
+        };
+      }
       if (sensitive) return redactDeep(value);
       return <String, Object?>{
         for (final entry in value.entries)
@@ -109,7 +129,7 @@ final class McpRedaction {
       return <Object?>[for (final item in value) redact(item)];
     }
     if (sensitive) {
-      return value is String && isReference(value)
+      return value is String && _safeReference(value)
           ? value
           : redactionPlaceholder;
     }

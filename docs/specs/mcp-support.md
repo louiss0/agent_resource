@@ -48,7 +48,7 @@ and recovery.
 15. As a user, I want to edit a managed registration interactively with the same review and approval, so that changes to an existing entry are never silent.
 16. As a user, I want unattended registration to require complete explicit inputs plus a dedicated MCP-risk acknowledgment, so that automation cannot accidentally consent to running an executable.
 17. As a user, I want new or copied credentials to be supplied only as environment-variable or command references, so that the CLI never introduces a literal secret into configuration.
-18. As a user, I want an existing literal credential to remain in place without being displayed, so that adoption and management do not force me to rewrite a working entry.
+18. As a user, I want adoption to leave existing literal credentials in place without displaying them; complete replacement removes omitted credentials.
 19. As a user, I want to adopt an existing untracked registration without rewriting it, so that I can bring it under management and record a baseline before any change.
 20. As a user, I want an externally changed or deleted managed registration to require explicit reviewed drift resolution, so that a destructive operation never overwrites an edit I did not see.
 21. As a user, I want any shared-file change to invalidate an already reviewed mutation plan, so that a stale plan cannot clobber unrelated edits.
@@ -112,7 +112,24 @@ and recovery.
 ### Credentials and security
 
 - Review redacts sensitive literal values by default and discloses the execution or connection surface plus its risks: harness, scope, server, transport, executable or sanitized endpoint, helpers, credential references, and consequential settings.
-- Existing literal credentials may remain in an already managed entry but are never displayed, introduced, or copied. Values newly supplied or copied use environment-variable or command references.
+- Replacement is a complete desired registration, not a patch: supply exactly
+  one of `--command` or `--url` and every supported field to retain. Omitted
+  fields, including existing credentials, unknown native settings and fields of
+  the old transport, are removed. Review `proposedEntry` and redacted
+  `observedEntry` in the dry-run plan before approval; unrelated shared-file
+  entries remain untouched. Literal credentials are never displayed or newly
+  introduced; backups retain protected prior entry evidence for recovery.
+- New `--env` and `--header` values are accepted only in documented target
+  forms. Claude project `.mcp.json` accepts whole `${NAME}` references; Pi
+  accepts whole `${NAME}` and `!command` substitutions. Codex stdio accepts
+  `${NAME}` only when the key equals NAME and encodes it in `env_vars`; Codex
+  HTTP encodes `${NAME}` as NAME in `env_http_headers`. Defaults, renamed Codex
+  variables, and unsupported command substitutions are refused. Antigravity
+  reference substitution is not established by the available documentation,
+  so these inputs are refused. These are static configuration checks only: no
+  server, credential helper or harness is launched, and interpolation,
+  authentication and runtime activation are not verified. Pi `!command` can
+  execute code when the harness uses it; never put literal secrets in commands.
 - Secret-bearing recovery evidence is retained only when necessary, in protected local state with strict access and explicit retention, never in plaintext logs or normal output.
 
 ### Conversion
