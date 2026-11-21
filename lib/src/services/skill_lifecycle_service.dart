@@ -13,6 +13,7 @@ import '../harness/harness_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../installation/installation_plan.dart';
 import '../installation/installation_route.dart';
+import '../installation/resource_catalog.dart';
 import '../skill_files.dart';
 import '../skill_validation.dart';
 import 'acquisition_service.dart';
@@ -745,6 +746,199 @@ interface class SkillLifecycleService implements LifecycleResource {
       nativeRoot: root,
       nativeDestination: input.destination.name,
     );
+  }
+
+  /// Update a direct installation from its recorded acquisition and route.
+  Future<LifecycleResult> update(LifecycleIdInput input) async {
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
+    _requireMutationScope(context);
+    final record = state.recordById(context, input.id);
+    final route = record.installationRoute;
+    if (!skillKinds.contains(record.kind) ||
+        route == null ||
+        route.packKey != null ||
+        route.scope != context.scope) {
+      throw MambaException(
+        'A direct Skill update requires a recorded direct installation route in this scope.',
+        exitCode: 4,
+      );
+    }
+    final expectedKind = switch (route.method) {
+      InstallationMethod.copy => ArtifactKind.skillCopy,
+      InstallationMethod.canonical => ArtifactKind.skillCanonical,
+      InstallationMethod.sourceLink => ArtifactKind.skillLink,
+    };
+    if (record.kind != expectedKind) {
+      throw MambaException(
+        'The recorded Skill method does not match its installation.',
+        exitCode: 4,
+      );
+    }
+    final source = route.source;
+    final workspace = await AcquisitionService(fileSystem: state.io.fs).acquire(
+      AcquisitionRequest(
+        locator: source.kind == AcquisitionLocatorKind.local
+            ? source.resolvedLocator
+            : source.requestedLocator,
+        cwd: context.cwd,
+        resourceType: CatalogResourceType.skill,
+        sourceKind: route.sourceKind,
+        ref: source.requestedRef,
+        subpath: source.kind == AcquisitionLocatorKind.local
+            ? null
+            : source.subpath,
+      ),
+    );
+    try {
+      final fs = state.io.fs;
+      var path = workspace.selectedRoot;
+      if (route.sourceRelativePath != '.') {
+        for (final part in route.sourceRelativePath.split('/')) {
+          path = fs.path.join(path, part);
+          if (skillEntityType(path, followLinks: false, fs: fs) ==
+              FileSystemEntityType.link) {
+            throw MambaException(
+              'The recorded source path now contains a link.',
+              exitCode: 4,
+            );
+          }
+        }
+      }
+      for (final omitted in workspace.omittedLinkPaths) {
+        if (route.sourceRelativePath == '.' ||
+            omitted == route.sourceRelativePath ||
+            omitted.startsWith('${route.sourceRelativePath}/')) {
+          throw MambaException(
+            'The recorded Skill source contains an unsafe link.',
+            exitCode: 4,
+          );
+        }
+      }
+      final staged = await SkillRootMarkdownMigration(fileSystem: fs)
+          .stage(path);
+      try {
+        if (route.method == InstallationMethod.sourceLink && staged.migrated) {
+          throw MambaException(
+            'source-link cannot migrate loose root files.',
+            exitCode: 4,
+          );
+        }
+        final acquired = workspace.provenance;
+        final replayedSource = AcquisitionProvenance(
+          kind: acquired.kind,
+          requestedLocator: source.requestedLocator,
+          resolvedLocator: acquired.resolvedLocator,
+          subpath: source.subpath,
+          temporary: acquired.temporary,
+          directFile: acquired.directFile,
+          durableLocalDirectory: acquired.durableLocalDirectory,
+          requestedRef: source.requestedRef,
+          resolvedCommit: acquired.resolvedCommit,
+          downloadDigest: acquired.downloadDigest,
+          configDigest: source.configDigest,
+        );
+        final newRoute = InstallationRoute(
+          source: replayedSource,
+          sourceKind: route.sourceKind,
+          sourceRelativePath: route.sourceRelativePath,
+          entryId: route.entryId,
+          scope: route.scope,
+          targets: route.targets,
+          method: route.method,
+          derivedArtifacts: [
+            for (final item in [...staged.movedMarkdown, ...staged.movedImages])
+              ManagedDerivedArtifact(
+                operation: DerivedArtifactOperation.moveRootFile,
+                sourcePath: item.split('/').last,
+                outputPath: item,
+              ),
+            if (staged.rewritten)
+              ManagedDerivedArtifact(
+                operation: DerivedArtifactOperation.rewriteMarker,
+                sourcePath: 'SKILL.md',
+                outputPath: 'SKILL.md',
+              ),
+          ],
+        );
+        final resource = installationResource(
+          targets: [for (final target in route.targets) target.name],
+          kind: expectedKind,
+        );
+        final digest = state.contentDigest(staged.path, ArtifactKind.skillCopy);
+        final origin = <String, Object?>{
+          ...record.origin,
+          'source': replayedSource.toJson(),
+          'contentDigest': digest,
+        };
+        if (expectedKind == ArtifactKind.skillLink) {
+          if (!workspace.provenance.durableLocalDirectory ||
+              state.verify(record) != ModificationStatus.unchanged) {
+            throw MambaException(
+              'The recorded source link is no longer unchanged or durable.',
+              exitCode: 4,
+            );
+          }
+          final target = fs.link(record.location).targetSync();
+          final resolvedTarget = fs.path.normalize(
+            fs.path.isAbsolute(target)
+                ? target
+                : fs.path.join(fs.path.dirname(record.location), target),
+          );
+          if (!fs.path.equals(resolvedTarget, fs.path.normalize(path))) {
+            throw MambaException(
+              'The recorded source link no longer points to its source.',
+              exitCode: 4,
+            );
+          }
+          await resource.inspect(path, context, expectedName: record.name);
+          await state.updateOrigin(
+            context: context,
+            installationId: input.id,
+            expectedOrigin: record.origin,
+            origin: origin,
+            installationRoute: newRoute,
+          );
+          return LifecycleResult(
+            command: 'skill update',
+            outcome: context.dryRun ? 'planned' : 'updated',
+            data: {
+              'installationId': input.id,
+              'location': record.location,
+              'route': newRoute.toJson(),
+            },
+          );
+        }
+        final result = expectedKind == ArtifactKind.skillCanonical
+            ? await state.replaceCanonical(
+                resource: resource,
+                context: context,
+                installationId: input.id,
+                source: staged.path,
+                origin: origin,
+                installationRoute: newRoute,
+              )
+            : await state.replace(
+                resource: resource,
+                context: context,
+                installationId: input.id,
+                source: staged.path,
+                origin: origin,
+                installationRoute: newRoute,
+              );
+        return LifecycleResult(
+          command: 'skill update',
+          outcome: context.dryRun ? 'planned' : 'updated',
+          data: {...result.data, 'route': newRoute.toJson()},
+        );
+      } finally {
+        await staged.close();
+      }
+    } finally {
+      await workspace.close();
+    }
   }
 
   Future<LifecycleResult> replace(
