@@ -10,6 +10,7 @@ import '../prompt/prompt_validation_failure.dart';
 import '../skill_files.dart';
 import 'lifecycle_state_service.dart';
 import 'prompt_inspection_service.dart';
+import 'skill_lifecycle_service.dart';
 
 /// A native read surface, not an installation destination or adapter.
 enum PromptDestination { claude, codex, shared, pi, piTemplate }
@@ -494,23 +495,12 @@ interface class PromptReadService {
     final matches = <(InstallationRecord, ExposureRecord)>[];
     for (final record in records) {
       if (record.lifecycle != 'live' ||
-          record.kind != ArtifactKind.skillCanonical ||
-          record.scope != context.scope ||
-          record.nativeDestination != 'canonical' ||
-          record.nativeForm != ArtifactKind.skillCanonical.wireName ||
-          !_fileSystem.path.equals(
-            record.nativeRoot,
-            context.sharedSkillsRoot(),
-          ) ||
-          !_fileSystem.path.equals(
-            record.location,
-            _fileSystem.path.join(record.nativeRoot, record.name),
-          ) ||
-          !_fileSystem.path.equals(
-            _fileSystem.path.dirname(record.location),
-            record.nativeRoot,
-          ) ||
-          _fileSystem.path.basename(record.location) != record.name) {
+          record.kind != ArtifactKind.skillCanonical) {
+        continue;
+      }
+      try {
+        SkillLifecycleService(state: _state).validateAuthority(record, context);
+      } on Exception {
         continue;
       }
       for (final exposure in record.exposures) {
@@ -537,13 +527,20 @@ interface class PromptReadService {
     if (entry.type != 'link' ||
         entry.target == null ||
         entry.originalParent == null ||
+        !_fileSystem.path.equals(
+          entry.originalParent!,
+          _fileSystem.path.dirname(exposure.path),
+        ) ||
         entry.nativeKind != exposure.nativeKind) {
       return false;
     }
     final target = _fileSystem.path.normalize(
       _fileSystem.path.isAbsolute(entry.target!)
           ? entry.target!
-          : _fileSystem.path.join(entry.originalParent!, entry.target!),
+          : _fileSystem.path.join(
+              _fileSystem.path.dirname(exposure.path),
+              entry.target!,
+            ),
     );
     return _fileSystem.path.equals(target, record.location) &&
         _state.verifyExposure(exposure);

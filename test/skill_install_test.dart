@@ -1632,6 +1632,82 @@ path = "skills/other"
             fs.path.join(project.path, '.claude', 'skills', 'review'),
           );
           final target = exposure.targetSync();
+          final ledger = fs.file(
+            fs.path.join(project.path, '.agent-resource', 'installations.json'),
+          );
+          final originalLedger = ledger.readAsStringSync();
+          final document = jsonDecode(originalLedger) as Map<String, dynamic>;
+          final installation =
+              (document['installations'] as List).single as Map;
+          final exposures = installation['exposures'] as List;
+          final tracked = exposures.single as Map;
+          final baseline = (tracked['baseline'] as List).single as Map;
+
+          // The link text resolves to the canonical location only when the
+          // untrusted recorded parent is used instead of the actual parent.
+          final relative = fs.path.relative(target, from: project.path);
+          final actualTarget = fs.path.normalize(
+            fs.path.join(fs.path.dirname(exposure.path), relative),
+          );
+          fs.directory(actualTarget).createSync(recursive: true);
+          exposure.deleteSync();
+          exposure.createSync(relative);
+          baseline['target'] = relative;
+          baseline['originalParent'] = project.path;
+          ledger.writeAsStringSync(jsonEncode(document));
+          final rejectedParent = await executor().fake().execute([
+            'prompt',
+            'list',
+            ...context(),
+            '--format',
+            'json',
+          ]);
+          expect(rejectedParent, isA<MambaFailureResult>());
+          final skillParent = await executor().fake().execute([
+            'skill',
+            'list',
+            ...context(),
+            '--destination',
+            'claude',
+            '--format',
+            'json',
+          ]);
+          expect(skillParent, isA<MambaSuccessResult>());
+          final parentOccurrences =
+              jsonDecode(
+                    (skillParent as MambaSuccessResult).output!,
+                  )['data']['occurrences']
+                  as List;
+          expect(
+            parentOccurrences.where((item) => item['path'] == exposure.path),
+            hasLength(1),
+          );
+          exposure.deleteSync();
+          exposure.createSync(target);
+
+          // A matching valid exposure cannot hide malformed or duplicate peers.
+          for (final duplicate in [false, true]) {
+            final modified = jsonDecode(originalLedger) as Map<String, dynamic>;
+            final record = (modified['installations'] as List).single as Map;
+            final siblings = record['exposures'] as List;
+            final sibling = Map<String, dynamic>.from(siblings.single as Map);
+            if (!duplicate) sibling['target'] = 'codex';
+            siblings.add(sibling);
+            ledger.writeAsStringSync(jsonEncode(modified));
+            final rejected = await executor().fake().execute([
+              'prompt',
+              'list',
+              ...context(),
+              '--format',
+              'json',
+            ]);
+            expect(
+              rejected,
+              isA<MambaFailureResult>(),
+              reason: 'duplicate=$duplicate',
+            );
+          }
+          ledger.writeAsStringSync(originalLedger);
           exposure.deleteSync();
           exposure.createSync(source.path);
           final changed = await executor().fake().execute([

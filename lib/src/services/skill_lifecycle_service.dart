@@ -574,13 +574,20 @@ interface class SkillLifecycleService implements LifecycleResource {
       final entry = exposure.baseline.entries.single;
       if (entry.target == null ||
           entry.originalParent == null ||
+          !state.io.fs.path.equals(
+            entry.originalParent!,
+            state.io.fs.path.dirname(exposure.path),
+          ) ||
           entry.nativeKind != exposure.nativeKind) {
         return false;
       }
       final target = state.io.fs.path.normalize(
         state.io.fs.path.isAbsolute(entry.target!)
             ? entry.target!
-            : state.io.fs.path.join(entry.originalParent!, entry.target!),
+            : state.io.fs.path.join(
+                state.io.fs.path.dirname(exposure.path),
+                entry.target!,
+              ),
       );
       return state.io.fs.path.equals(target, record.location) &&
           state.verifyExposure(exposure);
@@ -1153,7 +1160,7 @@ interface class SkillLifecycleService implements LifecycleResource {
       );
     }
     if (canonical) {
-      final paths = <String>{};
+      final paths = <String>[];
       for (final exposure in record.exposures) {
         final exposureRoot = canonicalExposureRoot(context, exposure.target);
         if (exposureRoot == null ||
@@ -1161,7 +1168,7 @@ interface class SkillLifecycleService implements LifecycleResource {
               exposure.path,
               state.io.fs.path.join(exposureRoot, record.name),
             ) ||
-            !paths.add(state.io.fs.path.normalize(exposure.path)) ||
+            paths.any((path) => state.io.fs.path.equals(path, exposure.path)) ||
             exposure.baseline.entries.length != 1 ||
             exposure.baseline.entries.single.type != 'link') {
           throw MambaException(
@@ -1169,6 +1176,7 @@ interface class SkillLifecycleService implements LifecycleResource {
             exitCode: 4,
           );
         }
+        paths.add(exposure.path);
       }
     }
   }
