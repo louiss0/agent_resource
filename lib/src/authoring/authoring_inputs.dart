@@ -46,6 +46,13 @@ final class MapFieldValue extends AuthoringFieldValue {
   final Map<String, Object?> entries;
 }
 
+/// A single boolean value of a native flag field.
+final class BooleanFieldValue extends AuthoringFieldValue {
+  const BooleanFieldValue(this.value);
+
+  final bool value;
+}
+
 /// An explicit removal of a native field.
 final class ClearedFieldValue extends AuthoringFieldValue {
   const ClearedFieldValue();
@@ -416,9 +423,11 @@ Map<String, AuthoringFieldValue> _normalizeFields(
       ClearedFieldValue() => _cleared(spec),
       InheritedFieldValue() => _inherited(spec),
       TextFieldValue() => _text(spec, value),
+      BooleanFieldValue() => _flag(spec, value),
       ListFieldValue() => _list(spec, value),
       MapFieldValue() => _map(spec, value),
       String() => _text(spec, TextFieldValue(value)),
+      bool() => _flag(spec, BooleanFieldValue(value)),
       List<Object?>() => _list(spec, ListFieldValue(_textList(spec, value))),
       Map<Object?, Object?>() => _map(
         spec,
@@ -494,6 +503,16 @@ AuthoringFieldValue _text(NativeFieldSpec spec, TextFieldValue value) {
   if (spec.valueKind != NativeFieldValueKind.text) {
     throw MambaException(
       'The ${spec.name} field does not accept a text value.',
+      exitCode: 4,
+    );
+  }
+  return value;
+}
+
+AuthoringFieldValue _flag(NativeFieldSpec spec, BooleanFieldValue value) {
+  if (spec.valueKind != NativeFieldValueKind.flag) {
+    throw MambaException(
+      'The ${spec.name} field does not accept a boolean value.',
       exitCode: 4,
     );
   }

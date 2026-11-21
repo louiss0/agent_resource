@@ -640,7 +640,12 @@ final _catalogSchema = z.object({
       .array(
         z.object({
           'path': z.string(),
-          'profile': z.string().oneOf(['claude', 'codex', 'pi-common']),
+          'profile': z.string().oneOf([
+            'claude',
+            'codex',
+            'pi-common',
+            'antigravity',
+          ]),
         }).makeStrict(),
       )
       .min(1)
@@ -1587,10 +1592,14 @@ final class _Parser {
         'claude' => NativeAgentProfile.claude,
         'codex' => NativeAgentProfile.codex,
         'pi-common' => NativeAgentProfile.piCommon,
+        'antigravity' => NativeAgentProfile.antigravity,
         _ => null,
       };
       if (profile != null && nativeProfile == null) {
-        _error('$path.profile', 'must be claude, codex, or pi-common');
+        _error(
+          '$path.profile',
+          'must be claude, codex, pi-common, or antigravity',
+        );
       }
       if (entryPath == null || nativeProfile == null) continue;
       if (!paths.add(entryPath)) {

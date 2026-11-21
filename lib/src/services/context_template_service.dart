@@ -38,6 +38,7 @@ LifecycleOptions contextLifecycleOptions({
   String? claudeConfigDir,
   String? codexHome,
   String? piAgentDir,
+  String? geminiDir,
   bool dryRun = false,
   bool approved = false,
 }) => LifecycleOptions(
@@ -51,6 +52,7 @@ LifecycleOptions contextLifecycleOptions({
   claudeConfigDir: claudeConfigDir,
   codexHome: codexHome,
   piAgentDir: piAgentDir,
+  geminiDir: geminiDir,
   dryRun: dryRun,
   approved: approved,
 );

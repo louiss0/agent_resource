@@ -8,6 +8,7 @@ import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
 import '../agent_inventory.dart';
+import '../harness/harness_catalog.dart';
 import '../skill_files.dart';
 import 'conversion_coordinator_service.dart';
 import 'lifecycle_state_service.dart';
@@ -68,6 +69,7 @@ interface class AgentLifecycleService {
         claudeConfigDir: input.claudeConfigDir,
         codexHome: input.codexHome,
         piAgentDir: input.piAgentDir,
+        geminiDir: input.geminiDir,
         stateDir: input.stateDir,
         readRoots: input.readRoots,
       );
@@ -137,6 +139,26 @@ interface class AgentLifecycleService {
             ) ==
             FileSystemEntityType.notFound;
         if (record.lifecycle == 'live' && !missing) continue;
+        final profile = record.nativeProfile;
+        final spec = profile == null
+            ? null
+            : _specFor(
+                AgentHarness.values.firstWhere(
+                  (harness) => harness.name == profile,
+                ),
+              );
+        final relative =
+            _fileSystem.path.isWithin(record.nativeRoot, record.location)
+            ? _fileSystem.path.relative(
+                record.location,
+                from: record.nativeRoot,
+              )
+            : _fileSystem.path.basename(record.location);
+        final layout = spec?.candidateLayout(
+          relative,
+          _fileSystem.path.split(relative).length - 1,
+          _fileSystem.path,
+        );
         occurrences.add(<String, Object?>{
           'occurrenceId': 'managed:${record.installationId}',
           'installationId': record.installationId,
@@ -171,6 +193,11 @@ interface class AgentLifecycleService {
                     ? 'missing'
                     : state.verify(record).name
               : 'notVerified',
+          if (spec?.nestedLayouts == true &&
+              layout != null) ...<String, Object?>{
+            'layout': layout.name,
+            'targetName': spec!.targetName(relative, _fileSystem.path),
+          },
         });
       }
     }
@@ -211,7 +238,11 @@ interface class AgentLifecycleService {
     final root = _defaultRoot(context, input.harness, input.destination);
     final location = input.output == null
         ? _fileSystem.path.normalize(
-            _fileSystem.path.join(root, _fileSystem.path.basename(source)),
+            _fileSystem.path.join(
+              root,
+              _spec(input.harness)
+                  .installationFileName(source, null, _fileSystem.path),
+            ),
           )
         : context.resolvePath(input.output!);
     final authority = input.output == null
@@ -463,7 +494,7 @@ interface class AgentLifecycleService {
     );
     return state.withStagedSource(
       nativeRoot: authority,
-      name: 'candidate${harness == AgentHarness.codex ? '.toml' : '.md'}',
+      name: 'candidate${_spec(harness).definitionExtension}',
       bytes: utf8.encode(content),
       body: body,
     );
@@ -473,70 +504,59 @@ interface class AgentLifecycleService {
     LifecycleContext context,
     AgentHarness harness,
     AgentDestination destination,
-  ) {
-    if (destination == AgentDestination.shared) {
-      if (harness != AgentHarness.pi) {
-        throw MambaException(
-          'Shared Agent destinations are supported only for common-Pi project files.',
-          exitCode: 4,
-        );
-      }
-      return _fileSystem.path.normalize(context.piSharedAgentsRoot());
-    }
-    return _fileSystem.path.normalize(switch (harness) {
-      AgentHarness.claude =>
-        context.scope == LifecycleScope.project
-            ? context.claudeAgentsRoot()
-            : _fileSystem.path.join(context.claudeConfigRoot(), 'agents'),
-      AgentHarness.codex =>
-        context.scope == LifecycleScope.project
-            ? context.codexAgentsRoot()
-            : _fileSystem.path.join(context.codexRoot(), 'agents'),
-      AgentHarness.pi => context.piAgentsRoot(),
-    });
-  }
+  ) =>
+      _spec(harness)
+          .defaultInstallRoot(_facetContext(context), destination.name);
 
   List<String> _authorityRoots(
     LifecycleContext context,
     AgentHarness harness,
     AgentDestination destination,
-  ) {
-    final candidates = <String>[];
-    if (destination == AgentDestination.shared) {
-      candidates.add(_defaultRoot(context, harness, destination));
-    } else if (context.scope == LifecycleScope.user ||
-        harness == AgentHarness.pi) {
-      candidates.add(_defaultRoot(context, harness, destination));
-    } else {
-      var current = context.cwd;
-      while (true) {
-        candidates.add(switch (harness) {
-          AgentHarness.claude => _fileSystem.path.join(
-            current,
-            '.claude',
-            'agents',
-          ),
-          AgentHarness.codex => _fileSystem.path.join(
-            current,
-            '.codex',
-            'agents',
-          ),
-          AgentHarness.pi => _fileSystem.path.join(current, '.pi', 'agents'),
-        });
-        if (_fileSystem.path.equals(current, context.projectRoot)) break;
-        final parent = _fileSystem.path.dirname(current);
-        if (_fileSystem.path.equals(parent, current) ||
-            candidates.length >= 64) {
-          throw MambaException(
-            'Agent ancestor authority is incomplete.',
-            exitCode: 3,
-          );
-        }
-        current = parent;
+  ) => _spec(harness).authorityRoots(_facetContext(context), destination.name);
+
+  AgentLifecycleContext _facetContext(LifecycleContext context) =>
+      AgentLifecycleContext(
+        path: _fileSystem.path,
+        projectRoot: context.projectRoot,
+        cwd: context.cwd,
+        home: context.home ?? '',
+        scope: context.scope.name,
+        ancestors: context.scope == LifecycleScope.project
+            ? _ancestorChain(context)
+            : const <String>[],
+        readRoots: List<String>.unmodifiable(<String>[
+          for (final root in context.options.readRoots)
+            context.resolvePath(root),
+        ]),
+        userRoots: context,
+      );
+
+  List<String> _ancestorChain(LifecycleContext context) {
+    final result = <String>[];
+    var current = context.cwd;
+    while (true) {
+      result.add(current);
+      if (_fileSystem.path.equals(current, context.projectRoot)) {
+        return List<String>.unmodifiable(result);
       }
+      if (result.length >= 64) {
+        throw MambaException(
+          'Agent ancestor authority is incomplete.',
+          exitCode: 3,
+        );
+      }
+      final parent = _fileSystem.path.dirname(current);
+      if (_fileSystem.path.equals(parent, current)) {
+        throw MambaException(
+          'Agent ancestor authority is incomplete.',
+          exitCode: 3,
+        );
+      }
+      current = parent;
     }
-    return candidates;
   }
+
+  AgentHarnessSpec _spec(AgentHarness harness) => _specFor(harness);
 
   String _eligibleAuthority(
     LifecycleContext context,
@@ -558,14 +578,12 @@ interface class AgentLifecycleService {
       );
     }
     final root = _fileSystem.path.normalize(containing.first);
-    if (harness == AgentHarness.pi &&
-        !_fileSystem.path.equals(_fileSystem.path.dirname(location), root)) {
-      throw MambaException(
-        'Common-Pi accepts only immediate native/shared Agent files; '
-        'provider-specific deeper files are not common-Pi targets.',
-        exitCode: 4,
-      );
-    }
+    _spec(harness).acceptsInstallLocation(
+      root,
+      location,
+      destination.name,
+      _fileSystem.path,
+    );
     final relative = _fileSystem.path.relative(location, from: root);
     if (_fileSystem.path.split(relative).length > 17) {
       throw MambaException(
@@ -584,7 +602,7 @@ interface class AgentLifecycleService {
   }
 
   void _requireExtension(String path, AgentHarness harness) {
-    final expected = harness == AgentHarness.codex ? '.toml' : '.md';
+    final expected = _spec(harness).definitionExtension;
     if (_fileSystem.path.extension(path) != expected ||
         _fileSystem.path.basename(path).length <= expected.length) {
       throw MambaException(
@@ -709,7 +727,7 @@ final class _AgentResource implements LifecycleResource {
         exitCode: 2,
       );
     }
-    final expectedExtension = harness == AgentHarness.codex ? '.toml' : '.md';
+    final expectedExtension = _specFor(harness).definitionExtension;
     if (_fs.path.extension(path) != expectedExtension) {
       throw MambaException(
         'The Agent file extension does not match ${harness.name}.',
@@ -760,6 +778,7 @@ final class _AgentResource implements LifecycleResource {
     Set<String> allowedPaths = const <String>{},
   }) async {
     final service = owner!;
+    final spec = _specFor(harness);
     service.state.checkPendingConversions(
       context,
       uniqueness: (
@@ -776,11 +795,15 @@ final class _AgentResource implements LifecycleResource {
               harness,
               AgentDestination.native,
             ),
-          if (harness == AgentHarness.pi)
-            _fs.path.join(context.projectRoot, '.agents', 'agents'),
-          if (harness == AgentHarness.claude)
-            for (final root in context.options.readRoots)
-              _fs.path.join(context.resolvePath(root), '.claude', 'agents'),
+          for (final scope in [LifecycleScope.project, LifecycleScope.user])
+            ...spec.additionalUniquenessRoots(
+              service._facetContext(
+                LifecycleContext.resolve(
+                  context.options.copyWith(scope: scope),
+                  fileSystem: _fs,
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -796,20 +819,14 @@ final class _AgentResource implements LifecycleResource {
         claudeConfigDir: context.options.claudeConfigDir,
         codexHome: context.options.codexHome,
         piAgentDir: context.options.piAgentDir,
+        geminiDir: context.options.geminiDir,
         readRoots: context.options.readRoots,
       ),
       fileSystem: _fs,
     );
-    final comparison = harness == AgentHarness.pi ? name.toLowerCase() : name;
-    final builtins = switch (harness) {
-      AgentHarness.claude => const {'Explore', 'Plan', 'general-purpose'},
-      AgentHarness.codex => const {'default', 'worker', 'explorer'},
-      AgentHarness.pi => const <String>{},
-    };
-    if (builtins.any(
-      (builtin) =>
-          (harness == AgentHarness.pi ? builtin.toLowerCase() : builtin) ==
-          comparison,
+    final comparison = spec.normalizeName(name);
+    if (spec.builtinNames.any(
+      (builtin) => spec.normalizeName(builtin) == comparison,
     )) {
       throw MambaException(
         'Agent native name "$name" collides with a documented ${harness.name} builtin.',
@@ -825,17 +842,8 @@ final class _AgentResource implements LifecycleResource {
               allowedPaths.any((allowed) => _fs.path.equals(path, allowed)))) {
         continue;
       }
-      final identity = occurrence['identity']! as Map<String, Object?>;
-      final nativeName = identity['name']! as Map<String, Object?>;
-      final resolved = nativeName['resolved'];
-      final observable = resolved is String && resolved.isNotEmpty
-          ? resolved
-          : _observableBasename(occurrence['path']);
-      if (observable == null) continue;
-      final other = harness == AgentHarness.pi
-          ? observable.toLowerCase()
-          : observable;
-      if (other == comparison) {
+      final observables = spec.uniquenessNames(occurrence, _fs.path);
+      if (observables.contains(comparison)) {
         throw MambaException(
           'Agent native name "$name" conflicts with ${occurrence['path']}; '
           'shadowing does not exclude a conflicting declaration.',
@@ -844,12 +852,10 @@ final class _AgentResource implements LifecycleResource {
       }
     }
   }
-
-  String? _observableBasename(Object? path) {
-    if (path is! String || path.isEmpty) return null;
-    final basename = _fs.path.basename(path);
-    final extension = _fs.path.extension(basename);
-    if (extension.isEmpty) return null;
-    return basename.substring(0, basename.length - extension.length);
-  }
 }
+
+AgentHarnessSpec _specFor(AgentHarness harness) =>
+    HarnessCatalog.instance.requireFacet(
+      HarnessId.of(harness),
+      HarnessFacet.agent,
+    ) as AgentHarnessSpec;

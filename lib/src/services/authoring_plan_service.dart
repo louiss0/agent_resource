@@ -10,6 +10,7 @@ import '../agent_inspection.dart';
 import '../authoring/authoring_inputs.dart';
 import '../authoring/authoring_profiles.dart';
 import '../authoring/package_manifest.dart';
+import '../harness/harness_catalog.dart';
 import '../native_references.dart';
 import '../prompt_resource_path_scanner.dart';
 import '../skill_files.dart';
@@ -590,6 +591,7 @@ interface class AuthoringPlanService {
         ).intersection(
           PromptInspectionService.allowedFields(form, PromptConsumer.codex),
         ),
+      AuthoringProfile.antigravity => inputs.matrix.supportedNames.toSet(),
     };
   }
 
@@ -616,6 +618,8 @@ interface class AuthoringPlanService {
           break;
         case TextFieldValue(:final text):
           merged[entry.key] = text;
+        case BooleanFieldValue(:final value):
+          merged[entry.key] = value;
         case ListFieldValue(:final values):
           merged[entry.key] = List<String>.of(values);
         case MapFieldValue(:final entries):
@@ -649,7 +653,10 @@ interface class AuthoringPlanService {
           intents[entry.key] = 'cleared';
         case InheritedFieldValue():
           intents[entry.key] = 'inherited';
-        case TextFieldValue() || ListFieldValue() || MapFieldValue():
+        case TextFieldValue() ||
+            BooleanFieldValue() ||
+            ListFieldValue() ||
+            MapFieldValue():
           intents[entry.key] = 'supplied';
       }
     }
@@ -1372,6 +1379,14 @@ interface class AuthoringPlanService {
         AuthoringProfile.codex => context.codexSkillsRoot(),
         AuthoringProfile.global => context.sharedSkillsRoot(),
         AuthoringProfile.pi => _piSkillsRoot(context),
+        AuthoringProfile.antigravity =>
+          (HarnessCatalog.instance.requireFacet(
+            HarnessId.antigravity,
+            HarnessFacet.skill,
+          ) as SkillHarnessSpec).root(
+            context,
+            userScope: context.scope == LifecycleScope.user,
+          ),
       };
 
   String _piSkillsRoot(LifecycleContext context) =>
@@ -1396,6 +1411,10 @@ interface class AuthoringPlanService {
               : _fileSystem.path.join(context.codexRoot(), 'agents'),
         AuthoringProfile.pi => context.piAgentsRoot(),
         AuthoringProfile.global => throw StateError('unreachable'),
+        AuthoringProfile.antigravity =>
+          context.scope == LifecycleScope.project
+              ? _fileSystem.path.join(context.projectRoot, '.agents', 'agents')
+              : _fileSystem.path.join(context.geminiConfigRoot(), 'agents'),
       };
 
   bool _within(String path, String root) =>
@@ -1406,7 +1425,8 @@ interface class AuthoringPlanService {
       switch (kind) {
         AuthoringKind.skill =>
           profile == AuthoringProfile.claude ||
-              profile == AuthoringProfile.codex,
+              profile == AuthoringProfile.codex ||
+              profile == AuthoringProfile.antigravity,
         AuthoringKind.agent => true,
         AuthoringKind.prompt => false,
       };
@@ -1495,18 +1515,12 @@ interface class AuthoringPlanService {
     String body,
     NativeFieldMatrix matrix,
   ) {
-    final entries = fields.entries.toList()
-      ..sort((left, right) => left.key.compareTo(right.key));
-    if (profile == AuthoringProfile.codex) {
-      return '${entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value, matrix.specFor(entry.key))}').join('\n')}\n';
-    }
-    final frontmatter = entries
-        .map(
-          (entry) =>
-              '${entry.key}: ${_yamlValue(entry.value, matrix.specFor(entry.key))}',
-        )
-        .join('\n');
-    return '---\n$frontmatter\n---\n$body';
+    final harness = agentHarnessForProfile(profile);
+    final spec = HarnessCatalog.instance.requireFacet(
+      HarnessId.of(harness),
+      HarnessFacet.agent,
+    ) as AgentHarnessSpec;
+    return spec.serializeNativeAgent(profile, fields, body, matrix: matrix);
   }
 
   String _yamlValue(Object? value, NativeFieldSpec? spec) {
@@ -1521,24 +1535,6 @@ interface class AuthoringPlanService {
       );
     }
     return jsonEncode(value);
-  }
-
-  String _tomlValue(Object? value, NativeFieldSpec? spec) {
-    if (value is List) {
-      return spec?.listForm == NativeListForm.scalar
-          ? jsonEncode(value.join(', '))
-          : jsonEncode(value);
-    }
-    if (value is Map) {
-      return '{ ${value.entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value, null)}').join(', ')} }';
-    }
-    if (value == null || value is String || value is num || value is bool) {
-      return jsonEncode(value);
-    }
-    throw MambaException(
-      'The proposed native output contains an unsupported value type.',
-      exitCode: 2,
-    );
   }
 }
 
@@ -1557,7 +1553,7 @@ PromptView? _promptView(
       selected.classification == PromptClassification.prompt) {
     return selected;
   }
-  for (final consumer in PromptConsumer.values) {
+  for (final consumer in PromptConsumer.inspectable) {
     final view = inspection.views[consumer];
     if (view != null && view.classification == PromptClassification.prompt) {
       return view;
@@ -1571,6 +1567,7 @@ PromptConsumer _consumer(AuthoringProfile profile) => switch (profile) {
   AuthoringProfile.codex => PromptConsumer.codex,
   AuthoringProfile.pi => PromptConsumer.pi,
   AuthoringProfile.global => PromptConsumer.claude,
+  AuthoringProfile.antigravity => PromptConsumer.antigravity,
 };
 
 /// The native profile of the selected source.

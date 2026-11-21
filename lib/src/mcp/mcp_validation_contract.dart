@@ -1,0 +1,892 @@
+import 'dart:convert';
+
+import 'package:zema/zema.dart';
+
+import '../validation/validation_diagnostics.dart';
+import 'mcp_types.dart';
+
+/// The only claim a completed MCP validation report may make.
+const String mcpValidationClaim =
+    'static schema/reference correctness only; not runtime-verified';
+
+/// Pinned documentation baselines for the closed native field matrices.
+const String mcpClaudeBaseline = 'claude-code-mcp/2026-11-16';
+const String mcpCodexBaseline = 'codex-mcp/2026-07-17';
+const String mcpPiBaseline =
+    'pi-native-mcp/5a2febe5d7638ab05540b44a60518b41201be170';
+const String mcpAntigravityBaseline = 'antigravity-mcp/2.12.0';
+const String mcpParentConfigurationBaseline =
+    'agent-parent-configuration/2026-10-23';
+
+/// Stable diagnostic codes and their fixed, value-free message templates.
+typedef McpValidationCodeDefinition = ({String category, String message});
+typedef McpFieldSchemaBuilder = ZemaSchema<dynamic, dynamic> Function(
+  String field,
+);
+
+const Map<String, McpValidationCodeDefinition> mcpValidationCodeTable =
+    <String, McpValidationCodeDefinition>{
+      'MCP_TRANSPORT_MISSING': (
+        category: 'specification',
+        message: 'Exactly one of the command and url fields is required.',
+      ),
+      'MCP_TRANSPORT_CONFLICT': (
+        category: 'specification',
+        message: 'The command and url fields are mutually exclusive.',
+      ),
+      'MCP_TRANSPORT_REFINEMENT': (
+        category: 'specification',
+        message: 'The transport fields are inconsistent.',
+      ),
+      'MCP_TYPE_REQUIRED': (
+        category: 'specification',
+        message: 'Field type is required for this HTTP registration.',
+      ),
+      'MCP_TYPE_UNSUPPORTED': (
+        category: 'specification',
+        message: 'Field type declares an unsupported transport value.',
+      ),
+      'MCP_TYPE_TRANSPORT_MISMATCH': (
+        category: 'specification',
+        message: 'Field type does not agree with the selected transport.',
+      ),
+      'MCP_FIELD_TRANSPORT_INAPPLICABLE': (
+        category: 'specification',
+        message: 'Field {field} is not applicable to the selected transport.',
+      ),
+      'MCP_PI_PROJECT_AUTH_FORBIDDEN': (
+        category: 'security',
+        message: 'Field auth is prohibited in the Pi project scope.',
+      ),
+      'UNKNOWN_FIELD': (
+        category: 'product',
+        message: 'Field {field} is not recognized by this profile.',
+      ),
+      'FIELD_TYPE': (
+        category: 'specification',
+        message: 'Field {field} has the wrong scalar type.',
+      ),
+      'FIELD_SHAPE': (
+        category: 'specification',
+        message: 'Field {field} has an invalid documented shape.',
+      ),
+      'FIELD_VALUE': (
+        category: 'specification',
+        message: 'Field {field} has an unsupported documented value.',
+      ),
+    };
+
+/// One stable, value-free validation finding.
+final class McpValidationDiagnostic {
+  const McpValidationDiagnostic({required this.code, required this.field});
+
+  final String code;
+  final String field;
+
+  String get escapedField => ValidationDiagnostics.escape(field);
+
+  String get category => mcpValidationCodeTable[code]?.category ?? 'product';
+
+  String get severity => 'error';
+
+  String get message {
+    final template =
+        mcpValidationCodeTable[code]?.message ??
+        'Field {field} has an invalid documented shape.';
+    return template.replaceAll('{field}', escapedField);
+  }
+
+  String render() => ValidationDiagnostics.format(escapedField, code, message);
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'code': code,
+    'category': category,
+    'severity': severity,
+    'field': escapedField,
+    'message': message,
+  };
+}
+
+/// A completed, static, per-harness validation result.
+final class McpValidationReport {
+  McpValidationReport({
+    required this.profile,
+    required Map<String, Object?> baseline,
+    required List<McpValidationDiagnostic> diagnostics,
+    this.claim = mcpValidationClaim,
+  }) : baseline = Map<String, Object?>.unmodifiable(baseline),
+       diagnostics = _sortedDiagnostics(diagnostics);
+
+  final String profile;
+  final Map<String, Object?> baseline;
+  final List<McpValidationDiagnostic> diagnostics;
+  final String claim;
+
+  bool get valid => diagnostics.isEmpty;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'valid': valid,
+    'profile': profile,
+    'baseline': baseline,
+    'claim': claim,
+    'diagnostics': <Object?>[
+      for (final diagnostic in diagnostics) diagnostic.toJson(),
+    ],
+  };
+
+  String renderText() {
+    final buffer = StringBuffer()
+      ..writeln('valid: $valid')
+      ..writeln('profile: $profile')
+      ..writeln('claim: $claim')
+      ..writeln('baseline: ${jsonEncode(baseline)}')
+      ..writeln('diagnostics:');
+    if (diagnostics.isEmpty) {
+      buffer.writeln('[]');
+    } else {
+      for (final diagnostic in diagnostics) {
+        buffer.writeln(diagnostic.render());
+      }
+    }
+    return buffer.toString();
+  }
+}
+
+/// One strict Zema contract and its pinned documentation baseline. The
+/// composed [McpHarnessSpec] owns one of these per harness.
+final class McpValidationContract {
+  McpValidationContract({
+    required this.profile,
+    required this.sources,
+    required this.commonFields,
+    required this.stdioFields,
+    required this.httpFields,
+    required this.stdioTypes,
+    required this.httpTypes,
+    required this.stdioTransportKeys,
+    required this.httpTransportKeys,
+    required this.requiresHttpType,
+    required this.schema,
+  });
+
+  final String profile;
+  final Set<String> sources;
+  final Set<String> commonFields;
+  final Set<String> stdioFields;
+  final Set<String> httpFields;
+  final Set<String> stdioTypes;
+  final Set<String> httpTypes;
+  final Set<String> stdioTransportKeys;
+  final Set<String> httpTransportKeys;
+  final bool requiresHttpType;
+  final ZemaSchema<dynamic, Map<String, dynamic>> schema;
+
+  Set<String> get transportKeys => <String>{
+    ...stdioTransportKeys,
+    ...httpTransportKeys,
+  };
+
+  Map<String, Object?> get baseline => <String, Object?>{
+    'sources': _sorted(sources),
+    'httpTypeRequired': requiresHttpType,
+    'recognizedFields': <String, Object?>{
+      'common': _sorted(commonFields),
+      'stdio': _sorted(stdioFields),
+      'http': _sorted(httpFields),
+    },
+    'supportedTypes': <String, Object?>{
+      'stdio': _sorted(stdioTypes),
+      'http': _sorted(httpTypes),
+    },
+  };
+
+  /// Evaluates one native entry against this harness contract. The evaluator
+  /// is deliberately inert: it reports static field, shape and reference
+  /// findings without reading or writing any native file.
+  McpValidationReport validate({
+    required McpHarness harness,
+    required Map<String, Object?> fields,
+    McpScope? scope,
+  }) {
+    final selection = _selectTransport(fields, this);
+    final diagnostics = <McpValidationDiagnostic>[
+      ..._semanticDiagnostics(
+        harness: harness,
+        scope: scope,
+        contract: this,
+        fields: fields,
+        selection: selection,
+      ),
+      ..._shapeDiagnostics(schema.safeParse(fields), selection, transportKeys),
+    ];
+    return McpValidationReport(
+      profile: profile,
+      baseline: baseline,
+      diagnostics: diagnostics,
+    );
+  }
+}
+
+const Set<String> _claudeCommonFields = <String>{'type'};
+const Set<String> _claudeStdioFields = <String>{'command', 'args', 'env'};
+const Set<String> _claudeHttpFields = <String>{
+  'url',
+  'headers',
+  'headersHelper',
+  'oauth',
+};
+const Set<String> _claudeStdioTypes = <String>{'stdio'};
+const Set<String> _claudeHttpTypes = <String>{'http', 'streamable-http', 'ws'};
+
+const Set<String> _codexCommonFields = <String>{
+  'type',
+  'enabled',
+  'required',
+  'startup_readiness',
+  'startup_timeout_sec',
+  'startup_timeout_ms',
+  'tool_timeout_sec',
+  'enabled_tools',
+  'disabled_tools',
+  'default_tools_approval_mode',
+  'tools',
+  'mcp_oauth_credentials_store',
+};
+const Set<String> _codexStdioFields = <String>{
+  'command',
+  'args',
+  'cwd',
+  'env',
+  'env_vars',
+};
+const Set<String> _codexHttpFields = <String>{
+  'url',
+  'auth',
+  'bearer_token_env_var',
+  'http_headers',
+  'env_http_headers',
+  'http_headers_helper',
+  'environment_id',
+  'oauth',
+  'oauth_resource',
+  'scopes',
+};
+const Set<String> _codexStdioTypes = <String>{'stdio'};
+const Set<String> _codexHttpTypes = <String>{'http', 'streamable-http'};
+
+const Set<String> _piCommonFields = <String>{
+  'type',
+  'enabled',
+  'timeout',
+  'description',
+  'exposure',
+  'toolExposure',
+};
+const Set<String> _piStdioFields = <String>{'command', 'args', 'env', 'cwd'};
+const Set<String> _piHttpFields = <String>{'url', 'headers', 'oauth', 'auth'};
+const Set<String> _piStdioTypes = <String>{'stdio'};
+const Set<String> _piHttpTypes = <String>{'http', 'streamable-http'};
+
+/// Public declarative field matrices assembled by each harness facet.
+const Set<String> mcpClaudeCommonFields = _claudeCommonFields;
+const Set<String> mcpClaudeStdioFields = _claudeStdioFields;
+const Set<String> mcpClaudeHttpFields = _claudeHttpFields;
+const Set<String> mcpClaudeStdioTypes = _claudeStdioTypes;
+const Set<String> mcpClaudeHttpTypes = _claudeHttpTypes;
+const Set<String> mcpCodexCommonFields = _codexCommonFields;
+const Set<String> mcpCodexStdioFields = _codexStdioFields;
+const Set<String> mcpCodexHttpFields = _codexHttpFields;
+const Set<String> mcpCodexStdioTypes = _codexStdioTypes;
+const Set<String> mcpCodexHttpTypes = _codexHttpTypes;
+const Set<String> mcpPiCommonFields = _piCommonFields;
+const Set<String> mcpPiStdioFields = _piStdioFields;
+const Set<String> mcpPiHttpFields = _piHttpFields;
+const Set<String> mcpPiStdioTypes = _piStdioTypes;
+const Set<String> mcpPiHttpTypes = _piHttpTypes;
+
+const Set<String> mcpAntigravityCommonFields = <String>{
+  'disabled',
+  'enabledTools',
+  'disabledTools',
+  'tools',
+  'timeoutSeconds',
+};
+const Set<String> mcpAntigravityStdioFields = <String>{
+  'command',
+  'args',
+  'env',
+  'cwd',
+};
+const Set<String> mcpAntigravityHttpFields = <String>{
+  'serverUrl',
+  'url',
+  'headers',
+  'authProviderType',
+  'oauth',
+};
+const Set<String> mcpAntigravityStdioTypes = <String>{'stdio'};
+const Set<String> mcpAntigravityHttpTypes = <String>{
+  'http',
+  'streamable-http',
+  'sse',
+};
+const Set<String> mcpAntigravityStdioTransportKeys = <String>{'command'};
+const Set<String> mcpAntigravityHttpTransportKeys = <String>{
+  'serverUrl',
+  'url',
+};
+
+/// Builds one owned Zema contract for a harness facet.
+McpValidationContract mcpValidationContract({
+  required String profile,
+  required Set<String> sources,
+  required Set<String> commonFields,
+  required Set<String> stdioFields,
+  required Set<String> httpFields,
+  required Set<String> stdioTypes,
+  required Set<String> httpTypes,
+  Set<String> stdioTransportKeys = const <String>{'command'},
+  Set<String> httpTransportKeys = const <String>{'url'},
+  required bool requiresHttpType,
+  required McpFieldSchemaBuilder fieldSchema,
+}) {
+  final transportKeys = <String>{...stdioTransportKeys, ...httpTransportKeys};
+  return McpValidationContract(
+    profile: profile,
+    sources: sources,
+    commonFields: commonFields,
+    stdioFields: stdioFields,
+    httpFields: httpFields,
+    stdioTypes: stdioTypes,
+    httpTypes: httpTypes,
+    stdioTransportKeys: stdioTransportKeys,
+    httpTransportKeys: httpTransportKeys,
+    requiresHttpType: requiresHttpType,
+    schema: _schemaFor(
+      commonFields: commonFields,
+      stdioFields: stdioFields,
+      httpFields: httpFields,
+      stdioTypes: stdioTypes,
+      httpTypes: httpTypes,
+      transportKeys: transportKeys,
+      fieldSchema: fieldSchema,
+    ),
+  );
+}
+
+/// Builds one strict union per harness. `z.discriminatedUnion` is unavailable
+/// in Zema 0.6.0, so two strict objects with literal type sets are combined
+/// with a product-level transport refinement.
+ZemaSchema<dynamic, Map<String, dynamic>> _schemaFor({
+  required Set<String> commonFields,
+  required Set<String> stdioFields,
+  required Set<String> httpFields,
+  required Set<String> stdioTypes,
+  required Set<String> httpTypes,
+  required Set<String> transportKeys,
+  required McpFieldSchemaBuilder fieldSchema,
+}) {
+  final stdio = z
+      .object(
+        _shapeFor(
+          commonFields: commonFields,
+          transportFields: stdioFields,
+          typeValues: stdioTypes,
+          transportKeys: transportKeys,
+          fieldSchema: fieldSchema,
+        ),
+      )
+      .makeStrict();
+  final http = z
+      .object(
+        _shapeFor(
+          commonFields: commonFields,
+          transportFields: httpFields,
+          typeValues: httpTypes,
+          transportKeys: transportKeys,
+          fieldSchema: fieldSchema,
+        ),
+      )
+      .makeStrict();
+  return z
+      .union<Map<String, dynamic>>(<ZemaSchema<dynamic, Map<String, dynamic>>>[
+        stdio,
+        http,
+      ])
+      .refine(
+        (map) {
+          var selected = 0;
+          for (final key in transportKeys) {
+            if (map[key] != null) selected++;
+          }
+          return selected == 1;
+        },
+        code: 'MCP_TRANSPORT_REFINEMENT',
+        message: 'The transport fields are inconsistent.',
+      );
+}
+
+Map<String, ZemaSchema<dynamic, dynamic>> _shapeFor({
+  required Set<String> commonFields,
+  required Set<String> transportFields,
+  required Set<String> typeValues,
+  required Set<String> transportKeys,
+  required McpFieldSchemaBuilder fieldSchema,
+}) {
+  final shape = <String, ZemaSchema<dynamic, dynamic>>{};
+  if (commonFields.contains('type')) {
+    shape['type'] = _literalTypes(typeValues);
+  }
+  final fields = <String>{
+    ...commonFields.where((field) => field != 'type'),
+    ...transportFields,
+  };
+  for (final field in _sorted(fields)) {
+    shape[field] = transportKeys.contains(field)
+        ? z.string().min(1).optional()
+        : fieldSchema(field);
+  }
+  return shape;
+}
+
+ZemaSchema<dynamic, dynamic> _literalTypes(Set<String> values) =>
+    z.union<String>(<ZemaSchema<dynamic, String>>[
+      for (final value in _sorted(values)) z.literal(value),
+    ]).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalString() => z.string().min(1).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalBoolean() => z.boolean().optional();
+
+ZemaSchema<dynamic, dynamic> _optionalPositiveInt() =>
+    z.integer().gte(1).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalChoice(List<String> values) =>
+    z.string().oneOf(values).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalStringArray() =>
+    z.array(z.string()).optional();
+
+ZemaSchema<dynamic, dynamic> _optionalStringMap() =>
+    z.map(z.string(), z.string()).optional();
+
+ZemaSchema<dynamic, dynamic> mcpClaudeFieldSchema(String field) =>
+    switch (field) {
+      'args' => _optionalStringArray(),
+      'env' || 'headers' => _optionalStringMap(),
+      'headersHelper' => _optionalString(),
+      'oauth' => _claudeOauthShape(),
+      _ => _optionalString(),
+    };
+
+ZemaSchema<dynamic, dynamic> _claudeOauthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'clientId': _optionalString(),
+      'callbackPort': _optionalPositiveInt(),
+      'authServerMetadataUrl': _optionalString(),
+      'scopes': _optionalStringArray(),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> mcpCodexFieldSchema(String field) =>
+    switch (field) {
+      'args' ||
+      'enabled_tools' ||
+      'disabled_tools' ||
+      'scopes' => _optionalStringArray(),
+      'env' || 'http_headers' || 'env_http_headers' => _optionalStringMap(),
+      'env_vars' => _codexEnvVars(),
+      'enabled' || 'required' => _optionalBoolean(),
+      'startup_timeout_sec' ||
+      'startup_timeout_ms' ||
+      'tool_timeout_sec' => _optionalPositiveInt(),
+      'startup_readiness' => _optionalChoice(<String>['catalog']),
+      'default_tools_approval_mode' => _optionalChoice(<String>[
+        'auto',
+        'prompt',
+        'writes',
+        'approve',
+      ]),
+      'mcp_oauth_credentials_store' => _optionalChoice(<String>[
+        'auto',
+        'file',
+        'keyring',
+      ]),
+      'auth' => _optionalChoice(<String>['oauth', 'chatgpt']),
+      'oauth' => _codexOauthShape(),
+      'tools' => _codexToolsShape(),
+      _ => _optionalString(),
+    };
+
+ZemaSchema<dynamic, dynamic> _codexEnvVars() => z
+    .array(
+      z.union<dynamic>(<ZemaSchema<dynamic, dynamic>>[
+        z.string(),
+        z.object(<String, ZemaSchema<dynamic, dynamic>>{
+          'name': z.string().min(1),
+          'source': _optionalChoice(<String>['local', 'remote']),
+        }).makeStrict(),
+      ]),
+    )
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _codexOauthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'client_id': _optionalString(),
+      'client_secret': _optionalString(),
+      'callback_url': _optionalString(),
+      'callback_port': _optionalPositiveInt(),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _codexToolShape() =>
+    z.object(<String, ZemaSchema<dynamic, dynamic>>{
+      'approval_mode': _optionalChoice(<String>[
+        'auto',
+        'prompt',
+        'writes',
+        'approve',
+      ]),
+      'output_token_limit': _optionalPositiveInt(),
+    }).makeStrict();
+
+ZemaSchema<dynamic, dynamic> _codexToolsShape() =>
+    z.map(z.string(), _codexToolShape()).optional();
+
+ZemaSchema<dynamic, dynamic> mcpPiFieldSchema(String field) => switch (field) {
+  'args' => _optionalStringArray(),
+  'env' || 'headers' => _optionalStringMap(),
+  'enabled' => _optionalBoolean(),
+  'timeout' => _optionalPositiveInt(),
+  'exposure' || 'toolExposure' => _optionalChoice(<String>[
+    'codemode',
+    'deferred',
+    'direct',
+    'hidden',
+    'codemode-deferred',
+  ]),
+  'oauth' => _piOauthShape(),
+  'auth' => _piAuthShape(),
+  _ => _optionalString(),
+};
+
+ZemaSchema<dynamic, dynamic> _piOauthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'clientId': _optionalString(),
+      'clientSecret': _optionalString(),
+      'callbackPort': _optionalPositiveInt(),
+      'callbackUrl': _optionalString(),
+      'scope': _optionalString(),
+      'clientName': _optionalString(),
+      'clientRegistration': _optionalChoice(<String>['auto', 'dcr', 'cimd']),
+      'authServerMetadataUrl': _optionalString(),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _piAuthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'provider': z.string().min(1),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> mcpAntigravityFieldSchema(String field) =>
+    switch (field) {
+      'args' || 'enabledTools' || 'disabledTools' => _optionalStringArray(),
+      'env' || 'headers' => _optionalStringMap(),
+      'disabled' => _optionalBoolean(),
+      'timeoutSeconds' => z.integer().gte(-1).optional(),
+      'authProviderType' => _optionalChoice(<String>['google_credentials']),
+      'oauth' => _antigravityOauthShape(),
+      'tools' => _antigravityToolsShape(),
+      _ => _optionalString(),
+    };
+
+ZemaSchema<dynamic, dynamic> _antigravityOauthShape() => z
+    .object(<String, ZemaSchema<dynamic, dynamic>>{
+      'clientId': _optionalString(),
+      'clientSecret': _optionalString(),
+    })
+    .makeStrict()
+    .optional();
+
+ZemaSchema<dynamic, dynamic> _antigravityToolShape() =>
+    z.object(<String, ZemaSchema<dynamic, dynamic>>{
+      'eager': _optionalBoolean(),
+      'background': _optionalChoice(<String>['off', 'always']),
+    }).makeStrict();
+
+ZemaSchema<dynamic, dynamic> _antigravityToolsShape() =>
+    z.map(z.string(), _antigravityToolShape()).optional();
+
+List<String> _sorted(Set<String> values) =>
+    List<String>.unmodifiable(values.toList()..sort());
+
+final class _TransportSelection {
+  const _TransportSelection({
+    required this.transport,
+    required this.conflict,
+    required this.missing,
+  });
+
+  final McpTransport? transport;
+  final bool conflict;
+  final bool missing;
+}
+
+_TransportSelection _selectTransport(
+  Map<String, Object?> fields,
+  McpValidationContract contract,
+) {
+  int declared(Set<String> keys) => keys.where(fields.containsKey).length;
+  final stdioKeys = declared(contract.stdioTransportKeys);
+  final httpKeys = declared(contract.httpTransportKeys);
+  final selected = stdioKeys + httpKeys;
+  final Object? rawType = fields['type'];
+  final String? type = rawType is String ? rawType : null;
+  McpTransport? typeTransport;
+  if (type != null) {
+    if (contract.stdioTypes.contains(type)) {
+      typeTransport = McpTransport.stdio;
+    } else if (contract.httpTypes.contains(type)) {
+      typeTransport = McpTransport.http;
+    }
+  }
+  final conflict = selected > 1;
+  final missing = selected == 0;
+  McpTransport? transport;
+  if (conflict) {
+    transport =
+        typeTransport ??
+        (stdioKeys > 0 ? McpTransport.stdio : McpTransport.http);
+  } else if (stdioKeys > 0) {
+    transport = McpTransport.stdio;
+  } else if (httpKeys > 0) {
+    transport = McpTransport.http;
+  } else {
+    transport = typeTransport;
+  }
+  return _TransportSelection(
+    transport: transport,
+    conflict: conflict,
+    missing: missing,
+  );
+}
+
+List<McpValidationDiagnostic> _semanticDiagnostics({
+  required McpHarness harness,
+  required McpScope? scope,
+  required McpValidationContract contract,
+  required Map<String, Object?> fields,
+  required _TransportSelection selection,
+}) {
+  final diagnostics = <McpValidationDiagnostic>[];
+  void add(String code, String field) =>
+      diagnostics.add(McpValidationDiagnostic(code: code, field: field));
+
+  if (selection.missing) {
+    add(
+      'MCP_TRANSPORT_MISSING',
+      ValidationDiagnostics.path(<Object?>['transport']),
+    );
+  }
+  if (selection.conflict) {
+    add(
+      'MCP_TRANSPORT_CONFLICT',
+      ValidationDiagnostics.path(<Object?>['transport']),
+    );
+  }
+
+  final typeField = ValidationDiagnostics.key('type');
+  final Object? rawType = fields['type'];
+  if (fields.containsKey('type') && rawType is! String) {
+    add('FIELD_TYPE', typeField);
+  } else if (rawType is String) {
+    final supported = <String>{...contract.stdioTypes, ...contract.httpTypes};
+    if (!supported.contains(rawType)) {
+      add('MCP_TYPE_UNSUPPORTED', typeField);
+    } else if (selection.transport == McpTransport.stdio &&
+        !contract.stdioTypes.contains(rawType)) {
+      add('MCP_TYPE_TRANSPORT_MISMATCH', typeField);
+    } else if (selection.transport == McpTransport.http &&
+        !contract.httpTypes.contains(rawType)) {
+      add('MCP_TYPE_TRANSPORT_MISMATCH', typeField);
+    }
+  } else if (selection.transport == McpTransport.http &&
+      contract.requiresHttpType) {
+    add('MCP_TYPE_REQUIRED', typeField);
+  }
+
+  if (harness == McpHarness.pi &&
+      scope == McpScope.project &&
+      fields.containsKey('auth')) {
+    add('MCP_PI_PROJECT_AUTH_FORBIDDEN', ValidationDiagnostics.key('auth'));
+  }
+
+  final current = <String>{...contract.commonFields};
+  final Set<String> other;
+  if (selection.transport == McpTransport.stdio) {
+    current.addAll(contract.stdioFields);
+    other = contract.httpFields;
+  } else if (selection.transport == McpTransport.http) {
+    current.addAll(contract.httpFields);
+    other = contract.stdioFields;
+  } else {
+    other = const <String>{};
+  }
+  final all = <String>{
+    ...contract.commonFields,
+    ...contract.stdioFields,
+    ...contract.httpFields,
+  };
+  for (final key in _sorted(Set<String>.from(fields.keys))) {
+    if (current.contains(key)) continue;
+    final field = ValidationDiagnostics.key(key);
+    if (other.contains(key)) {
+      add('MCP_FIELD_TRANSPORT_INAPPLICABLE', field);
+    } else if (!all.contains(key)) {
+      add('UNKNOWN_FIELD', field);
+    }
+  }
+  return diagnostics;
+}
+
+List<McpValidationDiagnostic> _shapeDiagnostics(
+  ZemaResult<Map<String, dynamic>> result,
+  _TransportSelection selection,
+  Set<String> transportKeys,
+) {
+  if (result.isSuccess) return const <McpValidationDiagnostic>[];
+  final diagnostics = <McpValidationDiagnostic>[];
+  for (final issue in _selectedIssues(result.errors, selection.transport)) {
+    if (_skipShapeIssue(issue, selection, transportKeys)) continue;
+    diagnostics.add(_diagnosticForIssue(issue));
+  }
+  return diagnostics;
+}
+
+List<ZemaIssue> _selectedIssues(
+  Iterable<ZemaIssue> errors,
+  McpTransport? transport,
+) {
+  if (transport == null) return const <ZemaIssue>[];
+  for (final error in errors) {
+    final Object? unionErrors = error.meta?['unionErrors'];
+    if (error.code == 'invalid_union' &&
+        unionErrors is List<Object?> &&
+        unionErrors.length >= 2) {
+      final Object? branch =
+          unionErrors[transport == McpTransport.stdio ? 0 : 1];
+      if (branch is List<Object?>) {
+        final branchIssues = <ZemaIssue>[];
+        for (final Object? item in branch) {
+          if (item is ZemaIssue) branchIssues.add(item);
+        }
+        return _flattenIssues(branchIssues);
+      }
+    }
+  }
+  return _flattenIssues(errors);
+}
+
+bool _skipShapeIssue(
+  ZemaIssue issue,
+  _TransportSelection selection,
+  Set<String> transportKeys,
+) {
+  if (issue.path.isEmpty) return true;
+  final Object first = issue.path.first;
+  if (first is String && first == 'type') return true;
+  if (issue.code == 'unknown_key' && issue.path.length == 1) return true;
+  if (issue.code == 'MCP_TRANSPORT_REFINEMENT') return true;
+  if (selection.missing &&
+      issue.code == 'invalid_type' &&
+      transportKeys.contains(first)) {
+    return true;
+  }
+  return false;
+}
+
+List<McpValidationDiagnostic> _sortedDiagnostics(
+  Iterable<McpValidationDiagnostic> diagnostics,
+) {
+  final seen = <String>{};
+  final result = <McpValidationDiagnostic>[];
+  for (final diagnostic in diagnostics) {
+    if (seen.add('${diagnostic.code}|${diagnostic.field}')) {
+      result.add(diagnostic);
+    }
+  }
+  result.sort((a, b) {
+    final field = a.field.compareTo(b.field);
+    if (field != 0) return field;
+    final code = a.code.compareTo(b.code);
+    if (code != 0) return code;
+    return a.message.compareTo(b.message);
+  });
+  return List<McpValidationDiagnostic>.unmodifiable(result);
+}
+
+List<ZemaIssue> _flattenIssues(Iterable<ZemaIssue> issues) {
+  final result = <ZemaIssue>[];
+  void visit(ZemaIssue issue) {
+    final Object? unionErrors = issue.meta?['unionErrors'];
+    if (issue.code == 'invalid_union' && unionErrors is List<Object?>) {
+      for (final Object? branch in unionErrors) {
+        if (branch is List<Object?>) {
+          for (final Object? nested in branch) {
+            if (nested is ZemaIssue) {
+              visit(nested.prependPath(issue.path));
+            }
+          }
+        }
+      }
+      return;
+    }
+    result.add(issue);
+  }
+
+  for (final issue in issues) {
+    visit(issue);
+  }
+  return result;
+}
+
+McpValidationDiagnostic _diagnosticForIssue(ZemaIssue issue) =>
+    McpValidationDiagnostic(
+      code: _codeForIssue(issue),
+      field: _fieldForIssue(issue),
+    );
+
+String _codeForIssue(ZemaIssue issue) => switch (issue.code) {
+  'unknown_key' => 'UNKNOWN_FIELD',
+  'invalid_type' => 'FIELD_TYPE',
+  'too_short' ||
+  'too_long' ||
+  'invalid_literal' ||
+  'invalid_enum' ||
+  'invalid_url' ||
+  'too_small' ||
+  'too_big' ||
+  'too_small_exclusive' ||
+  'too_big_exclusive' ||
+  'not_positive' => 'FIELD_VALUE',
+  _ => 'FIELD_SHAPE',
+};
+
+String _fieldForIssue(ZemaIssue issue) {
+  final path = issue.path;
+  if (path.isEmpty) return 'registration';
+  if (path.length == 1) {
+    final Object first = path.first;
+    if (first is String) {
+      return issue.code == 'unknown_key'
+          ? ValidationDiagnostics.key(first)
+          : ValidationDiagnostics.path(<Object?>[first]);
+    }
+  }
+  return ValidationDiagnostics.path(path);
+}

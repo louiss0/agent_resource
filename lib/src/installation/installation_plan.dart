@@ -3,11 +3,20 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:mamba/mamba.dart';
 
+import '../harness/harness_id.dart';
 import '../services/acquisition_service.dart';
 
 enum InstallationResourceType { skill, agent }
 
-enum InstallationTarget { claude, codex, pi }
+enum InstallationTarget implements HarnessWireNamed {
+  claude,
+  codex,
+  pi,
+  antigravity;
+
+  @override
+  String get wireName => name;
+}
 
 enum InstallationMethod implements MambaEnumValue {
   canonical('canonical'),

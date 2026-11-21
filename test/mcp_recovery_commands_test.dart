@@ -234,10 +234,12 @@ void main() {
           '--yes',
           '--ack-mcp-risk',
           '--format',
+          '--gemini-dir',
           '--state-dir',
         ]) {
           expect(output, contains(flag), reason: flag);
         }
+        expect(output, contains('antigravity'));
       });
 
       test('undeclared inputs are rejected before any effect', () async {

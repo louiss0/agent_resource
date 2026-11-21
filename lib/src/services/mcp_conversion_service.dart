@@ -6,13 +6,13 @@ import 'package:mamba/mamba.dart';
 
 import '../../components/installation_approval.dart';
 import '../conversion/conversion_evidence.dart' show ConversionIdentity;
+import '../harness/harness_catalog.dart';
 import '../mcp/mcp_conversion_account.dart';
 import '../mcp/mcp_conversion_lineage.dart';
 import '../mcp/mcp_envelope.dart';
 import '../mcp/mcp_native.dart';
 import '../mcp/mcp_native_editor.dart';
 import '../mcp/mcp_ownership_ledger.dart';
-import '../mcp/mcp_redaction.dart';
 import '../mcp/mcp_types.dart';
 import 'lifecycle_state_service.dart';
 import 'mcp_validation_service.dart';
@@ -22,7 +22,7 @@ import 'mcp_validation_service.dart';
 /// selectors. The target harness is explicit and the target scope defaults to
 /// the preserved source scope.
 final class McpConversionRequest {
-  const McpConversionRequest({
+  McpConversionRequest({
     required this.environment,
     required this.harness,
     required this.scope,
@@ -41,8 +41,21 @@ final class McpConversionRequest {
     this.claudeConfigDir,
     this.codexHome,
     this.piAgentDir,
+    this.geminiDir,
     this.stateDir,
-  });
+    LifecycleRootOverrides? roots,
+  }) : roots =
+           roots ??
+           LifecycleRootOverrides(
+             cwd: cwd,
+             projectRoot: projectRoot,
+             home: home,
+             claudeConfigDir: claudeConfigDir,
+             codexHome: codexHome,
+             piAgentDir: piAgentDir,
+             geminiDir: geminiDir,
+             stateDir: stateDir,
+           );
 
   final Map<String, String> environment;
   final McpHarness harness;
@@ -67,7 +80,11 @@ final class McpConversionRequest {
   final String? claudeConfigDir;
   final String? codexHome;
   final String? piAgentDir;
+  final String? geminiDir;
   final String? stateDir;
+
+  /// The same overrides as one value for services that thread them onward.
+  final LifecycleRootOverrides roots;
 }
 
 /// The injectable, scriptable review seam. Production prints the complete
@@ -82,10 +99,6 @@ Future<bool> defaultMcpConversionApproval(String completePlanPreview) async {
     label: 'Approve this reviewed MCP conversion plan? (Ctrl+C to cancel)',
   ).render();
 }
-
-const Set<String> _claudeHttpTypes = <String>{'http', 'streamable-http', 'ws'};
-const Set<String> _codexHttpTypes = <String>{'http', 'streamable-http'};
-const Set<String> _piHttpTypes = <String>{'http', 'streamable-http'};
 
 final class _Prepared {
   const _Prepared(
@@ -195,13 +208,14 @@ interface class McpConversionService {
       McpNativeResolver.resolveLifecycleContext(
         fs,
         environment: request.environment,
-        cwd: request.cwd,
-        projectRoot: request.projectRoot,
-        home: request.home,
-        claudeConfigDir: request.claudeConfigDir,
-        codexHome: request.codexHome,
-        piAgentDir: request.piAgentDir,
-        stateDir: request.stateDir,
+        cwd: request.roots.cwd,
+        projectRoot: request.roots.projectRoot,
+        home: request.roots.home,
+        claudeConfigDir: request.roots.claudeConfigDir,
+        codexHome: request.roots.codexHome,
+        piAgentDir: request.roots.piAgentDir,
+        geminiDir: request.roots.geminiDir,
+        stateDir: request.roots.stateDir,
       );
 
   _Prepared _prepare(McpConversionRequest request) {
@@ -230,12 +244,12 @@ interface class McpConversionService {
         exitCode: 2,
       );
     }
-    if (request.targetHarness == McpHarness.claude &&
-        (scope == McpScope.user || scope == McpScope.local)) {
+    final sourceSpec = HarnessCatalog.instance.mcpSpec(request.harness);
+    final targetSpec = HarnessCatalog.instance.mcpSpec(request.targetHarness);
+    if (targetSpec.inspectOnlyScopes.contains(scope)) {
       throw MambaException(
-        'Claude user/local registrations live in the shared ~/.claude.json '
-        'home file, whose third-party edit protocol is not documented. That '
-        'write surface is inspect-only.',
+        targetSpec.inspectOnlyDiagnostic ??
+            'The target MCP scope is inspect-only.',
         exitCode: 2,
       );
     }
@@ -298,8 +312,26 @@ interface class McpConversionService {
       );
     }
 
-    final transport = _transport(sourceEntry);
-    final mapped = _mapEntry(request, sourceEntry, transport);
+    final transport = sourceSpec.declaredTransport(sourceEntry);
+    if (transport == null) {
+      throw MambaException(
+        'An MCP registration must declare exactly one transport: command '
+        '(stdio) or url (http).',
+        exitCode: 2,
+      );
+    }
+    final omitted = request.omitFields.toSet();
+    final canonical = sourceSpec.importNative(
+      McpImportRequest(
+        fields: sourceEntry,
+        scope: request.scope,
+        transport: transport,
+        omitFields: omitted,
+      ),
+    );
+    final mapped = targetSpec.exportCanonical(
+      McpExportRequest(canonical: canonical, omitFields: omitted),
+    );
     final proposed = mapped.proposed;
     final fields = mapped.fields;
     final credentialRefusals = mapped.credentialRefusals;
@@ -328,7 +360,7 @@ interface class McpConversionService {
       (field) => field['outcome'] == McpFieldOutcome.refused.toJson(),
     );
     final planId =
-        'mcp-convert-${mcpCanonicalDigest(<String, Object?>{'source': source.storageKey, 'sourceBytes': _digest(sourceText), 'sourceEntry': mcpCanonicalDigest(sourceEntry), 'sourceBaseline': sourceRecord.baselineDigest, 'target': target.storageKey, 'targetBytes': _digest(targetText), 'transport': transport.wireName, 'scopeChanged': scope != request.scope, 'proposed': proposed, 'fields': fields, 'credentialRefusals': credentialRefusals, 'omitFields': _sorted(request.omitFields)})}';
+        'mcp-convert-${mcpCanonicalDigest(<String, Object?>{'source': source.storageKey, 'sourceBytes': _digest(sourceText), 'sourceEntry': mcpCanonicalDigest(sourceEntry), 'sourceBaseline': sourceRecord.baselineDigest, 'target': target.storageKey, 'targetBytes': _digest(targetText), 'transport': transport.wireName, 'scopeChanged': scope != request.scope, 'provenance': canonical.toJson(), 'proposed': proposed, 'fields': fields, 'credentialRefusals': credentialRefusals, 'omitFields': _sorted(request.omitFields)})}';
 
     final lineage = McpConversionLineageRecord(
       identity: ConversionIdentity(
@@ -362,6 +394,7 @@ interface class McpConversionService {
       'scopeChanged': scope != request.scope,
       'createsFile': targetText.isEmpty,
       'proposedEntry': proposed,
+      'provenance': canonical.toJson(),
       'fields': fields,
       'credentialRefusals': credentialRefusals,
       'lineage': lineage.toJson(),
@@ -496,407 +529,6 @@ interface class McpConversionService {
       );
     }
     return locations.single;
-  }
-
-  McpTransport _transport(Map<String, Object?> fields) {
-    final command = fields.containsKey('command');
-    final url = fields.containsKey('url');
-    if (command == url) {
-      throw MambaException(
-        'An MCP registration must declare exactly one transport: command '
-        '(stdio) or url (http).',
-        exitCode: 2,
-      );
-    }
-    return command ? McpTransport.stdio : McpTransport.http;
-  }
-
-  ({
-    Map<String, Object?> proposed,
-    List<Map<String, Object?>> fields,
-    List<Map<String, Object?>> credentialRefusals,
-    List<McpConversionDiagnostic> diagnostics,
-  })
-  _mapEntry(
-    McpConversionRequest request,
-    Map<String, Object?> source,
-    McpTransport transport,
-  ) {
-    final proposed = <String, Object?>{};
-    final fields = <Map<String, Object?>>[];
-    final credentialRefusals = <Map<String, Object?>>[];
-    final diagnostics = <McpConversionDiagnostic>[];
-    final omitted = request.omitFields.toSet();
-    final profile = 'mcp-${request.harness.wireName}-native-v1';
-    final target = request.targetHarness;
-
-    void add(
-      String? sourcePath,
-      String? targetPath,
-      McpFieldOutcome outcome,
-      String reason, {
-      String? decision,
-    }) {
-      fields.add(<String, Object?>{
-        'sourcePath': sourcePath,
-        'targetPath': targetPath,
-        'sourceProfile': profile,
-        'outcome': outcome.toJson(),
-        'decision': decision,
-        'reason': reason,
-      });
-    }
-
-    void refuse(String path, String reason) {
-      add(path, null, McpFieldOutcome.refused, reason);
-      diagnostics.add(
-        McpConversionDiagnostic(
-          code: 'MCP_CONVERSION_UNREPRESENTABLE',
-          field: path,
-        ),
-      );
-    }
-
-    void policyOmit(String path, String policy) {
-      add(
-        path,
-        null,
-        McpFieldOutcome.omittedAfterReview,
-        'credential-policy',
-        decision: 'policy:$policy',
-      );
-      credentialRefusals.add(<String, Object?>{
-        'sourcePath': path,
-        'policy': policy,
-        'reason': 'not copied; re-authenticate at the target harness',
-      });
-    }
-
-    for (final transportKey in const <String>['command', 'url']) {
-      if (omitted.contains(transportKey)) {
-        throw MambaException(
-          'The transport field $transportKey cannot be omitted; transport '
-          'must be preserved.',
-          exitCode: 2,
-        );
-      }
-    }
-
-    for (final key in _sorted(source.keys)) {
-      if (omitted.contains(key)) {
-        add(
-          key,
-          null,
-          McpFieldOutcome.omittedAfterReview,
-          'reviewed-omission',
-          decision: 'omit:$key',
-        );
-        continue;
-      }
-      if (mcpCredentialPolicyFields.contains(key)) {
-        policyOmit(key, 'credentials-not-copied');
-        continue;
-      }
-      final value = source[key];
-      switch (key) {
-        case 'command':
-          if (value is String && value.isNotEmpty) {
-            proposed[key] = value;
-            add(key, key, McpFieldOutcome.represented, 'same-transport');
-          } else {
-            refuse(key, 'invalid-transport-value');
-          }
-        case 'url':
-          if (value is String && value.isNotEmpty) {
-            final safe = McpRedaction.sanitizeEndpoint(value);
-            if (safe == McpRedaction.redactionPlaceholder) {
-              refuse(key, 'endpoint-cannot-be-sanitized');
-            } else if (safe != value) {
-              proposed[key] = safe;
-              add(
-                key,
-                key,
-                McpFieldOutcome.altered,
-                'credential-policy',
-                decision: 'policy:endpoint-query-removed',
-              );
-              credentialRefusals.add(<String, Object?>{
-                'sourcePath': key,
-                'policy': 'endpoint-query-removed',
-                'reason': 'not copied; re-authenticate at the target harness',
-              });
-            } else {
-              proposed[key] = value;
-              add(key, key, McpFieldOutcome.represented, 'same-transport');
-            }
-          } else {
-            refuse(key, 'invalid-transport-value');
-          }
-        case 'type':
-          _mapType(value, target, transport, omitted, proposed, add, refuse);
-        case 'args':
-          if (value is List) {
-            proposed[key] = value;
-            add(key, key, McpFieldOutcome.represented, 'same-shape');
-          } else {
-            refuse(key, 'wrong-shape');
-          }
-        case 'env' || 'headers' || 'http_headers':
-          if (value is Map) {
-            final targetKey =
-                key == 'http_headers' && target != McpHarness.codex
-                ? 'headers'
-                : key == 'headers' && target == McpHarness.codex
-                ? 'http_headers'
-                : key;
-            final copied = <String, Object?>{};
-            var narrowed = false;
-            for (final entry in value.entries) {
-              final path = '$key.${entry.key}';
-              if (omitted.contains(path)) {
-                add(
-                  path,
-                  null,
-                  McpFieldOutcome.omittedAfterReview,
-                  'reviewed-omission',
-                  decision: 'omit:$path',
-                );
-                narrowed = true;
-                continue;
-              }
-              final scalar = entry.value;
-              if (scalar is String && McpRedaction.isReference(scalar)) {
-                copied[entry.key.toString()] = scalar;
-                add(
-                  path,
-                  '$targetKey.${entry.key}',
-                  McpFieldOutcome.represented,
-                  'reference-only',
-                );
-              } else {
-                policyOmit(path, 'literal-value-not-copied');
-                narrowed = true;
-              }
-            }
-            if (copied.isNotEmpty) proposed[targetKey] = copied;
-            add(
-              key,
-              copied.isEmpty ? null : targetKey,
-              narrowed ? McpFieldOutcome.altered : McpFieldOutcome.represented,
-              'reference-only',
-              decision: narrowed ? 'policy:references-only' : null,
-            );
-          } else {
-            refuse(key, 'wrong-shape');
-          }
-        case 'cwd':
-          if (target == McpHarness.claude) {
-            refuse(key, 'no-native-equivalent');
-          } else {
-            proposed[key] = value;
-            add(key, key, McpFieldOutcome.represented, 'same-shape');
-          }
-        case 'tools':
-          if (target == McpHarness.codex && value is Map) {
-            final copied = <String, Object?>{};
-            var narrowed = false;
-            for (final tool in value.entries) {
-              final toolPath = 'tools.${tool.key}';
-              if (omitted.contains(toolPath)) {
-                add(
-                  toolPath,
-                  null,
-                  McpFieldOutcome.omittedAfterReview,
-                  'reviewed-omission',
-                  decision: 'omit:$toolPath',
-                );
-                narrowed = true;
-                continue;
-              }
-              if (tool.value is! Map) {
-                refuse(toolPath, 'wrong-shape');
-                continue;
-              }
-              final controls = <String, Object?>{};
-              for (final control in (tool.value as Map).entries) {
-                final path = '$toolPath.${control.key}';
-                if (omitted.contains(path)) {
-                  add(
-                    path,
-                    null,
-                    McpFieldOutcome.omittedAfterReview,
-                    'reviewed-omission',
-                    decision: 'omit:$path',
-                  );
-                  narrowed = true;
-                  continue;
-                }
-                controls[control.key.toString()] = control.value;
-                add(path, path, McpFieldOutcome.represented, 'same-shape');
-              }
-              if (controls.isNotEmpty) copied[tool.key.toString()] = controls;
-            }
-            if (copied.isNotEmpty) proposed[key] = copied;
-            add(
-              key,
-              copied.isEmpty ? null : key,
-              narrowed ? McpFieldOutcome.altered : McpFieldOutcome.represented,
-              'runtime-control',
-              decision: narrowed ? 'policy:reviewed-omission' : null,
-            );
-          } else if (value is Map) {
-            final paths = <String>[];
-            for (final tool in value.entries) {
-              final toolPath = 'tools.${tool.key}';
-              if (omitted.contains(toolPath)) {
-                add(
-                  toolPath,
-                  null,
-                  McpFieldOutcome.omittedAfterReview,
-                  'reviewed-omission',
-                  decision: 'omit:$toolPath',
-                );
-                continue;
-              }
-              if (tool.value is Map) {
-                for (final control in (tool.value as Map).keys) {
-                  paths.add('$toolPath.$control');
-                }
-              } else {
-                paths.add(toolPath);
-              }
-            }
-            if (paths.isEmpty) {
-              refuse(key, 'harness-specific-runtime-control');
-            } else {
-              for (final path in paths) {
-                if (omitted.contains(path)) {
-                  add(
-                    path,
-                    null,
-                    McpFieldOutcome.omittedAfterReview,
-                    'reviewed-omission',
-                    decision: 'omit:$path',
-                  );
-                } else {
-                  refuse(path, 'harness-specific-runtime-control');
-                }
-              }
-            }
-          } else {
-            refuse(key, 'wrong-shape');
-          }
-        case 'enabled':
-          if (target == McpHarness.claude) {
-            refuse(key, 'no-native-equivalent');
-          } else {
-            proposed[key] = value;
-            add(key, key, McpFieldOutcome.represented, 'same-shape');
-          }
-        default:
-          if (mcpCodexRuntimeControls.contains(key) &&
-              target == McpHarness.codex) {
-            proposed[key] = value;
-            add(key, key, McpFieldOutcome.represented, 'same-shape');
-          } else if (mcpPiRuntimeControls.contains(key) &&
-              target == McpHarness.pi) {
-            proposed[key] = value;
-            add(key, key, McpFieldOutcome.represented, 'same-shape');
-          } else {
-            refuse(key, 'no-native-equivalent');
-          }
-      }
-    }
-
-    if (transport == McpTransport.http &&
-        target == McpHarness.claude &&
-        !source.containsKey('type') &&
-        !omitted.contains('type')) {
-      proposed['type'] = 'http';
-      add(
-        null,
-        'type',
-        McpFieldOutcome.altered,
-        'target-requires-http-type',
-        decision: 'derive:http-type',
-      );
-    }
-
-    final knownPaths = fields
-        .map((field) => field['sourcePath'])
-        .whereType<String>()
-        .toSet();
-    for (final path in _sorted(omitted)) {
-      if (!knownPaths.contains(path)) {
-        throw MambaException(
-          'Unknown --omit-field $path: no such source field was observed.',
-          exitCode: 2,
-        );
-      }
-    }
-
-    fields.sort((a, b) {
-      final left = a['sourcePath'] as String? ?? '';
-      final right = b['sourcePath'] as String? ?? '';
-      final bySource = left.compareTo(right);
-      if (bySource != 0) return bySource;
-      final aTarget = a['targetPath'] as String? ?? '';
-      final bTarget = b['targetPath'] as String? ?? '';
-      final byTarget = aTarget.compareTo(bTarget);
-      if (byTarget != 0) return byTarget;
-      return (a['outcome'] as String).compareTo(b['outcome'] as String);
-    });
-    credentialRefusals.sort(
-      (a, b) =>
-          (a['sourcePath'] as String).compareTo(b['sourcePath'] as String),
-    );
-    diagnostics.sort((a, b) {
-      final byCode = a.code.compareTo(b.code);
-      return byCode != 0 ? byCode : a.field.compareTo(b.field);
-    });
-    return (
-      proposed: proposed,
-      fields: fields,
-      credentialRefusals: credentialRefusals,
-      diagnostics: diagnostics,
-    );
-  }
-
-  void _mapType(
-    Object? value,
-    McpHarness target,
-    McpTransport transport,
-    Set<String> omitted,
-    Map<String, Object?> proposed,
-    void Function(String?, String?, McpFieldOutcome, String, {String? decision})
-    add,
-    void Function(String, String) refuse,
-  ) {
-    if (value is! String) {
-      refuse('type', 'wrong-shape');
-      return;
-    }
-    final allowed = transport == McpTransport.stdio
-        ? const <String>{'stdio'}
-        : switch (target) {
-            McpHarness.claude => _claudeHttpTypes,
-            McpHarness.codex => _codexHttpTypes,
-            McpHarness.pi => _piHttpTypes,
-          };
-    if (allowed.contains(value)) {
-      proposed['type'] = value;
-      add('type', 'type', McpFieldOutcome.represented, 'supported-type');
-    } else if (omitted.contains('type')) {
-      add(
-        'type',
-        null,
-        McpFieldOutcome.omittedAfterReview,
-        'reviewed-omission',
-        decision: 'omit:type',
-      );
-    } else {
-      refuse('type', 'no-native-equivalent');
-    }
   }
 
   static String _digest(String text) => mcpCanonicalDigest(text);

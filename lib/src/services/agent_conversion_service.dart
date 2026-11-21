@@ -7,6 +7,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
+import '../harness/harness_catalog.dart';
 import '../native_references.dart';
 import '../skill_files.dart';
 import 'agent_authoring_service.dart';
@@ -37,6 +38,7 @@ ConversionRequest parseConversionRequest(
   String requestFile,
   String workingDirectory, {
   fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  String? harnessOverride,
 }) {
   final path = fileSystem.path.normalize(
     fileSystem.path.isAbsolute(requestFile)
@@ -87,7 +89,7 @@ ConversionRequest parseConversionRequest(
         AgentHarness.values.every((value) => value.name != source['harness'])) {
       throw MambaException(
         'A native-file conversion source requires a nonblank path and a '
-        'supported claude, codex, or pi harness.',
+        'supported claude, codex, pi, or antigravity harness.',
       );
     }
   } else if (kind == 'codex-role') {
@@ -113,6 +115,9 @@ ConversionRequest parseConversionRequest(
     throw MambaException('Unsupported conversion source kind: $kind');
   }
   final target = _map(map['target'], 'target');
+  if (harnessOverride != null) {
+    target['harness'] = harnessOverride;
+  }
   _known(target, const {
     'harness',
     'output',
@@ -122,7 +127,7 @@ ConversionRequest parseConversionRequest(
   if (target['harness'] is! String ||
       AgentHarness.values.every((value) => value.name != target['harness'])) {
     throw MambaException(
-      'Conversion target harness must be claude, codex, or pi.',
+      'Conversion target harness must be claude, codex, pi, or antigravity.',
     );
   }
   for (final key in const ['output', 'installationId']) {
@@ -306,8 +311,12 @@ interface class AgentConversionService {
       'claude-agent-file' => AgentHarness.claude,
       'codex-agent-file' || 'codex-config-bound-role' => AgentHarness.codex,
       'pi-agent-file' => AgentHarness.pi,
+      'antigravity-agent-file' => AgentHarness.antigravity,
       _ => throw MambaException('Unsupported native source form.', exitCode: 4),
     };
+    final catalog = HarnessCatalog.instance;
+    final sourceSpec = catalog.agentSpecById(HarnessId.of(sourceHarness));
+    final targetSpec = catalog.agentSpecById(HarnessId.of(targetHarness));
     if (sourceHarness == targetHarness) {
       throw MambaException(
         'Conversion requires different source and target profiles; use clone or edit.',
@@ -362,15 +371,28 @@ interface class AgentConversionService {
           : sha256.convert(utf8.encode(instructions)).toString(),
     });
 
-    _mapModel(request, source, targetHarness, fieldResults);
-    _mapEffort(request, source, targetHarness, fieldResults);
-    _mapTools(request, source, targetHarness, fieldResults);
+    final exported = targetSpec.exportCanonicalAgent(
+      AgentExportRequest(
+        canonical: sourceSpec.importNativeAgent(
+          AgentImportRequest(
+            fields: source.nativeFields,
+            sourceForm: source.form,
+            sourceProfile: source.profile,
+            instructions: instructions,
+          ),
+        ),
+        definition: request.definition,
+        decisions: request.decisions,
+        sourceProfile: source.profile,
+      ),
+    );
+    fieldResults.addAll(exported.fields);
+    diagnostics.addAll(exported.diagnostics);
     final referenceErrors = applyNativeReferenceMappings(
       targetFields,
       request.references,
       targetHarness,
     );
-    _accountRemainingFields(request, source, fieldResults);
     final referenceEntries = request.references.entries.toList()
       ..sort((left, right) => left.key.compareTo(right.key));
     final sourceAssociations = <String, Map<String, Object?>>{
@@ -495,7 +517,7 @@ interface class AgentConversionService {
           !unresolved &&
           !source.hasErrors,
       'sourceProfile': source.profile,
-      'targetProfile': _targetProfile(targetHarness),
+      'targetProfile': exported.targetProfile,
       'sourceForm': source.form,
       'targetForm': '${targetHarness.name}-agent-file',
       'sourceBinding': source.binding,
@@ -645,230 +667,6 @@ interface class AgentConversionService {
     throw StateError('Validated conversion source kind.');
   }
 
-  void _mapModel(
-    ConversionRequest request,
-    AgentInspectionReport source,
-    AgentHarness target,
-    List<Map<String, Object?>> outcomes,
-  ) {
-    final sourceModel = source.nativeFields['model'];
-    final targetModel = request.definition['model'];
-    if (targetModel != null) {
-      final accepted = request.decisions.contains('map:model');
-      outcomes.add(
-        _field(
-          'model',
-          'model',
-          accepted ? 'altered' : 'unresolved',
-          source.profile,
-          decision: 'map:model',
-        ),
-      );
-    } else if (target == AgentHarness.pi) {
-      outcomes.add(_field('model', 'model', 'unresolved', source.profile));
-    } else if (sourceModel != null &&
-        request.decisions.contains('omit:model')) {
-      outcomes.add(
-        _field(
-          'model',
-          null,
-          'omitted',
-          source.profile,
-          decision: 'omit:model',
-        ),
-      );
-    } else if (request.decisions.contains('inherit:model')) {
-      outcomes.add(
-        _field(
-          'model',
-          null,
-          'inherited',
-          source.profile,
-          decision: 'inherit:model',
-        ),
-      );
-    } else {
-      outcomes.add(_field('model', 'model', 'unresolved', source.profile));
-    }
-  }
-
-  void _mapEffort(
-    ConversionRequest request,
-    AgentInspectionReport source,
-    AgentHarness target,
-    List<Map<String, Object?>> outcomes,
-  ) {
-    final String? sourceKey = source.nativeFields.containsKey('effort')
-        ? 'effort'
-        : source.nativeFields.containsKey('model_reasoning_effort')
-        ? 'model_reasoning_effort'
-        : source.nativeFields.containsKey('thinking')
-        ? 'thinking'
-        : null;
-    final targetKey = target == AgentHarness.claude
-        ? 'effort'
-        : target == AgentHarness.codex
-        ? 'model_reasoning_effort'
-        : 'thinking';
-    final sourceValue = sourceKey == null
-        ? null
-        : source.nativeFields[sourceKey];
-    final targetValue = request.definition[targetKey];
-    if (sourceValue == null && targetValue == null) {
-      return;
-    }
-    if (targetValue != null) {
-      final accepted = request.decisions.contains('map:effort');
-      outcomes.add(
-        _field(
-          sourceKey,
-          targetKey,
-          accepted ? 'altered' : 'unresolved',
-          source.profile,
-          decision: 'map:effort',
-        ),
-      );
-    } else if (sourceValue != null) {
-      if (request.decisions.contains('omit:effort')) {
-        outcomes.add(
-          _field(
-            sourceKey,
-            null,
-            'omitted',
-            source.profile,
-            decision: 'omit:effort',
-          ),
-        );
-      } else {
-        outcomes.add(
-          _field(sourceKey, targetKey, 'unresolved', source.profile),
-        );
-      }
-    }
-  }
-
-  void _mapTools(
-    ConversionRequest request,
-    AgentInspectionReport source,
-    AgentHarness target,
-    List<Map<String, Object?>> outcomes,
-  ) {
-    final hasTools = source.nativeFields.containsKey('tools');
-    final targetTools = request.definition['tools'];
-    if (targetTools != null) {
-      final accepted = request.decisions.contains('map:tools');
-      outcomes.add(
-        _field(
-          'tools',
-          'tools',
-          accepted ? 'altered' : 'unresolved',
-          source.profile,
-          decision: 'map:tools',
-        ),
-      );
-    } else if (target == AgentHarness.pi) {
-      outcomes.add(_field('tools', 'tools', 'unresolved', source.profile));
-    } else if (hasTools && request.decisions.contains('omit:tools')) {
-      outcomes.add(
-        _field(
-          'tools',
-          null,
-          'omitted',
-          source.profile,
-          decision: 'omit:tools',
-        ),
-      );
-    } else if (request.decisions.contains('inherit:tools')) {
-      outcomes.add(
-        _field(
-          'tools',
-          null,
-          'inherited',
-          source.profile,
-          decision: 'inherit:tools',
-        ),
-      );
-    } else {
-      outcomes.add(_field('tools', 'tools', 'unresolved', source.profile));
-    }
-    if (source.nativeFields.containsKey('disallowedTools') ||
-        request.definition.containsKey('disallowedTools')) {
-      if (request.definition.containsKey('disallowedTools')) {
-        final accepted = request.decisions.contains('map:disallowedTools');
-        outcomes.add(
-          _field(
-            'disallowedTools',
-            'disallowedTools',
-            accepted ? 'altered' : 'unresolved',
-            source.profile,
-            decision: 'map:disallowedTools',
-          ),
-        );
-      } else if (request.decisions.contains('omit:disallowedTools')) {
-        outcomes.add(
-          _field(
-            'disallowedTools',
-            null,
-            'omitted',
-            source.profile,
-            decision: 'omit:disallowedTools',
-          ),
-        );
-      } else {
-        outcomes.add(
-          _field(
-            'disallowedTools',
-            'disallowedTools',
-            'unresolved',
-            source.profile,
-          ),
-        );
-      }
-    }
-  }
-
-  void _accountRemainingFields(
-    ConversionRequest request,
-    AgentInspectionReport source,
-    List<Map<String, Object?>> outcomes,
-  ) {
-    const handled = <String>{
-      'name',
-      'description',
-      'developer_instructions',
-      'model',
-      'tools',
-      'disallowedTools',
-      'effort',
-      'model_reasoning_effort',
-      'thinking',
-    };
-    final keys = <String>{
-      ...source.nativeFields.keys,
-      ...request.definition.keys,
-    }.where((key) => !handled.contains(key)).toList()..sort();
-    for (final key in keys) {
-      if (request.definition.containsKey(key)) {
-        final accepted = request.decisions.contains('map:$key');
-        outcomes.add(
-          _field(
-            key,
-            key,
-            accepted ? 'altered' : 'unresolved',
-            source.profile,
-            decision: 'map:$key',
-          ),
-        );
-      } else if (request.decisions.contains('omit:$key')) {
-        outcomes.add(
-          _field(key, null, 'omitted', source.profile, decision: 'omit:$key'),
-        );
-      } else {
-        outcomes.add(_field(key, key, 'unrepresentable', source.profile));
-      }
-    }
-  }
-
   Map<String, Object?> _identityField(
     String path, {
     required bool overridden,
@@ -903,11 +701,5 @@ interface class AgentConversionService {
     'sourceProfile': profile,
     'outcome': outcome,
     'decision': decision,
-  };
-
-  String _targetProfile(AgentHarness harness) => switch (harness) {
-    AgentHarness.claude => 'claude-agent-native-v1',
-    AgentHarness.codex => 'codex-agent-native-v1',
-    AgentHarness.pi => 'pi-agent-common-v1',
   };
 }

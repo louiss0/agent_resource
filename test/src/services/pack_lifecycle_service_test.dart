@@ -1676,6 +1676,8 @@ track = { kind = "local" }
       String? method,
       String? target,
       bool useDefaultTarget = true,
+      LifecycleScope scope = LifecycleScope.project,
+      String? geminiDir,
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: type,
@@ -1686,8 +1688,14 @@ track = { kind = "local" }
         'USERPROFILE': home.path,
         'APPDATA': p.join(home.path, 'AppData', 'Roaming'),
         'LOCALAPPDATA': p.join(home.path, 'AppData', 'Local'),
+        'CODEX_HOME': p.join(sandbox.path, 'codex'),
+        'PI_CODING_AGENT_DIR': p.join(sandbox.path, 'pi'),
       },
-      scope: LifecycleScope.project,
+      scope: scope,
+      geminiDir: geminiDir,
+      configPath: scope == LifecycleScope.user
+          ? p.join(project.path, 'agent-resources.toml')
+          : null,
       cwd: project.path,
       projectRoot: project.path,
       home: home.path,
@@ -1697,6 +1705,84 @@ track = { kind = "local" }
       snapshot: snapshot,
       yes: true,
     );
+
+    for (final target in ['codex', 'shared']) {
+      for (final method in ['copy', 'source-link']) {
+        test(
+          'user $target pack $method installs and removes from shared storage',
+          () async {
+            final service = PackLifecycleService();
+            final installed = await service.execute(
+              request(
+                PackOperation.install,
+                PackResourceType.skill,
+                scope: LifecycleScope.user,
+                method: method,
+                target: target,
+              ),
+            );
+            expect(
+              installed.resources.single.disposition.wireName,
+              'installed',
+            );
+            final nativeFile = File(
+              p.join(home.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+            );
+            expect(nativeFile.existsSync(), isTrue);
+
+            final removed = await service.execute(
+              request(
+                PackOperation.remove,
+                PackResourceType.skill,
+                scope: LifecycleScope.user,
+                only: const ['reviewer'],
+              ),
+            );
+            expect(removed.resources.single.disposition.wireName, 'removed');
+            expect(nativeFile.existsSync(), isFalse);
+            expect(
+              File(p.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+                  .existsSync(),
+              isTrue,
+            );
+          },
+        );
+      }
+    }
+
+    test('user canonical Antigravity pack installs and removes its native exposure', () async {
+      final service = PackLifecycleService();
+      final gemini = p.join(sandbox.path, 'gemini');
+      final installed = await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          scope: LifecycleScope.user,
+          geminiDir: gemini,
+          method: 'canonical',
+          target: 'antigravity',
+        ),
+      );
+      expect(installed.resources.single.disposition.wireName, 'installed');
+      final canonical = p.join(home.path, '.agents', 'skills', 'reviewer');
+      final exposure = Link(p.join(gemini, 'config', 'skills', 'reviewer'));
+      expect(exposure.existsSync(), isTrue);
+      expect(exposure.targetSync(), canonical);
+      expect(File(p.join(exposure.path, 'SKILL.md')).existsSync(), isTrue);
+
+      final removed = await service.execute(
+        request(
+          PackOperation.remove,
+          PackResourceType.skill,
+          scope: LifecycleScope.user,
+          geminiDir: gemini,
+          only: const ['reviewer'],
+        ),
+      );
+      expect(removed.resources.single.disposition.wireName, 'removed');
+      expect(exposure.existsSync(), isFalse);
+      expect(Directory(canonical).existsSync(), isFalse);
+    });
 
     test(
       'canonical rollback restores historical exposures and consumers',

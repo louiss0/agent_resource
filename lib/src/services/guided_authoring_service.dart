@@ -206,7 +206,7 @@ interface class GuidedAuthoringService {
     _DraftReference? draft;
 
     if (options.dryRun) {
-      if (inputs.body == null) {
+      if (inputs.body == null && inputs.operation != AuthoringOperation.clone) {
         throw MambaException(
           'A dry run requires an explicit instruction body: --body-file, '
           '--body-stdin or --body-text.',
@@ -236,6 +236,9 @@ interface class GuidedAuthoringService {
           text: await _resolveBody(request, options, inputs.body!),
         ),
       );
+    } else if (inputs.operation == AuthoringOperation.clone) {
+      // A clone preserves the reviewed source instructions. There is no
+      // body to collect and no draft to retain.
     } else {
       if (!request.interactive) {
         throw MambaException(

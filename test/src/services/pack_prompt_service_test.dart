@@ -317,6 +317,41 @@ path = "skills/unknown"
     );
 
     test(
+      'installs an ordinary Skill for Antigravity in the Shared root',
+      () async {
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+        final result = await service.execute(
+          request(
+            PackOperation.install,
+            only: const <String>['plain'],
+            target: 'antigravity',
+          ),
+        );
+
+        expect(result.outcome, 'completed');
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'plain',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isTrue,
+        );
+        final records = ledger();
+        expect(records, hasLength(1));
+        expect(records.single['nativeDestination'], 'shared');
+        expect(records.single['knownConsumers'], contains('antigravity'));
+      },
+    );
+
+    test(
       'the Prompt selection installs the Prompt candidates of the scope',
       () async {
         final service = PackLifecycleService.withDependencies(fileSystem: fs);
@@ -356,6 +391,39 @@ path = "skills/unknown"
               'diagnostic',
               contains('Unknown native name'),
             ),
+          ),
+        );
+        expect(ledger(), isEmpty);
+        expect(installedFiles(), isEmpty);
+      },
+    );
+
+    test(
+      'refuses an Antigravity Prompt selection with the facet diagnostic',
+      () async {
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+        await expectLater(
+          service.execute(
+            request(
+              PackOperation.install,
+              resourceTypes: const <PackResourceType>[PackResourceType.prompt],
+              only: const <String>['prompt'],
+              target: 'antigravity',
+            ),
+          ),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'exit code', 2)
+                .having(
+                  (error) => error.message,
+                  'diagnostic',
+                  allOf(
+                    contains('antigravity'),
+                    contains('ordinary Skills'),
+                    contains('.agents/skills'),
+                  ),
+                ),
           ),
         );
         expect(ledger(), isEmpty);

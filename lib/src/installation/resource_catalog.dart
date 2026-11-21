@@ -17,7 +17,8 @@ enum CatalogResourceType { skill, agent }
 enum NativeAgentProfile implements MambaEnumValue {
   claude('claude'),
   codex('codex'),
-  piCommon('pi-common');
+  piCommon('pi-common'),
+  antigravity('antigravity');
 
   const NativeAgentProfile(this.wireName);
   final String wireName;
@@ -364,7 +365,8 @@ List<CatalogOffering> _validateOfferings(
           .firstOrNull;
       if (nativeProfile == null) {
         errors.add(
-          '$location profile must be exactly claude, codex, or pi-common.',
+          '$location profile must be exactly claude, codex, pi-common, or '
+          'antigravity.',
         );
       }
     }

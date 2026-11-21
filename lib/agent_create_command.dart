@@ -134,6 +134,7 @@ final class AgentCreateCommand extends GuidedCreateCommand {
     AuthoringProfile.claude,
     AuthoringProfile.codex,
     AuthoringProfile.pi,
+    AuthoringProfile.antigravity,
   ];
 
   @override
@@ -179,6 +180,7 @@ final class AgentCreateCommand extends GuidedCreateCommand {
         valueOf(GuidedCreateFields.description) != null ||
         valueOf(GuidedCreateFields.model) != null ||
         valueOf(GuidedCreateFields.tools) != null ||
+        valueOf(GuidedCreateFields.mainAgent) ||
         valueOf(GuidedCreateFields.skills) != null ||
         valueOf(GuidedCreateFields.allowedTools) != null ||
         valueOf(GuidedCreateFields.disallowedTools) != null ||

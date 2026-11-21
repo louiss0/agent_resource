@@ -27,9 +27,18 @@ void main() {
           project = fs.directory(fs.path.join(sandbox.path, 'project'))
             ..createSync();
           home = fs.directory(fs.path.join(sandbox.path, 'home'))..createSync();
-          for (final name in ['claude', 'codex', 'pi']) {
+          for (final name in [
+            'claude',
+            'codex',
+            'pi',
+            'antigravity',
+            'state',
+          ]) {
             fs.directory(fs.path.join(sandbox.path, name)).createSync();
           }
+          fs
+              .directory(fs.path.join(sandbox.path, 'antigravity', 'config'))
+              .createSync(recursive: true);
           interaction = ScriptedInstallationInteraction();
         });
 
@@ -65,6 +74,8 @@ void main() {
           '${fs.path.join(sandbox.path, 'codex')}${fs.path.separator}',
           '--pi-agent-dir',
           '${fs.path.join(sandbox.path, 'pi')}${fs.path.separator}',
+          '--gemini-dir',
+          '${fs.path.join(sandbox.path, 'antigravity')}${fs.path.separator}',
           '--state-dir',
           '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
         ];
