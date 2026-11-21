@@ -202,6 +202,41 @@ final class LifecycleOptions {
   );
 }
 
+/// Offers a user-scope inventory when an implicit project boundary is invalid.
+Future<LifecycleOptions> resolveInventoryScope({
+  required LifecycleOptions options,
+  required fslib.FileSystem fileSystem,
+  required bool interactive,
+  required bool scopeExplicit,
+  required Future<bool> Function() offerUserScope,
+}) async {
+  if (!interactive || scopeExplicit || options.projectRoot == null) {
+    return options;
+  }
+  try {
+    LifecycleContext.resolve(options, fileSystem: fileSystem);
+    return options;
+  } on MambaException catch (error) {
+    final fallback = options.copyWith(
+      scope: LifecycleScope.user,
+      clearProjectRoot: true,
+    );
+    try {
+      LifecycleContext.resolve(fallback, fileSystem: fileSystem).requireHome();
+    } on MambaException {
+      throw MambaException(
+        'Cannot resolve project or user context. Supply a valid --cwd and --home '
+        'and, if needed, a valid --project-root. ${error.message}',
+        exitCode: 4,
+      );
+    }
+    if (!await offerUserScope()) {
+      throw MambaException('Scope selection cancelled.', exitCode: 7);
+    }
+    return fallback;
+  }
+}
+
 final class LifecycleContext implements HarnessUserRoots {
   LifecycleContext._({
     required this.options,

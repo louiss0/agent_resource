@@ -61,7 +61,7 @@ final class SkillCommand extends GroupCommand {
       SkillCloneCommand(
         guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
       ),
-      SkillListCommand(service),
+      SkillListCommand(service, guided: guided),
       InspectCommand(
         inspect,
         read: reader,
@@ -91,10 +91,14 @@ final class SkillCommand extends GroupCommand {
   String get shortDescription => 'Manage skills.';
 }
 
-final class SkillListCommand(final SkillLifecycleService _lifecycle)
-    extends Command {
+final class SkillListCommand(
+  final SkillLifecycleService _lifecycle, {
+  GuidedAuthoringService? guided,
+}) extends Command {
   this
-    : super(
+    : _guided =
+          guided ?? GuidedAuthoringService(fileSystem: _lifecycle.state.io.fs),
+      super(
         options: [
           _scope,
           _destination,
@@ -119,11 +123,9 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
             'notVerified. No management artifacts are created.',
       );
 
-  static final _scope = ChoiceOption.withDefault(
-    'scope',
-    choices: LifecycleScope.values,
-    defaultValue: LifecycleScope.project,
-  );
+  final GuidedAuthoringService _guided;
+
+  static final _scope = ChoiceOption('scope', choices: LifecycleScope.values);
   static final _destination = ChoiceOption(
     'destination',
     choices: SkillDestination.values,
@@ -151,11 +153,20 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final result = await _lifecycle.list(
-      LifecycleOptions(
+    final options = await resolveInventoryScope(
+      fileSystem: _lifecycle.state.io.fs,
+      interactive:
+          valueOf(_format) == LifecycleOutputFormat.text && _guided.hasTerminal,
+      scopeExplicit: valueOf(_scope) != null,
+      offerUserScope: () async =>
+          (await _guided.valueQuestion?.call(
+            'Project context is unavailable. Type user to inventory user scope:',
+          ))?.trim() ==
+          'user',
+      options: LifecycleOptions(
         processWorkingDirectory: _lifecycle.state.io.fs.currentDirectory.path,
         environment: Platform.environment,
-        scope: valueOf(_scope),
+        scope: valueOf(_scope) ?? LifecycleScope.project,
         cwd: valueOf(_cwd),
         projectRoot: valueOf(_projectRoot),
         home: valueOf(_home),
@@ -165,6 +176,9 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
         stateDir: valueOf(_stateDir),
         readRoots: valueOf(_readRoots) ?? const <String>[],
       ),
+    );
+    final result = await _lifecycle.list(
+      options,
       destination: valueOf(_destination),
       verify: valueOf(_verify),
     );

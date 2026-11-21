@@ -14,6 +14,7 @@ import 'src/services/agent_lifecycle_service.dart';
 import 'src/services/agent_graph_service.dart';
 import 'src/services/agent_installation_service.dart';
 import 'src/services/guided_authoring_service.dart';
+import 'src/services/lifecycle_state_service.dart';
 import 'lifecycle.dart';
 import 'agent_config_commands.dart';
 import 'agent_install.dart';
@@ -99,7 +100,7 @@ final class AgentCommand extends GroupCommand {
           authoring: authoringService,
         );
     return [
-      AgentListCommand(inventory, service),
+      AgentListCommand(inventory, service, guided: guided),
       AgentConfigCommand(
         parentConfig ?? ParentConfigService(fileSystem: service.fileSystem),
       ),
@@ -393,10 +394,13 @@ AgentInspectionInput _inspectionInput({
 
 final class AgentListCommand(
   final AgentInventoryOperation _inventory,
-  final AgentLifecycleService _lifecycle,
-) extends Command {
+  final AgentLifecycleService _lifecycle, {
+  GuidedAuthoringService? guided,
+}) extends Command {
   this
-    : super(
+    : _guided =
+          guided ?? GuidedAuthoringService(fileSystem: _lifecycle.fileSystem),
+      super(
         options: [
           _scope,
           _listHarness,
@@ -437,11 +441,12 @@ final class AgentListCommand(
             'no files or management records are created.',
       );
 
-  static final _scope = ChoiceOption.withDefault(
+  final GuidedAuthoringService _guided;
+
+  static final _scope = ChoiceOption(
     'scope',
     choices: AgentScope.values,
-    defaultValue: AgentScope.project,
-    description: 'Installation scopes to inventory.',
+    description: 'Installation scopes to inventory; project is the default.',
   );
 
   static final _listHarness = ChoiceOption(
@@ -515,15 +520,41 @@ final class AgentListCommand(
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
+    final options = await resolveInventoryScope(
+      fileSystem: _lifecycle.fileSystem,
+      interactive:
+          valueOf(_listFormat) == OutputFormat.text && _guided.hasTerminal,
+      scopeExplicit: valueOf(_scope) != null,
+      offerUserScope: () async =>
+          (await _guided.valueQuestion?.call(
+            'Project context is unavailable. Type user to inventory user scope:',
+          ))?.trim() ==
+          'user',
+      options: LifecycleOptions(
+        processWorkingDirectory: _lifecycle.fileSystem.currentDirectory.path,
+        environment: Platform.environment,
+        scope: valueOf(_scope) == AgentScope.user
+            ? LifecycleScope.user
+            : LifecycleScope.project,
+        cwd: valueOf(_listCwd),
+        projectRoot: valueOf(_projectRoot),
+        home: valueOf(_home),
+      ),
+    );
+    final selectedScope =
+        valueOf(_scope) ??
+        (options.scope == LifecycleScope.user
+            ? AgentScope.user
+            : AgentScope.project);
     final report = await _inventory(
       AgentInventoryInput(
         processWorkingDirectory: _lifecycle.fileSystem.currentDirectory.path,
         environment: Platform.environment,
-        scope: valueOf(_scope),
+        scope: selectedScope,
         harness: valueOf(_listHarness),
         verify: valueOf(_verify),
         cwd: valueOf(_listCwd),
-        projectRoot: valueOf(_projectRoot),
+        projectRoot: options.projectRoot,
         home: valueOf(_home),
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
@@ -539,11 +570,11 @@ final class AgentListCommand(
       AgentInventoryInput(
         processWorkingDirectory: _lifecycle.fileSystem.currentDirectory.path,
         environment: Platform.environment,
-        scope: valueOf(_scope),
+        scope: selectedScope,
         harness: valueOf(_listHarness),
         verify: valueOf(_verify),
         cwd: valueOf(_listCwd),
-        projectRoot: valueOf(_projectRoot),
+        projectRoot: options.projectRoot,
         home: valueOf(_home),
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
