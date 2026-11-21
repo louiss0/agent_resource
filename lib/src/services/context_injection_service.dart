@@ -14,6 +14,7 @@ import '../context/context_template_store.dart';
 import '../context/context_types.dart';
 import 'instruction_draft_service.dart';
 import 'lifecycle_state_service.dart';
+import 'native_link_service.dart';
 
 /// The observed and proposed state of one deduplicated injection target.
 final class const ContextInjectionTarget({
@@ -115,7 +116,9 @@ final class ContextInjectionService {
   ContextInjectionService({
     fslib.FileSystem? fileSystem,
     ContextTemplateStore? templates,
-  }) : fileSystem = fileSystem ?? const local.LocalFileSystem(),
+    LifecycleIO? io,
+  }) : _io = io ?? LifecycleIO(fs: fileSystem ?? const local.LocalFileSystem()),
+       fileSystem = fileSystem ?? const local.LocalFileSystem(),
        _templates =
            templates ??
            ContextTemplateStore(
@@ -123,6 +126,7 @@ final class ContextInjectionService {
            );
 
   final fslib.FileSystem fileSystem;
+  final LifecycleIO _io;
   final ContextTemplateStore _templates;
   late final ContextTargetResolver _resolver = ContextTargetResolver(
     fileSystem: fileSystem,
@@ -247,49 +251,71 @@ final class ContextInjectionService {
 
     final context = LifecycleContext.resolve(options, fileSystem: fileSystem);
     final stateRoot = context.stateRoot(LifecycleScope.user);
-    final state = LifecycleStateService(io: LifecycleIO(fs: fileSystem));
+    final state = LifecycleStateService(io: _io);
     final published = <ContextInjectionTarget>[];
+    final candidates = <String, String>{};
+    final receipts = <String, List<int>>{};
     for (final target in current.targets) {
-      final key = sha256.convert(utf8.encode(target.path)).toString();
-      final recoveryPath = target.action == ContextCombineAction.create
-          ? null
-          : fileSystem.path.join(
-              stateRoot,
-              authoringRecoveryDirectoryName,
-              reviewed.planId,
-              '$key.md',
-            );
-      if (recoveryPath != null) {
-        state.writeProtectedDocument(
-          recoveryPath,
-          utf8.encode(target.existingContent),
-        );
-      }
-      final staged = fileSystem.path.join(
+      final id = authoringReceiptId(reviewed.planId, target.path);
+      final path = fileSystem.path.join(
         stateRoot,
-        authoringStagingDirectoryName,
-        reviewed.planId,
-        '$key.candidate',
+        authoringReceiptDirectoryName,
+        '$id.json',
       );
-      state.io.createDirectory(fileSystem.path.dirname(staged));
-      final bytes = utf8.encode(target.proposedContent);
-      state.io.write(staged, bytes);
-      final stagedBytes = state.io.read(staged, bytes.length + 1);
-      if (sha256.convert(stagedBytes).toString() != target.proposedSha256) {
+      if (fileSystem.typeSync(path, followLinks: false) !=
+          FileSystemEntityType.notFound) {
         throw MambaException(
-          'STAGING_DIGEST_MISMATCH: Staged bytes do not match the reviewed '
-          'plan.',
+          'CONTEXT_RECEIPT_OCCUPIED: Receipt already exists: $path',
           exitCode: 4,
         );
       }
-      state.io.createDirectory(fileSystem.path.dirname(target.path));
-      state.io.rename(staged, target.path);
-      final receiptId = authoringReceiptId(reviewed.planId, target.path);
-      writeAuthoringReceipt(
-        state: state,
-        stateRoot: stateRoot,
-        document: authoringReceiptDocument(
-          receiptId: receiptId,
+    }
+    try {
+      for (final target in current.targets) {
+        final key = sha256.convert(utf8.encode(target.path)).toString();
+        final recoveryPath = target.action == ContextCombineAction.create
+            ? null
+            : fileSystem.path.join(
+                stateRoot,
+                authoringRecoveryDirectoryName,
+                reviewed.planId,
+                '$key.md',
+              );
+        if (recoveryPath != null) {
+          state.writeProtectedDocument(
+            recoveryPath,
+            utf8.encode(target.existingContent),
+          );
+        }
+        _requireTargetState(target, published: false);
+        _io.createDirectory(fileSystem.path.dirname(target.path));
+        _requireTargetState(target, published: false);
+        // A same-volume staging directory makes rename possible even when the
+        // application state and the destination are on different volumes.
+        final staging = fileSystem
+            .directory(fileSystem.path.dirname(target.path))
+            .createTempSync('.agent-resource-');
+        final staged = fileSystem.path.join(staging.path, 'candidate');
+        candidates[staged] = target.proposedSha256;
+        final bytes = utf8.encode(target.proposedContent);
+        _io.write(staged, bytes);
+        if (sha256.convert(_io.read(staged, bytes.length + 1)).toString() !=
+            target.proposedSha256) {
+          throw MambaException(
+            'STAGING_DIGEST_MISMATCH: Staged bytes do not match the reviewed plan.',
+            exitCode: 4,
+          );
+        }
+        _requireTargetState(target, published: false);
+        _io.rename(staged, target.path);
+        final receiptId = authoringReceiptId(reviewed.planId, target.path);
+        published.add(
+          target.withEvidence(receiptId: receiptId, recoveryPath: recoveryPath),
+        );
+      }
+      for (final target in published) {
+        final document = authoringReceiptDocument(
+          receiptId: target.receiptId!,
           planId: reviewed.planId,
           operation: 'contextInject',
           kind: 'contextFile',
@@ -297,13 +323,129 @@ final class ContextInjectionService {
           target: target.path,
           root: reviewed.scope.name,
           form: fileSystem.path.basename(target.path),
-        ),
+        );
+        final receiptPath = fileSystem.path.join(
+          stateRoot,
+          authoringReceiptDirectoryName,
+          '${target.receiptId}.json',
+        );
+        receipts[receiptPath] = utf8.encode(jsonEncode(document));
+        if (fileSystem.typeSync(receiptPath, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+          throw MambaException(
+            'CONTEXT_RECEIPT_OCCUPIED: Receipt already exists: $receiptPath',
+            exitCode: 4,
+          );
+        }
+        writeAuthoringReceipt(
+          state: state,
+          stateRoot: stateRoot,
+          document: document,
+        );
+      }
+    } on Exception catch (error) {
+      if (published.isEmpty) {
+        if (candidates.isEmpty) rethrow;
+        throw MambaException(
+          '$error; staging locations: ${candidates.keys.join(', ')}. '
+          'Inspect any retained staging files before retrying.',
+          exitCode: 4,
+        );
+      }
+      final evidence = <String>[];
+      for (final target in published.reversed) {
+        try {
+          _requireTargetState(target, published: true);
+          if (target.existingExists) {
+            final staging = fileSystem
+                .directory(fileSystem.path.dirname(target.path))
+                .createTempSync('.agent-resource-');
+            final restore = fileSystem.path.join(staging.path, 'restore');
+            candidates[restore] = target.existingSha256!;
+            _io.write(restore, utf8.encode(target.existingContent));
+            _requireTargetState(target, published: true);
+            _io.rename(restore, target.path);
+          } else {
+            _io.delete(target.path);
+          }
+          final receiptPath = fileSystem.path.join(
+            stateRoot,
+            authoringReceiptDirectoryName,
+            '${target.receiptId}.json',
+          );
+          final expectedReceipt = receipts[receiptPath];
+          if (expectedReceipt != null &&
+              fileSystem.typeSync(receiptPath, followLinks: false) !=
+                  FileSystemEntityType.notFound) {
+            try {
+              if (fileSystem.typeSync(receiptPath, followLinks: false) !=
+                  FileSystemEntityType.file) {
+                throw StateError('receipt is not a regular file');
+              }
+              final actual = _io.read(receiptPath, expectedReceipt.length);
+              if (sha256.convert(actual) != sha256.convert(expectedReceipt)) {
+                throw StateError('receipt changed');
+              }
+              _io.delete(receiptPath);
+            } on Exception catch (receiptError) {
+              evidence.add(
+                'receipt retained $receiptPath; inspect it: $receiptError',
+              );
+            }
+          }
+          evidence.add(
+            'compensated ${target.path}; recovery ${target.recoveryPath ?? 'not needed (created target)'}',
+          );
+        } on Exception catch (rollbackError) {
+          evidence.add(
+            'NOT compensated ${target.path}; recovery ${target.recoveryPath ?? 'none (created target)'}; receipt ${fileSystem.path.join(stateRoot, authoringReceiptDirectoryName, '${target.receiptId}.json')}; $rollbackError',
+          );
+        }
+      }
+      throw MambaException(
+        'CONTEXT_PARTIAL_FAILURE: $error; ${evidence.join('; ')}. '
+        'Inspect each destination and retained recovery copy before retrying. '
+        'Staging locations: ${candidates.keys.join(', ')}.',
+        exitCode: 4,
       );
-      published.add(
-        target.withEvidence(receiptId: receiptId, recoveryPath: recoveryPath),
-      );
+    } finally {
+      for (final entry in candidates.entries) {
+        try {
+          final observed = _observe(entry.key);
+          if (observed.exists && observed.sha256 == entry.value) {
+            _io.delete(entry.key);
+          }
+          // Never recursively delete a staging directory: another writer may
+          // have placed an entry there after publication.
+          fileSystem.directory(fileSystem.path.dirname(entry.key)).deleteSync();
+        } on Exception {
+          // Unknown entries are retained rather than deleted.
+        }
+      }
     }
     return current.withEvidence(published);
+  }
+
+  void _requireTargetState(
+    ContextInjectionTarget target, {
+    required bool published,
+  }) {
+    final observed = _observe(target.path);
+    final expectedExists = published || target.existingExists;
+    final expectedHash = published
+        ? target.proposedSha256
+        : target.existingSha256;
+    final expectedLength = published
+        ? target.proposedByteLength
+        : target.existingByteLength;
+    if (observed.exists != expectedExists ||
+        observed.sha256 != expectedHash ||
+        observed.byteLength != expectedLength) {
+      throw MambaException(
+        'CONTEXT_PLAN_DRIFT: Target ${target.path} changed; review a fresh plan.',
+        exitCode: 4,
+      );
+    }
   }
 
   /// Returns non-blocking advisory diagnostics for one reviewed plan.
@@ -470,13 +612,17 @@ final class ContextInjectionService {
     return candidate;
   }
 
+  bool _isReparse(String path) =>
+      fileSystem is local.LocalFileSystem &&
+      const NativeLinkService().isWindowsReparsePoint(path);
+
   ({bool exists, String? sha256, int byteLength, String? content}) _observe(
     String path,
   ) {
     var parent = fileSystem.path.dirname(path);
     while (true) {
       final parentType = fileSystem.typeSync(parent, followLinks: false);
-      if (parentType == FileSystemEntityType.link) {
+      if (parentType == FileSystemEntityType.link || _isReparse(parent)) {
         throw MambaException(
           'SYMLINK_REFUSED: Context path traverses a link: $parent',
           exitCode: 4,
@@ -494,7 +640,7 @@ final class ContextInjectionService {
       parent = next;
     }
     final type = fileSystem.typeSync(path, followLinks: false);
-    if (type == FileSystemEntityType.link) {
+    if (type == FileSystemEntityType.link || _isReparse(path)) {
       throw MambaException(
         'SYMLINK_REFUSED: Context file is a link: $path',
         exitCode: 4,
