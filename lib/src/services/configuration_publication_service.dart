@@ -216,6 +216,7 @@ interface class ConfigurationPublicationService {
           );
         }
         final phase = decoded['phase'];
+        final retainedStage = _validatedStage(decoded, target, transactionId!);
         if (action == 'complete') {
           if (!const {
             'staged',
@@ -278,6 +279,7 @@ interface class ConfigurationPublicationService {
             );
           }
           if (context.dryRun) return planned();
+          _cleanupStaging(retainedStage);
           _advance(
             evidencePath,
             Map<String, Object?>.from(decoded),
@@ -336,6 +338,7 @@ interface class ConfigurationPublicationService {
           );
         }
         if (context.dryRun) return planned();
+        _cleanupStaging(retainedStage);
         _advance(
           evidencePath,
           Map<String, Object?>.from(decoded),
@@ -402,6 +405,10 @@ interface class ConfigurationPublicationService {
       '.agent-resource-prefer-$transactionId.quarantine',
     );
     final failedNewPath = '$quarantinePath.failed-new';
+    final stagePath = path.join(
+      path.dirname(target),
+      '.agent-resource-prefer-$transactionId.stage',
+    );
     final expectedDigest = _digest(request.expectedSource);
     final transaction = <String, Object?>{
       'schemaVersion': 1,
@@ -411,12 +418,14 @@ interface class ConfigurationPublicationService {
       'expectedDigest': expectedDigest,
       'backupPath': backupPath,
       'quarantinePath': quarantinePath,
+      'stagePath': stagePath,
       'phase': 'prepared',
     };
     _requireAbsent(transactionPath, target);
     _requireAbsent(backupPath, target);
     _requireAbsent(quarantinePath, target);
     _requireAbsent(failedNewPath, target);
+    _requireAbsent(stagePath, target);
     fslib.Directory? stagingDirectory;
     var quarantined = false;
     var published = false;
@@ -472,10 +481,12 @@ interface class ConfigurationPublicationService {
       final proposed = request.propose(currentSource);
       final proposedBytes = utf8.encode(proposed);
       final candidateDigest = _digest(proposed);
-      stagingDirectory = _io.fs
-          .directory(path.dirname(target))
-          .createTempSync('agent-resource-prefer-');
-      final stagedPath = path.join(stagingDirectory.path, 'config.toml');
+      transaction['currentDigest'] = _digest(currentSource);
+      transaction['candidateDigest'] = candidateDigest;
+      transaction['backupPath'] = retainedBackupPath;
+      _advance(transactionPath, transaction, 'prepared');
+      stagingDirectory = _io.fs.directory(stagePath)..createSync();
+      final stagedPath = path.join(stagePath, 'config.toml');
       _io.write(stagedPath, proposedBytes);
       if (_digest(_readBounded(stagedPath)) != candidateDigest) {
         throw MambaException(
@@ -483,9 +494,6 @@ interface class ConfigurationPublicationService {
           exitCode: 4,
         );
       }
-      transaction['currentDigest'] = _digest(currentSource);
-      transaction['candidateDigest'] = candidateDigest;
-      transaction['backupPath'] = retainedBackupPath;
       _advance(transactionPath, transaction, 'staged');
 
       final targetBeforePublish = _io.type(target, followLinks: false);
@@ -852,6 +860,53 @@ interface class ConfigurationPublicationService {
         jsonEncode(<String, Object?>{...transaction, 'phase': phase}),
       ),
     );
+  }
+
+  fslib.Directory? _validatedStage(
+    Map<String, dynamic> transaction,
+    String target,
+    String id,
+  ) {
+    final recorded = transaction['stagePath'];
+    // Legacy evidence cannot identify its staging directory.
+    if (recorded == null) return null;
+    final path = _io.fs.path;
+    final expected = path.join(
+      path.dirname(target),
+      '.agent-resource-prefer-$id.stage',
+    );
+    if (recorded != expected) {
+      throw MambaException(
+        'Configuration staging authority is invalid.',
+        exitCode: 6,
+      );
+    }
+    final type = _io.type(expected, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return null;
+    if (type != FileSystemEntityType.directory) {
+      throw MambaException('Configuration staging is unsafe.', exitCode: 6);
+    }
+    final entries = _io.list(expected).toList();
+    if (entries.length > 1) {
+      throw MambaException(
+        'Configuration staging contains unexpected entries.',
+        exitCode: 6,
+      );
+    }
+    if (entries.isNotEmpty) {
+      final file = entries.single.path;
+      final digest = transaction['candidateDigest'];
+      if (file != path.join(expected, 'config.toml') ||
+          _io.type(file, followLinks: false) != FileSystemEntityType.file ||
+          digest is! String ||
+          _digest(_readBounded(file)) != digest) {
+        throw MambaException(
+          'Configuration staging cannot be verified; evidence retained.',
+          exitCode: 6,
+        );
+      }
+    }
+    return _io.fs.directory(expected);
   }
 
   void _cleanupStaging(fslib.Directory? stagingDirectory) {

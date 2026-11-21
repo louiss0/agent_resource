@@ -1613,6 +1613,98 @@ void main() {
           );
         });
 
+        test(
+          'recovery removes verified orphan staging after interruption',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+            fs.directory('/user').createSync(recursive: true);
+            fs.directory('/project').createSync(recursive: true);
+            final workflow = ConfigurationWorkflowService(
+              fileSystem: fs,
+              environment: const {'HOME': '/user'},
+              publication: ConfigurationPublicationService(
+                fileSystem: fs,
+                io: _OrphanStageIO(fs: fs),
+              ),
+            );
+            final config = Executor('agent_resource', 'test', '1.0.0', [
+              ConfigCommand(workflow: workflow, fileSystem: fs),
+            ]);
+            await expectLater(
+              config.fake().execute([
+                'config',
+                'prefer',
+                '--scope',
+                'user',
+                '--user-config',
+                '/user/config.toml',
+                '--project-config',
+                '/project/config.toml',
+                '--cwd',
+                '/project/',
+                '--project-root',
+                '/project/',
+                '--set',
+                'cli.retention.snapshot_days=14',
+                '--apply',
+              ]),
+              throwsA(isA<StateError>()),
+            );
+            expect(
+              fs
+                  .directory('/user')
+                  .listSync()
+                  .where((e) => e.path.contains('agent-resource-prefer-')),
+              isNotEmpty,
+            );
+            final recovery = createExecutor(fileSystem: fs).fake();
+            final common = [
+              '--scope',
+              'project',
+              '--cwd',
+              '/project/',
+              '--project-root',
+              '/project/',
+              '--configuration-target',
+              '/user/config.toml',
+              '--format',
+              'json',
+            ];
+            final listing = await recovery.execute([
+              'skill',
+              'recover',
+              ...common,
+            ]) as MambaSuccessResult;
+            final data =
+                jsonDecode(listing.output as String) as Map<String, dynamic>;
+            final id =
+                (data['data']['transactions'] as List<dynamic>)
+                        .single['transactionId']
+                    as String;
+            final result = await recovery.execute([
+              'skill',
+              'recover',
+              id,
+              ...common,
+              '--action',
+              'rollback',
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              fs
+                  .directory('/user')
+                  .listSync()
+                  .where((e) => e.path.contains('agent-resource-prefer-')),
+              isEmpty,
+            );
+          },
+        );
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
@@ -2506,5 +2598,26 @@ final class _InterruptSkillInstallIO extends LifecycleIO {
       throw const io.FileSystemException('injected journal failure');
     }
     super.write(path, bytes);
+  }
+}
+
+final class _OrphanStageIO extends LifecycleIO {
+  _OrphanStageIO({required super.fs});
+  @override
+  void write(String path, List<int> bytes) {
+    if (path.endsWith('/config.toml') &&
+        path.contains('agent-resource-prefer-')) {
+      super.write(path, bytes);
+      throw StateError('simulated interruption');
+    }
+    super.write(path, bytes);
+  }
+
+  @override
+  void delete(String path) {
+    if (path.contains('agent-resource-prefer-')) {
+      throw StateError('simulated crash before cleanup');
+    }
+    super.delete(path);
   }
 }
