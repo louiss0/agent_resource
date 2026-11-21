@@ -261,6 +261,35 @@ Approvals, adoption authority, destructive consent,
 risk acknowledgements, credentials, and credential-like values are refused
 without being echoed or remembered.
 
+If publication is interrupted, inspect its evidence by selecting the exact
+configuration target with either lifecycle command. Supply the same `--cwd`
+and `--project-root` that were used for the original publication when
+inspecting older project-scoped evidence:
+
+```text
+agent_resource skill recover --configuration-target <path> --scope all
+agent_resource agent recover <transaction-id> --configuration-target <path> --action rollback --dry-run
+agent_resource agent recover <transaction-id> --configuration-target <path> --action rollback --yes
+agent_resource agent recover <transaction-id> --configuration-target <path> --action complete --yes
+```
+
+Recovery validates the target and retained evidence before making a change.
+It refuses changed targets, unverified quarantine or staging bytes, and other
+ambiguous states rather than overwriting or removing them. New evidence and
+coordination are anchored to the target so cooperating configuration writers
+using different projects or user state roots share a reservation and lock.
+Windows target case aliases share the same reservation; arbitrary filesystem
+aliases and hostile concurrent writers are not supported.
+
+Older project-scoped evidence cannot be discovered from a different project:
+there is no global inventory of old projects. Before retrying a shared user
+configuration that might have an older interrupted publication, run recovery
+from the original project. Older transactions also did not record their staging
+directory, so recovery cannot identify or remove those old staging artifacts.
+Incomplete or altered new staging evidence is retained for manual inspection.
+Lifecycle mutations with unrelated coordination roots are not guaranteed to
+acquire the configuration target lock; stop other writers while recovering.
+
 ```text
 agent_resource config effective [--scope project|user] [--pack <key>] [--format text|json]
 agent_resource config prefer --scope project --set cli.install.targets=claude,codex
