@@ -6,6 +6,43 @@ import 'package:test/test.dart';
 
 void main() {
   group('agent_resource', () {
+    group('agent', () {
+      group('create', () {
+        test(
+          'unattended bound-role publication requires explicit scope',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+            fs.directory('/project').createSync();
+            fs.directory('/home').createSync();
+            final result = await createExecutor(fileSystem: fs).fake().execute([
+              'agent',
+              'create',
+              '--cwd',
+              '/project/',
+              '--home',
+              '/home/',
+              '--role-key',
+              'reviewer',
+              '--apply',
+              '--yes',
+              '--unattended',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>()
+                  .having((v) => v.exitCode, 'exit code', 4)
+                  .having(
+                    (v) => v.message,
+                    'message',
+                    'Unattended publication requires explicit --scope project|user.',
+                  )
+                  .having((v) => v.output, 'output', isNull),
+            );
+            expect(fs.directory('/project/.codex').existsSync(), isFalse);
+          },
+        );
+      });
+    });
     group('skill', () {
       group('create', () {
         test('unattended publication requires an explicit scope', () async {

@@ -125,15 +125,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(GuidedCreateFields.format);
     final interactive = resolveInteractive(valueOf, format);
-    if (!interactive &&
-        valueOf(GuidedCreateFields.apply) &&
-        !valueOf(GuidedCreateFields.dryRun) &&
-        valueOf(GuidedCreateFields.scope) == null) {
-      throw MambaException(
-        'Unattended publication requires explicit --scope project|user.',
-        exitCode: 4,
-      );
-    }
+    validatePublicationScope(valueOf, interactive);
     final options = buildOptions(valueOf);
     final inputs = await buildInputs(valueOf, interactive);
     final outcome = await guided.run(
@@ -196,6 +188,19 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     }
     if (unattended || format == LifecycleOutputFormat.json) return false;
     return explicit || hasTerminal;
+  }
+
+  /// Require an explicit scope for unattended publication.
+  void validatePublicationScope(ValueOf valueOf, bool interactive) {
+    if (!interactive &&
+        valueOf(GuidedCreateFields.apply) &&
+        !valueOf(GuidedCreateFields.dryRun) &&
+        valueOf(GuidedCreateFields.scope) == null) {
+      throw MambaException(
+        'Unattended publication requires explicit --scope project|user.',
+        exitCode: 4,
+      );
+    }
   }
 
   /// The lifecycle context of the run.

@@ -166,6 +166,7 @@ final class AgentCreateCommand extends GuidedCreateCommand {
   Future<String> _runBoundRole(ValueOf valueOf) async {
     final format = valueOf(GuidedCreateFields.format);
     final interactive = resolveInteractive(valueOf, format);
+    validatePublicationScope(valueOf, interactive);
     final options = buildOptions(valueOf);
     final inputs = parseBoundRoleAuthoringInputs(
       roleKey: valueOf(_roleKey),
