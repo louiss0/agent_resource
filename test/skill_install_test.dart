@@ -1542,6 +1542,133 @@ path = "skills/other"
           );
         });
 
+        test('canonical inventory follows only its tracked exposure', () async {
+          useLocalFileSystem();
+          final source = skill('canonical-inventory');
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\ndisable-model-invocation: true\n---\nBody.\n',
+              );
+          final installed = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--source-kind',
+            'resource',
+            '--target',
+            'claude',
+            '--target',
+            'codex',
+            '--method',
+            'canonical',
+            ...context(),
+            '--yes',
+          ]);
+          expect(
+            installed,
+            isA<MambaSuccessResult>(),
+            reason: installed is MambaFailureResult ? installed.message : null,
+          );
+          final prompts = await executor().fake().execute([
+            'prompt',
+            'list',
+            ...context(),
+            '--format',
+            'json',
+          ]);
+          expect(
+            prompts,
+            isA<MambaSuccessResult>(),
+            reason: prompts is MambaFailureResult ? prompts.message : null,
+          );
+          final promptEntries =
+              jsonDecode((prompts as MambaSuccessResult).output!)['entries']
+                  as List;
+          expect(promptEntries, hasLength(1));
+          expect(promptEntries.single['exposures'], hasLength(1));
+          expect(promptEntries.single['directConsumers'], contains('codex'));
+          final skills = await executor().fake().execute([
+            'skill',
+            'list',
+            ...context(),
+            '--format',
+            'json',
+          ]);
+          expect(skills, isA<MambaSuccessResult>());
+          final occurrences =
+              (jsonDecode(
+                    (skills as MambaSuccessResult).output!,
+                  )['data']['occurrences']
+                  as List);
+          expect(
+            occurrences.where((item) => item['installationId'] != null),
+            hasLength(1),
+          );
+          final canonical = occurrences.singleWhere(
+            (item) => item['installationId'] != null,
+          );
+          expect(canonical['exposures'], hasLength(1));
+          expect(canonical['directConsumers'], contains('codex'));
+          final filtered = await executor().fake().execute([
+            'skill',
+            'list',
+            ...context(),
+            '--destination',
+            'claude',
+            '--format',
+            'json',
+          ]);
+          expect(filtered, isA<MambaSuccessResult>());
+          expect(
+            (jsonDecode(
+                  (filtered as MambaSuccessResult).output!,
+                )['data']['occurrences']
+                as List),
+            hasLength(1),
+          );
+
+          final exposure = io.Link(
+            fs.path.join(project.path, '.claude', 'skills', 'review'),
+          );
+          final target = exposure.targetSync();
+          exposure.deleteSync();
+          exposure.createSync(source.path);
+          final changed = await executor().fake().execute([
+            'prompt',
+            'list',
+            ...context(),
+            '--format',
+            'json',
+          ]);
+          expect(
+            changed,
+            isA<MambaFailureResult>().having((r) => r.exitCode, 'exit code', 4),
+          );
+          exposure.deleteSync();
+          exposure.createSync(target);
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agent-resource',
+                  'installations.json',
+                ),
+              )
+              .deleteSync();
+          final untracked = await executor().fake().execute([
+            'prompt',
+            'list',
+            ...context(),
+            '--format',
+            'json',
+          ]);
+          expect(
+            untracked,
+            isA<MambaFailureResult>().having((r) => r.exitCode, 'exit code', 4),
+          );
+        });
+
         test('general batch preflight conflicts use status one', () async {
           final collection = fs.directory(
             fs.path.join(sandbox.path, 'conflicts'),

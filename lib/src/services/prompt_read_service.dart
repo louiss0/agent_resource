@@ -24,6 +24,8 @@ final class const PromptInventoryEntry({
   required final LifecycleScope installationScope,
   required final PromptManagement management,
   required final PromptNativeViews native,
+  final List<Map<String, Object?>>? exposures,
+  final List<String>? directConsumers,
 }) {
   Map<String, Object?> toJson() => <String, Object?>{
     ...native.toJson(),
@@ -32,6 +34,8 @@ final class const PromptInventoryEntry({
     'destination': destination.name,
     'installationScope': installationScope.name,
     'management': management.name,
+    if (exposures != null) 'exposures': exposures,
+    if (directConsumers != null) 'directConsumers': directConsumers,
   };
 }
 
@@ -56,6 +60,11 @@ final class const PromptInventory({
           'placement=${entry.native.placement.name} '
           'global=${entry.native.globalCompatibility.name} '
           'management=${entry.management.name}',
+      if (entry.exposures != null)
+        for (final exposure in entry.exposures!)
+          '  exposure ${exposure['target']}: ${exposure['path']}',
+      if (entry.directConsumers != null)
+        '  direct consumers: ${entry.directConsumers!.join(', ')}',
       for (final view in entry.native.views.values) ...[
         '  ${view.consumer.name}: ${view.classification.name} '
             'valid=${view.valid} install=${view.installationSupported ? 'supported' : 'unsupported'}',
@@ -171,7 +180,17 @@ interface class PromptReadService {
         options.copyWith(scope: scope),
         fileSystem: _fileSystem,
       );
-      final managedPaths = _managedPaths(context);
+      final records = _records(context);
+      final managedPaths = records == null
+          ? null
+          : {
+              for (final record in records)
+                if (record.lifecycle == 'live') ...[
+                  _pathKey(record.location),
+                  for (final exposure in record.exposures)
+                    _pathKey(exposure.path),
+                ],
+            };
       for (final surface in _surfaces(context)) {
         await _requireUnlinked(surface.root, charge);
         final type = await skillEntityTypeAsync(
@@ -191,7 +210,12 @@ interface class PromptReadService {
           );
         }
         rootsScanned++;
-        for (final path in await _candidates(surface, charge)) {
+        for (final path in await _candidates(
+          surface,
+          charge,
+          context,
+          records,
+        )) {
           if (!seen.add(_fileSystem.path.normalize(path))) continue;
           // A native Pi template root supplies a profile, unlike an arbitrary
           // .md path. An explicitly selected other harness is never overridden.
@@ -211,6 +235,15 @@ interface class PromptReadService {
               : native.views[consumer]!.classification !=
                     PromptClassification.nonPrompt;
           if (!relevant) continue;
+          final canonical = records
+              ?.where(
+                (record) =>
+                    record.lifecycle == 'live' &&
+                    record.kind == ArtifactKind.skillCanonical &&
+                    _fileSystem.path.equals(record.location, path),
+              )
+              .toList();
+          final owner = canonical?.length == 1 ? canonical!.single : null;
           entries.add(
             PromptInventoryEntry(
               path: path,
@@ -223,6 +256,25 @@ interface class PromptReadService {
                   ? PromptManagement.managed
                   : PromptManagement.unmanaged,
               native: native,
+              exposures: owner == null
+                  ? null
+                  : [
+                      for (final exposure in owner.exposures)
+                        {
+                          'path': exposure.path,
+                          'target': exposure.target,
+                          'nativeKind': exposure.nativeKind,
+                        },
+                    ],
+              directConsumers: owner == null
+                  ? null
+                  : [
+                      for (final consumer in owner.knownConsumers)
+                        if (owner.exposures.every(
+                          (exposure) => exposure.target != consumer,
+                        ))
+                          consumer,
+                    ],
             ),
           );
         }
@@ -354,6 +406,8 @@ interface class PromptReadService {
   Future<List<String>> _candidates(
     _PromptSurface surface,
     void Function() charge,
+    LifecycleContext context,
+    List<InstallationRecord>? records,
   ) async {
     final children = <fslib.FileSystemEntity>[];
     try {
@@ -385,6 +439,7 @@ interface class PromptReadService {
         );
       }
       if (type == FileSystemEntityType.link) {
+        if (_trustedExposure(child.path, context, records)) continue;
         throw MambaException(
           'Prompt inventory refuses linked source entries: $name.',
           exitCode: 4,
@@ -421,19 +476,76 @@ interface class PromptReadService {
         : normalized;
   }
 
-  /// Read and index authority once per scope. Null means unverified ownership,
-  /// not an empty ledger or a failed native inspection.
-  Set<String>? _managedPaths(LifecycleContext context) {
+  /// Ledger failures never grant link traversal authority.
+  List<InstallationRecord>? _records(LifecycleContext context) {
     try {
-      return {
-        for (final record in _state.records(context))
-          if (record.lifecycle == 'live') ...[
-            _pathKey(record.location),
-            for (final exposure in record.exposures) _pathKey(exposure.path),
-          ],
-      };
+      return _state.records(context);
     } on Exception {
       return null;
     }
+  }
+
+  bool _trustedExposure(
+    String path,
+    LifecycleContext context,
+    List<InstallationRecord>? records,
+  ) {
+    if (records == null) return false;
+    final matches = <(InstallationRecord, ExposureRecord)>[];
+    for (final record in records) {
+      if (record.lifecycle != 'live' ||
+          record.kind != ArtifactKind.skillCanonical ||
+          record.scope != context.scope ||
+          record.nativeDestination != 'canonical' ||
+          record.nativeForm != ArtifactKind.skillCanonical.wireName ||
+          !_fileSystem.path.equals(
+            record.nativeRoot,
+            context.sharedSkillsRoot(),
+          ) ||
+          !_fileSystem.path.equals(
+            record.location,
+            _fileSystem.path.join(record.nativeRoot, record.name),
+          ) ||
+          !_fileSystem.path.equals(
+            _fileSystem.path.dirname(record.location),
+            record.nativeRoot,
+          ) ||
+          _fileSystem.path.basename(record.location) != record.name) {
+        continue;
+      }
+      for (final exposure in record.exposures) {
+        if (_fileSystem.path.equals(exposure.path, path)) {
+          matches.add((record, exposure));
+        }
+      }
+    }
+    if (matches.length != 1) return false;
+    final (record, exposure) = matches.single;
+    final root = switch (exposure.target) {
+      'claude' => context.claudeSkillsRoot(),
+      _ => null,
+    };
+    if (root == null ||
+        !_fileSystem.path.equals(
+          path,
+          _fileSystem.path.join(root, record.name),
+        ) ||
+        exposure.baseline.entries.length != 1) {
+      return false;
+    }
+    final entry = exposure.baseline.entries.single;
+    if (entry.type != 'link' ||
+        entry.target == null ||
+        entry.originalParent == null ||
+        entry.nativeKind != exposure.nativeKind) {
+      return false;
+    }
+    final target = _fileSystem.path.normalize(
+      _fileSystem.path.isAbsolute(entry.target!)
+          ? entry.target!
+          : _fileSystem.path.join(entry.originalParent!, entry.target!),
+    );
+    return _fileSystem.path.equals(target, record.location) &&
+        _state.verifyExposure(exposure);
   }
 }
