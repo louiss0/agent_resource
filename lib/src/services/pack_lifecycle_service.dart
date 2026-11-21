@@ -2058,7 +2058,9 @@ interface class PackLifecycleService {
             name: candidate.name,
             action: action,
             method: _recordMethod(record.kind),
+            methodOrigin: 'installation-record',
             targets: record.validatedProfiles,
+            targetOrigin: 'installation-record',
             previousSnapshot: previousSnapshot,
             snapshot:
                 action == 'unchanged' ||
@@ -2384,7 +2386,14 @@ interface class PackLifecycleService {
     };
     final plan = PackPlan.create(
       operation: '${request.resourceType.name}s.install',
-      context: _contextJson(request, context, configuration),
+      context: {
+        ..._contextJson(request, context, configuration),
+        'scopeOrigin': (request.scopeExplicit ?? (request.scope != null))
+            ? 'explicit-argument'
+            : context.scope == LifecycleScope.user
+            ? 'interactive-selection'
+            : 'built-in-default',
+      },
       source: source,
       resources: [
         for (final record in selected)
@@ -2393,7 +2402,9 @@ interface class PackLifecycleService {
             name: record.name,
             action: 'unchanged',
             method: _recordMethod(record.kind),
+            methodOrigin: 'installation-record',
             targets: record.validatedProfiles,
+            targetOrigin: 'installation-record',
             previousSnapshot: snapshotRefs[record.name],
             snapshot: snapshotRefs[record.name],
             linkOnly: record.kind == ArtifactKind.skillLink,
@@ -2403,7 +2414,7 @@ interface class PackLifecycleService {
     return PackOperationResult(
       operation: '${request.resourceType.name}s.install',
       outcome: 'no-op',
-      context: _contextJson(request, context, configuration),
+      context: plan.context,
       source: source,
       resources: [
         for (final record in selected)

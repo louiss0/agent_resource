@@ -665,6 +665,15 @@ track = { kind = "local" }
         expect(replay.outcome, 'no-op');
         expect(replay.resources.single.disposition.wireName, 'unchanged');
         expect(replay.source['exactLockReplay'], isTrue);
+        expect(
+          replay.plan!.resources.single.targetOrigin,
+          'installation-record',
+        );
+        expect(
+          replay.plan!.resources.single.methodOrigin,
+          'installation-record',
+        );
+        expect(replay.plan!.context['scopeOrigin'], 'explicit-argument');
       },
     );
 
