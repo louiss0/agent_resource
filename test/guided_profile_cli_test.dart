@@ -70,7 +70,10 @@ void main() {
             isA<MambaSuccessResult>(),
             reason: result is MambaFailureResult ? result.message : null,
           );
-          expect(questions.single, contains('profile'));
+          expect(questions.single, contains('claude'));
+          expect(questions.single, contains('codex'));
+          expect(questions.single, contains('pi'));
+          expect(questions.single, contains('antigravity'));
           expect((result as MambaSuccessResult).output, contains('planned'));
         });
       });
