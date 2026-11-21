@@ -29,8 +29,16 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     List<String>? knownConsumers,
     List<String>? validatedProfiles,
     bool allowModified = false,
+    InstallationRecord? expectedRecord,
   }) async {
     var initial = recordById(context, installationId);
+    if (expectedRecord != null &&
+        jsonEncode(initial.toJson()) != jsonEncode(expectedRecord.toJson())) {
+      throw MambaException(
+        'The reviewed installation record changed before replacement.',
+        exitCode: 4,
+      );
+    }
     _requireResource(initial, resource, context, live: true);
     if (allowModified) {
       initial = initial.copyWith(

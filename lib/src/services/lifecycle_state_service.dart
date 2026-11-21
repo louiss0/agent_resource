@@ -2316,8 +2316,16 @@ interface class LifecycleStateService {
     InstallationRoute? installationRoute,
     bool allowModified = false,
     Set<String> allowedPaths = const <String>{},
+    InstallationRecord? expectedRecord,
   }) async {
     var initial = recordById(context, installationId);
+    if (expectedRecord != null &&
+        jsonEncode(initial.toJson()) != jsonEncode(expectedRecord.toJson())) {
+      throw MambaException(
+        'The reviewed installation record changed before replacement.',
+        exitCode: 4,
+      );
+    }
     _requireReplacementResource(initial, resource, context);
     final recordedBaseline = initial.baseline;
     if (allowModified) {
@@ -2384,6 +2392,13 @@ interface class LifecycleStateService {
     final state = context.stateRoot();
     return _serialized(context, initial.location, () async {
       var record = recordById(context, installationId);
+      if (expectedRecord != null &&
+          jsonEncode(record.toJson()) != jsonEncode(expectedRecord.toJson())) {
+        throw MambaException(
+          'The reviewed installation record changed before replacement.',
+          exitCode: 4,
+        );
+      }
       if (record.baseline.digest != recordedBaseline.digest) {
         throw MambaException(
           'The managed baseline changed before replacement.',

@@ -1031,6 +1031,7 @@ interface class SkillLifecycleService implements LifecycleResource {
                 source: staged.path,
                 origin: origin,
                 installationRoute: newRoute,
+                expectedRecord: record,
                 exposures: exposures,
                 validatedProfiles: canonicalTargets
                     ? [for (final target in requestedTargets) target.name]
@@ -1048,6 +1049,7 @@ interface class SkillLifecycleService implements LifecycleResource {
                     : staged.path,
                 origin: origin,
                 installationRoute: newRoute,
+                expectedRecord: record,
               );
         return LifecycleResult(
           command: migrationMethod == null ? 'skill update' : 'skill migrate',
