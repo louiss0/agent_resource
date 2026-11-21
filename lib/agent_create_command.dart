@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:mamba/mamba.dart';
 
@@ -214,7 +215,10 @@ final class AgentCreateCommand extends GuidedCreateCommand {
     }
     final apply = valueOf(GuidedCreateFields.apply);
     if (!apply) {
-      return _renderResult(planned, format);
+      final rendered = _renderResult(planned, format);
+      return interactive
+          ? '$rendered\n${_boundRoleCommand(inputs, options, apply: false)}'
+          : rendered;
     }
     if (interactive && !options.approved) {
       final confirmed = await confirmation(
@@ -238,7 +242,67 @@ final class AgentCreateCommand extends GuidedCreateCommand {
       options.copyWith(approved: true),
       planId: planId!,
     );
-    return _renderResult(published, format);
+    final rendered = _renderResult(published, format);
+    return interactive
+        ? '$rendered\n${_boundRoleCommand(inputs, options, apply: true)}'
+        : rendered;
+  }
+
+  String _boundRoleCommand(
+    BoundRoleAuthoringInputs inputs,
+    LifecycleOptions options, {
+    required bool apply,
+  }) {
+    final words = <String>[
+      'agent',
+      'create',
+      '--role-key',
+      inputs.roleKey,
+      '--config-file',
+      inputs.configFile,
+      '--ownership',
+      inputs.ownership.name,
+      if (inputs.definitionSource != null) ...[
+        '--definition-source',
+        inputs.definitionSource!,
+      ],
+      if (inputs.definitionOutput != null) ...[
+        '--definition-output',
+        inputs.definitionOutput!,
+      ],
+      if (inputs.clientsStopped) '--ack-clients-stopped',
+      '--scope',
+      options.scope.name,
+      if (options.cwd != null) ...['--cwd', options.cwd!],
+      if (options.projectRoot != null) ...[
+        '--project-root',
+        options.projectRoot!,
+      ],
+      if (options.home != null) ...['--home', options.home!],
+      if (options.claudeConfigDir != null) ...[
+        '--claude-config-dir',
+        options.claudeConfigDir!,
+      ],
+      if (options.codexHome != null) ...['--codex-home', options.codexHome!],
+      if (options.piAgentDir != null) ...[
+        '--pi-agent-dir',
+        options.piAgentDir!,
+      ],
+      if (options.geminiDir != null) ...['--gemini-dir', options.geminiDir!],
+      if (options.stateDir != null) ...['--state-dir', options.stateDir!],
+      if (options.dryRun) '--dry-run',
+      if (apply) ...['--apply', '--yes'],
+      '--unattended',
+    ];
+    String quote(String value) {
+      if (RegExp(r'^[A-Za-z0-9_./:-]+$').hasMatch(value)) return value;
+      return Platform.isWindows
+          ? "'${value.replaceAll("'", "''")}'"
+          : "'${value.replaceAll("'", "'\\''")}'";
+    }
+
+    return 'Explicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
+        'agent_resource ${words.map(quote).join(' ')}';
   }
 
   /// The rendered result of the bound-role route.

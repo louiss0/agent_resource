@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform, Process;
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/authoring/editor_process.dart';
@@ -287,6 +288,60 @@ void main() {
         expect(config.readAsStringSync(), contains('agents.reviewer'));
       },
     );
+
+    test('prints a replayable guided bound-role command', () async {
+      final definition = _definition(fixture);
+      final config = _config(fixture);
+      final interactive = createExecutor(
+        fileSystem: fixture.fs,
+        guided: GuidedAuthoringService(
+          fileSystem: fixture.fs,
+          terminal: () => true,
+        ),
+      ).fake();
+      final result = await interactive.execute([
+        'agent',
+        'create',
+        '--role-key',
+        'reviewer',
+        '--config-file',
+        config.path,
+        '--ownership',
+        'both',
+        '--definition-source',
+        definition.path,
+        '--ack-clients-stopped',
+        ..._context(fixture),
+      ]);
+      expect(
+        result,
+        isA<MambaSuccessResult>(),
+        reason: result is MambaFailureResult ? result.message : null,
+      );
+      final output = (result as MambaSuccessResult).output!;
+      expect(output, contains('Explicit command ('));
+      final command = output.split('\n').last.split('): ').last;
+      final shell = await Process.run(
+        Platform.isWindows ? 'powershell.exe' : 'sh',
+        Platform.isWindows
+            ? [
+                '-NoProfile',
+                '-Command',
+                'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+              ]
+            : ['-c', 'agent_resource() { printf "%s\\n" "\$@"; }; $command'],
+      );
+      expect(shell.exitCode, 0, reason: '${shell.stderr}');
+      final args = Platform.isWindows
+          ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+          : (shell.stdout as String).trimRight().split('\n');
+      final replay = await executor.execute(args);
+      expect(
+        replay,
+        isA<MambaSuccessResult>(),
+        reason: replay is MambaFailureResult ? replay.message : null,
+      );
+    });
 
     test('shows the bound-role plan before requesting approval', () async {
       final definition = _definition(fixture);
