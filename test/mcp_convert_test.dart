@@ -290,6 +290,75 @@ void main() {
           };
         });
 
+        test('refuses Codex native references for unsupported targets without writes', () async {
+          final source = location(McpHarness.codex, McpScope.project);
+          final target = location(McpHarness.antigravity, McpScope.project);
+          seedSource(source, {
+            'url': 'https://example.com/mcp',
+            'env_http_headers': {'Authorization': 'TOKEN'},
+          });
+          final result = await exec(
+            convertArgs(
+              McpHarness.codex,
+              McpHarness.antigravity,
+              extra: const ['--apply', '--format', 'json'],
+            ),
+          );
+          expect(result, isA<MambaFailureResult>());
+          expect(fs.file(target.path).existsSync(), isFalse);
+        });
+
+        test(
+          'converts Codex native HTTP header names to Claude references',
+          () async {
+            final source = location(McpHarness.codex, McpScope.project);
+            final target = location(McpHarness.claude, McpScope.project);
+            seedSource(source, {
+              'url': 'https://example.com/mcp',
+              'env_http_headers': {'Authorization': 'TOKEN'},
+            });
+            success(
+              await exec(
+                convertArgs(
+                  McpHarness.codex,
+                  McpHarness.claude,
+                  extra: const ['--apply', '--format', 'json'],
+                ),
+              ),
+            );
+            expect(entryAt(target, sourceName), {
+              'type': 'http',
+              'url': 'https://example.com/mcp',
+              'headers': {'Authorization': ref('TOKEN')},
+            });
+          },
+        );
+
+        test(
+          'converts Codex native environment names to Claude references',
+          () async {
+            final source = location(McpHarness.codex, McpScope.project);
+            final target = location(McpHarness.claude, McpScope.project);
+            seedSource(source, {
+              'command': 'node',
+              'env_vars': ['TOKEN'],
+            });
+            success(
+              await exec(
+                convertArgs(
+                  McpHarness.codex,
+                  McpHarness.claude,
+                  extra: const ['--apply', '--format', 'json'],
+                ),
+              ),
+            );
+            expect(entryAt(target, sourceName), {
+              'command': 'node',
+              'env': {'TOKEN': ref('TOKEN')},
+            });
+          },
+        );
+
         test(
           'converts HTTP references to Codex native environment headers',
           () async {

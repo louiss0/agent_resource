@@ -243,6 +243,11 @@ McpCanonicalRegistration mcpImportNative(
       kind = McpCanonicalClaimKind.type;
     } else if (key == 'args') {
       kind = McpCanonicalClaimKind.arguments;
+    } else if (source.mcpHarness == McpHarness.codex &&
+        (key == 'env_vars' || key == 'env_http_headers')) {
+      canonicalPath = key == 'env_vars' ? 'env' : 'headers';
+      kind = McpCanonicalClaimKind.referenceMap;
+      detail = key;
     } else if (key == 'env' || key == 'headers' || key == 'http_headers') {
       canonicalPath = key == 'env' ? 'env' : 'headers';
       kind = McpCanonicalClaimKind.referenceMap;
@@ -555,9 +560,37 @@ void _exportReferenceMap({
   required void Function(String, String) policyOmit,
 }) {
   final key = claim.sourcePath;
+  if (claim.detail == 'env_vars' && value is List) {
+    final identifier = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
+    if (value.any((name) => name is! String || !identifier.hasMatch(name))) {
+      refuse(key, 'unsupported-native-reference');
+      return;
+    }
+    value = <String, String>{
+      for (final name in value.cast<String>())
+        name:
+            r'$'
+            '{$name}',
+    };
+  }
   if (value is! Map) {
     refuse(key, 'wrong-shape');
     return;
+  }
+  if (claim.detail == 'env_http_headers') {
+    final identifier = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
+    if (value.values.any(
+      (name) => name is! String || !identifier.hasMatch(name),
+    )) {
+      refuse(key, 'unsupported-native-reference');
+      return;
+    }
+    value = <Object?, String>{
+      for (final entry in value.entries)
+        entry.key:
+            r'$'
+            '{${entry.value}}',
+    };
   }
   final isEnv = claim.canonicalPath == 'env';
   final codex = target.mcpHarness == McpHarness.codex;
