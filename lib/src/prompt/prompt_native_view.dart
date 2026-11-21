@@ -1,3 +1,4 @@
+import '../harness/harness_catalog.dart';
 import 'prompt_contracts.dart';
 
 /// The native view of one source in one consuming harness.
@@ -54,7 +55,11 @@ final class PromptNativeView {
     PromptConsumer consumer,
   ) =>
       form == PromptForm.skill &&
-      consumer != PromptConsumer.pi &&
+      HarnessCatalog.instance
+              .byId(HarnessId.fromWire(consumer.name))
+              .prompt
+              ?.supportsSkillBackedInstallation ==
+          true &&
       view.classification == PromptClassification.prompt &&
       view.valid;
 

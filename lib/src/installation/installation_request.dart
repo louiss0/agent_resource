@@ -38,6 +38,54 @@ final class InstallationWorkflowRequest {
   final String? ref;
   final String? subpath;
   final bool scopeExplicit;
+
+  InstallationWorkflowRequest withOptions(LifecycleOptions value) =>
+      InstallationWorkflowRequest(
+        source: source,
+        options: value,
+        sourceKind: sourceKind,
+        resourceIds: resourceIds,
+        allResources: allResources,
+        targets: targets,
+        method: method,
+        profile: profile,
+        ref: ref,
+        subpath: subpath,
+        scopeExplicit: scopeExplicit,
+      );
+}
+
+/// Offers user scope only when removing the invalid project root resolves the
+/// context and the operator has not explicitly selected a scope.
+Future<InstallationWorkflowRequest> resolveInstallationScope(
+  InstallationWorkflowRequest request,
+  InstallationInteraction interaction,
+  fslib.FileSystem fileSystem, {
+  required bool interactive,
+}) async {
+  if (!interactive ||
+      request.scopeExplicit ||
+      request.options.projectRoot == null) {
+    return request;
+  }
+  try {
+    LifecycleContext.resolve(request.options, fileSystem: fileSystem);
+    return request;
+  } on MambaException catch (error, stack) {
+    final options = request.options.copyWith(
+      scope: LifecycleScope.user,
+      clearProjectRoot: true,
+    );
+    try {
+      LifecycleContext.resolve(options, fileSystem: fileSystem);
+    } on MambaException {
+      Error.throwWithStackTrace(error, stack);
+    }
+    if (!await interaction.offerUserScope()) {
+      throw MambaException('Scope selection cancelled.', exitCode: 7);
+    }
+    return request.withOptions(options);
+  }
 }
 
 sealed class InstallationWorkflowResult {
@@ -45,10 +93,91 @@ sealed class InstallationWorkflowResult {
 }
 
 final class InstallationCompletedResult extends InstallationWorkflowResult {
-  const InstallationCompletedResult(this.plan, this.outcome);
+  const InstallationCompletedResult(
+    this.plan,
+    this.outcome, {
+    this.explicitCommand,
+  });
 
   final InstallationPlan plan;
   final InstallationOutcome outcome;
+  final String? explicitCommand;
+}
+
+/// Render the selected installation intent without disclosing sensitive locators.
+String installationExplicitCommand({
+  required InstallationWorkflowRequest request,
+  required InstallationPlan plan,
+  required InstallationCandidateSet candidates,
+  required String source,
+  required LifecycleContext context,
+  required List<InstallationTarget> targets,
+  required CatalogResourceType resourceType,
+  InstallationMethod? method,
+}) {
+  if (sanitizeLocator(source) != source) {
+    return 'Explicit command omitted: the source locator contains sensitive credentials or parameters.';
+  }
+  final options = request.options;
+  final collection = candidates.candidates.any(
+    (candidate) => candidate.catalogEntry,
+  );
+  final words = <String>[
+    resourceType.name,
+    'install',
+    source,
+    '--source-kind',
+    collection ? 'collection' : 'resource',
+    if (collection)
+      for (final candidate in candidates.candidates) ...[
+        '--resource',
+        candidate.id!,
+      ],
+    for (final target in targets) ...['--target', target.name],
+    if (method != null) ...['--method', method.wireName],
+    if (!collection &&
+        resourceType == CatalogResourceType.agent &&
+        candidates.candidates.single.profile != null) ...[
+      '--profile',
+      candidates.candidates.single.profile!.wireName,
+    ],
+    '--scope',
+    context.scope.name,
+    '--cwd',
+    context.cwd.endsWith(context.fs.path.separator)
+        ? context.cwd
+        : '${context.cwd}${context.fs.path.separator}',
+    if (options.projectRoot != null) ...[
+      '--project-root',
+      options.projectRoot!,
+    ],
+    if (options.home != null) ...['--home', options.home!],
+    if (options.claudeConfigDir != null) ...[
+      '--claude-config-dir',
+      options.claudeConfigDir!,
+    ],
+    if (options.codexHome != null) ...['--codex-home', options.codexHome!],
+    if (resourceType == CatalogResourceType.agent &&
+        options.piAgentDir != null) ...[
+      '--pi-agent-dir',
+      options.piAgentDir!,
+    ],
+    if (options.geminiDir != null) ...['--gemini-dir', options.geminiDir!],
+    if (options.stateDir != null) ...['--state-dir', options.stateDir!],
+    for (final root in options.readRoots) ...['--read-root', root],
+    if (request.ref != null) ...['--ref', request.ref!],
+    if (request.subpath != null) ...['--subpath', request.subpath!],
+    if (options.dryRun) '--dry-run' else '--yes',
+  ];
+  String quote(String value) {
+    if (RegExp(r'^[A-Za-z0-9_./:-]+$').hasMatch(value)) return value;
+    return Platform.isWindows
+        ? "'${value.replaceAll("'", "''")}'"
+        : "'${value.replaceAll("'", "'\\''")}'";
+  }
+
+  return 'Explicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
+      'agent_resource ${words.map(quote).join(' ')}';
 }
 
 final class InstallationCancelledResult extends InstallationWorkflowResult {
@@ -77,11 +206,13 @@ final class InstallationCandidateSet {
   const InstallationCandidateSet(
     this.candidates,
     this.provenance, {
+    required this.sourceKind,
     this.selectionWarning,
   });
 
   final List<InstallationCandidate> candidates;
   final AcquisitionProvenance provenance;
+  final AcquisitionSourceKind sourceKind;
   final String? selectionWarning;
 }
 
@@ -217,6 +348,7 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
           return InstallationCandidateSet(
             const [],
             workspace.provenance,
+            sourceKind: kind,
             selectionWarning: 'No Skill groups were selected; nothing was installed and no management state was written.',
           );
         }
@@ -262,6 +394,7 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
       catalog == null
           ? workspace.provenance
           : workspace.provenance.withConfigDigest(catalog.configDigest),
+      sourceKind: kind,
     );
   }
 
@@ -311,15 +444,19 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
       resourceType == CatalogResourceType.skill && selectedFile != null
       ? fileSystem.path.dirname(selectedFile)
       : selectedFile ?? workspace.selectedRoot;
-  return InstallationCandidateSet([
-    InstallationCandidate(
-      id: null,
-      path: checkedPath(selectedPath),
-      label: null,
-      profile: profile,
-      catalogEntry: false,
-    ),
-  ], workspace.provenance);
+  return InstallationCandidateSet(
+    [
+      InstallationCandidate(
+        id: null,
+        path: checkedPath(selectedPath),
+        label: null,
+        profile: profile,
+        catalogEntry: false,
+      ),
+    ],
+    workspace.provenance,
+    sourceKind: kind,
+  );
 }
 
 AcquisitionSourceKind _sourceKind(

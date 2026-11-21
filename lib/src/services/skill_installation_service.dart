@@ -11,6 +11,7 @@ import '../installation/installation_batch.dart';
 import '../installation/installation_interaction.dart';
 import '../installation/installation_plan.dart';
 import '../installation/installation_request.dart';
+import '../installation/installation_route.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../harness/harness_catalog.dart';
@@ -57,7 +58,7 @@ interface class SkillInstallationService {
       if (!request.scopeExplicit) {
         throw MambaException(
           'Unattended Skill installation requires explicit --scope; the '
-          'interactive user-scope default is not assumed.',
+          'interactive project-scope default is not assumed.',
         );
       }
       if (request.method == null) {
@@ -77,6 +78,15 @@ interface class SkillInstallationService {
         );
       }
     }
+    for (final target in request.targets) {
+      HarnessCatalog.instance.requireSkillInstallation(HarnessId.of(target));
+    }
+    request = await resolveInstallationScope(
+      request,
+      _interaction,
+      _fileSystem,
+      interactive: interactive,
+    );
     final source = await _source(request, interactive);
     if (source == null) {
       return const InstallationCancelledResult('skill install');
@@ -142,6 +152,9 @@ interface class SkillInstallationService {
       if (targets.isEmpty) {
         throw MambaException('No compatible consuming harness was selected.');
       }
+      for (final target in targets) {
+        HarnessCatalog.instance.requireSkillInstallation(HarnessId.of(target));
+      }
       final units = <InstallationUnitPlan>[];
       final stagedSkills = <StagedSkill>[];
       final migrationDiagnostics = <Map<String, Object?>>[];
@@ -184,8 +197,10 @@ interface class SkillInstallationService {
             units.add(
               await _planUnit(
                 candidate,
-                staged.path,
+                staged,
                 candidates.provenance,
+                candidates.sourceKind,
+                workspace.selectedRoot,
                 context,
                 method,
                 targets,
@@ -219,10 +234,26 @@ interface class SkillInstallationService {
               },
           ],
         );
+        final explicitCommand = interactive
+            ? installationExplicitCommand(
+                request: request,
+                plan: plan,
+                candidates: candidates,
+                source: source,
+                context: context,
+                targets: targets,
+                resourceType: CatalogResourceType.skill,
+                method: method,
+              )
+            : null;
         if (request.options.dryRun) {
-          return InstallationCompletedResult(plan, InstallationOutcome.planned);
+          return InstallationCompletedResult(
+            plan,
+            InstallationOutcome.planned,
+            explicitCommand: explicitCommand,
+          );
         }
-        return await _batch.execute(
+        final result = await _batch.execute(
           plan: plan,
           context: context,
           state: state,
@@ -231,6 +262,14 @@ interface class SkillInstallationService {
           interactive: interactive,
           approved: request.options.approved,
         );
+        if (result is InstallationCompletedResult) {
+          return InstallationCompletedResult(
+            result.plan,
+            result.outcome,
+            explicitCommand: explicitCommand,
+          );
+        }
+        return result;
       } finally {
         for (final staged in stagedSkills) {
           await staged.close();
@@ -274,10 +313,9 @@ interface class SkillInstallationService {
         InstallationTarget.antigravity,
     };
     while (true) {
-      final answer = await _interaction.selectTargets(const [
-        InstallationTarget.claude,
-        InstallationTarget.codex,
-        InstallationTarget.antigravity,
+      final answer = await _interaction.selectTargets([
+        for (final id in HarnessCatalog.instance.skillInstallationTargets)
+          InstallationTarget.values.byName(id.wireName),
       ], detected);
       if (answer.status == InteractionAnswerStatus.cancelled) return null;
       if (answer.status == InteractionAnswerStatus.value) return answer.value;
@@ -286,12 +324,47 @@ interface class SkillInstallationService {
 
   Future<InstallationUnitPlan> _planUnit(
     InstallationCandidate candidate,
-    String stagedPath,
+    StagedSkill staged,
     AcquisitionProvenance provenance,
+    AcquisitionSourceKind sourceKind,
+    String selectedRoot,
     LifecycleContext context,
     InstallationMethod method,
     List<InstallationTarget> targets,
   ) async {
+    final stagedPath = staged.path;
+    final relative = provenance.directFile
+        ? '.'
+        : _fileSystem.path
+              .relative(candidate.path, from: selectedRoot)
+              .split(_fileSystem.path.separator)
+              .join('/');
+    final route = InstallationRoute(
+      source: provenance,
+      sourceKind: sourceKind,
+      sourceRelativePath: relative,
+      entryId: candidate.id,
+      scope: context.scope,
+      targets: ([
+        for (final target in targets)
+          InstallationRouteTarget.values.byName(target.name),
+      ]..sort((a, b) => a.name.compareTo(b.name))),
+      method: method,
+      derivedArtifacts: [
+        for (final path in [...staged.movedMarkdown, ...staged.movedImages])
+          ManagedDerivedArtifact(
+            operation: DerivedArtifactOperation.moveRootFile,
+            sourcePath: path.split('/').last,
+            outputPath: path,
+          ),
+        if (staged.rewritten)
+          ManagedDerivedArtifact(
+            operation: DerivedArtifactOperation.rewriteMarker,
+            sourcePath: 'SKILL.md',
+            outputPath: 'SKILL.md',
+          ),
+      ],
+    );
     final resource = _lifecycle.installationResource(
       targets: [for (final target in targets) target.name],
       kind: switch (method) {
@@ -320,21 +393,23 @@ interface class SkillInstallationService {
           path: canonicalPath,
           kind: InstallationEntryKind.content,
           action: InstallationEntryAction.createContent,
-          target: targets.contains(InstallationTarget.codex)
-              ? 'codex'
-              : context.scope == LifecycleScope.project &&
-                    targets.contains(InstallationTarget.antigravity)
-              ? 'antigravity'
-              : null,
+          target: targets
+              .where(
+                (target) => _fileSystem.path.equals(
+                  _harnessRoot(context, target),
+                  canonicalRoot,
+                ),
+              )
+              .firstOrNull
+              ?.name,
           nativeRoot: canonicalRoot,
           nativeDestination: 'canonical',
           artifactKind: OwnedArtifactKind.skillCanonical,
         ),
       );
-      for (final target in const [
-        InstallationTarget.claude,
-        InstallationTarget.codex,
-        InstallationTarget.antigravity,
+      for (final target in [
+        for (final id in HarnessCatalog.instance.skillInstallationTargets)
+          InstallationTarget.values.byName(id.wireName),
       ]) {
         if (!targets.contains(target)) continue;
         final root = _lifecycle.canonicalExposureRoot(context, target.name);
@@ -380,12 +455,13 @@ interface class SkillInstallationService {
                 ? _nativeDirectoryLinkKind
                 : null,
             nativeRoot: root,
-            nativeDestination: target == InstallationTarget.claude
-                ? 'claude'
-                : target == InstallationTarget.antigravity &&
-                      context.scope == LifecycleScope.user
-                ? 'antigravity'
-                : 'shared',
+            nativeDestination: context.scope == LifecycleScope.user
+                ? HarnessCatalog.instance
+                      .requireSkillInstallation(HarnessId.of(target))
+                      .userInstallationDestination!
+                : HarnessCatalog.instance
+                      .requireSkillInstallation(HarnessId.of(target))
+                      .projectInstallationDestination!,
             artifactKind: method == InstallationMethod.copy
                 ? OwnedArtifactKind.skillCopy
                 : OwnedArtifactKind.skillLink,
@@ -419,6 +495,7 @@ interface class SkillInstallationService {
           : stagedPath,
       sourceDigest: digest,
       origin: origin,
+      installationRoute: route,
     );
   }
 
@@ -600,14 +677,16 @@ interface class SkillInstallationService {
   }
 
   String _harnessRoot(LifecycleContext context, InstallationTarget target) {
-    if (target == InstallationTarget.codex) {
-      return context.sharedSkillsRoot();
-    }
-    final spec = HarnessCatalog.instance.requireFacet(
+    final spec = HarnessCatalog.instance.requireSkillInstallation(
       HarnessId.of(target),
-      HarnessFacet.skill,
-    ) as SkillHarnessSpec;
-    return spec.root(context, userScope: context.scope == LifecycleScope.user);
+    );
+    return switch (spec.installationRoot!) {
+      SkillInstallationRoot.shared => context.sharedSkillsRoot(),
+      SkillInstallationRoot.harness => spec.root(
+        context,
+        userScope: context.scope == LifecycleScope.user,
+      ),
+    };
   }
 
   bool _isDirectory(String path) =>

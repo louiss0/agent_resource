@@ -19,6 +19,8 @@ void main() {
           '--apply',
           '--yes',
           '--unattended',
+          '--scope',
+          'project',
           '--cwd',
           '/sandbox/project/',
           '--project-root',

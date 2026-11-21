@@ -238,6 +238,7 @@ void main() {
     );
     final plan = await service.plan(inputs, options);
     expect(plan.ready, isTrue);
+    expect(plan.data['conversionTargetForm'], 'skillBacked');
     expect(plan.output, '/work/project/source/demo/SKILL.md');
     expect(plan.candidate, contains('disable-model-invocation: true'));
   });
@@ -615,6 +616,7 @@ void main() {
     final plan = await service.plan(inputs, options);
     expect(plan.ready, isTrue);
     expect(plan.data['sourceRemovalRequired'], isTrue);
+    expect(plan.data['conversionTargetForm'], 'template');
     expect(plan.output, '/work/project/.pi/prompts/demo.md');
   });
 

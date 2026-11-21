@@ -102,6 +102,8 @@ void main() {
       final args = <String>[
         'agent',
         'create',
+        '--scope',
+        'project',
         '--profile',
         'antigravity',
         '--name',

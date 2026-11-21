@@ -75,7 +75,7 @@ dart run bin/agent_resource.dart skill list [--scope user|project|all]
 dart run bin/agent_resource.dart agent list [--scope project|user|all]
 ```
 
-Skill scope defaults to user; Agent scope defaults to project. Use `--cwd`,
+Skill and Agent inventory scope defaults to project. Use `--cwd`,
 `--project-root`, `--home`, native-home overrides, and `--state-dir` to select
 isolated context. Relative operation paths resolve against `--cwd`. Both
 inventories distinguish unmanaged candidates, managed installations,
@@ -97,8 +97,8 @@ do not prove runtime activation, precedence, or harness compatibility.
 
 Text installation is interactive by default on a usable terminal. It prompts
 for a missing source and required selections, displays the complete plan, and
-asks for approval before writes. Skill scope and method default to `user` and
-`canonical`; Agent scope defaults to `project`. These defaults are not assumed
+asks for approval before writes. Skill and Agent scope default to `project`; the Skill method defaults to
+`canonical`. These defaults are not assumed
 for unattended or JSON installation.
 
 Interactive components use `interact2`; Mamba remains the command framework.
@@ -191,6 +191,13 @@ direct file's native schema, never converts it, and the validated source
 basename is preserved at the application-owned native destination. Agent
 installation does not create links, register Codex roles, or edit parent
 configuration.
+
+New managed Skill records retain a versioned installation route: source
+provenance and selected source-relative entry, scope, targets, method, and
+managed root-file migrations or marker rewrites. Pack records also identify
+the pack, with its track evidence retained in the record's origin. Older or
+adopted records may not have a route; the application does not infer missing
+provenance. A recorded route is evidence, not approval to replay an update.
 
 A curated collection has an `agent-resources.toml` at its selected root.
 Skill collections can alternatively use the discovery conventions above. Its version-1
@@ -577,9 +584,9 @@ verification limits: [protected instruction drafts](docs/specs/protected-instruc
 ### Inspect and validate one Skill directory
 
 ```text
-dart run bin/agent_resource.dart skill inspect --skill <directory> [--target claude|codex|pi]
+dart run bin/agent_resource.dart skill inspect --skill <directory> [--target claude|codex|pi|antigravity]
 dart run bin/agent_resource.dart skill inspect --skill <directory> --content
-dart run bin/agent_resource.dart skill validate --skill <directory> [--target claude|codex|pi]
+dart run bin/agent_resource.dart skill validate --skill <directory> [--target claude|codex|pi|antigravity]
 ```
 
 Skill inspection is **body-free by default**. It reports the native form,
@@ -606,8 +613,17 @@ content inspection may use a selected directory link, but never reads a linked
 endings and whitespace, up to 1,048,576 bytes. The body-free native path refuses
 linked source ancestors rather than inspecting their targets.
 
-The bounded core Skill validation profile remains available to the library and
-existing installation machinery; it is not the new per-Harness CLI report.
+The validation report also includes `installationAdmission`, separately from
+native validity. It checks source-level Skill tree and strict core admission
+against a disposable staged copy and reports `copy`, `canonical`, and
+`source-link` eligibility. Loose root Markdown or images may be migrated for
+copy or canonical installation; source-link refuses migration because its
+target is user-owned. This source-only result does not check a selected
+installation target, source durability, ownership, destination conflicts, or
+approval. Run `skill install --dry-run` with the intended choices for those
+checks. The validation command's exit status still reflects native validity,
+not installation admission. The per-view `installationSupported` field concerns
+Prompt installation support, not ordinary Skill admission.
 See [the inspection surface specification](docs/specs/prompt-inspection-surface.md)
 for scope, failure, Pi recognition, and verification limits.
 

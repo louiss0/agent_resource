@@ -249,6 +249,30 @@ agent_resource context inject  [<name>] [--name <name>] [--harness claude|codex|
   - On `context inspect`, `data` always includes `"content": "<utf8-markdown>"` along with `"name"`, `"path"`, `"byteLength"`, `"isEmpty"`, and `"sha256"`.
   - On `context create`, `context edit`, and `context inject`, `data` includes `"planId"`, template metadata, target metadata (`targets` array on `inject` with deduplicated `path`, `harnesses`, `variant`, `action`, `existingExists`, `existingByteLength`, `proposedByteLength`, `receiptId`, `recoveryPath`), and `"content"` when `--show-instructions` is passed.
 
+## Context injection publication and recovery boundary
+
+Injection re-observes the template and all destinations after approval, then
+checks each destination again immediately before its write. Parent paths and
+final entries must not be links or Windows reparse points. Candidates are
+staged beside each destination, so the state directory need not be on the
+same volume. An ordinary failure after a target write triggers reverse-order
+compensation only while the target still has the bytes just published. The
+failure message lists compensated and uncompensated targets, recovery-copy
+paths, and staging locations. Inspect retained files and obtain a fresh plan
+before retrying; a recovery copy is evidence, not automatic authority to
+replace a changed destination. Receipts for safely compensated targets are
+removed only when their contents still match the receipt written here.
+
+This is a bounded concurrent-writer contract, not filesystem isolation. The
+checks and subsequent rename or delete are separate operations: another writer
+with access to these directories can race between them. Coordinate writers and
+keep destination and state directories trusted for the duration of publication
+and compensation. Process termination or power loss may interrupt compensation;
+this workflow does not provide an atomic multi-target transaction or a durable
+recovery journal. Inspect destination files, recovery copies and staging
+locations after interruption. Filesystem rename and flush durability are also
+subject to the underlying platform and filesystem.
+
 ## Testing Decisions
 
 A good test exercises external CLI behavior and observable filesystem state, never private helpers or internal data structures: it invokes `createExecutor(...).fake().execute([...])` against an in-memory `MemoryFileSystem(style: FileSystemStyle.posix)`, and asserts the returned `MambaSuccessResult` / `MambaFailureResult` (`exitCode`, JSON or text `output`) alongside the resulting files in `<userStateRoot>/context-templates/`, `<userStateRoot>/instruction-drafts/`, `<userStateRoot>/authoring-recovery/`, and the target project, subfolder, or user-global **Context files**.

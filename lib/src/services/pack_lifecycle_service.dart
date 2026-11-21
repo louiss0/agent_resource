@@ -12,6 +12,7 @@ import '../../components/resource_selector.dart';
 import '../agent_inspection.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/installation_plan.dart';
+import '../installation/installation_route.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
 import '../installation/skill_root_markdown_migration.dart';
@@ -2279,6 +2280,7 @@ interface class PackLifecycleService {
           context: context,
           installationId: record.installationId,
           expectedOrigin: record.origin,
+          installationRoute: _routeForRecord(context, candidate, record),
           origin: {
             ...candidate.origin,
             'targetObservation': {
@@ -2296,6 +2298,7 @@ interface class PackLifecycleService {
           context: context,
           installationId: record.installationId,
           expectedOrigin: record.origin,
+          installationRoute: _routeForRecord(context, candidate, record),
           origin: candidate.origin,
         );
       }
@@ -2429,6 +2432,7 @@ interface class PackLifecycleService {
             context: context,
             installationId: record.installationId,
             expectedOrigin: record.origin,
+            installationRoute: _routeForRecord(context, candidate, record),
             origin: candidate.origin,
           );
           results.add(_result(request, record.name, 'updated'));
@@ -2952,6 +2956,40 @@ interface class PackLifecycleService {
     }
   }
 
+  InstallationRoute? _routeForRecord(
+    LifecycleContext context,
+    _PackCandidate candidate,
+    InstallationRecord record,
+  ) {
+    if (candidate.type != PackResourceType.skill &&
+        candidate.type != PackResourceType.prompt) {
+      return null;
+    }
+    if (candidate.provenance == null) {
+      return candidate.historicalInstallation?.installationRoute;
+    }
+    final method = switch (record.kind) {
+      ArtifactKind.skillCanonical => SkillInstallMethod.canonical,
+      ArtifactKind.skillLink => SkillInstallMethod.sourceLink,
+      ArtifactKind.skillCopy => SkillInstallMethod.copy,
+      _ => throw StateError('Not a Skill record.'),
+    };
+    final targets =
+        record.installationRoute?.targets
+            .map((target) => target.name)
+            .toList() ??
+        (record.validatedProfiles.isNotEmpty
+            ? record.validatedProfiles
+            : [record.nativeDestination]);
+    return _installationUnit(
+      context,
+      candidate,
+      method,
+      targets,
+      PackResourceType.skill,
+    ).installationRoute;
+  }
+
   Future<void> _replaceRecord(
     PackLifecycleRequest request,
     LifecycleContext context,
@@ -2966,6 +3004,7 @@ interface class PackLifecycleService {
         installationId: record.installationId,
         source: candidate.path,
         origin: candidate.origin,
+        installationRoute: _routeForRecord(context, candidate, record),
         exposures: candidate.historicalInstallation?.exposures,
         knownConsumers: candidate.historicalInstallation?.knownConsumers,
         validatedProfiles: candidate.historicalInstallation?.validatedProfiles,
@@ -2979,6 +3018,7 @@ interface class PackLifecycleService {
         installationId: record.installationId,
         source: candidate.path,
         origin: candidate.origin,
+        installationRoute: _routeForRecord(context, candidate, record),
         allowModified:
             _lifecycleState.verify(record) != ModificationStatus.unchanged,
         allowedPaths: {
@@ -3049,18 +3089,21 @@ interface class PackLifecycleService {
           path: canonical,
           kind: InstallationEntryKind.content,
           action: InstallationEntryAction.createContent,
-          target: targets.contains('codex')
-              ? 'codex'
-              : context.scope == LifecycleScope.project &&
-                    targets.contains('antigravity')
-              ? 'antigravity'
-              : null,
+          target: targets
+              .where(
+                (target) =>
+                    target != 'shared' &&
+                    _fileSystem.path.equals(_skillRoot(context, target), root),
+              )
+              .firstOrNull,
           nativeRoot: root,
           nativeDestination: 'canonical',
           artifactKind: OwnedArtifactKind.skillCanonical,
         ),
       );
-      for (final target in const ['claude', 'codex', 'antigravity']) {
+      for (final target in HarnessCatalog.instance.skillInstallationTargets.map(
+        (id) => id.wireName,
+      )) {
         if (!targets.contains(target)) continue;
         final exposureRoot = _skills.canonicalExposureRoot(context, target);
         entries.add(
@@ -3105,12 +3148,15 @@ interface class PackLifecycleService {
                 ? _nativeDirectoryLinkKind
                 : null,
             nativeRoot: root,
-            nativeDestination: target == 'claude'
-                ? 'claude'
-                : target == 'antigravity' &&
-                      context.scope == LifecycleScope.user
-                ? 'antigravity'
-                : 'shared',
+            nativeDestination: target == 'shared'
+                ? 'shared'
+                : context.scope == LifecycleScope.user
+                ? HarnessCatalog.instance
+                      .requireSkillInstallation(HarnessId.fromWire(target))
+                      .userInstallationDestination!
+                : HarnessCatalog.instance
+                      .requireSkillInstallation(HarnessId.fromWire(target))
+                      .projectInstallationDestination!,
             artifactKind: selectedMethod == SkillInstallMethod.copy
                 ? OwnedArtifactKind.skillCopy
                 : OwnedArtifactKind.skillLink,
@@ -3136,6 +3182,25 @@ interface class PackLifecycleService {
           : candidate.path,
       sourceDigest: candidate.digest,
       origin: candidate.origin,
+      installationRoute: candidate.provenance == null
+          ? null
+          : InstallationRoute(
+              source: candidate.provenance!,
+              sourceKind: AcquisitionSourceKind.collection,
+              sourceRelativePath: candidate.relativePath!,
+              packKey: candidate.origin['packKey'] as String,
+              scope: context.scope,
+              targets: [
+                for (final target in targets)
+                  InstallationRouteTarget.values.byName(target),
+              ],
+              method: switch (selectedMethod) {
+                SkillInstallMethod.canonical => InstallationMethod.canonical,
+                SkillInstallMethod.copy => InstallationMethod.copy,
+                SkillInstallMethod.sourceLink => InstallationMethod.sourceLink,
+              },
+              derivedArtifacts: candidate.derivedArtifacts,
+            ),
     );
   }
 
@@ -3701,6 +3766,25 @@ interface class PackLifecycleService {
           profile: profile,
           digest: digest,
           migrated: staged?.migrated ?? false,
+          provenance: workspace.provenance,
+          relativePath: relative,
+          derivedArtifacts: [
+            for (final output in [
+              ...?staged?.movedMarkdown,
+              ...?staged?.movedImages,
+            ])
+              ManagedDerivedArtifact(
+                operation: DerivedArtifactOperation.moveRootFile,
+                sourcePath: output.split('/').last,
+                outputPath: output,
+              ),
+            if (staged?.rewritten == true)
+              ManagedDerivedArtifact(
+                operation: DerivedArtifactOperation.rewriteMarker,
+                sourcePath: 'SKILL.md',
+                outputPath: 'SKILL.md',
+              ),
+          ],
           extraFolders: extraFolders,
           origin: origin,
           discoveryRoot: discoveryRoot,
@@ -4058,12 +4142,11 @@ interface class PackLifecycleService {
     final targets = _requestedTargets(request, pack, configuration);
     if (targets.isEmpty ||
         targets.any(
-          (target) => !const {
-            'claude',
-            'codex',
-            'shared',
-            'antigravity',
-          }.contains(target),
+          (target) =>
+              target != 'shared' &&
+              !HarnessCatalog.instance.skillInstallationTargets.any(
+                (id) => id.wireName == target,
+              ),
         )) {
       throw MambaException(
         'Skill installation requires an explicit claude, codex, or '
@@ -4581,17 +4664,17 @@ interface class PackLifecycleService {
   }
 
   String _skillRoot(LifecycleContext context, String target) {
-    final id = switch (target) {
-      'claude' => HarnessId.claude,
-      'antigravity' => HarnessId.antigravity,
-      _ => null,
+    if (target == 'shared') return context.sharedSkillsRoot();
+    final spec = HarnessCatalog.instance.requireSkillInstallation(
+      HarnessId.fromWire(target),
+    );
+    return switch (spec.installationRoot!) {
+      SkillInstallationRoot.shared => context.sharedSkillsRoot(),
+      SkillInstallationRoot.harness => spec.root(
+        context,
+        userScope: context.scope == LifecycleScope.user,
+      ),
     };
-    if (id == null) return context.sharedSkillsRoot();
-    final spec = HarnessCatalog.instance.requireFacet(
-      id,
-      HarnessFacet.skill,
-    ) as SkillHarnessSpec;
-    return spec.root(context, userScope: context.scope == LifecycleScope.user);
   }
 
   Future<List<String>> _targets(
@@ -4632,12 +4715,11 @@ interface class PackLifecycleService {
     }
     if (targets.isEmpty ||
         targets.any(
-          (target) => !const {
-            'claude',
-            'codex',
-            'shared',
-            'antigravity',
-          }.contains(target),
+          (target) =>
+              target != 'shared' &&
+              !HarnessCatalog.instance.skillInstallationTargets.any(
+                (id) => id.wireName == target,
+              ),
         )) {
       throw MambaException(
         'Skill installation requires an explicit claude, codex, or '
@@ -5799,6 +5881,9 @@ final class _PackCandidate {
     required this.path,
     this.originalPath,
     this.migrated = false,
+    this.provenance,
+    this.relativePath,
+    this.derivedArtifacts = const [],
     required this.profile,
     required this.digest,
     required this.extraFolders,
@@ -5813,6 +5898,9 @@ final class _PackCandidate {
   final String path;
   final String? originalPath;
   final bool migrated;
+  final AcquisitionProvenance? provenance;
+  final String? relativePath;
+  final List<ManagedDerivedArtifact> derivedArtifacts;
   final NativeAgentProfile? profile;
   final String digest;
   final Set<String> extraFolders;

@@ -17,7 +17,7 @@ void main() {
     group('skill', () {
       group('list', () {
         test(
-          'user is the default scope and native home overrides are isolated',
+          'explicit user scope and native home overrides are isolated',
           () async {
             final sandbox = (fs.directory('/sandbox')..createSync());
             try {
@@ -49,6 +49,8 @@ void main() {
                   ).fake().execute([
                     'skill',
                     'list',
+                    '--scope',
+                    'user',
                     '--cwd',
                     '${project.path}$separator',
                     '--project-root',

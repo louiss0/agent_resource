@@ -14,6 +14,7 @@ import '../conversion/conversion_restore_evidence.dart';
 import '../harness/harness_user_roots.dart';
 import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
+import '../installation/installation_route.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
 import 'configuration_publication_service.dart';
@@ -180,15 +181,19 @@ final class LifecycleOptions {
 
   LifecycleOptions copyWith({
     LifecycleScope? scope,
+    String? processWorkingDirectory,
+    String? cwd,
+    bool clearProjectRoot = false,
     String? geminiDir,
     bool? dryRun,
     bool? approved,
   }) => LifecycleOptions(
-    processWorkingDirectory: processWorkingDirectory,
+    processWorkingDirectory:
+        processWorkingDirectory ?? this.processWorkingDirectory,
     environment: environment,
     scope: scope ?? this.scope,
-    cwd: cwd,
-    projectRoot: projectRoot,
+    cwd: cwd ?? this.cwd,
+    projectRoot: clearProjectRoot ? null : projectRoot,
     home: home,
     claudeConfigDir: claudeConfigDir,
     codexHome: codexHome,
@@ -199,6 +204,76 @@ final class LifecycleOptions {
     dryRun: dryRun ?? this.dryRun,
     approved: approved ?? this.approved,
   );
+}
+
+/// Offers a user-scope context when an implicit project context is invalid.
+Future<LifecycleOptions> resolveInteractiveUserScope({
+  required LifecycleOptions options,
+  required fslib.FileSystem fileSystem,
+  required bool interactive,
+  required bool scopeExplicit,
+  required Future<bool> Function() offerUserScope,
+}) async {
+  if (!interactive || scopeExplicit) {
+    return options;
+  }
+  try {
+    LifecycleContext.resolve(options, fileSystem: fileSystem);
+    return options;
+  } on MambaException catch (error) {
+    var fallback = options.copyWith(
+      scope: LifecycleScope.user,
+      clearProjectRoot: true,
+    );
+    try {
+      LifecycleContext.resolve(fallback, fileSystem: fileSystem).requireHome();
+    } on MambaException {
+      final home =
+          options.home ??
+          options.environment['HOME'] ??
+          options.environment['USERPROFILE'];
+      final otherPaths = [
+        options.claudeConfigDir,
+        options.codexHome,
+        options.piAgentDir,
+        options.geminiDir,
+        options.stateDir,
+        ...options.readRoots,
+      ].whereType<String>();
+      if (home == null ||
+          !fileSystem.path.isAbsolute(home) ||
+          fileSystem.typeSync(home) != FileSystemEntityType.directory ||
+          otherPaths.any((path) => !fileSystem.path.isAbsolute(path))) {
+        throw MambaException(
+          'Cannot resolve project or user context. Supply an existing absolute --home '
+          'and absolute user paths, or a valid --cwd and --project-root. ${error.message}',
+          exitCode: 4,
+        );
+      }
+      fallback = options.copyWith(
+        scope: LifecycleScope.user,
+        clearProjectRoot: true,
+        processWorkingDirectory: home,
+        cwd: home,
+      );
+      try {
+        LifecycleContext.resolve(
+          fallback,
+          fileSystem: fileSystem,
+        ).requireHome();
+      } on MambaException {
+        throw MambaException(
+          'Cannot resolve project or user context. Supply an existing absolute --home '
+          'and valid absolute user paths. ${error.message}',
+          exitCode: 4,
+        );
+      }
+    }
+    if (!await offerUserScope()) {
+      throw MambaException('Scope selection cancelled.', exitCode: 7);
+    }
+    return fallback;
+  }
 }
 
 final class LifecycleContext implements HarnessUserRoots {
@@ -836,6 +911,7 @@ final class InstallationRecord {
     required this.backupIds,
     required this.transactionId,
     this.exposures = const <ExposureRecord>[],
+    this.installationRoute,
   });
 
   factory InstallationRecord.fromJson(Object? value) {
@@ -865,6 +941,20 @@ final class InstallationRecord {
     if (!path.isWithin(nativeRoot, location)) {
       throw const FormatException('Installation location escapes native root.');
     }
+    final route = map.containsKey('installationRoute')
+        ? InstallationRoute.fromJson(map['installationRoute'])
+        : null;
+    if (route != null &&
+        (route.scope.name != scope ||
+            switch (route.method) {
+              InstallationMethod.canonical => kind != 'skill-canonical',
+              InstallationMethod.copy => kind != 'skill-copy',
+              InstallationMethod.sourceLink => kind != 'skill-link',
+            })) {
+      throw const FormatException(
+        'Installation route does not match its record.',
+      );
+    }
     return InstallationRecord(
       installationId: _id(_string(map, 'installationId'), 'ins'),
       kind: ArtifactKind.values.firstWhere((value) => value.wireName == kind),
@@ -887,6 +977,7 @@ final class InstallationRecord {
         for (final id in _stringList(map['backupIds'])) _id(id, 'bak'),
       ],
       transactionId: _nullableId(map['transactionId'], 'trx'),
+      installationRoute: route,
       exposures: map['exposures'] == null
           ? const <ExposureRecord>[]
           : [
@@ -913,6 +1004,7 @@ final class InstallationRecord {
   final List<String> backupIds;
   final String? transactionId;
   final List<ExposureRecord> exposures;
+  final InstallationRoute? installationRoute;
 
   InstallationRecord copyWith({
     ArtifactKind? kind,
@@ -925,7 +1017,9 @@ final class InstallationRecord {
     List<String>? knownConsumers,
     List<String>? validatedProfiles,
     Map<String, Object?>? origin,
+    InstallationRoute? installationRoute,
     bool clearTransaction = false,
+    bool clearInstallationRoute = false,
   }) => InstallationRecord(
     installationId: installationId,
     kind: kind ?? this.kind,
@@ -946,6 +1040,9 @@ final class InstallationRecord {
         ? null
         : transactionId ?? this.transactionId,
     exposures: exposures ?? this.exposures,
+    installationRoute: clearInstallationRoute
+        ? null
+        : installationRoute ?? this.installationRoute,
   );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -965,6 +1062,8 @@ final class InstallationRecord {
     'lifecycle': lifecycle,
     'backupIds': backupIds,
     'transactionId': transactionId,
+    if (installationRoute != null)
+      'installationRoute': installationRoute!.toJson(),
     if (kind == ArtifactKind.skillCanonical) ...<String, Object?>{
       'recordSchemaVersion': 2,
       'exposures': [for (final exposure in exposures) exposure.toJson()],
@@ -1373,6 +1472,7 @@ interface class LifecycleStateService {
     required String location,
     required String nativeRoot,
     required String nativeDestination,
+    InstallationRoute? installationRoute,
   }) async {
     final prepared = await _prepareInstall(
       resource,
@@ -1471,6 +1571,7 @@ interface class LifecycleStateService {
           baseline: baseline,
           lifecycle: 'live',
           origin: const <String, Object?>{'status': 'unknown'},
+          installationRoute: installationRoute,
           backupIds: const <String>[],
           transactionId: null,
         );
@@ -1825,6 +1926,7 @@ interface class LifecycleStateService {
               baseline: baseline,
               lifecycle: 'live',
               origin: unit.origin,
+              installationRoute: unit.installationRoute,
               backupIds: existing?.backupIds ?? const <String>[],
               transactionId: null,
             ),
@@ -1879,6 +1981,15 @@ interface class LifecycleStateService {
                   ? existingCanonical.origin
                   : unit.origin,
               backupIds: existingCanonical?.backupIds ?? const <String>[],
+              installationRoute: unit.installationRoute?.withTargets(
+                (<InstallationRouteTarget>{
+                  ...?existingCanonical?.installationRoute?.targets,
+                  for (final consumer
+                      in existingCanonical?.knownConsumers ?? const <String>[])
+                    InstallationRouteTarget.values.byName(consumer),
+                  ...?unit.installationRoute?.targets,
+                }.toList()..sort((a, b) => a.name.compareTo(b.name))),
+              ),
               transactionId: null,
               exposures: List<ExposureRecord>.unmodifiable(exposures),
             ),
@@ -2202,6 +2313,7 @@ interface class LifecycleStateService {
     required String installationId,
     required String source,
     Map<String, Object?>? origin,
+    InstallationRoute? installationRoute,
     bool allowModified = false,
     Set<String> allowedPaths = const <String>{},
   }) async {
@@ -2394,6 +2506,8 @@ interface class LifecycleStateService {
           nativeForm: candidate.nativeForm,
           baseline: newBaseline,
           origin: origin,
+          installationRoute: installationRoute,
+          clearInstallationRoute: installationRoute == null,
           backupIds: [...record.backupIds, backup.backupId],
           clearTransaction: true,
         );
@@ -4266,6 +4380,7 @@ interface class LifecycleStateService {
     required String installationId,
     required Map<String, Object?> expectedOrigin,
     required Map<String, Object?> origin,
+    InstallationRoute? installationRoute,
   }) async {
     final initial = recordById(context, installationId);
     if (jsonEncode(initial.origin) != jsonEncode(expectedOrigin)) {
@@ -4285,7 +4400,11 @@ interface class LifecycleStateService {
         );
       }
       _commitRecords(context.stateRoot(), [
-        current.copyWith(origin: origin),
+        current.copyWith(
+          origin: origin,
+          installationRoute: installationRoute,
+          clearInstallationRoute: installationRoute == null,
+        ),
       ], const <String, Object?>{});
     });
   }

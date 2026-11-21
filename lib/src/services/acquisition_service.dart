@@ -53,6 +53,52 @@ final class AcquisitionProvenance {
     this.configDigest,
   });
 
+  factory AcquisitionProvenance.fromJson(Object? value) {
+    if (value is! Map) {
+      throw const FormatException('Invalid acquisition provenance.');
+    }
+    String requiredText(String key) {
+      final field = value[key];
+      if (field is! String || field.isEmpty) {
+        throw FormatException('Invalid provenance $key.');
+      }
+      return field;
+    }
+
+    String? optionalText(String key) {
+      final field = value[key];
+      if (field == null) return null;
+      if (field is! String || field.isEmpty) {
+        throw FormatException('Invalid provenance $key.');
+      }
+      return field;
+    }
+
+    final kind = AcquisitionLocatorKind.values.where(
+      (item) => item.name == requiredText('kind'),
+    );
+    if (kind.length != 1 ||
+        value['temporary'] is! bool ||
+        value['durableLocalDirectory'] is! bool ||
+        (value['packageBoundary'] != null &&
+            value['packageBoundary'] != 'single-file')) {
+      throw const FormatException('Invalid acquisition provenance.');
+    }
+    return AcquisitionProvenance(
+      kind: kind.single,
+      requestedLocator: requiredText('requestedLocator'),
+      resolvedLocator: requiredText('resolvedLocator'),
+      subpath: optionalText('subpath'),
+      temporary: value['temporary'] as bool,
+      directFile: value['packageBoundary'] == 'single-file',
+      durableLocalDirectory: value['durableLocalDirectory'] as bool,
+      requestedRef: optionalText('requestedRef'),
+      resolvedCommit: optionalText('resolvedCommit'),
+      downloadDigest: optionalText('downloadDigest'),
+      configDigest: optionalText('configDigest'),
+    );
+  }
+
   final AcquisitionLocatorKind kind;
   final String requestedLocator;
   final String resolvedLocator;

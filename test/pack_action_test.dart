@@ -1,4 +1,6 @@
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/pack_action.dart';
+import 'package:file/memory.dart';
 import 'package:agent_resource/src/pack/pack_discovery.dart';
 import 'package:agent_resource/src/pack/pack_models.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
@@ -51,6 +53,131 @@ void main() {
   group('agent_resource', () {
     group('pack', () {
       group('install', () {
+        test('offers user scope when project context is unavailable', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/project').createSync();
+          fs.directory('/home').createSync();
+          fs.directory('/source/skills/reviewer').createSync(recursive: true);
+          fs.file('/source/agent-resources.toml').writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/reviewer"
+''');
+          fs
+              .file('/source/skills/reviewer/SKILL.md')
+              .writeAsStringSync(
+                '---\nname: reviewer\ndescription: Reviews.\n---\nBody.\n',
+              );
+          fs.file('/project/agent-resources.toml').writeAsStringSync('''
+schema_version = 1
+[cli.install]
+targets = ["codex"]
+skill_method = "copy"
+[packs."local/demo".source]
+kind = "local"
+path = "../source"
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+          var offered = 0;
+          final command = PackActionCommand(
+            PackResourceType.skill,
+            PackOperation.install,
+            PackLifecycleService(fileSystem: fs),
+            fileSystem: fs,
+            stdinIsTerminal: () => true,
+            stdoutIsTerminal: () => true,
+            offerUserScope: () async {
+              offered++;
+              return true;
+            },
+          );
+          final result =
+              await Executor('agent_resource', 'Test.', '1.0.0', [
+                command,
+              ]).fake().execute([
+                'install',
+                'local/demo',
+                '--cwd',
+                '/project/',
+                '--project-root',
+                '/missing/',
+                '--home',
+                '/home/',
+                '--config',
+                '/project/agent-resources.toml',
+                '--target',
+                'codex',
+                '--method',
+                'copy',
+                '--dry-run',
+              ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          expect(offered, 1);
+          expect((result as MambaSuccessResult).output, contains('reviewer'));
+          final missingCwd =
+              await Executor('agent_resource', 'Test.', '1.0.0', [
+                command,
+              ]).fake().execute([
+                'install',
+                'local/demo',
+                '--cwd',
+                '/missing/',
+                '--home',
+                '/home/',
+                '--config',
+                '/project/agent-resources.toml',
+                '--target',
+                'codex',
+                '--method',
+                'copy',
+                '--dry-run',
+              ]);
+          expect(
+            missingCwd,
+            isA<MambaSuccessResult>(),
+            reason: missingCwd is MambaFailureResult
+                ? missingCwd.message
+                : null,
+          );
+          expect(offered, 2);
+        });
+        test('does not prompt when stdout is redirected', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/project').createSync();
+          fs.directory('/source').createSync();
+          fs.file('/project/agent-resources.toml').writeAsStringSync('''
+schema_version = 1
+[packs."local/demo".source]
+kind = "local"
+path = "../source"
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+          final command = PackActionCommand(
+            PackResourceType.skill,
+            PackOperation.install,
+            PackLifecycleService(fileSystem: fs),
+            fileSystem: fs,
+            stdinIsTerminal: () => true,
+            stdoutIsTerminal: () => false,
+          );
+          final result = await Executor('agent_resource', 'Test.', '1.0.0', [
+            command,
+          ]).fake().execute(['install', 'local/demo', '--cwd', '/project/']);
+          expect(
+            result,
+            isA<MambaFailureResult>().having(
+              (value) => value.message,
+              'message',
+              contains('Noninteractive mutations require explicit --scope'),
+            ),
+          );
+        });
         test(
           'passes repeated native names and context to the lifecycle',
           () async {

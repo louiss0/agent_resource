@@ -7,6 +7,7 @@ import 'package:file/memory.dart';
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
+import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_installation_service.dart';
@@ -102,6 +103,50 @@ void main() {
           '--state-dir',
           '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
         ];
+
+        test(
+          'refuses an unsupported Skill target before acquisition',
+          () async {
+            final source = skill('unsupported-target');
+            final service = SkillInstallationService(
+              fileSystem: fs,
+              acquisition: acquisition,
+              interaction: interaction,
+              progress: noInstallationProgress,
+            );
+            final request = InstallationWorkflowRequest(
+              source: source.path,
+              options: LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                approved: true,
+              ),
+              sourceKind: AcquisitionSourceKind.resource,
+              resourceIds: const [],
+              allResources: false,
+              targets: const [InstallationTarget.pi],
+              method: InstallationMethod.copy,
+              profile: null,
+              ref: null,
+              subpath: null,
+              scopeExplicit: true,
+            );
+            await expectLater(
+              service.run(request, interactive: false),
+              throwsA(
+                predicate(
+                  (error) =>
+                      error.toString().contains('pi') &&
+                      error.toString().contains('Skill'),
+                ),
+              ),
+            );
+            expect(acquisition.calls, 0);
+          },
+        );
 
         for (final entry in ['metadata.json', 'rules']) {
           test('rejects unsupported root entry $entry before writes', () async {
@@ -1115,6 +1160,144 @@ path = "skills/review"
           },
         );
 
+        test(
+          'offers user scope when the project root cannot be used',
+          () async {
+            final source = skill('fallback-user');
+            interaction.userScopeFallbacks.add(true);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              '--dry-run',
+              '--cwd',
+              '${project.path}/',
+              '--project-root',
+              '${sandbox.path}/missing/',
+              '--home',
+              '${home.path}/',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              (result as MambaSuccessResult).output,
+              contains('Scope: user'),
+            );
+            expect(interaction.userScopeFallbacks, isEmpty);
+          },
+        );
+
+        test('omits a replay command for a sensitive source locator', () async {
+          useLocalFileSystem();
+          final server = await io.HttpServer.bind(
+            io.InternetAddress.loopbackIPv4,
+            0,
+          );
+          server.listen((request) {
+            request.response.write(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+            request.response.close();
+          });
+          addTearDown(() => server.close(force: true));
+          final locator =
+              'http://127.0.0.1:${server.port}/SKILL.md?token=PRIVATE123';
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            locator,
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            '--source-kind',
+            'resource',
+            '--dry-run',
+            ...context(),
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          final output = (result as MambaSuccessResult).output!;
+          expect(output, contains('Explicit command omitted'));
+          expect(output, isNot(contains('PRIVATE123')));
+        });
+
+        test('interactive installation defaults to project scope', () async {
+          final source = skill("default project's");
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            '--dry-run',
+            ...context().skip(2),
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          final output = (result as MambaSuccessResult).output!;
+          expect(output, contains('Scope: project'));
+          expect(output, contains('Explicit command'));
+          expect(output, contains('--scope project'));
+          expect(output, contains('--source-kind resource'));
+          expect(output, contains('--target codex'));
+          expect(output, contains('--method copy'));
+          expect(output, contains('--dry-run'));
+          expect(output, contains(project.path));
+          expect(output, isNot(contains('${home.path}/.agents/skills')));
+          final command = output.split('\n').last.split('): ').last;
+          final shell = await io.Process.run(
+            io.Platform.isWindows ? 'powershell.exe' : 'sh',
+            io.Platform.isWindows
+                ? [
+                    '-NoProfile',
+                    '-Command',
+                    'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+                  ]
+                : [
+                    '-c',
+                    'agent_resource() { printf "%s\\n" "\$@"; }; $command',
+                  ],
+          );
+          expect(shell.exitCode, 0, reason: '${shell.stderr}');
+          final args = io.Platform.isWindows
+              ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+              : (shell.stdout as String).trimRight().split('\n');
+          expect(args, contains(source.path));
+          final replay = await createExecutor(
+            fileSystem: fs,
+            skillInstallation: SkillInstallationService(
+              fileSystem: fs,
+              interaction: ScriptedInstallationInteraction(interactive: false),
+              progress: noInstallationProgress,
+            ),
+          ).fake().execute(args);
+          expect(
+            replay,
+            isA<MambaSuccessResult>(),
+            reason: replay is MambaFailureResult ? replay.message : null,
+          );
+          expect(
+            (replay as MambaSuccessResult).output,
+            contains('Scope: project'),
+          );
+        });
+
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {
           final collection = fs.directory(
             fs.path.join(sandbox.path, 'collection'),
@@ -1165,6 +1348,45 @@ path = "skills/other"
           expect(output, contains('Scope: user'));
           expect(output, contains('Method: canonical'));
           expect(output, contains('code-review'));
+          expect(output, contains('--source-kind collection'));
+          expect(output, contains('--resource code-review'));
+          expect(output, contains('--target codex'));
+          expect(output, contains('--method canonical'));
+          final command = output.split('\n').last.split('): ').last;
+          final shell = await io.Process.run(
+            io.Platform.isWindows ? 'powershell.exe' : 'sh',
+            io.Platform.isWindows
+                ? [
+                    '-NoProfile',
+                    '-Command',
+                    'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+                  ]
+                : [
+                    '-c',
+                    'agent_resource() { printf "%s\\n" "\$@"; }; $command',
+                  ],
+          );
+          expect(shell.exitCode, 0, reason: '${shell.stderr}');
+          final args = io.Platform.isWindows
+              ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+              : (shell.stdout as String).trimRight().split('\n');
+          final replay = await createExecutor(
+            fileSystem: fs,
+            skillInstallation: SkillInstallationService(
+              fileSystem: fs,
+              interaction: ScriptedInstallationInteraction(interactive: false),
+              progress: noInstallationProgress,
+            ),
+          ).fake().execute(args);
+          expect(
+            replay,
+            isA<MambaSuccessResult>(),
+            reason: replay is MambaFailureResult ? replay.message : null,
+          );
+          expect(
+            (replay as MambaSuccessResult).output,
+            contains('code-review'),
+          );
           expect(interaction.approvals, isEmpty);
           expect(
             fs.directory(fs.path.join(home.path, '.agents')).existsSync(),
@@ -1199,6 +1421,79 @@ path = "skills/other"
               contains('cancelled'),
             );
             expect(project.listSync(recursive: true), isEmpty);
+          },
+        );
+
+        test(
+          'records the source route and migrated artifacts for replay',
+          () async {
+            final source = skill('route-source');
+            fs
+                .file(fs.path.join(source.path, 'guide.md'))
+                .writeAsStringSync('Guide');
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final state = LifecycleStateService(io: LifecycleIO(fs: fs));
+            final records = state.records(
+              LifecycleContext.resolve(
+                LifecycleOptions(
+                  processWorkingDirectory: project.path,
+                  scope: LifecycleScope.project,
+                  cwd: project.path,
+                  projectRoot: project.path,
+                  home: home.path,
+                  stateDir: fs.path.join(sandbox.path, 'state'),
+                ),
+                fileSystem: fs,
+              ),
+            );
+            final route = records.single.toJson()['installationRoute'] as Map;
+            expect(
+              records.single.installationRoute!.source.resolvedLocator,
+              source.path,
+            );
+            expect(route['sourceKind'], 'resource');
+            expect(route['scope'], 'project');
+            expect(route['targets'], ['codex']);
+            expect(route['method'], 'copy');
+            expect((route['source'] as Map)['requestedLocator'], source.path);
+            expect(route['sourceRelativePath'], '.');
+            final bad = records.single.toJson();
+            bad['installationRoute'] = {
+              ...route,
+              'sourceRelativePath': '../escape',
+            };
+            expect(
+              () => InstallationRecord.fromJson(bad),
+              throwsFormatException,
+            );
+            expect(
+              route['derivedArtifacts'],
+              contains(
+                predicate(
+                  (item) =>
+                      item is Map &&
+                      item['sourcePath'] == 'guide.md' &&
+                      item['outputPath'] == 'references/guide.md',
+                ),
+              ),
+            );
           },
         );
 
@@ -1261,6 +1556,10 @@ path = "skills/other"
             records.single.knownConsumers,
             containsAll(['claude', 'codex']),
           );
+          expect(records.single.installationRoute!.targets.map((t) => t.name), [
+            'claude',
+            'codex',
+          ]);
         });
 
         test(

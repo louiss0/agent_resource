@@ -6,12 +6,19 @@ import 'harness_id.dart';
 /// The native user root that holds one harness's Skills.
 enum SkillUserRoot { claude, codex, pi, gemini, geminiConfig }
 
+/// Direct Skill installation routing for a consuming harness.
+enum SkillInstallationRoot { harness, shared }
+
 /// The Skill capability declared by one harness.
 ///
 /// The facet carries its roots, discovery roots and native field matrix. The
 /// Skill services call these members instead of translating harness enums in
 /// another switch.
 abstract interface class SkillHarnessSpec implements HarnessFacetSpec {
+  /// Null means direct Skill installation is not supported.
+  SkillInstallationRoot? get installationRoot;
+  String? get projectInstallationDestination;
+  String? get userInstallationDestination;
   SkillUserRoot get userRoot;
   List<SkillUserRoot> get userDiscoveryRoots;
   bool get unifiesSharedProjectRoot;
@@ -29,6 +36,9 @@ final class SkillHarnessFacet implements SkillHarnessSpec {
   const SkillHarnessFacet({
     required this.harness,
     required this.userRoot,
+    this.installationRoot,
+    this.projectInstallationDestination,
+    this.userInstallationDestination,
     this.userDiscoveryRoots = const <SkillUserRoot>[],
     this.unifiesSharedProjectRoot = false,
     this.additionalFields = const <NativeFieldSpec>[],
@@ -42,6 +52,15 @@ final class SkillHarnessFacet implements SkillHarnessSpec {
 
   @override
   final SkillUserRoot userRoot;
+
+  @override
+  final SkillInstallationRoot? installationRoot;
+
+  @override
+  final String? projectInstallationDestination;
+
+  @override
+  final String? userInstallationDestination;
 
   @override
   final List<SkillUserRoot> userDiscoveryRoots;
@@ -150,6 +169,9 @@ const skillHarnessFacets = <HarnessId, SkillHarnessSpec>{
   HarnessId.claude: SkillHarnessFacet(
     harness: HarnessId.claude,
     userRoot: SkillUserRoot.claude,
+    installationRoot: SkillInstallationRoot.harness,
+    projectInstallationDestination: 'claude',
+    userInstallationDestination: 'claude',
     additionalFields: <NativeFieldSpec>[
       ..._commonSkillFields,
       SkillHarnessFacet._disallowedTools,
@@ -158,6 +180,9 @@ const skillHarnessFacets = <HarnessId, SkillHarnessSpec>{
   HarnessId.codex: SkillHarnessFacet(
     harness: HarnessId.codex,
     userRoot: SkillUserRoot.codex,
+    installationRoot: SkillInstallationRoot.shared,
+    projectInstallationDestination: 'shared',
+    userInstallationDestination: 'shared',
     additionalFields: _commonSkillFields,
   ),
   HarnessId.pi: SkillHarnessFacet(
@@ -168,6 +193,9 @@ const skillHarnessFacets = <HarnessId, SkillHarnessSpec>{
   HarnessId.antigravity: SkillHarnessFacet(
     harness: HarnessId.antigravity,
     userRoot: SkillUserRoot.geminiConfig,
+    installationRoot: SkillInstallationRoot.harness,
+    projectInstallationDestination: 'shared',
+    userInstallationDestination: 'antigravity',
     userDiscoveryRoots: <SkillUserRoot>[
       SkillUserRoot.geminiConfig,
       SkillUserRoot.gemini,

@@ -197,6 +197,56 @@ track = { kind = "local" }
       expect(result.outcome, 'valid');
     });
 
+    test('records a pack Skill route and managed migration outputs', () async {
+      fs
+          .file(fs.path.join(source.path, 'skills', 'reviewer', 'guide.md'))
+          .writeAsStringSync('Guide');
+      final result = await PackLifecycleService(fileSystem: fs)
+          .execute(request(PackOperation.install, PackResourceType.skill));
+      expect(result.resources.single.disposition.wireName, 'installed');
+      final context = LifecycleContext.resolve(
+        LifecycleOptions(
+          processWorkingDirectory: sandbox.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        ),
+        fileSystem: fs,
+      );
+      final record = LifecycleStateService(io: LifecycleIO(fs: fs))
+          .records(context)
+          .single;
+      final route = record.toJson()['installationRoute'] as Map;
+      expect(route['sourceKind'], 'collection');
+      expect(route['sourceRelativePath'], 'skills/reviewer');
+      expect(route['targets'], ['codex']);
+      expect(route['method'], 'copy');
+      expect(route['packKey'], 'local/demo');
+      expect(
+        route['derivedArtifacts'],
+        contains(
+          predicate(
+            (item) =>
+                item is Map && item['outputPath'] == 'references/guide.md',
+          ),
+        ),
+      );
+      fs
+          .file(fs.path.join(source.path, 'skills', 'reviewer', 'guide.md'))
+          .writeAsStringSync('Updated guide');
+      await PackLifecycleService(fileSystem: fs)
+          .execute(request(PackOperation.update, PackResourceType.skill));
+      final updated = LifecycleStateService(io: LifecycleIO(fs: fs))
+          .records(context)
+          .single;
+      expect(updated.installationRoute, isNotNull);
+      expect(
+        updated.installationRoute!.derivedArtifacts.single.outputPath,
+        'references/guide.md',
+      );
+    });
+
     test('installs a native Skill and Agent with source evidence', () async {
       final service = PackLifecycleService(fileSystem: fs);
       final skills = await service.execute(
