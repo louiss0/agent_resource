@@ -180,7 +180,9 @@ agent_resource agent install ./reviewer.md --source-kind resource --profile clau
 ```
 
 Skill `canonical` owns content in scope-specific `.agents/skills`. Codex reads
-that content directly; Claude receives a managed native exposure link.
+that content directly, as does Antigravity at project scope. Claude receives a
+managed native exposure link. At user scope, Antigravity receives a managed
+link under `~/.gemini/config/skills` (or the configured Gemini root).
 `copy` creates independent native copies, while `source-link` manages links to
 an explicitly selected durable local Skill directory. Remote, temporary, and
 single-file sources are ineligible for `source-link`. The Skill's declared name
@@ -408,7 +410,7 @@ stderr with a nonzero status. Resource kinds are selected on `pack` with
 ```text
 agent_resource skill adopt <existing-directory/> --destination claude|codex|shared
 agent_resource skill replace <installation-id> <source-directory/>
-agent_resource skill remove <installation-id> [--target claude]
+agent_resource skill remove <installation-id> [--target claude|antigravity]
 agent_resource skill backup list
 agent_resource skill backup restore <backup-id>
 agent_resource skill backup cleanup <backup-id>
@@ -428,9 +430,9 @@ Replacement and restoration preserve installation identity and recorded
 location. Removal and replacement require a currently unchanged complete
 baseline and create independent retained backups before live mutation.
 Canonical replacement preserves its method and accounts for all associated
-exposures and direct consumers. Canonical `skill remove --target claude`
-detaches only the managed Claude exposure; Codex's direct consumer relationship
-cannot be revoked by metadata removal while shared content remains.
+exposures and direct consumers. Canonical `skill remove --target claude` or
+user-scoped `skill remove --target antigravity` detaches only that managed
+link. Direct readers cannot be revoked while shared content remains.
 
 Linked Skills keep target validation separate from entry ownership. Target
 edits do not invalidate an unchanged link entry; removal unlinks an unchanged

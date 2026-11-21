@@ -63,6 +63,7 @@ final class McpMutationInputs {
   final _claudeConfigDir = FolderPathOption('claude-config-dir');
   final _codexHome = FolderPathOption('codex-home');
   final _piAgentDir = FolderPathOption('pi-agent-dir');
+  final _geminiDir = FolderPathOption('gemini-dir');
   final _stateDir = FolderPathOption('state-dir');
   final _planId = StringOption(
     'plan-id',
@@ -107,6 +108,7 @@ final class McpMutationInputs {
     _claudeConfigDir,
     _codexHome,
     _piAgentDir,
+    _geminiDir,
     _stateDir,
     _planId,
   ];
@@ -159,6 +161,7 @@ abstract class McpMutationCommand extends Command {
     final claudeConfigDir = valueOf(inputs._claudeConfigDir);
     final codexHome = valueOf(inputs._codexHome);
     final piAgentDir = valueOf(inputs._piAgentDir);
+    final geminiDir = valueOf(inputs._geminiDir);
     final stateDir = valueOf(inputs._stateDir);
     final reviewedPlanId = valueOf(inputs._planId);
 
@@ -186,6 +189,7 @@ abstract class McpMutationCommand extends Command {
       claudeConfigDir: claudeConfigDir,
       codexHome: codexHome,
       piAgentDir: piAgentDir,
+      geminiDir: geminiDir,
       stateDir: stateDir,
     );
     final envelope = await _service.execute(request);

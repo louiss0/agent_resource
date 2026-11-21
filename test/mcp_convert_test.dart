@@ -71,6 +71,15 @@ void main() {
                 format: McpNativeFormat.json,
                 section: McpNativeSection.mcpServers,
               ),
+              McpHarness.antigravity => McpNativeLocation(
+                harness: harness,
+                scope: scope,
+                path: scope == McpScope.project
+                    ? '/sandbox/project/.agents/mcp_config.json'
+                    : '/sandbox/gemini/config/mcp_config.json',
+                format: McpNativeFormat.json,
+                section: McpNativeSection.mcpServers,
+              ),
             };
 
         void writeText(String path, String text) {
@@ -112,6 +121,20 @@ void main() {
         ]);
 
         Map<String, Object?> sourceEntry(McpHarness harness, String transport) {
+          if (harness == McpHarness.antigravity) {
+            return transport == 'stdio'
+                ? <String, Object?>{
+                    'command': 'node',
+                    'args': <Object?>['server.js'],
+                    'env': <String, Object?>{'TOKEN': ref('SOURCE_TOKEN')},
+                  }
+                : <String, Object?>{
+                    'serverUrl': 'https://source.example.test/mcp',
+                    'headers': <String, Object?>{
+                      'X-Token': ref('SOURCE_HEADER'),
+                    },
+                  };
+          }
           if (transport == 'stdio') {
             return <String, Object?>{
               'type': 'stdio',
@@ -167,6 +190,8 @@ void main() {
           '/sandbox/codex/',
           '--pi-agent-dir',
           '/sandbox/pi/',
+          '--gemini-dir',
+          '/sandbox/gemini/',
           '--state-dir',
           '$stateRoot/',
         ];
@@ -253,6 +278,7 @@ void main() {
             '/sandbox/claude',
             '/sandbox/codex',
             '/sandbox/pi',
+            '/sandbox/gemini',
             stateRoot,
           ]) {
             fs.directory(dir).createSync(recursive: true);
@@ -282,10 +308,12 @@ void main() {
             '--interactive',
             '--format',
             '--cwd',
+            '--gemini-dir',
             '--state-dir',
           ]) {
             expect(output, contains(flag), reason: flag);
           }
+          expect(output, contains('antigravity'));
         });
 
         test(
@@ -334,39 +362,11 @@ void main() {
           },
         );
 
-        final List<({McpHarness source, McpHarness target, String transport})>
-        directions =
-            <({McpHarness source, McpHarness target, String transport})>[
-              (
-                source: McpHarness.claude,
-                target: McpHarness.codex,
-                transport: 'stdio',
-              ),
-              (
-                source: McpHarness.claude,
-                target: McpHarness.pi,
-                transport: 'stdio',
-              ),
-              (
-                source: McpHarness.codex,
-                target: McpHarness.claude,
-                transport: 'stdio',
-              ),
-              (
-                source: McpHarness.codex,
-                target: McpHarness.pi,
-                transport: 'stdio',
-              ),
-              (
-                source: McpHarness.pi,
-                target: McpHarness.claude,
-                transport: 'stdio',
-              ),
-              (
-                source: McpHarness.pi,
-                target: McpHarness.codex,
-                transport: 'stdio',
-              ),
+        final List<({McpHarness source, McpHarness target})> directions =
+            <({McpHarness source, McpHarness target})>[
+              for (final source in McpHarness.values)
+                for (final target in McpHarness.values)
+                  if (source != target) (source: source, target: target),
             ];
 
         for (final direction in directions) {
@@ -377,6 +377,9 @@ void main() {
               final source = location(direction.source, McpScope.project);
               final target = location(direction.target, McpScope.project);
               final entry = sourceEntry(direction.source, transport);
+              if (direction.target == McpHarness.antigravity) {
+                entry.remove('type');
+              }
               seedSource(source, entry);
               final sourceBefore = readText(source.path);
 
@@ -410,15 +413,19 @@ void main() {
                 scope: McpScope.project,
               );
               expect(report.valid, isTrue, reason: report.renderText());
+              final endpointKeys = <String>{'url', 'serverUrl'};
               expect(
                 written.containsKey('command'),
                 transport == 'stdio' ? isTrue : isFalse,
               );
               expect(
-                written.containsKey('url'),
+                endpointKeys.any(written.containsKey),
                 transport == 'http' ? isTrue : isFalse,
               );
-              expect(written['command'] ?? written['url'], isNotNull);
+              expect(
+                written['command'] ?? written['url'] ?? written['serverUrl'],
+                isNotNull,
+              );
 
               // Story 27: transport and scope are preserved, not inferred.
               expect(data['transport'], transport);
@@ -920,6 +927,175 @@ void main() {
                 .file(location(McpHarness.pi, McpScope.project).path)
                 .existsSync(),
             isFalse,
+          );
+        });
+
+        test(
+          'Antigravity dry-run binds provenance to a reviewed apply',
+          () async {
+            final source = location(McpHarness.antigravity, McpScope.project);
+            final target = location(McpHarness.codex, McpScope.project);
+            seedSource(source, sourceEntry(McpHarness.antigravity, 'stdio'));
+            final sourceBefore = readText(source.path);
+
+            final plan = success(
+              await exec(
+                convertArgs(
+                  McpHarness.antigravity,
+                  McpHarness.codex,
+                  extra: const <String>['--dry-run', '--format', 'json'],
+                ),
+              ),
+            );
+            final planData = plan['data'] as Map<String, dynamic>;
+            final planId = planData['planId'] as String;
+            final provenance = planData['provenance'] as Map<String, dynamic>;
+            expect(provenance['sourceHarness'], 'antigravity');
+            expect(jsonEncode(provenance), contains('command'));
+            expect(previews, isEmpty);
+            expect(fs.file(target.path).existsSync(), isFalse);
+            expect(readText(source.path), sourceBefore);
+
+            final applied = success(
+              await exec(
+                convertArgs(
+                  McpHarness.antigravity,
+                  McpHarness.codex,
+                  extra: <String>[
+                    '--apply',
+                    '--yes',
+                    '--plan-id',
+                    planId,
+                    '--format',
+                    'json',
+                  ],
+                ),
+              ),
+            );
+            expect(applied['outcome'], 'converted');
+            expect(entryAt(target, sourceName), isNotNull);
+            expect(readText(source.path), sourceBefore);
+            final lineage = McpConversionLineageStore(
+              fs: fs,
+              stateRoot: stateRoot,
+            ).read();
+            expect(lineage, hasLength(1));
+            expect(
+              McpOwnershipLedger(fs: fs, stateRoot: stateRoot)
+                  .read()
+                  .values
+                  .any((record) => record.identity.harness == McpHarness.codex),
+              isTrue,
+            );
+          },
+        );
+
+        test(
+          'an Antigravity target requires reviewed field-loss approval',
+          () async {
+            final source = location(McpHarness.codex, McpScope.project);
+            final target = location(McpHarness.antigravity, McpScope.project);
+            seedSource(source, <String, Object?>{
+              'type': 'stdio',
+              'command': 'node',
+              'tools': <String, Object?>{
+                'search': <String, Object?>{'approval_mode': 'prompt'},
+              },
+            });
+            final plan = success(
+              await exec(
+                convertArgs(
+                  McpHarness.codex,
+                  McpHarness.antigravity,
+                  extra: const <String>[
+                    '--dry-run',
+                    '--omit-field',
+                    'type',
+                    '--omit-field',
+                    'tools.search.approval_mode',
+                    '--format',
+                    'json',
+                  ],
+                ),
+              ),
+            );
+            final fields = ((plan['data'] as Map)['fields'] as List)
+                .cast<Map<String, dynamic>>();
+            for (final path in const <String>[
+              'type',
+              'tools.search.approval_mode',
+            ]) {
+              final row = fields.firstWhere(
+                (field) => field['sourcePath'] == path,
+              );
+              expect(row['outcome'], 'omitted-after-review');
+              expect(row['decision'], 'omit:$path');
+            }
+            expect(fs.file(target.path).existsSync(), isFalse);
+          },
+        );
+
+        test('Antigravity credential literals and endpoint secrets are never copied', () async {
+          final source = location(McpHarness.antigravity, McpScope.project);
+          final target = location(McpHarness.pi, McpScope.project);
+          seedSource(source, <String, Object?>{
+            'serverUrl': 'https://source.example.test/mcp?token=$secretQuery',
+            'headers': <String, Object?>{
+              'Authorization': 'Bearer $secretHeader',
+              'X-Ref': ref('HEADER_REF'),
+            },
+            'oauth': <String, Object?>{
+              'clientId': 'CLIENT-ID-SECRET',
+              'clientSecret': secretOAuth,
+            },
+          });
+
+          final result = await exec(
+            convertArgs(
+              McpHarness.antigravity,
+              McpHarness.pi,
+              extra: const <String>['--apply', '--format', 'json'],
+            ),
+          );
+          final envelope = success(result);
+          final output = (result as MambaSuccessResult).output!;
+          expectNoSecrets(output);
+          expectNoSecrets(previews.single);
+          final written = entryAt(target, sourceName);
+          expect(written, isNotNull);
+          expect(written!['url'], 'https://source.example.test/mcp');
+          expect((written['headers'] as Map)['X-Ref'], ref('HEADER_REF'));
+          expect(
+            (written['headers'] as Map).containsKey('Authorization'),
+            isFalse,
+          );
+          expect(written.containsKey('serverUrl'), isFalse);
+          final targetText = readText(target.path);
+          expectNoSecrets(targetText);
+          for (final forbidden in const <String>[
+            'oauth',
+            'clientSecret',
+            'clientId',
+          ]) {
+            expect(targetText, isNot(contains(forbidden)), reason: forbidden);
+          }
+          final data = envelope['data'] as Map<String, dynamic>;
+          final refusals = (data['credentialRefusals'] as List)
+              .cast<Map<String, dynamic>>();
+          expect(
+            refusals.map((item) => item['sourcePath']),
+            containsAll(<String>[
+              'serverUrl',
+              'headers.Authorization',
+              'oauth',
+            ]),
+          );
+          final fields = (data['fields'] as List).cast<Map<String, dynamic>>();
+          expect(
+            fields
+                .where((field) => field['outcome'] == 'omitted-after-review')
+                .map((field) => field['decision']),
+            contains('policy:credentials-not-copied'),
           );
         });
       });

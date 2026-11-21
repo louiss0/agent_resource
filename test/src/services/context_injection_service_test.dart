@@ -148,6 +148,138 @@ void main() {
             expect(fs.file(path).readAsStringSync(), 'global rules\n');
           }
         });
+
+        test('creates, appends and replaces an antigravity file', () async {
+          writeTemplate('shared rules\n');
+          await publish(const <String>[
+            'notes',
+            '--harness',
+            'antigravity',
+            '--variant',
+            'standard',
+          ]);
+          expect(
+            fs.file('/sandbox/project/AGENTS.md').readAsStringSync(),
+            'shared rules\n',
+          );
+
+          writeTemplate('more rules\n');
+          final append = await publish(const <String>[
+            'notes',
+            '--harness',
+            'antigravity',
+            '--variant',
+            'standard',
+          ]);
+          final appendTargets =
+              (append['data'] as Map<String, dynamic>)['targets']!
+                  as List<dynamic>;
+          expect(appendTargets.single, containsPair('action', 'append'));
+          expect(
+            fs.file('/sandbox/project/AGENTS.md').readAsStringSync(),
+            'shared rules\n\nmore rules\n',
+          );
+
+          final replace = await publish(const <String>[
+            'notes',
+            '--harness',
+            'antigravity',
+            '--variant',
+            'standard',
+            '--replace',
+          ]);
+          final replaceTargets =
+              (replace['data'] as Map<String, dynamic>)['targets']!
+                  as List<dynamic>;
+          expect(replaceTargets.single, containsPair('action', 'replace'));
+          expect(
+            fs.file('/sandbox/project/AGENTS.md').readAsStringSync(),
+            'more rules\n',
+          );
+        });
+
+        test(
+          'publishes antigravity context to overridden user roots',
+          () async {
+            writeTemplate('global rules\n');
+            for (final testCase in <Map<String, String>>[
+              {'variant': 'standard', 'path': '/sandbox/gemini/AGENTS.md'},
+              {'variant': 'gemini', 'path': '/sandbox/gemini/GEMINI.md'},
+              {
+                'variant': 'dot-agents',
+                'path': '/sandbox/gemini/config/AGENTS.md',
+              },
+            ]) {
+              final envelope = await publish(<String>[
+                'notes',
+                '--harness',
+                'antigravity',
+                '--scope',
+                'user',
+                '--variant',
+                testCase['variant']!,
+                '--gemini-dir',
+                '/sandbox/gemini/',
+              ]);
+              final targets =
+                  (envelope['data'] as Map<String, dynamic>)['targets']!
+                      as List<dynamic>;
+              expect(targets, hasLength(1));
+              expect(targets.single, containsPair('path', testCase['path']));
+              expect(
+                targets.single,
+                containsPair('harnesses', ['antigravity']),
+              );
+              expect(
+                fs.file(testCase['path']!).readAsStringSync(),
+                'global rules\n',
+              );
+            }
+            expect(
+              fs
+                  .directory('/sandbox/state/authoring-receipts')
+                  .listSync()
+                  .where((entity) => entity.path.endsWith('.json')),
+              hasLength(3),
+            );
+          },
+        );
+
+        test(
+          'writes one shared AGENTS.md for codex, pi and antigravity',
+          () async {
+            writeTemplate('shared rules\n');
+
+            final envelope = await publish(const <String>[
+              'notes',
+              '--harness',
+              'codex',
+              '--harness',
+              'pi',
+              '--harness',
+              'antigravity',
+            ]);
+            final targets =
+                (envelope['data'] as Map<String, dynamic>)['targets']!
+                    as List<dynamic>;
+            expect(targets, hasLength(1));
+            expect(
+              targets.single,
+              containsPair('harnesses', ['codex', 'pi', 'antigravity']),
+            );
+            expect(
+              fs.file('/sandbox/project/AGENTS.md').readAsStringSync(),
+              'shared rules\n',
+            );
+            expect(
+              fs
+                  .directory('/sandbox/state/authoring-receipts')
+                  .listSync()
+                  .where((entity) => entity.path.endsWith('.json')),
+              hasLength(1),
+            );
+          },
+        );
       });
     });
   });

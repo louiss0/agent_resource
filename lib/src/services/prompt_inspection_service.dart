@@ -702,7 +702,7 @@ interface class const PromptInspectionService({
     }
 
     final views = Map<PromptConsumer, PromptView>.unmodifiable({
-      for (final item in PromptConsumer.values) item: build(item),
+      for (final item in PromptConsumer.inspectable) item: build(item),
     });
     final globalCompatibility =
         views.values.any(

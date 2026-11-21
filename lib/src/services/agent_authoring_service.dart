@@ -8,12 +8,18 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
+import '../authoring/authoring_inputs.dart' show AuthoringProfile;
+import '../harness/harness_catalog.dart';
 import '../native_references.dart';
 import '../skill_files.dart';
 import 'agent_graph_service.dart';
 import 'agent_lifecycle_service.dart';
 import 'lifecycle_state_service.dart';
 import 'parent_config_service.dart' show parseStrictJsonObject;
+
+final Set<String> _authoringHarnessNames = HarnessCatalog.instance.descriptors
+    .map((descriptor) => descriptor.wireName)
+    .toSet();
 
 enum AuthoringOperation { create, clone, edit, compose }
 
@@ -47,6 +53,7 @@ AuthoringRequest parseAuthoringRequest(
   String requestFile,
   String workingDirectory, {
   fslib.FileSystem fileSystem = const local.LocalFileSystem(),
+  String? harnessOverride,
 }) {
   final path = fileSystem.path.normalize(
     fileSystem.path.isAbsolute(requestFile)
@@ -97,6 +104,9 @@ AuthoringRequest parseAuthoringRequest(
     );
   }
   final target = _object(map['target'], 'target');
+  if (harnessOverride != null) {
+    target['harness'] = harnessOverride;
+  }
   _knownKeys(target, const {
     'harness',
     'output',
@@ -104,8 +114,7 @@ AuthoringRequest parseAuthoringRequest(
     'installationId',
   }, 'target');
   final harness = target['harness'];
-  if (harness is! String ||
-      AgentHarness.values.every((value) => value.name != harness)) {
+  if (harness is! String || !_authoringHarnessNames.contains(harness)) {
     throw MambaException('Target harness must be claude, codex, or pi.');
   }
   for (final key in const ['output', 'installationId']) {
@@ -241,7 +250,7 @@ Map<String, Object?> _source(Object? value) {
       throw MambaException('A native-file source requires a nonblank path.');
     }
     if (source['harness'] is! String ||
-        AgentHarness.values.every((item) => item.name != source['harness'])) {
+        !_authoringHarnessNames.contains(source['harness'])) {
       throw MambaException(
         'A native-file source requires an explicit harness.',
       );
@@ -855,6 +864,10 @@ interface class AgentAuthoringService {
             ? context.codexAgentsRoot()
             : _fileSystem.path.join(context.codexRoot(), 'agents'),
       AgentHarness.pi => context.piAgentsRoot(),
+      AgentHarness.antigravity =>
+        context.scope == LifecycleScope.project
+            ? _fileSystem.path.join(context.projectRoot, '.agents', 'agents')
+            : _fileSystem.path.join(context.geminiConfigRoot(), 'agents'),
     };
     return _fileSystem.path.join(
       root,
@@ -1019,6 +1032,7 @@ String _profile(AgentHarness harness) => switch (harness) {
   AgentHarness.claude => 'claude-agent-native-v1',
   AgentHarness.codex => 'codex-agent-native-v1',
   AgentHarness.pi => 'pi-agent-common-v1',
+  AgentHarness.antigravity => 'antigravity-agent-native-v1',
 };
 
 bool _qualifiedModel(String value) {
@@ -1054,32 +1068,15 @@ String _serialize(
   Map<String, Object?> fields,
   String instructions,
 ) {
-  final entries = fields.entries.toList()
-    ..sort((left, right) => left.key.compareTo(right.key));
-  if (harness == AgentHarness.codex) {
-    return '${entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value)}').join('\n')}\n';
-  }
-  final frontmatter = entries
-      .map((entry) => '${entry.key}: ${_yamlValue(entry.value)}')
-      .join('\n');
-  return '---\n$frontmatter\n---\n$instructions';
-}
-
-String _yamlValue(Object? value) => jsonEncode(value);
-
-String _tomlValue(Object? value) {
-  if (value == null ||
-      value is String ||
-      value is num ||
-      value is bool ||
-      value is List<Object?>) {
-    return jsonEncode(value);
-  }
-  if (value is Map<String, Object?>) {
-    return '{ ${value.entries.map((entry) => '${entry.key} = ${_tomlValue(entry.value)}').join(', ')} }';
-  }
-  throw MambaException(
-    'Unsupported native value type in proposed output.',
-    exitCode: 2,
-  );
+  final profile = switch (harness) {
+    AgentHarness.claude => AuthoringProfile.claude,
+    AgentHarness.codex => AuthoringProfile.codex,
+    AgentHarness.pi => AuthoringProfile.pi,
+    AgentHarness.antigravity => AuthoringProfile.antigravity,
+  };
+  final spec = HarnessCatalog.instance.requireFacet(
+    HarnessId.of(harness),
+    HarnessFacet.agent,
+  ) as AgentHarnessSpec;
+  return spec.serializeNativeAgent(profile, fields, instructions);
 }
