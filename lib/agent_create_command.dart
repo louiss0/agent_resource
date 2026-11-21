@@ -218,8 +218,8 @@ final class AgentCreateCommand extends GuidedCreateCommand {
     }
     if (interactive && !options.approved) {
       final confirmed = await confirmation(
-        'Publish the reviewed bound role ${inputs.roleKey} and register it '
-        'in ${inputs.configFile}?',
+        '${planned.renderText()}\n'
+        'Publish the reviewed bound role ${inputs.roleKey}?',
       );
       if (!confirmed) {
         throw MambaException(

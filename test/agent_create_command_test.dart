@@ -288,6 +288,62 @@ void main() {
       },
     );
 
+    test('shows the bound-role plan before requesting approval', () async {
+      final definition = _definition(fixture);
+      final config = _config(fixture);
+      final output = fixture.fs.path.join(
+        fixture.project.path,
+        '.codex',
+        'agents',
+        'reviewer.toml',
+      );
+      String? review;
+      final interactiveExecutor = createExecutor(
+        fileSystem: fixture.fs,
+        guided: GuidedAuthoringService(
+          fileSystem: fixture.fs,
+          terminal: () => true,
+          confirm: (summary) async {
+            review = summary;
+            expect(fixture.fs.file(output).existsSync(), isFalse);
+            expect(
+              config.readAsStringSync(),
+              isNot(contains('agents.reviewer')),
+            );
+            return false;
+          },
+        ),
+      ).fake();
+      final result = await interactiveExecutor.execute([
+        'agent',
+        'create',
+        '--role-key',
+        'reviewer',
+        '--config-file',
+        config.path,
+        '--ownership',
+        'both',
+        '--definition-source',
+        definition.path,
+        '--definition-output',
+        output,
+        '--ack-clients-stopped',
+        '--apply',
+        ..._context(fixture),
+      ]);
+      expect(
+        result,
+        isA<MambaFailureResult>().having(
+          (value) => value.exitCode,
+          'exit code',
+          7,
+        ),
+      );
+      expect(review, contains(output));
+      expect(review, contains('planId'));
+      expect(fixture.fs.file(output).existsSync(), isFalse);
+    });
+
     test('refuses a stale plan identity on the bound-role route', () async {
       final definition = _definition(fixture);
       final config = _config(fixture);
