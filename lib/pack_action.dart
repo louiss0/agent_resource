@@ -299,6 +299,7 @@ final class PackActionCommand extends Command {
         pack: valueOf(_PackContextOptions.pack),
         processWorkingDirectory: resolvedOptions.processWorkingDirectory,
         environment: Map<String, String>.unmodifiable(Platform.environment),
+        scopeExplicit: valueOf(_PackContextOptions.scope) != null,
         scope:
             valueOf(_PackContextOptions.scope) ??
             (resolvedOptions.scope == LifecycleScope.user

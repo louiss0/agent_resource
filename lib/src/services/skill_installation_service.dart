@@ -175,12 +175,16 @@ interface class SkillInstallationService {
                     .any((id) => id.wireName == target),
               )
               .toList();
+      final detectedTargets =
+          interactive && request.targets.isEmpty && configuredTargets.isEmpty
+          ? detectSkillInstallationTargets(context, _fileSystem)
+          : <InstallationTarget>{};
       final targets = request.targets.isEmpty && configuredTargets.isNotEmpty
           ? [
               for (final target in configuredTargets)
                 InstallationTarget.values.byName(target),
             ]
-          : await _targets(request, context, interactive);
+          : await _targets(request, detectedTargets, interactive);
       if (targets == null) {
         return const InstallationCancelledResult('skill install');
       }
@@ -275,6 +279,10 @@ interface class SkillInstallationService {
                   ? 'explicit-argument'
                   : configuredTargets.isNotEmpty
                   ? targetSetting!.origin.wireName
+                  : detectedTargets.length == 1 &&
+                        targets.length == 1 &&
+                        detectedTargets.contains(targets.single)
+                  ? 'detection'
                   : 'interactive-selection',
             },
             'method': {
@@ -366,7 +374,7 @@ interface class SkillInstallationService {
 
   Future<List<InstallationTarget>?> _targets(
     InstallationWorkflowRequest request,
-    LifecycleContext context,
+    Set<InstallationTarget> detected,
     bool interactive,
   ) async {
     if (request.targets.isNotEmpty) {
@@ -375,14 +383,6 @@ interface class SkillInstallationService {
     if (!interactive) {
       throw MambaException('Unattended Skill installation requires --target.');
     }
-    final detected = <InstallationTarget>{
-      if (_isDirectory(context.claudeSkillsRoot())) InstallationTarget.claude,
-      if (_isDirectory(context.codexSkillsRoot()) ||
-          _isDirectory(context.sharedSkillsRoot()))
-        InstallationTarget.codex,
-      if (_isDirectory(_harnessRoot(context, InstallationTarget.antigravity)))
-        InstallationTarget.antigravity,
-    };
     while (true) {
       final answer = await _interaction.selectTargets([
         for (final id in HarnessCatalog.instance.skillInstallationTargets)
@@ -759,10 +759,6 @@ interface class SkillInstallationService {
       ),
     };
   }
-
-  bool _isDirectory(String path) =>
-      _fileSystem.typeSync(path, followLinks: false) ==
-      FileSystemEntityType.directory;
 }
 
 String get _nativeDirectoryLinkKind => Platform.isWindows

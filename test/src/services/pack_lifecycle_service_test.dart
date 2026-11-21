@@ -146,6 +146,80 @@ track = { kind = "local" }
     }
 
     test(
+      'interactive Skill pack uses a single detected target default',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst('targets = ["codex"]\n', ''),
+        );
+        fs
+            .directory('${project.path}/.claude/skills')
+            .createSync(recursive: true);
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            choice: (_, _) async =>
+                throw StateError('unexpected target prompt'),
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['claude']);
+        expect(result.plan!.resources.single.targetOrigin, 'detection');
+      },
+    );
+
+    test(
+      'interactive Skill pack shares the canonical method default',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst('skill_method = "copy"\n', ''),
+        );
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            choice: (_, _) async =>
+                throw StateError('unexpected method prompt'),
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            target: 'codex',
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.method, 'canonical');
+        expect(result.plan!.resources.single.methodOrigin, 'built-in-default');
+      },
+    );
+
+    test(
       'interactive Agent pack refuses an incompatible preferred target',
       () async {
         await expectLater(

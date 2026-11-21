@@ -14,6 +14,8 @@ import '../configuration/effective_configuration.dart';
 import 'configuration_workflow_service.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/installation_plan.dart';
+import '../installation/installation_request.dart'
+    show detectSkillInstallationTargets;
 import '../installation/installation_route.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
@@ -95,6 +97,7 @@ final class const PackLifecycleRequest({
   final Map<String, String> environment = const <String, String>{},
   final String? pack,
   final LifecycleScope? scope,
+  final bool? scopeExplicit,
   final String? cwd,
   final String? projectRoot,
   final String? home,
@@ -289,12 +292,12 @@ interface class PackLifecycleService {
         'cli.install.skill_method=${methods.single == 'sourceLink' ? 'source-link' : methods.single}',
     ];
     final context = _context(request);
-    if (!await _promptYesNo(
-      'Save ${context.scope.name} installation preferences (${preferences.join(', ')})?',
-    )) {
-      return result;
-    }
     try {
+      if (!await _promptYesNo(
+        'Save ${context.scope.name} installation preferences (${preferences.join(', ')})?',
+      )) {
+        return result;
+      }
       await ConfigurationWorkflowService(
         fileSystem: _fileSystem,
         environment: request.environment,
@@ -1155,6 +1158,7 @@ interface class PackLifecycleService {
     environment: request.environment,
     pack: request.pack,
     scope: request.scope,
+    scopeExplicit: request.scopeExplicit,
     cwd: request.cwd,
     projectRoot: request.projectRoot,
     home: request.home,
@@ -1747,6 +1751,15 @@ interface class PackLifecycleService {
           ? _declinedGroups(context, pack.key, request.resourceType)
           : const <String>{};
       final effectiveInstall = await _effectiveInstall(request, context);
+      final targetSetting = effectiveInstall.settings.singleWhere(
+        (setting) => setting.key == EligiblePreference.installTargets.wireName,
+      );
+      final detectedTargets =
+          request.interactive &&
+              request.resourceType == PackResourceType.skill &&
+              (targetSetting.value as List).isEmpty
+          ? detectSkillInstallationTargets(context, _fileSystem)
+          : <InstallationTarget>{};
       var selected =
           _selectCandidates(
                 request,
@@ -1914,6 +1927,7 @@ interface class PackLifecycleService {
             candidate,
             null,
             effectiveInstall,
+            detectedTargets,
           );
           final method = await _method(
             request,
@@ -1953,7 +1967,7 @@ interface class PackLifecycleService {
                                 )
                                 .value ==
                             null
-                        ? 'interactive-selection'
+                        ? 'built-in-default'
                         : effectiveInstall.settings
                               .singleWhere(
                                 (setting) =>
@@ -1981,7 +1995,13 @@ interface class PackLifecycleService {
                                 .value
                             as List)
                         .isEmpty
-                  ? 'interactive-selection'
+                  ? candidate.type == PackResourceType.agent
+                        ? 'native-profile'
+                        : detectedTargets.length == 1 &&
+                              targets.length == 1 &&
+                              detectedTargets.single.name == targets.single
+                        ? 'detection'
+                        : 'interactive-selection'
                   : effectiveInstall.settings
                         .singleWhere(
                           (setting) =>
@@ -2069,7 +2089,7 @@ interface class PackLifecycleService {
         operation: '${request.resourceType.name}s.${request.operation.name}',
         context: {
           ..._contextJson(request, context, configuration),
-          'scopeOrigin': request.scope != null
+          'scopeOrigin': (request.scopeExplicit ?? (request.scope != null))
               ? 'explicit-argument'
               : context.scope == LifecycleScope.user
               ? 'interactive-selection'
@@ -4901,6 +4921,7 @@ interface class PackLifecycleService {
     _PackCandidate candidate,
     InstallationRecord? record,
     ConfigurationWorkflowResult effective,
+    Set<InstallationTarget> detectedTargets,
   ) async {
     if (candidate.type == PackResourceType.agent) {
       final target = _harness(candidate.profile!).name;
@@ -4924,6 +4945,7 @@ interface class PackLifecycleService {
             .cast<String>();
     if (targets.isEmpty && record != null) return record.validatedProfiles;
     if (targets.isEmpty && request.interactive && !request.yes) {
+      if (detectedTargets.length == 1) return [detectedTargets.single.name];
       final target = await _promptChoice(
         'Skill target [claude/codex/antigravity]:',
         const ['claude', 'codex', 'antigravity'],
@@ -4992,25 +5014,7 @@ interface class PackLifecycleService {
       };
     }
     if (method == null && request.interactive && !request.yes) {
-      final answer = await _promptChoice(
-        'Skill method [canonical/copy/source-link]:',
-        const ['canonical', 'copy', 'source-link'],
-      );
-      if (answer == null) {
-        throw MambaException(
-          'Skill method selection was cancelled; no resource was published.',
-          exitCode: PackProcessStatus.cancelled.code,
-        );
-      }
-      if (answer == 'source-link' && pack.source is! LocalPackSource) {
-        throw MambaException(
-          'source-link requires a durable local pack source.',
-          exitCode: PackProcessStatus.invalidInput.code,
-        );
-      }
-      return SkillInstallMethod.values.firstWhere(
-        (value) => _methodName(answer) == value.name,
-      );
+      return SkillInstallMethod.canonical;
     }
     if (method == null) {
       throw MambaException(

@@ -6,6 +6,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../configuration/effective_configuration.dart';
+import '../harness/harness_catalog.dart';
 import '../pack/pack_configuration.dart' show PackConfigurationScope;
 import '../services/configuration_workflow_service.dart';
 import '../services/acquisition_service.dart';
@@ -73,6 +74,31 @@ final class InstallationWorkflowRequest {
       );
 }
 
+Set<InstallationTarget> detectSkillInstallationTargets(
+  LifecycleContext context,
+  fslib.FileSystem fileSystem,
+) {
+  bool directory(String path) =>
+      fileSystem.typeSync(path, followLinks: false) ==
+      FileSystemEntityType.directory;
+  final antigravity = HarnessCatalog.instance.requireSkillInstallation(
+    HarnessId.of(InstallationTarget.antigravity),
+  );
+  return {
+    if (directory(context.claudeSkillsRoot())) InstallationTarget.claude,
+    if (directory(context.codexSkillsRoot()) ||
+        directory(context.sharedSkillsRoot()))
+      InstallationTarget.codex,
+    if (directory(
+      antigravity.root(
+        context,
+        userScope: context.scope == LifecycleScope.user,
+      ),
+    ))
+      InstallationTarget.antigravity,
+  };
+}
+
 Future<ConfigurationWorkflowResult> effectiveInstallationConfiguration(
   InstallationWorkflowRequest request,
   LifecycleContext context,
@@ -102,13 +128,13 @@ Future<void> offerInstallationPreferenceSave({
   required InstallationInteraction interaction,
   required List<String> preferences,
 }) async {
-  if (!await interaction.offerPreferenceSave(
-    preferences,
-    scope: context.scope.name,
-  )) {
-    return;
-  }
   try {
+    if (!await interaction.offerPreferenceSave(
+      preferences,
+      scope: context.scope.name,
+    )) {
+      return;
+    }
     await ConfigurationWorkflowService(
       fileSystem: fileSystem,
       environment: request.options.environment,

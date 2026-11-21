@@ -1447,6 +1447,36 @@ skill_method = "copy"
         );
 
         test(
+          'save prompt failure does not misreport a successful installation',
+          () async {
+            final source = skill('prompt-failure');
+            interaction.approvals.add(true);
+            interaction.preferencePromptFails = true;
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              interaction.presentedPlans.last,
+              contains(
+                'Installation succeeded, but preferences were not saved',
+              ),
+            );
+          },
+        );
+
+        test(
           'offers eligible preference saving only after interactive success',
           () async {
             final source = skill('save-source');
