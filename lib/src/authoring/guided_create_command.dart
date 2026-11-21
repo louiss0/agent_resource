@@ -116,8 +116,17 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(GuidedCreateFields.format);
     final interactive = resolveInteractive(valueOf, format);
+    if (!interactive &&
+        valueOf(GuidedCreateFields.apply) &&
+        !valueOf(GuidedCreateFields.dryRun) &&
+        valueOf(GuidedCreateFields.scope) == null) {
+      throw MambaException(
+        'Unattended publication requires explicit --scope project|user.',
+        exitCode: 4,
+      );
+    }
     final options = buildOptions(valueOf);
-    final inputs = buildInputs(valueOf);
+    final inputs = await buildInputs(valueOf, interactive);
     final outcome = await guided.run(
       GuidedAuthoringRequest(
         command: commandPath,
@@ -184,7 +193,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   LifecycleOptions buildOptions(ValueOf valueOf) => LifecycleOptions(
     processWorkingDirectory: fileSystem.currentDirectory.path,
     environment: Map<String, String>.unmodifiable(Platform.environment),
-    scope: valueOf(GuidedCreateFields.scope),
+    scope: valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
     cwd: valueOf(GuidedCreateFields.cwd),
     projectRoot: valueOf(GuidedCreateFields.projectRoot),
     home: valueOf(GuidedCreateFields.home),
@@ -197,8 +206,19 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   );
 
   /// The named native inputs of the run.
-  AuthoringInputs buildInputs(ValueOf valueOf) {
-    final profile = valueOf(GuidedCreateFields.profile);
+  Future<AuthoringInputs> buildInputs(ValueOf valueOf, bool interactive) async {
+    var profile = valueOf(GuidedCreateFields.profile);
+    if (profile == null && interactive) {
+      final answer = await guided.valueQuestion?.call(
+        'Select a native profile ():',
+      );
+      if (answer == null || answer.trim().isEmpty) {
+        throw MambaException('Profile selection cancelled.', exitCode: 7);
+      }
+      profile = supportedProfiles
+          .where((value) => value.name == answer.trim())
+          .firstOrNull;
+    }
     if (profile == null) {
       throw MambaException(
         'Select the native profile explicitly with --profile '
@@ -223,7 +243,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       operation: AuthoringOperation.create,
       kind: kind,
       profile: profile,
-      scope: valueOf(GuidedCreateFields.scope),
+      scope: valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
       bodyFile: valueOf(GuidedCreateFields.bodyFile),
       bodyStandardInput: valueOf(GuidedCreateFields.bodyStdin),
       bodyText: valueOf(GuidedCreateFields.bodyText),

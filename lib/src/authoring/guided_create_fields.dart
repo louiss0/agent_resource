@@ -27,11 +27,11 @@ final class GuidedCreateFields {
   );
 
   /// The scope of the created output.
-  static final scope = ChoiceOption.withDefault(
+  static final scope = ChoiceOption(
     'scope',
     choices: const [LifecycleScope.project, LifecycleScope.user],
-    defaultValue: LifecycleScope.project,
-    description: 'The scope of the created output.',
+    description:
+        'The scope of the created output; project is the guided default.',
   );
 
   /// The output format.

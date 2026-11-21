@@ -56,7 +56,7 @@ interface class SkillInstallationService {
       if (!request.scopeExplicit) {
         throw MambaException(
           'Unattended Skill installation requires explicit --scope; the '
-          'interactive user-scope default is not assumed.',
+          'interactive project-scope default is not assumed.',
         );
       }
       if (request.method == null) {

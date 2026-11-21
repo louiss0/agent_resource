@@ -1,4 +1,4 @@
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, stdout;
 
 import 'package:mamba/mamba.dart';
 
@@ -16,10 +16,10 @@ final _harnessOption = RepeatableChoiceOption<ContextHarness>(
   'harness',
   ContextHarness.values,
 );
-final _scopeOption = ChoiceOption.withDefault(
+final _scopeOption = ChoiceOption(
   'scope',
   choices: ContextScope.values,
-  defaultValue: ContextScope.project,
+  description: 'Injection scope; project is the interactive default.',
 );
 final _folderOption = StringOption('folder');
 final _variantOption = StringOption('variant');
@@ -45,6 +45,7 @@ final class ContextInjectCommand extends Command {
     Future<List<ContextHarness>?> Function()? selectHarnesses,
     ContextTemplateSelection? selectTemplate,
     Future<bool> Function()? confirm,
+    void Function(String)? presentPlan,
     bool Function()? hasTerminal,
     InstallationApprovalComponent? approval,
   }) : _approval =
@@ -55,6 +56,7 @@ final class ContextInjectCommand extends Command {
                  '(Ctrl+C to cancel)',
            ),
        _explicitConfirm = confirm,
+       _presentPlan = presentPlan ?? stdout.writeln,
        _selectHarnesses = selectHarnesses ?? _defaultHarnessSelector,
        _selectTemplate = selectTemplate ?? selectStoredContextTemplate,
        _hasTerminal =
@@ -105,6 +107,7 @@ final class ContextInjectCommand extends Command {
   final ContextTemplateSelection _selectTemplate;
   final InstallationApprovalComponent _approval;
   final Future<bool> Function()? _explicitConfirm;
+  final void Function(String) _presentPlan;
   final bool Function() _hasTerminal;
 
   @override
@@ -118,14 +121,30 @@ final class ContextInjectCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(contextFormatOption);
     requireContextInteractiveFormat(valueOf(_interactiveFlag), format);
+    final terminal = _hasTerminal();
+    if (valueOf(_interactiveFlag) && !terminal) {
+      throw _refusal(
+        'INTERACTIVE_TERMINAL_REFUSED',
+        'No usable input and output terminal for interactive injection.',
+      );
+    }
     final options = _options(valueOf);
     final interactive =
         !valueOf(_unattendedFlag) &&
         format == ContextOutputFormat.text &&
-        (valueOf(_interactiveFlag) || _hasTerminal());
+        terminal;
+    if (!interactive &&
+        valueOf(_applyFlag) &&
+        !valueOf(_dryRunFlag) &&
+        valueOf(_scopeOption) == null) {
+      throw _refusal(
+        'MISSING_SCOPE',
+        'Unattended publication requires explicit --scope project|user.',
+      );
+    }
     final name = await _resolveName(valueOf, options, interactive);
     final harnesses = await _resolveHarnesses(valueOf, interactive);
-    final scope = valueOf(_scopeOption);
+    final scope = valueOf(_scopeOption) ?? ContextScope.project;
     final folder = valueOf(_folderOption);
     if (folder != null && scope == ContextScope.user) {
       throw _refusal(
@@ -181,6 +200,14 @@ final class ContextInjectCommand extends Command {
           'Supply --yes to apply a plan in unattended mode.',
         );
       }
+      _presentPlan(
+        LifecycleResult(
+          command: 'context inject',
+          outcome: 'planned',
+          data: plan.toData(),
+          diagnostics: _injection.diagnostics(plan),
+        ).renderText(),
+      );
       if (!await _confirm()) {
         throw _cancelled();
       }

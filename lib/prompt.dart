@@ -211,7 +211,7 @@ final class PromptListCommand extends Command {
   static final _scope = ChoiceOption.withDefault(
     'scope',
     choices: LifecycleScope.values,
-    defaultValue: LifecycleScope.user,
+    defaultValue: LifecycleScope.project,
   );
   static final _target = _promptTarget;
   static final _format = _promptFormat;

@@ -97,7 +97,7 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
         flags: [_verify],
         longDescription:
             'Read-only management-aware Skill inventory. Scope defaults to '
-            'user. Project inventory includes the bounded cwd-to-project-root '
+            'project. Project inventory includes the bounded cwd-to-project-root '
             'ancestor chain. Destination filters presentation only. Managed '
             'occurrences, tracked-missing records, unmanaged candidates, and '
             'ownership-unverified states remain distinct. --verify performs a '
@@ -108,7 +108,7 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
   static final _scope = ChoiceOption.withDefault(
     'scope',
     choices: LifecycleScope.values,
-    defaultValue: LifecycleScope.user,
+    defaultValue: LifecycleScope.project,
   );
   static final _destination = ChoiceOption(
     'destination',

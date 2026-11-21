@@ -49,6 +49,7 @@ void main() {
               '--apply',
               '--yes',
               '--unattended',
+              if (!extra.contains('--scope')) ...['--scope', 'project'],
               '--format',
               'json',
             ]),

@@ -75,7 +75,7 @@ dart run bin/agent_resource.dart skill list [--scope user|project|all]
 dart run bin/agent_resource.dart agent list [--scope project|user|all]
 ```
 
-Skill scope defaults to user; Agent scope defaults to project. Use `--cwd`,
+Skill and Agent inventory scope defaults to project. Use `--cwd`,
 `--project-root`, `--home`, native-home overrides, and `--state-dir` to select
 isolated context. Relative operation paths resolve against `--cwd`. Both
 inventories distinguish unmanaged candidates, managed installations,
@@ -97,8 +97,8 @@ do not prove runtime activation, precedence, or harness compatibility.
 
 Text installation is interactive by default on a usable terminal. It prompts
 for a missing source and required selections, displays the complete plan, and
-asks for approval before writes. Skill scope and method default to `user` and
-`canonical`; Agent scope defaults to `project`. These defaults are not assumed
+asks for approval before writes. Skill and Agent scope default to `project`; the Skill method defaults to
+`canonical`. These defaults are not assumed
 for unattended or JSON installation.
 
 Interactive components use `interact2`; Mamba remains the command framework.

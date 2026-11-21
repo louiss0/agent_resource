@@ -487,6 +487,8 @@ void main() {
           }) async => successJson(
             await exec(<String>[
               ...extra,
+              '--scope',
+              'project',
               '--apply',
               '--plan-id',
               planId,
@@ -507,6 +509,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--yes',
                 '--dry-run',
@@ -664,6 +668,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 'pln_0000000000000000000000000000000000000000000000000000000000000000',
@@ -693,6 +699,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 planId,
@@ -727,6 +735,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 planId,
@@ -758,6 +768,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 planId,
@@ -1210,6 +1222,94 @@ void main() {
                     ),
               );
               expect(prompts, hasLength(1));
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test(
+            'refuses explicit interaction without a usable terminal',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              var asked = false;
+              final injected = ContextInjectCommand(
+                injection,
+                templates,
+                confirm: () async {
+                  asked = true;
+                  return true;
+                },
+                hasTerminal: () => false,
+              );
+              final result = await execWith(injected, const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--interactive',
+              ]);
+              expect(result, isA<MambaFailureResult>());
+              expect(
+                (result as MambaFailureResult).message,
+                contains('TERMINAL'),
+              );
+              expect(asked, isFalse);
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test('requires explicit scope for unattended publication', () async {
+            writeTemplate('styles', 'rules\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              hasTerminal: () => false,
+            );
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--apply',
+              '--yes',
+              '--unattended',
+            ]);
+            expect(result, isA<MambaFailureResult>());
+            expect((result as MambaFailureResult).message, contains('--scope'));
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+
+          test(
+            'shows the destination and plan before asking for approval',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final events = <String>[];
+              final injected = ContextInjectCommand(
+                injection,
+                templates,
+                presentPlan: (plan) => events.add(plan),
+                confirm: () async {
+                  events.add('confirm');
+                  return false;
+                },
+                hasTerminal: () => true,
+              );
+              final result = await execWith(injected, const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--interactive',
+              ]);
+              expect(result, isA<MambaFailureResult>());
+              expect(events, hasLength(2));
+              expect(events.first, contains('/sandbox/project/CLAUDE.md'));
+              expect(events.first, contains('planId'));
+              expect(events.last, 'confirm');
               expect(
                 fs.file('/sandbox/project/CLAUDE.md').existsSync(),
                 isFalse,
