@@ -145,6 +145,72 @@ track = { kind = "local" }
       );
     }
 
+    test('interactive Skill pack ignores shared preferred target like direct install', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["shared"]',
+        ),
+      );
+      final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
+        prompts: PackPrompts(choice: (_, _) async => 'codex'),
+      );
+      final result = await service.execute(
+        PackLifecycleRequest(
+          operation: PackOperation.install,
+          resourceType: PackResourceType.skill,
+          pack: 'local/demo',
+          processWorkingDirectory: project.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+          interactive: true,
+          dryRun: true,
+        ),
+      );
+      expect(result.plan!.resources.single.targets, ['codex']);
+      expect(
+        result.plan!.resources.single.targetOrigin,
+        'interactive-selection',
+      );
+    });
+
+    test(
+      'interactive Skill pack retains supported targets alongside shared',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst(
+            'targets = ["codex"]',
+            'targets = ["shared", "codex"]',
+          ),
+        );
+        final result = await PackLifecycleService(fileSystem: fs).execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(result.plan!.resources.single.targetOrigin, 'project-config');
+      },
+    );
+
     test(
       'interactive Skill pack ignores ineligible preferred targets',
       () async {

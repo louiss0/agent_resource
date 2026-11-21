@@ -1762,11 +1762,8 @@ interface class PackLifecycleService {
               request.resourceType == PackResourceType.skill
           ? requestedTargets
                 .where(
-                  (target) =>
-                      target == 'shared' ||
-                      HarnessCatalog.instance.skillInstallationTargets.any(
-                        (id) => id.wireName == target,
-                      ),
+                  (target) => HarnessCatalog.instance.skillInstallationTargets
+                      .any((id) => id.wireName == target),
                 )
                 .toList()
           : requestedTargets;

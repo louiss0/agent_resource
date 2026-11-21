@@ -167,6 +167,14 @@ interface class AgentInstallationService {
           'A direct agent file requires one --target consistent with --profile.',
         );
       }
+      if (!targetExplicit &&
+          configuredTargets.isNotEmpty &&
+          candidates.sourceKind == AcquisitionSourceKind.resource &&
+          !request.targets.contains(
+            _target(candidates.candidates.single.profile!),
+          )) {
+        throw MambaException('No Agent resources match the preferred targets.');
+      }
       final units = <InstallationUnitPlan>[];
       final errors = <String>[];
       var worstStatus = 1;

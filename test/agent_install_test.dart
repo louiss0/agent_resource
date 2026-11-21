@@ -169,6 +169,78 @@ targets = ["claude"]
         );
 
         test(
+          'interactive exact Agent rejects a conflicting target preference',
+          () async {
+            final source = agent();
+            fs
+                .file('${project.path}/agent-resources.toml')
+                .writeAsStringSync(
+                  'schema_version = 1\n[cli.install]\ntargets = ["codex"]\n',
+                );
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              source.path,
+              '--profile',
+              'claude',
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>().having(
+                (r) => r.message,
+                'message',
+                contains('No Agent resources match the preferred targets'),
+              ),
+            );
+            expect(
+              fs.directory('${project.path}/.claude').existsSync(),
+              isFalse,
+            );
+          },
+        );
+
+        for (final scenario in [
+          (
+            targets: '"codex", "claude"',
+            explicit: false,
+            origin: 'project-config',
+          ),
+          (targets: '"codex"', explicit: true, origin: 'explicit-argument'),
+        ]) {
+          test(
+            'interactive exact Agent accepts matching or explicit target $scenario',
+            () async {
+              final source = agent();
+              fs
+                  .file('${project.path}/agent-resources.toml')
+                  .writeAsStringSync(
+                    'schema_version = 1\n[cli.install]\ntargets = [${scenario.targets}]\n',
+                  );
+              final result = await executor().fake().execute([
+                'agent',
+                'install',
+                source.path,
+                '--profile',
+                'claude',
+                if (scenario.explicit) ...['--target', 'claude'],
+                ...context(),
+                '--dry-run',
+              ]);
+              expect(
+                result,
+                isA<MambaSuccessResult>(),
+                reason: result is MambaFailureResult ? result.message : null,
+              );
+              final output = (result as MambaSuccessResult).output!;
+              expect(output, contains('Profile: claude'));
+              expect(output, contains(scenario.origin));
+            },
+          );
+        }
+
+        test(
           'interactive exact Agent rejects an incompatible explicit target',
           () async {
             final source = agent();
