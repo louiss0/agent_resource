@@ -165,6 +165,83 @@ void main() {
             }
           },
         );
+        test(
+          'offers user scope when the working directory is unavailable',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+            fs.directory('/home').createSync();
+            final result =
+                await createExecutor(
+                  fileSystem: fs,
+                  guided: GuidedAuthoringService(
+                    fileSystem: fs,
+                    terminal: () => true,
+                    ask: (_) async => 'user',
+                  ),
+                ).fake().execute([
+                  'skill',
+                  'create',
+                  '--cwd',
+                  '/missing/',
+                  '--home',
+                  '/home/',
+                  '--profile',
+                  'claude',
+                  '--name',
+                  'demo',
+                  '--description',
+                  'Demo.',
+                  '--body-text',
+                  'Body.',
+                  '--dry-run',
+                ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect((result as MambaSuccessResult).output, contains('/home/'));
+          },
+        );
+        test('refuses relative body paths when fallback changes cwd', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/home').createSync();
+          fs.file('/home/body.md').writeAsStringSync('Wrong body');
+          final result =
+              await createExecutor(
+                fileSystem: fs,
+                guided: GuidedAuthoringService(
+                  fileSystem: fs,
+                  terminal: () => true,
+                  ask: (_) async => 'user',
+                ),
+              ).fake().execute([
+                'skill',
+                'create',
+                '--cwd',
+                '/missing/',
+                '--home',
+                '/home/',
+                '--profile',
+                'claude',
+                '--name',
+                'demo',
+                '--description',
+                'Demo.',
+                '--body-file',
+                'body.md',
+                '--dry-run',
+              ]);
+          expect(
+            result,
+            isA<MambaFailureResult>().having(
+              (value) => value.message,
+              'message',
+              contains('absolute'),
+            ),
+          );
+          expect(fs.directory('/home/.claude').existsSync(), isFalse);
+        });
         test('re-prompts with the choices after an invalid profile', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           fs.directory('/project').createSync();

@@ -153,7 +153,7 @@ final class SkillListCommand(
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final options = await resolveInventoryScope(
+    final options = await resolveInteractiveUserScope(
       fileSystem: _lifecycle.state.io.fs,
       interactive:
           valueOf(_format) == LifecycleOutputFormat.text && _guided.hasTerminal,

@@ -239,7 +239,7 @@ final class PromptListCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final target = valueOf(_target) as PromptConsumer?;
     _requirePromptTarget(target);
-    final options = await resolveInventoryScope(
+    final options = await resolveInteractiveUserScope(
       fileSystem: _fileSystem,
       interactive:
           valueOf(_format) == LifecycleOutputFormat.text && _guided.hasTerminal,

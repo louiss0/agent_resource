@@ -205,8 +205,8 @@ final class LifecycleOptions {
   );
 }
 
-/// Offers a user-scope inventory when an implicit project boundary is invalid.
-Future<LifecycleOptions> resolveInventoryScope({
+/// Offers a user-scope context when an implicit project context is invalid.
+Future<LifecycleOptions> resolveInteractiveUserScope({
   required LifecycleOptions options,
   required fslib.FileSystem fileSystem,
   required bool interactive,

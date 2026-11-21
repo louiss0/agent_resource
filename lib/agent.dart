@@ -520,7 +520,7 @@ final class AgentListCommand(
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final options = await resolveInventoryScope(
+    final options = await resolveInteractiveUserScope(
       fileSystem: _lifecycle.fileSystem,
       interactive:
           valueOf(_listFormat) == OutputFormat.text && _guided.hasTerminal,

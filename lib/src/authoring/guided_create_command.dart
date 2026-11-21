@@ -319,52 +319,46 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     }
   }
 
-  /// Offers user scope only when discarding an unusable project root resolves
-  /// the context, and the operator did not explicitly select a scope.
+  /// Offers a separately resolvable user context when project context fails.
   Future<LifecycleOptions> resolveOptions(
     ValueOf valueOf,
     bool interactive,
   ) async {
     final options = buildOptions(valueOf);
-    if (!interactive ||
-        valueOf(GuidedCreateFields.scope) != null ||
-        options.projectRoot == null) {
-      return options;
-    }
-    try {
-      LifecycleContext.resolve(options, fileSystem: fileSystem);
-      return options;
-    } on MambaException catch (error, stack) {
-      final fallback = buildOptions(valueOf, fallbackToUser: true);
-      try {
-        LifecycleContext.resolve(fallback, fileSystem: fileSystem);
-      } on MambaException {
-        Error.throwWithStackTrace(error, stack);
+    final resolved = await resolveInteractiveUserScope(
+      options: options,
+      fileSystem: fileSystem,
+      interactive: interactive,
+      scopeExplicit: valueOf(GuidedCreateFields.scope) != null,
+      offerUserScope: () async =>
+          (await guided.valueQuestion?.call(
+            'Project context is unavailable. Use user scope instead? Type user to continue:',
+          ))?.trim() ==
+          'user',
+    );
+    if (resolved.cwd != options.cwd) {
+      final paths = [
+        valueOf(GuidedCreateFields.bodyFile),
+        valueOf(GuidedCreateFields.output),
+        sourcePath(valueOf),
+      ].whereType<String>();
+      if (paths.any((path) => !fileSystem.path.isAbsolute(path))) {
+        throw MambaException(
+          'User-scope fallback requires absolute source, body and output paths when cwd is unavailable.',
+          exitCode: 4,
+        );
       }
-      final answer = await guided.valueQuestion?.call(
-        'Project context is unavailable. Use user scope instead? Type user to continue:',
-      );
-      if (answer?.trim() != 'user') {
-        throw MambaException('Scope selection cancelled.', exitCode: 7);
-      }
-      return fallback;
     }
+    return resolved;
   }
 
   /// The lifecycle context of the run.
-  LifecycleOptions buildOptions(
-    ValueOf valueOf, {
-    bool fallbackToUser = false,
-  }) => LifecycleOptions(
+  LifecycleOptions buildOptions(ValueOf valueOf) => LifecycleOptions(
     processWorkingDirectory: fileSystem.currentDirectory.path,
     environment: Map<String, String>.unmodifiable(Platform.environment),
-    scope: fallbackToUser
-        ? LifecycleScope.user
-        : valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
+    scope: valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
     cwd: valueOf(GuidedCreateFields.cwd),
-    projectRoot: fallbackToUser
-        ? null
-        : valueOf(GuidedCreateFields.projectRoot),
+    projectRoot: valueOf(GuidedCreateFields.projectRoot),
     home: valueOf(GuidedCreateFields.home),
     claudeConfigDir: valueOf(GuidedCreateFields.claudeConfigDir),
     codexHome: valueOf(GuidedCreateFields.codexHome),

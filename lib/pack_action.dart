@@ -257,7 +257,7 @@ final class PackActionCommand extends Command {
         _stdoutIsTerminal() &&
         !yes &&
         format == LifecycleOutputFormat.text;
-    final resolvedOptions = await resolveInventoryScope(
+    final resolvedOptions = await resolveInteractiveUserScope(
       fileSystem: _fileSystem,
       interactive: interactive,
       scopeExplicit: valueOf(_PackContextOptions.scope) != null,
