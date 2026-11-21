@@ -1115,6 +1115,30 @@ path = "skills/review"
           },
         );
 
+        test('interactive installation defaults to project scope', () async {
+          final source = skill('default-project');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            '--dry-run',
+            ...context().skip(2),
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          final output = (result as MambaSuccessResult).output!;
+          expect(output, contains('Scope: project'));
+          expect(output, contains(project.path));
+          expect(output, isNot(contains('${home.path}/.agents/skills')));
+        });
+
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {
           final collection = fs.directory(
             fs.path.join(sandbox.path, 'collection'),
