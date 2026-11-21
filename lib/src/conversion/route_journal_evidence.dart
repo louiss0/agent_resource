@@ -6,7 +6,8 @@ import '../services/lifecycle_state_service.dart';
 import 'path_action_diff.dart';
 
 /// Standalone lexical evidence only. Decoding does not authorize recovery or
-/// establish filesystem authority, reserve paths, or validate live state.
+/// establish filesystem authority or validate live state. Callers may use valid
+/// evidence to conservatively reserve its participating paths and identities.
 final class RouteJournalEvidence {
   RouteJournalEvidence._(this._encoded);
   final String _encoded;

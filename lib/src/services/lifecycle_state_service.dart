@@ -10,6 +10,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
+import '../conversion/route_journal_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
 import '../harness/harness_user_roots.dart';
 import '../authoring/authoring_transaction.dart';
@@ -4883,7 +4884,15 @@ interface class LifecycleStateService {
     Set<String> validatedPaths = const {},
   }) {
     for (final state in _coordinationStates(context)) {
-      _blockPending(state, location, validatedPaths: validatedPaths);
+      _blockPending(
+        state,
+        location,
+        validatedPaths: validatedPaths,
+        expectedScope:
+            io.fs.path.equals(state, context.stateRoot(LifecycleScope.project))
+            ? 'project'
+            : 'user',
+      );
     }
   }
 
@@ -4965,6 +4974,21 @@ interface class LifecycleStateService {
             touchedIds.add(record.installationId);
           }
         }
+      }
+      for (final state in _coordinationStates(context)) {
+        _blockPendingRoutes(
+          state,
+          locations: locations,
+          installationIds: touchedIds,
+          packKeys: packKeys,
+          expectedScope:
+              io.fs.path.equals(
+                state,
+                context.stateRoot(LifecycleScope.project),
+              )
+              ? 'project'
+              : 'user',
+        );
       }
       bool conflicts(ConversionEvidence evidence) {
         final snapshot = evidence.observations['coordinatorSourceRecord'];
@@ -5265,11 +5289,85 @@ interface class LifecycleStateService {
     return states.toList();
   }
 
+  void _blockPendingRoutes(
+    String state, {
+    Iterable<String> locations = const [],
+    Set<String> installationIds = const {},
+    Set<String> packKeys = const {},
+    String? expectedScope,
+  }) {
+    final root = io.fs.path.join(state, 'transactions');
+    _requireUnlinkedCoordinationPath(root);
+    final type = io.type(root, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return;
+    if (type != FileSystemEntityType.directory) {
+      throw MambaException(
+        'Transaction authority is not a directory.',
+        exitCode: 6,
+      );
+    }
+    for (final file in io.list(root)) {
+      if (io.fs.path.extension(file.path) != '.json') continue;
+      _requireUnlinkedCoordinationPath(file.path);
+      final raw = _readTransaction(file.path);
+      if (raw['operation'] != 'cross-route') continue;
+      try {
+        final bytes = io.read(file.path, maxManagementDocumentBytes);
+        final evidence = RouteJournalEvidence.decode(
+          utf8.decode(bytes),
+          io.fs.path,
+        ).toJson();
+        if (io.fs.path.basenameWithoutExtension(file.path) !=
+                evidence['transactionId'] ||
+            expectedScope != null && evidence['scope'] != expectedScope) {
+          throw const FormatException('Route journal authority mismatch.');
+        }
+        if (evidence['phase'] == 'completed') continue;
+        final records = [
+          for (final item in evidence['oldRecords'] as List)
+            InstallationRecord.fromJson(item),
+          for (final item in evidence['newRecords'] as List)
+            InstallationRecord.fromJson(item),
+        ];
+        if (records.any(
+          (record) =>
+              installationIds.contains(record.installationId) ||
+              packKeys.contains(record.installationRoute!.packKey) ||
+              locations.any(
+                (location) =>
+                    _pathsOverlap(location, record.location) ||
+                    record.exposures.any(
+                      (exposure) => _pathsOverlap(location, exposure.path),
+                    ),
+              ),
+        )) {
+          throw MambaException(
+            'Pending route transaction ${evidence['transactionId']} blocks this mutation.',
+            exitCode: 6,
+          );
+        }
+      } on MambaException {
+        rethrow;
+      } on Exception catch (error) {
+        throw MambaException(
+          'Invalid route transaction evidence ${file.path}: $error',
+          exitCode: 6,
+        );
+      }
+    }
+  }
+
   void _blockPending(
     String state,
     String location, {
     Set<String> validatedPaths = const {},
+    required String expectedScope,
   }) {
+    _blockPendingRoutes(
+      state,
+      locations: [location],
+      expectedScope: expectedScope,
+    );
     _blockPendingInverseRestores(
       <String>[state],
       location: location,
