@@ -2318,6 +2318,16 @@ interface class PackLifecycleService {
       }
       if (records.isEmpty) continue;
       final record = records.single;
+      final route = record.installationRoute;
+      if (request.operation == PackOperation.update &&
+          candidate.type == PackResourceType.skill &&
+          route != null &&
+          route.sourceRelativePath != candidate.relativePath) {
+        throw MambaException(
+          'The upstream path for ${record.name} changed; refusing to replace its recorded source without explicit review.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
       final modification = _lifecycleState.verify(record);
       if (request.operation == PackOperation.install &&
           ((record.kind != ArtifactKind.skillLink &&

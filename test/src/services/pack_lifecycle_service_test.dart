@@ -493,6 +493,53 @@ track = { kind = "local" }
       );
     });
 
+    test(
+      'update refuses a Skill moved to a different upstream route',
+      () async {
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(
+          request(PackOperation.install, PackResourceType.skill),
+        );
+        final ledger = fs.file(
+          fs.path.join(project.path, '.agent-resource', 'installations.json'),
+        );
+        final before = ledger.readAsStringSync();
+        final installed = fs.file(
+          fs.path.join(
+            project.path,
+            '.agents',
+            'skills',
+            'reviewer',
+            'SKILL.md',
+          ),
+        );
+        final installedBefore = installed.readAsStringSync();
+        final original = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        );
+        fs.file(fs.path.join(source.path, 'skills', 'moved', 'SKILL.md'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync(
+            original.readAsStringSync().replaceFirst('# Reviewer', '# Changed'),
+          );
+        fs
+            .file(fs.path.join(source.path, 'agent-resources.toml'))
+            .writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/moved"
+''');
+        await expectLater(
+          service.execute(
+            request(PackOperation.update, PackResourceType.skill),
+          ),
+          throwsA(isA<MambaException>()),
+        );
+        expect(ledger.readAsStringSync(), before);
+        expect(installed.readAsStringSync(), installedBefore);
+      },
+    );
+
     test('installs a native Skill and Agent with source evidence', () async {
       final service = PackLifecycleService(fileSystem: fs);
       final skills = await service.execute(
