@@ -1,6 +1,5 @@
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/pack_action.dart';
-import 'package:mamba/mamba.dart';
 import 'package:file/memory.dart';
 import 'package:agent_resource/src/pack/pack_discovery.dart';
 import 'package:agent_resource/src/pack/pack_models.dart';
