@@ -10,6 +10,7 @@ import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
 import 'package:mamba/mamba.dart' show MambaException;
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
+import 'package:file/local.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
 import 'package:toml/toml.dart' show TomlDocument;
@@ -1917,6 +1918,146 @@ void main() {
             root.deleteSync(recursive: true);
           }
         }, timeout: const Timeout(Duration(seconds: 90)));
+
+        test('serializes lifecycle recovery against another process publishing a nested configuration', () async {
+          final root = io.Directory.systemTemp.createTempSync(
+            'config-lifecycle-coordination-',
+          );
+          io.Process? publisher;
+          try {
+            final sep = io.Platform.pathSeparator;
+            final project = io.Directory('${root.path}${sep}project')
+              ..createSync();
+            final other = io.Directory('${root.path}${sep}other')..createSync();
+            final source = io.Directory('${root.path}${sep}source')
+              ..createSync();
+            io.File('${source.path}${sep}SKILL.md').writeAsStringSync(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+            const local = LocalFileSystem();
+            final live = local.path.join(
+              project.path,
+              '.claude',
+              'skills',
+              'review',
+            );
+            final ioFailure = _InterruptSkillInstallIO(live, local);
+            final skill = SkillLifecycleService(
+              state: LifecycleStateService(io: ioFailure),
+            );
+            String? id;
+            try {
+              await skill.install(
+                SkillInstallInput(
+                  options: LifecycleOptions(
+                    processWorkingDirectory: project.path,
+                    cwd: project.path,
+                    projectRoot: project.path,
+                    home: project.path,
+                    scope: LifecycleScope.project,
+                  ),
+                  source: source.path,
+                  destination: SkillDestination.claude,
+                ),
+              );
+              fail('Expected interrupted install');
+            } on MambaException catch (error) {
+              id = RegExp(r'transaction (trx_[a-f0-9]{32})')
+                  .firstMatch(error.message)
+                  ?.group(1);
+            }
+            expect(id, isNotNull);
+            final target = io.File(
+              local.path.join(live, 'agent-resources.toml'),
+            )..writeAsStringSync('schema_version = 1\n');
+            final markerFile = io.File(local.path.join(root.path, 'held'));
+            final script = io.File(local.path.join(root.path, 'worker.dart'))
+              ..writeAsStringSync(_coordinationWorker);
+            final packages = io.File('.dart_tool/package_config.json')
+                .absolute
+                .path;
+            final kernel = local.path.join(root.path, 'worker.dill');
+            final compiled = await io.Process.run(
+              io.Platform.resolvedExecutable,
+              [
+                'compile',
+                'kernel',
+                '--packages=$packages',
+                '-o',
+                kernel,
+                script.path,
+              ],
+            ).timeout(const Duration(seconds: 45));
+            expect(
+              compiled.exitCode,
+              0,
+              reason: '${compiled.stdout} ${compiled.stderr}',
+            );
+            publisher = await io.Process.start(io.Platform.resolvedExecutable, [
+              '--packages=$packages',
+              kernel,
+              other.path,
+              target.path,
+              markerFile.path,
+              'true',
+            ]);
+            final publisherOut = publisher.stdout
+                .transform(utf8.decoder)
+                .join();
+            final publisherErr = publisher.stderr
+                .transform(utf8.decoder)
+                .join();
+            for (var i = 0; i < 150 && !markerFile.existsSync(); i++) {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+            }
+            if (!markerFile.existsSync()) {
+              fail('Publisher did not reach its paused journal write');
+            }
+            final recovery = createExecutor(fileSystem: local).fake().execute([
+              'skill',
+              'recover',
+              id!,
+              '--action',
+              'rollback',
+              '--yes',
+              '--scope',
+              'project',
+              '--cwd',
+              '${project.path}$sep',
+              '--project-root',
+              '${project.path}$sep',
+              '--home',
+              '${project.path}$sep',
+            ]);
+            final completedEarly = await recovery
+                .then((_) => true)
+                .timeout(const Duration(seconds: 2), onTimeout: () => false);
+            if (completedEarly) {
+              expect(
+                await recovery,
+                isA<MambaFailureResult>().having(
+                  (r) => r.message,
+                  'message',
+                  contains('coordination'),
+                ),
+              );
+              expect(target.readAsStringSync(), 'schema_version = 1\n');
+            }
+            final publisherCode = await publisher.exitCode;
+            expect(
+              publisherCode,
+              0,
+              reason: '${await publisherOut} ${await publisherErr}',
+            );
+            final result = await recovery;
+            expect(result, isA<MambaFailureResult>());
+            expect(target.readAsStringSync(), contains('snapshot_days = 14'));
+          } finally {
+            publisher?.kill();
+            if (publisher != null) await publisher.exitCode;
+            root.deleteSync(recursive: true);
+          }
+        }, timeout: const Timeout(Duration(seconds: 100)));
 
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
