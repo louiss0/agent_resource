@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
-import 'package:ffi/ffi.dart';
 import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
@@ -5770,17 +5768,7 @@ interface class LifecycleStateService {
     // acquire the same stable pair in lexical order; removal/recovery uses
     // this domain as well so aliases cannot bypass a pending operation.
     final states = _coordinationStates(context)..sort();
-    // All local mutations share a machine-level gate before acquiring scope
-    // locks. A target may be inside a lifecycle location even when the two
-    // processes have unrelated project and user-state roots.
-    final globalPath = io.fs is local.LocalFileSystem
-        ? _globalCoordinationPath()
-        : null;
-    final globalKey = globalPath == null
-        ? null
-        : 'global:${_pathKey(globalPath)}';
     final keys = states.map(_pathKey).toSet();
-    if (globalKey != null) keys.add(globalKey);
     final held = Zone.current[_coordinationZone] as Set<String>?;
     Future<T> guarded() async {
       if (!coordinated) {
@@ -5801,35 +5789,6 @@ interface class LifecycleStateService {
     final completions = <String, Completer<void>>{};
     final locks = <fslib.RandomAccessFile>[];
     try {
-      if (globalPath != null && globalKey != null) {
-        final previous = _inProcessLocks[globalKey] ?? Future<void>.value();
-        final completion = Completer<void>.sync();
-        _inProcessLocks[globalKey] = completion.future;
-        await previous;
-        completions[globalKey] = completion;
-        _requireUnlinkedCoordinationPath(globalPath);
-        final type = io.type(globalPath, followLinks: false);
-        if (type != FileSystemEntityType.notFound &&
-            type != FileSystemEntityType.file) {
-          throw MambaException(
-            'Global lifecycle coordination is not a regular file: $globalPath',
-            exitCode: 6,
-          );
-        }
-        final lock = io.fs.file(globalPath).openSync(mode: FileMode.append);
-        locks.add(lock);
-        // On Windows a contended byte-range lock can fail immediately.
-        // Retry briefly rather than treating ordinary contention as damage.
-        for (var attempt = 0; ; attempt++) {
-          try {
-            await lock.lock(FileLock.exclusive);
-            break;
-          } on FileSystemException {
-            if (attempt >= 299) rethrow;
-            await Future<void>.delayed(const Duration(milliseconds: 100));
-          }
-        }
-      }
       for (final state in states) {
         final key = _pathKey(state);
         final previous = _inProcessLocks[key] ?? Future<void>.value();
@@ -5878,50 +5837,6 @@ interface class LifecycleStateService {
           _inProcessLocks.remove(entry.key);
         }
       }
-    }
-  }
-
-  String _globalCoordinationPath() {
-    final path = io.fs.path;
-    final String parent;
-    if (Platform.isWindows) {
-      final systemRoot = _windowsSystemDirectory();
-      parent = path.join(path.rootPrefix(systemRoot), 'Users', 'Public');
-    } else {
-      parent = Platform.isMacOS ? '/private/tmp' : '/tmp';
-    }
-    if (io.type(parent, followLinks: false) != FileSystemEntityType.directory) {
-      throw MambaException(
-        'Global lifecycle coordination directory is unavailable: $parent',
-        exitCode: 6,
-      );
-    }
-    return path.join(parent, '.agent-resource-lifecycle-coordination.lock');
-  }
-
-  String _windowsSystemDirectory() {
-    final buffer = calloc<Uint16>(32768);
-    try {
-      final getWindowsDirectory = DynamicLibrary.open('kernel32.dll')
-          .lookupFunction<
-            Uint32 Function(Pointer<Uint16>, Uint32),
-            int Function(Pointer<Uint16>, int)
-          >('GetWindowsDirectoryW');
-      final length = getWindowsDirectory(buffer, 32768);
-      if (length == 0 || length >= 32768) {
-        throw MambaException(
-          'Cannot determine Windows lifecycle coordination authority.',
-          exitCode: 6,
-        );
-      }
-      return buffer.cast<Utf16>().toDartString(length: length);
-    } on ArgumentError {
-      throw MambaException(
-        'Windows lifecycle coordination is unavailable.',
-        exitCode: 6,
-      );
-    } finally {
-      calloc.free(buffer);
     }
   }
 

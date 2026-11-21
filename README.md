@@ -287,14 +287,10 @@ configuration that might have an older interrupted publication, run recovery
 from the original project. Older transactions also did not record their staging
 directory, so recovery cannot identify or remove those old staging artifacts.
 Incomplete or altered new staging evidence is retained for manual inspection.
-Cooperating local lifecycle and configuration mutations also acquire a common
-machine-level coordination lock before scope and target locks, including when
-their project and user-state roots differ. This serializes local mutations
-across otherwise unrelated resources. If the common lock cannot be opened or
-acquired, the mutation refuses. All writers must use a version supporting
-this lock and share the same native filesystem namespace; separately isolated
-containers or older versions do not share this coordination authority and must
-not write the same resources concurrently.
+Lifecycle mutations with unrelated coordination roots are not guaranteed to
+acquire the configuration target lock; stop other writers while recovering.
+There is no machine-wide or cross-account lifecycle lock. Coordinate writers
+externally when they can affect the same resources across unrelated roots.
 
 ```text
 agent_resource config effective [--scope project|user] [--pack <key>] [--format text|json]

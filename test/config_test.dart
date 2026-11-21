@@ -10,7 +10,6 @@ import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
 import 'package:mamba/mamba.dart' show MambaException;
 import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
-import 'package:file/local.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
 import 'package:toml/toml.dart' show TomlDocument;
@@ -1919,64 +1918,36 @@ void main() {
           }
         }, timeout: const Timeout(Duration(seconds: 90)));
 
-        test('serializes lifecycle recovery against another process publishing a nested configuration', () async {
+        test('does not serialize unrelated publications from separate processes', () async {
           final root = io.Directory.systemTemp.createTempSync(
-            'config-lifecycle-coordination-',
+            'config-coordination-',
           );
-          io.Process? publisher;
+          io.Process? first;
+          io.Process? second;
           try {
-            final sep = io.Platform.pathSeparator;
-            final project = io.Directory('${root.path}${sep}project')
-              ..createSync();
-            final other = io.Directory('${root.path}${sep}other')..createSync();
-            final source = io.Directory('${root.path}${sep}source')
-              ..createSync();
-            io.File('${source.path}${sep}SKILL.md').writeAsStringSync(
-              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
-            );
-            const local = LocalFileSystem();
-            final live = local.path.join(
-              project.path,
-              '.claude',
-              'skills',
-              'review',
-            );
-            final ioFailure = _InterruptSkillInstallIO(live, local);
-            final skill = SkillLifecycleService(
-              state: LifecycleStateService(io: ioFailure),
-            );
-            String? id;
-            try {
-              await skill.install(
-                SkillInstallInput(
-                  options: LifecycleOptions(
-                    processWorkingDirectory: project.path,
-                    cwd: project.path,
-                    projectRoot: project.path,
-                    home: project.path,
-                    scope: LifecycleScope.project,
-                  ),
-                  source: source.path,
-                  destination: SkillDestination.claude,
-                ),
-              );
-              fail('Expected interrupted install');
-            } on MambaException catch (error) {
-              id = RegExp(r'transaction (trx_[a-f0-9]{32})')
-                  .firstMatch(error.message)
-                  ?.group(1);
-            }
-            expect(id, isNotNull);
+            final projectA = io.Directory(
+              '${root.path}${io.Platform.pathSeparator}a',
+            )..createSync();
+            final projectB = io.Directory(
+              '${root.path}${io.Platform.pathSeparator}b',
+            )..createSync();
             final target = io.File(
-              local.path.join(live, 'agent-resources.toml'),
+              '${root.path}${io.Platform.pathSeparator}config.toml',
             )..writeAsStringSync('schema_version = 1\n');
-            final markerFile = io.File(local.path.join(root.path, 'held'));
-            final script = io.File(local.path.join(root.path, 'worker.dart'))
-              ..writeAsStringSync(_coordinationWorker);
+            final otherTarget = io.File(
+              '${root.path}${io.Platform.pathSeparator}other.toml',
+            )..writeAsStringSync('schema_version = 1\n');
+            final marker = io.File(
+              '${root.path}${io.Platform.pathSeparator}held',
+            );
+            final script = io.File(
+              '${root.path}${io.Platform.pathSeparator}worker.dart',
+            )..writeAsStringSync(_coordinationWorker);
             final packages = io.File('.dart_tool/package_config.json')
                 .absolute
                 .path;
-            final kernel = local.path.join(root.path, 'worker.dill');
+            final kernel =
+                '${root.path}${io.Platform.pathSeparator}worker.dill';
             final compiled = await io.Process.run(
               io.Platform.resolvedExecutable,
               [
@@ -1993,71 +1964,59 @@ void main() {
               0,
               reason: '${compiled.stdout} ${compiled.stderr}',
             );
-            publisher = await io.Process.start(io.Platform.resolvedExecutable, [
+            Future<io.Process> start(
+              io.Directory project,
+              io.File file,
+              bool hold,
+            ) => io.Process.start(io.Platform.resolvedExecutable, [
               '--packages=$packages',
               kernel,
-              other.path,
-              target.path,
-              markerFile.path,
-              'true',
+              project.path,
+              file.path,
+              marker.path,
+              hold.toString(),
             ]);
-            final publisherOut = publisher.stdout
-                .transform(utf8.decoder)
-                .join();
-            final publisherErr = publisher.stderr
-                .transform(utf8.decoder)
-                .join();
-            for (var i = 0; i < 150 && !markerFile.existsSync(); i++) {
+            first = await start(projectA, target, true);
+            final firstOut = first.stdout.transform(utf8.decoder).join();
+            final firstErr = first.stderr.transform(utf8.decoder).join();
+            for (var i = 0; i < 150 && !marker.existsSync(); i++) {
               await Future<void>.delayed(const Duration(milliseconds: 100));
             }
-            if (!markerFile.existsSync()) {
-              fail('Publisher did not reach its paused journal write');
-            }
-            final recovery = createExecutor(fileSystem: local).fake().execute([
-              'skill',
-              'recover',
-              id!,
-              '--action',
-              'rollback',
-              '--yes',
-              '--scope',
-              'project',
-              '--cwd',
-              '${project.path}$sep',
-              '--project-root',
-              '${project.path}$sep',
-              '--home',
-              '${project.path}$sep',
-            ]);
-            final completedEarly = await recovery
-                .then((_) => true)
-                .timeout(const Duration(seconds: 2), onTimeout: () => false);
-            if (completedEarly) {
-              expect(
-                await recovery,
-                isA<MambaFailureResult>().having(
-                  (r) => r.message,
-                  'message',
-                  contains('coordination'),
-                ),
+            if (!marker.existsSync()) {
+              final code = await first.exitCode;
+              fail(
+                'First worker exited $code: ${await firstOut} ${await firstErr}',
               );
-              expect(target.readAsStringSync(), 'schema_version = 1\n');
             }
-            final publisherCode = await publisher.exitCode;
-            expect(
-              publisherCode,
-              0,
-              reason: '${await publisherOut} ${await publisherErr}',
+            second = await start(projectB, otherTarget, false);
+            final secondOut = second.stdout.transform(utf8.decoder).join();
+            final secondErr = second.stderr.transform(utf8.decoder).join();
+            final secondCode = await second.exitCode.timeout(
+              const Duration(seconds: 6),
+              onTimeout: () {
+                throw StateError('Unrelated publication was blocked');
+              },
             );
-            final result = await recovery;
-            expect(result, isA<MambaFailureResult>());
+            final firstCode = await first.exitCode;
+            expect(firstCode, 0, reason: '${await firstOut} ${await firstErr}');
+            expect(
+              secondCode,
+              0,
+              reason: '${await secondOut} ${await secondErr}',
+            );
             expect(target.readAsStringSync(), contains('snapshot_days = 14'));
+            expect(
+              otherTarget.readAsStringSync(),
+              contains('snapshot_days = 14'),
+            );
           } finally {
-            publisher?.kill();
-            if (publisher != null) await publisher.exitCode;
+            first?.kill();
+            second?.kill();
+            if (first != null) await first.exitCode;
+            if (second != null) await second.exitCode;
             root.deleteSync(recursive: true);
           }
-        }, timeout: const Timeout(Duration(seconds: 100)));
+        }, timeout: const Timeout(Duration(seconds: 90)));
 
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
