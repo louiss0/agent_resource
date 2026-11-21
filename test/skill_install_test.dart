@@ -1307,6 +1307,41 @@ path = "skills/other"
           expect(output, contains('--resource code-review'));
           expect(output, contains('--target codex'));
           expect(output, contains('--method canonical'));
+          final command = output.split('\n').last.split('): ').last;
+          final shell = await io.Process.run(
+            io.Platform.isWindows ? 'powershell.exe' : 'sh',
+            io.Platform.isWindows
+                ? [
+                    '-NoProfile',
+                    '-Command',
+                    'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+                  ]
+                : [
+                    '-c',
+                    'agent_resource() { printf "%s\\n" "\$@"; }; $command',
+                  ],
+          );
+          expect(shell.exitCode, 0, reason: '${shell.stderr}');
+          final args = io.Platform.isWindows
+              ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+              : (shell.stdout as String).trimRight().split('\n');
+          final replay = await createExecutor(
+            fileSystem: fs,
+            skillInstallation: SkillInstallationService(
+              fileSystem: fs,
+              interaction: ScriptedInstallationInteraction(interactive: false),
+              progress: noInstallationProgress,
+            ),
+          ).fake().execute(args);
+          expect(
+            replay,
+            isA<MambaSuccessResult>(),
+            reason: replay is MambaFailureResult ? replay.message : null,
+          );
+          expect(
+            (replay as MambaSuccessResult).output,
+            contains('code-review'),
+          );
           expect(interaction.approvals, isEmpty);
           expect(
             fs.directory(fs.path.join(home.path, '.agents')).existsSync(),
