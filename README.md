@@ -54,7 +54,8 @@ dart run bin/agent_resource.dart --version
 The no-argument and `--help` invocations show root help. Root help lists the
 singular `skill` and `agent` groups for native resource operations, `pack` for
 source-aware lifecycle operations, `prompt` and `authoring` for Prompt and
-draft surfaces, and `config` for configuration validation. Each singular group
+draft surfaces, and `config` for validation, effective settings, and
+preferences. Each singular group
 provides `list`, `inspect`, `validate`, `install`, `adopt`, `replace`, `remove`,
 `backup`, and `recover` paths. There are no root-level aliases, and
 `skill discover` is not retained as a second inventory verb. Unsupported commands
@@ -234,6 +235,73 @@ reports human-readable aggregate diagnostics and recovery guidance on stderr
 with a nonzero status. Human text and Mamba errors may use normal terminal
 color; JSON success data is plain and contains no prompts or progress output.
 
+### Inspect and save preferences
+
+`config effective` is read-only. It reports the resolved safe preferences, the
+user and project configuration paths, and each value's origin: explicit
+argument, project config, user config, pack config, detection, or built-in
+default. Use `--format text|json` for human-readable or scripted inspection.
+Explicit `--target`, `--method`, and `--snapshot-days` values are shown as
+explicit argument origins without changing configuration. `--pack <key>`
+reports pack-level install overrides as `pack-config` origins. A user path
+discovered from `XDG_CONFIG_HOME` reports that variable as its source.
+
+`config prefer` previews eligible changes by default. Add `--apply` to write
+only the reviewed safe preferences to the selected `--scope project|user`
+configuration. The eligible keys are `cli.install.targets`,
+`cli.install.skill_method`, and `cli.retention.snapshot_days`. Remembered
+targets may be `claude`, `codex`, `shared`, or `pi`: Skill-backed pack
+installations support the first three, while MCP also supports `pi`. Agent
+installations derive their target from the Agent's native profile. A target
+accepted here is not necessarily supported by every resource type. Applies use
+focused table edits that preserve comments, indentation, and unrelated TOML
+sections; ambiguous inline or dotted layouts are refused. Publication uses
+lifecycle coordination, a private same-filesystem staging directory, backup
+and quarantine evidence, and rename. Stale sources, symlink parents or
+targets, creation races, and unsupported publication conditions refuse; an
+interruption may require evidence-backed recovery inspection. No crash,
+power-loss, hostile-writer, or universal metadata guarantee is claimed.
+Approvals, adoption authority, destructive consent,
+risk acknowledgements, credentials, and credential-like values are refused
+without being echoed or remembered.
+
+If publication is interrupted, inspect its evidence by selecting the exact
+configuration target with either lifecycle command. Supply the same `--cwd`
+and `--project-root` that were used for the original publication when
+inspecting older project-scoped evidence:
+
+```text
+agent_resource skill recover --configuration-target <path> --scope all
+agent_resource agent recover <transaction-id> --configuration-target <path> --action rollback --dry-run
+agent_resource agent recover <transaction-id> --configuration-target <path> --action rollback --yes
+agent_resource agent recover <transaction-id> --configuration-target <path> --action complete --yes
+```
+
+Recovery validates the target and retained evidence before making a change.
+It refuses changed targets, unverified quarantine or staging bytes, and other
+ambiguous states rather than overwriting or removing them. New evidence and
+coordination are anchored to the target so cooperating configuration writers
+using different projects or user state roots share a reservation and lock.
+Windows target case aliases share the same reservation; arbitrary filesystem
+aliases and hostile concurrent writers are not supported.
+
+Older project-scoped evidence cannot be discovered from a different project:
+there is no global inventory of old projects. Before retrying a shared user
+configuration that might have an older interrupted publication, run recovery
+from the original project. Older transactions also did not record their staging
+directory, so recovery cannot identify or remove those old staging artifacts.
+Incomplete or altered new staging evidence is retained for manual inspection.
+Lifecycle mutations with unrelated coordination roots are not guaranteed to
+acquire the configuration target lock; stop other writers while recovering.
+There is no machine-wide or cross-account lifecycle lock. Coordinate writers
+externally when they can affect the same resources across unrelated roots.
+
+```text
+agent_resource config effective [--scope project|user] [--pack <key>] [--format text|json]
+agent_resource config prefer --scope project --set cli.install.targets=claude,codex
+agent_resource config prefer --scope user --set cli.retention.snapshot_days=30 --apply
+```
+
 ### Manage source-aware packs
 
 Declare consumer packs in a project-level or user-level
@@ -262,6 +330,8 @@ SemVer bump policies; ordinary install never advances an existing exact lock.
 
 ```text
 agent_resource config validate [--resolve]
+agent_resource config effective [--scope project|user] [--pack <key>] [--format text|json]
+agent_resource config prefer --scope project|user --set <key>=<value> [--apply]
 agent_resource prompt inspect --path <path> [--target claude|codex|pi]
 agent_resource prompt validate --path <path> [--target claude|codex|pi]
 agent_resource prompt list [--scope project|user|all] [--target claude|codex|pi]

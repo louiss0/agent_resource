@@ -233,3 +233,26 @@ An identified set of resource correctness checks that distinguishes specificatio
 
 **Linting**:
 Identifying suspicious, inconsistent, or discouraged resource patterns that may still be valid.
+
+**Effective configuration**:
+The resolved safe preferences for one invocation, together with the user and
+project configuration paths and each value's origin. It is a read-only view,
+not a claim that a consuming harness applied the setting.
+
+**Eligible preference**:
+A durable setting Agent Resource can remember at user or project scope:
+install targets, Skill installation method, or snapshot retention. Approvals,
+adoption authority, destructive consent, risk acknowledgements, and
+credentials are not eligible remembered values.
+
+**Configuration publication**:
+The trusted-local, cooperating-writer handoff of a reviewed configuration to a
+live path through lifecycle coordination, private staging, backup/quarantine
+evidence, and same-filesystem rename. It refuses detected unsafe or stale
+conditions and makes no crash, power-loss, hostile-writer, or universal
+metadata-fidelity guarantee.
+
+**Value origin**:
+Where one effective value came from: an explicit argument, project
+configuration, user configuration, pack configuration, path detection, or a
+built-in default.

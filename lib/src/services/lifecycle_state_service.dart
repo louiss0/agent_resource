@@ -15,6 +15,7 @@ import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
+import 'configuration_publication_service.dart';
 
 part 'lifecycle_canonical.dart';
 
@@ -1230,6 +1231,7 @@ interface class LifecycleStateService {
     Set<String> installationIds = const {},
     Set<String> packKeys = const {},
     Set<String> excludedAuthoringEvidencePaths = const {},
+    Set<String> excludedConfigurationEvidencePaths = const {},
     required Future<T> Function() body,
   }) => _serialized(context, context.stateRoot(), () {
     checkPendingConversions(
@@ -1238,6 +1240,7 @@ interface class LifecycleStateService {
       installationIds: installationIds,
       packKeys: packKeys,
       excludedAuthoringEvidencePaths: excludedAuthoringEvidencePaths,
+      excludedConfigurationEvidencePaths: excludedConfigurationEvidencePaths,
     );
     return body();
   }, coordinated: true);
@@ -4703,6 +4706,7 @@ interface class LifecycleStateService {
     Set<String> packKeys = const {},
     Set<String> validatedRecoveryPaths = const {},
     Set<String> excludedAuthoringEvidencePaths = const {},
+    Set<String> excludedConfigurationEvidencePaths = const {},
     ({
       ArtifactKind kind,
       String name,
@@ -4712,6 +4716,13 @@ interface class LifecycleStateService {
     uniqueness,
   }) {
     try {
+      ConfigurationPublicationService(
+        fileSystem: io.fs,
+        state: this,
+      ).checkReservations(
+        locations,
+        excluded: excludedConfigurationEvidencePaths,
+      );
       _blockPendingAuthoring(
         context,
         locations: locations,
