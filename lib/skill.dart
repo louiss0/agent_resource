@@ -335,7 +335,9 @@ final class ValidateCommand extends Command {
     final target = valueOf(_target);
     if (target == PromptConsumer.antigravity) {
       final report = await _lifecycle.antigravityView(skill);
-      report['installationAdmission'] = _lifecycle.installationAdmission(skill);
+      report['installationAdmission'] = await _lifecycle.installationAdmission(
+        skill,
+      );
       final view = (report['views'] as List).single as Map<String, Object?>;
       if (view['valid'] == true) return jsonEncode(report);
       throw MambaException(jsonEncode(report), exitCode: 2);
@@ -362,7 +364,7 @@ final class ValidateCommand extends Command {
     final output = jsonEncode({
       ...views.toJson(),
       'views': rendered,
-      'installationAdmission': _lifecycle.installationAdmission(skill),
+      'installationAdmission': await _lifecycle.installationAdmission(skill),
     });
     if (failed) throw MambaException(output, exitCode: 2);
     return output;

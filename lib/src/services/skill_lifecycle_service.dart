@@ -10,6 +10,7 @@ import 'package:yaml/yaml.dart';
 
 import '../authoring/native_field_matrix.dart';
 import '../harness/harness_catalog.dart';
+import '../installation/skill_root_markdown_migration.dart';
 import '../skill_files.dart';
 import '../skill_validation.dart';
 import 'conversion_coordinator_service.dart';
@@ -335,30 +336,50 @@ interface class SkillLifecycleService implements LifecycleResource {
 
   /// Checks the source-level admission rules shared by Skill installations.
   /// Destination, ownership and publication checks are performed separately.
-  Map<String, Object?> installationAdmission(String path) {
+  Future<Map<String, Object?>> installationAdmission(String path) async {
+    StagedSkill? staged;
     try {
-      state.validateSkillTree(path);
-      final name = readDeclaredSkillName(path, fs: state.io.fs);
+      staged = await SkillRootMarkdownMigration(fileSystem: state.io.fs)
+          .stage(path);
+      state.validateSkillTree(staged.path);
+      final name = readDeclaredSkillName(staged.path, fs: state.io.fs);
       final report = validateSkill(
-        path,
+        staged.path,
         expectedDirectoryName: name,
         fs: state.io.fs,
       );
       return <String, Object?>{
         'eligible': report.valid,
         'scope': 'source-only',
+        'methods': <String, bool>{
+          'copy': report.valid,
+          'canonical': report.valid,
+          'source-link': report.valid && !staged.migrated,
+        },
         'diagnostics': [
           for (final diagnostic in report.diagnostics) diagnostic.toJson(),
+          if (staged.migrated)
+            <String, Object?>{
+              'code': 'SOURCE_LINK_REQUIRES_MIGRATION',
+              'message': 'source-link cannot migrate loose root files; move them into references/ or assets/, or use copy or canonical.',
+            },
         ],
       };
     } on MambaException catch (error) {
       return <String, Object?>{
         'eligible': false,
         'scope': 'source-only',
+        'methods': <String, bool>{
+          'copy': false,
+          'canonical': false,
+          'source-link': false,
+        },
         'diagnostics': [
           <String, Object?>{'message': error.message},
         ],
       };
+    } finally {
+      await staged?.close();
     }
   }
 

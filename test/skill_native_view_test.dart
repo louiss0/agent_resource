@@ -178,6 +178,7 @@ void main() {
       expect(report['installationAdmission'], {
         'eligible': true,
         'scope': 'source-only',
+        'methods': {'copy': true, 'canonical': true, 'source-link': true},
         'diagnostics': isEmpty,
       });
     });
@@ -236,6 +237,30 @@ void main() {
         expect(admission['diagnostics'], isNotEmpty);
       },
     );
+
+    test('reports migration eligibility by installation method', () async {
+      fs
+          .file('$directory/SKILL.md')
+          .writeAsStringSync(
+            '---\nname: prompt\ndescription: ordinary\n---\nSee guide.md.\n',
+          );
+      fs.file('$directory/guide.md').writeAsStringSync('Guide');
+      final result = await run([
+        'validate',
+        '--skill',
+        directory,
+        '--target',
+        'claude',
+      ]);
+      expect(result, isA<MambaSuccessResult>());
+      final report = jsonDecode((result as MambaSuccessResult).output!) as Map;
+      final admission = report['installationAdmission'] as Map;
+      expect(admission['eligible'], true);
+      expect((admission['methods'] as Map)['copy'], true);
+      expect((admission['methods'] as Map)['canonical'], true);
+      expect((admission['methods'] as Map)['source-link'], false);
+      expect('${admission['diagnostics']}', contains('source-link'));
+    });
 
     test('rejects malformed controls and unknown targets', () async {
       fs
