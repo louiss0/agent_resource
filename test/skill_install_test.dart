@@ -245,6 +245,190 @@ void main() {
           },
         );
 
+        test('reviews a canonical target change before publishing', () async {
+          useLocalFileSystem();
+          final source = skill('canonical-target-source');
+          expect(
+            await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'canonical',
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          final options = LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          );
+          final lifecycle = SkillLifecycleService(fileSystem: fs);
+          final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+          final record = lifecycle.state.records(resolved).single;
+          final exposure = record.exposures.single.path;
+          final args = [
+            'skill',
+            'migrate',
+            record.installationId,
+            ...context(),
+            '--method',
+            'canonical',
+            '--target',
+            'codex',
+            '--format',
+            'json',
+          ];
+          final preview = await executor().fake().execute([
+            ...args,
+            '--dry-run',
+          ]);
+          expect(preview, isA<MambaSuccessResult>());
+          final plan =
+              jsonDecode((preview as MambaSuccessResult).output!) as Map;
+          final data = plan['data'] as Map;
+          expect(data['fromTargets'], ['claude']);
+          expect(data['toTargets'], ['codex']);
+          expect(
+            fs.typeSync(exposure, followLinks: false),
+            FileSystemEntityType.link,
+          );
+          final id = data['planId'] as String;
+          expect(
+            await executor().fake().execute([...args, '--reviewed-plan', id]),
+            isA<MambaFailureResult>(),
+          );
+          expect(
+            fs.typeSync(exposure, followLinks: false),
+            FileSystemEntityType.link,
+          );
+          expect(
+            await executor().fake().execute([
+              ...args,
+              '--reviewed-plan',
+              id,
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          expect(
+            fs.typeSync(exposure, followLinks: false),
+            FileSystemEntityType.notFound,
+          );
+          final updated = lifecycle.state.records(resolved).single;
+          expect(updated.installationRoute!.targets.map((item) => item.name), [
+            'codex',
+          ]);
+          expect(updated.exposures, isEmpty);
+          expect(updated.knownConsumers, ['codex']);
+        });
+
+        test('canonical target addition refuses occupied exposure and stale review', () async {
+          useLocalFileSystem();
+          final source = skill('canonical-add-target');
+          expect(
+            await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'canonical',
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          final options = LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          );
+          final lifecycle = SkillLifecycleService(fileSystem: fs);
+          final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+          final record = lifecycle.state.records(resolved).single;
+          final location = fs.path.join(
+            project.path,
+            '.claude',
+            'skills',
+            'review',
+          );
+          fs.directory(location).createSync(recursive: true);
+          final args = [
+            'skill',
+            'migrate',
+            record.installationId,
+            ...context(),
+            '--method',
+            'canonical',
+            '--target',
+            'claude',
+            '--target',
+            'codex',
+            '--format',
+            'json',
+          ];
+          expect(
+            await executor().fake().execute([...args, '--dry-run']),
+            isA<MambaFailureResult>(),
+          );
+          expect(fs.directory(location).existsSync(), isTrue);
+          fs.directory(location).deleteSync();
+          final preview = await executor().fake().execute([
+            ...args,
+            '--dry-run',
+          ]);
+          expect(preview, isA<MambaSuccessResult>());
+          final data =
+              (jsonDecode((preview as MambaSuccessResult).output!)
+                      as Map)['data']
+                  as Map;
+          final plan = data['planId'] as String;
+          fs.directory(location).createSync(recursive: true);
+          expect(
+            await executor().fake().execute([
+              ...args,
+              '--reviewed-plan',
+              plan,
+              '--yes',
+            ]),
+            isA<MambaFailureResult>(),
+          );
+          expect(fs.directory(location).existsSync(), isTrue);
+          fs.directory(location).deleteSync();
+          expect(
+            await executor().fake().execute([
+              ...args,
+              '--reviewed-plan',
+              plan,
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          final updated = lifecycle.state.records(resolved).single;
+          expect(
+            updated.installationRoute!.targets.map((target) => target.name),
+            ['claude', 'codex'],
+          );
+          expect(
+            fs.typeSync(location, followLinks: false),
+            FileSystemEntityType.link,
+          );
+        });
+
         test(
           'previews and confirms a direct copy to source-link migration',
           () async {

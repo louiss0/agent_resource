@@ -755,12 +755,19 @@ interface class SkillLifecycleService implements LifecycleResource {
   Future<LifecycleResult> migrate(
     LifecycleIdInput input, {
     required InstallationMethod method,
+    List<InstallationTarget>? targets,
     String? reviewedPlan,
-  }) => _replay(input, migrationMethod: method, reviewedPlan: reviewedPlan);
+  }) => _replay(
+    input,
+    migrationMethod: method,
+    migrationTargets: targets,
+    reviewedPlan: reviewedPlan,
+  );
 
   Future<LifecycleResult> _replay(
     LifecycleIdInput input, {
     InstallationMethod? migrationMethod,
+    List<InstallationTarget>? migrationTargets,
     String? reviewedPlan,
   }) async {
     final context = LifecycleContext.resolve(
@@ -790,12 +797,37 @@ interface class SkillLifecycleService implements LifecycleResource {
         exitCode: 4,
       );
     }
+    final requestedTargets =
+        migrationTargets == null || migrationTargets.isEmpty
+        ? route.targets
+        : ([
+            for (final target in migrationTargets)
+              InstallationRouteTarget.values.byName(target.name),
+          ]..sort((a, b) => a.name.compareTo(b.name)));
+    if (requestedTargets.toSet().length != requestedTargets.length) {
+      throw MambaException(
+        'Duplicate migration targets are not allowed.',
+        exitCode: 4,
+      );
+    }
+    for (final target in migrationTargets ?? const <InstallationTarget>[]) {
+      HarnessCatalog.instance.requireSkillInstallation(HarnessId.of(target));
+    }
+    final targetsChanged =
+        jsonEncode(requestedTargets.map((target) => target.name).toList()) !=
+        jsonEncode(route.targets.map((target) => target.name).toList());
+    final canonicalTargets =
+        migrationMethod == InstallationMethod.canonical &&
+        route.method == InstallationMethod.canonical &&
+        targetsChanged;
     if (migrationMethod != null &&
-        (migrationMethod == InstallationMethod.canonical ||
+        !canonicalTargets &&
+        (targetsChanged ||
+            migrationMethod == InstallationMethod.canonical ||
             route.method == InstallationMethod.canonical ||
             migrationMethod == route.method)) {
       throw MambaException(
-        'This migration requires distinct copy and source-link methods.',
+        'This migration supports canonical target changes or copy/source-link method changes at the existing target; the requested transition is not supported.',
         exitCode: 4,
       );
     }
@@ -875,7 +907,7 @@ interface class SkillLifecycleService implements LifecycleResource {
           sourceRelativePath: route.sourceRelativePath,
           entryId: route.entryId,
           scope: route.scope,
-          targets: route.targets,
+          targets: requestedTargets,
           method: method,
           derivedArtifacts: [
             for (final item in [...staged.movedMarkdown, ...staged.movedImages])
@@ -893,7 +925,7 @@ interface class SkillLifecycleService implements LifecycleResource {
           ],
         );
         final resource = installationResource(
-          targets: [for (final target in route.targets) target.name],
+          targets: [for (final target in requestedTargets) target.name],
           kind: desiredKind,
         );
         final digest = state.contentDigest(staged.path, ArtifactKind.skillCopy);
@@ -908,10 +940,11 @@ interface class SkillLifecycleService implements LifecycleResource {
                   .convert(
                     utf8.encode(
                       jsonEncode({
-                        'installationId': record.installationId,
-                        'location': record.location,
-                        'baseline': record.baseline.toJson(),
-                        'origin': record.origin,
+                        'record': record.toJson(),
+                        'destinationRoots': [
+                          for (final target in requestedTargets)
+                            canonicalExposureRoot(context, target.name),
+                        ],
                         'from': route.toJson(),
                         'to': newRoute.toJson(),
                         'sourceDigest': digest,
@@ -965,6 +998,31 @@ interface class SkillLifecycleService implements LifecycleResource {
             },
           );
         }
+        final exposures = canonicalTargets
+            ? [
+                for (final target in requestedTargets)
+                  if (canonicalExposureRoot(context, target.name)
+                      case final String root)
+                    state.plannedCanonicalExposure(
+                      path: fs.path.join(root, record.name),
+                      target: target.name,
+                      canonicalPath: record.location,
+                    ),
+              ]
+            : null;
+        if (canonicalTargets) {
+          for (final old in route.targets) {
+            if (!requestedTargets.contains(old) &&
+                (old == InstallationRouteTarget.codex ||
+                    old == InstallationRouteTarget.antigravity &&
+                        context.scope == LifecycleScope.project)) {
+              throw MambaException(
+                'Shared canonical content remains discoverable to ${old.name}; this target cannot be revoked by metadata.',
+                exitCode: 4,
+              );
+            }
+          }
+        }
         final result = expectedKind == ArtifactKind.skillCanonical
             ? await state.replaceCanonical(
                 resource: resource,
@@ -973,6 +1031,13 @@ interface class SkillLifecycleService implements LifecycleResource {
                 source: staged.path,
                 origin: origin,
                 installationRoute: newRoute,
+                exposures: exposures,
+                validatedProfiles: canonicalTargets
+                    ? [for (final target in requestedTargets) target.name]
+                    : null,
+                knownConsumers: canonicalTargets
+                    ? [for (final target in requestedTargets) target.name]
+                    : null,
               )
             : await state.replace(
                 resource: resource,
@@ -996,6 +1061,8 @@ interface class SkillLifecycleService implements LifecycleResource {
             if (migrationMethod != null) ...{
               'fromMethod': route.method.wireName,
               'toMethod': method.wireName,
+              'fromTargets': [for (final target in route.targets) target.name],
+              'toTargets': [for (final target in requestedTargets) target.name],
               'planId': planId,
             },
             'route': newRoute.toJson(),

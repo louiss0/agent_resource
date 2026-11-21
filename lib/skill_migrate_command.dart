@@ -14,6 +14,7 @@ final class SkillMigrateCommand extends Command {
         mandatoryPositionals: [_id],
         options: [
           _method,
+          _targets,
           _reviewedPlan,
           _scope,
           _cwd,
@@ -28,9 +29,9 @@ final class SkillMigrateCommand extends Command {
         flags: [_dryRun, _yes],
         longDescription:
             'Preview with --dry-run, then confirm the unchanged plan with '
-            '--reviewed-plan <planId> --yes. This action currently changes only '
-            'between copy and source-link at the recorded target. Canonical and '
-            'target migrations are not supported.',
+            '--reviewed-plan <planId> --yes. Specify --target to review a '
+            'canonical target change. Copy and source-link method changes at '
+            'the recorded target are also supported.',
       );
 
   final SkillLifecycleService _service;
@@ -38,6 +39,10 @@ final class SkillMigrateCommand extends Command {
   static final _method = ChoiceOption(
     'method',
     choices: InstallationMethod.values,
+  );
+  static final _targets = RepeatableChoiceOption(
+    'target',
+    InstallationTarget.values,
   );
   static final _reviewedPlan = StringOption('reviewed-plan');
   static final _scope = ChoiceOption('scope', choices: LifecycleScope.values);
@@ -58,8 +63,7 @@ final class SkillMigrateCommand extends Command {
   @override
   String get name => 'migrate';
   @override
-  String get shortDescription =>
-      'Migrate a direct Skill between copy and source-link.';
+  String get shortDescription => 'Review and migrate a direct Skill route.';
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
@@ -94,6 +98,7 @@ final class SkillMigrateCommand extends Command {
         ),
       ),
       method: method,
+      targets: valueOf(_targets),
       reviewedPlan: valueOf(_reviewedPlan),
     );
     return format == 'json'

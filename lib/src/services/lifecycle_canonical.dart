@@ -1,6 +1,23 @@
 part of 'lifecycle_state_service.dart';
 
 extension CanonicalLifecycleOperations on LifecycleStateService {
+  /// Describes an exposure before publication without creating it.
+  ExposureRecord plannedCanonicalExposure({
+    required String path,
+    required String target,
+    required String canonicalPath,
+  }) {
+    final nativeKind = Platform.isWindows
+        ? 'windows-directory-symlink'
+        : 'posix-directory-symlink';
+    return ExposureRecord(
+      path: path,
+      target: target,
+      nativeKind: nativeKind,
+      baseline: _linkBaselineFor(path, canonicalPath, nativeKind),
+    );
+  }
+
   Future<LifecycleResult> replaceCanonical({
     required LifecycleResource resource,
     required LifecycleContext context,
@@ -35,6 +52,22 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       exposures: exposures,
       knownConsumers: knownConsumers,
       validatedProfiles: validatedProfiles,
+    );
+    resource.validateAuthority(desired, context);
+    for (final exposure in desired.exposures) {
+      if (!initial.exposures.any(
+        (old) => io.fs.path.equals(old.path, exposure.path),
+      )) {
+        _requireAbsent(exposure.path);
+      }
+    }
+    checkPendingConversions(
+      context,
+      locations: [
+        initial.location,
+        for (final exposure in initial.exposures) exposure.path,
+        for (final exposure in desired.exposures) exposure.path,
+      ],
     );
     await resource.checkUnique(
       context,
@@ -251,6 +284,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         locations: [
           current.location,
           for (final exposure in current.exposures) exposure.path,
+          for (final exposure in desired.exposures) exposure.path,
         ],
       );
       final transactionId = LifecycleStateService._newId('trx');
