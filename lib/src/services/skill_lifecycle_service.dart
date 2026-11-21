@@ -143,6 +143,12 @@ interface class SkillLifecycleService implements LifecycleResource {
             final exposure = canonical == null
                 ? null
                 : _exposureAt(canonical, path);
+            // A tracked exposure is represented by its canonical occurrence.
+            if (exposure != null &&
+                candidate.type == FileSystemEntityType.link &&
+                _isCanonicalExposure(canonical!, exposure, scopedContext)) {
+              continue;
+            }
             final link = candidate.type == FileSystemEntityType.link
                 ? _linkObservation(path, root)
                 : null;
@@ -313,7 +319,15 @@ interface class SkillLifecycleService implements LifecycleResource {
             .where(
               (occurrence) =>
                   destination == null ||
-                  occurrence['destination'] == destination.name,
+                  occurrence['destination'] == destination.name ||
+                  (occurrence['exposures'] is List &&
+                      (occurrence['exposures'] as List).any(
+                        (item) => item['target'] == destination.name,
+                      )) ||
+                  (occurrence['directConsumers'] is List &&
+                      (occurrence['directConsumers'] as List).contains(
+                        destination.name,
+                      )),
             )
             .toList()
           ..sort(
@@ -548,6 +562,38 @@ interface class SkillLifecycleService implements LifecycleResource {
       }
     }
     return null;
+  }
+
+  bool _isCanonicalExposure(
+    InstallationRecord record,
+    ExposureRecord exposure,
+    LifecycleContext context,
+  ) {
+    try {
+      validateAuthority(record, context);
+      final entry = exposure.baseline.entries.single;
+      if (entry.target == null ||
+          entry.originalParent == null ||
+          !state.io.fs.path.equals(
+            entry.originalParent!,
+            state.io.fs.path.dirname(exposure.path),
+          ) ||
+          entry.nativeKind != exposure.nativeKind) {
+        return false;
+      }
+      final target = state.io.fs.path.normalize(
+        state.io.fs.path.isAbsolute(entry.target!)
+            ? entry.target!
+            : state.io.fs.path.join(
+                state.io.fs.path.dirname(exposure.path),
+                entry.target!,
+              ),
+      );
+      return state.io.fs.path.equals(target, record.location) &&
+          state.verifyExposure(exposure);
+    } on Exception {
+      return false;
+    }
   }
 
   ExposureRecord? _exposureAt(InstallationRecord record, String path) {
@@ -1114,7 +1160,7 @@ interface class SkillLifecycleService implements LifecycleResource {
       );
     }
     if (canonical) {
-      final paths = <String>{};
+      final paths = <String>[];
       for (final exposure in record.exposures) {
         final exposureRoot = canonicalExposureRoot(context, exposure.target);
         if (exposureRoot == null ||
@@ -1122,7 +1168,7 @@ interface class SkillLifecycleService implements LifecycleResource {
               exposure.path,
               state.io.fs.path.join(exposureRoot, record.name),
             ) ||
-            !paths.add(state.io.fs.path.normalize(exposure.path)) ||
+            paths.any((path) => state.io.fs.path.equals(path, exposure.path)) ||
             exposure.baseline.entries.length != 1 ||
             exposure.baseline.entries.single.type != 'link') {
           throw MambaException(
@@ -1130,6 +1176,26 @@ interface class SkillLifecycleService implements LifecycleResource {
             exitCode: 4,
           );
         }
+        final entry = exposure.baseline.entries.single;
+        final parent = state.io.fs.path.dirname(exposure.path);
+        if (entry.target == null ||
+            entry.originalParent == null ||
+            !state.io.fs.path.equals(entry.originalParent!, parent) ||
+            entry.nativeKind != exposure.nativeKind ||
+            !state.io.fs.path.equals(
+              state.io.fs.path.normalize(
+                state.io.fs.path.isAbsolute(entry.target!)
+                    ? entry.target!
+                    : state.io.fs.path.join(parent, entry.target!),
+              ),
+              record.location,
+            )) {
+          throw MambaException(
+            'Stored canonical exposure does not match current native authority.',
+            exitCode: 4,
+          );
+        }
+        paths.add(exposure.path);
       }
     }
   }
