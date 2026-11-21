@@ -353,8 +353,14 @@ interface class ConfigurationPublicationService {
       }
 
       if (context.dryRun) return perform();
+      final mutationContext = context.scope == LifecycleScope.all
+          ? LifecycleContext.resolve(
+              context.options.copyWith(scope: LifecycleScope.project),
+              fileSystem: _io.fs,
+            )
+          : context;
       return _state.runMutation(
-        context: context,
+        context: mutationContext,
         locations: [target],
         excludedConfigurationEvidencePaths: {
           transactions.single['evidencePath']! as String,
