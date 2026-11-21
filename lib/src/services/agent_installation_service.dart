@@ -164,10 +164,33 @@ interface class AgentInstallationService {
             },
         ],
       );
+      final targetNames = units
+          .expand((unit) => unit.entries)
+          .map((entry) => entry.target)
+          .whereType<String>()
+          .toSet();
+      final targets = InstallationTarget.values
+          .where((target) => targetNames.contains(target.name))
+          .toList();
+      final explicitCommand = interactive
+          ? installationExplicitCommand(
+              request: request,
+              plan: plan,
+              candidates: candidates,
+              source: source,
+              context: context,
+              targets: targets,
+              resourceType: CatalogResourceType.agent,
+            )
+          : null;
       if (request.options.dryRun) {
-        return InstallationCompletedResult(plan, InstallationOutcome.planned);
+        return InstallationCompletedResult(
+          plan,
+          InstallationOutcome.planned,
+          explicitCommand: explicitCommand,
+        );
       }
-      return await _batch.execute(
+      final result = await _batch.execute(
         plan: plan,
         context: context,
         state: state,
@@ -182,6 +205,14 @@ interface class AgentInstallationService {
         interactive: interactive,
         approved: request.options.approved,
       );
+      if (result is InstallationCompletedResult) {
+        return InstallationCompletedResult(
+          result.plan,
+          result.outcome,
+          explicitCommand: explicitCommand,
+        );
+      }
+      return result;
     } finally {
       await workspace.close();
     }

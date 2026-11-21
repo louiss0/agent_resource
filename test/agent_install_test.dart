@@ -140,6 +140,11 @@ void main() {
             (result as MambaSuccessResult).output,
             contains('Profile: claude'),
           );
+          final output = result.output!;
+          expect(output, contains('Explicit command'));
+          expect(output, contains('--profile claude'));
+          expect(output, contains('--target claude'));
+          expect(output, contains('--source-kind resource'));
           expect(interaction.targetSelections, isEmpty);
           expect(interaction.approvals, isEmpty);
         });

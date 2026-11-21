@@ -1149,8 +1149,46 @@ path = "skills/review"
           },
         );
 
+        test('omits a replay command for a sensitive source locator', () async {
+          useLocalFileSystem();
+          final server = await io.HttpServer.bind(
+            io.InternetAddress.loopbackIPv4,
+            0,
+          );
+          server.listen((request) {
+            request.response.write(
+              '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+            );
+            request.response.close();
+          });
+          addTearDown(() => server.close(force: true));
+          final locator =
+              'http://127.0.0.1:${server.port}/SKILL.md?token=PRIVATE123';
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            locator,
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            '--source-kind',
+            'resource',
+            '--dry-run',
+            ...context(),
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          final output = (result as MambaSuccessResult).output!;
+          expect(output, contains('Explicit command omitted'));
+          expect(output, isNot(contains('PRIVATE123')));
+        });
+
         test('interactive installation defaults to project scope', () async {
-          final source = skill('default-project');
+          final source = skill("default project's");
           final result = await executor().fake().execute([
             'skill',
             'install',
@@ -1169,8 +1207,50 @@ path = "skills/review"
           );
           final output = (result as MambaSuccessResult).output!;
           expect(output, contains('Scope: project'));
+          expect(output, contains('Explicit command'));
+          expect(output, contains('--scope project'));
+          expect(output, contains('--source-kind resource'));
+          expect(output, contains('--target codex'));
+          expect(output, contains('--method copy'));
+          expect(output, contains('--dry-run'));
           expect(output, contains(project.path));
           expect(output, isNot(contains('${home.path}/.agents/skills')));
+          final command = output.split('\n').last.split('): ').last;
+          final shell = await io.Process.run(
+            io.Platform.isWindows ? 'powershell.exe' : 'sh',
+            io.Platform.isWindows
+                ? [
+                    '-NoProfile',
+                    '-Command',
+                    'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+                  ]
+                : [
+                    '-c',
+                    'agent_resource() { printf "%s\\n" "\$@"; }; $command',
+                  ],
+          );
+          expect(shell.exitCode, 0, reason: '${shell.stderr}');
+          final args = io.Platform.isWindows
+              ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+              : (shell.stdout as String).trimRight().split('\n');
+          expect(args, contains(source.path));
+          final replay = await createExecutor(
+            fileSystem: fs,
+            skillInstallation: SkillInstallationService(
+              fileSystem: fs,
+              interaction: ScriptedInstallationInteraction(interactive: false),
+              progress: noInstallationProgress,
+            ),
+          ).fake().execute(args);
+          expect(
+            replay,
+            isA<MambaSuccessResult>(),
+            reason: replay is MambaFailureResult ? replay.message : null,
+          );
+          expect(
+            (replay as MambaSuccessResult).output,
+            contains('Scope: project'),
+          );
         });
 
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {
@@ -1223,6 +1303,10 @@ path = "skills/other"
           expect(output, contains('Scope: user'));
           expect(output, contains('Method: canonical'));
           expect(output, contains('code-review'));
+          expect(output, contains('--source-kind collection'));
+          expect(output, contains('--resource code-review'));
+          expect(output, contains('--target codex'));
+          expect(output, contains('--method canonical'));
           expect(interaction.approvals, isEmpty);
           expect(
             fs.directory(fs.path.join(home.path, '.agents')).existsSync(),
