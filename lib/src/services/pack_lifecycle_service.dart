@@ -1845,7 +1845,13 @@ interface class PackLifecycleService {
           );
         }
       }
-      await _requirePromptViews(request, selected, pack, configuration);
+      await _requirePromptViews(
+        request,
+        selected,
+        pack,
+        configuration,
+        existing,
+      );
       _preflightRecords(request, selected, existing);
       final results = <PackResourceResult>[];
       final failures = <String>[];
@@ -4308,53 +4314,52 @@ interface class PackLifecycleService {
     List<_PackCandidate> selected,
     PackDefinition pack,
     PackConfiguration configuration,
+    List<InstallationRecord> existing,
   ) async {
     if (selected.isEmpty) return;
     final skillCandidates = selected
         .where((candidate) => _isSkillFamily(candidate.type))
         .toList();
     if (skillCandidates.isEmpty) return;
-    // The targets are resolved without an interactive choice: the selection
-    // is checked before the installation asks for a target.
-    final requestedTargets = _requestedTargets(request, pack, configuration);
-    if (request.promptSelection) {
-      _promptService.requireSupportedTargets(requestedTargets);
-    }
-    if (request.promptSelection && requestedTargets.isEmpty) {
-      throw MambaException(
-        'The prompt selection requires an explicit claude or codex '
-        '--target/configuration choice; the selection is refused before any '
-        'installation effect.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-    // Without a configured target the interactive installation asks for one
-    // later. The Prompt gates are checked for every supported harness.
-    final targets = requestedTargets.isEmpty
-        ? const <String>['claude', 'codex']
-        : requestedTargets;
-    final views = <PackPromptCandidate>[];
     for (final candidate in skillCandidates) {
-      views.add(
-        await _promptService.inspect(
-          candidate.originalPath ?? candidate.path,
-          candidate.path,
-          name: candidate.name,
-        ),
+      final records = existing.where((record) => record.name == candidate.name);
+      final route =
+          request.operation == PackOperation.update && records.length == 1
+          ? records.single.installationRoute
+          : null;
+      final requestedTargets = route == null
+          ? _requestedTargets(request, pack, configuration)
+          : route.targets.map((target) => target.name).toList();
+      if (request.promptSelection) {
+        _promptService.requireSupportedTargets(requestedTargets);
+        if (requestedTargets.isEmpty) {
+          throw MambaException(
+            'The prompt selection requires an explicit claude or codex '
+            '--target/configuration choice; the selection is refused before any '
+            'installation effect.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+      }
+      final targets = requestedTargets.isEmpty
+          ? const <String>['claude', 'codex']
+          : requestedTargets;
+      final view = await _promptService.inspect(
+        candidate.originalPath ?? candidate.path,
+        candidate.path,
+        name: candidate.name,
       );
-    }
-    if (request.promptSelection) {
-      _promptService.requireSupportedSelection(
-        selected: views,
-        targets: targets,
-      );
-      return;
-    }
-    for (final view in views) {
-      _promptService.requireNoInvalidPromptFallback(
-        candidate: view,
-        targets: targets,
-      );
+      if (request.promptSelection) {
+        _promptService.requireSupportedSelection(
+          selected: [view],
+          targets: targets,
+        );
+      } else {
+        _promptService.requireNoInvalidPromptFallback(
+          candidate: view,
+          targets: targets,
+        );
+      }
     }
   }
 

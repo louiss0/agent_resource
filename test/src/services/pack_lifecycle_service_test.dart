@@ -540,6 +540,86 @@ path = "skills/moved"
       },
     );
 
+    test(
+      'update replays the recorded Skill route after preferences change',
+      () async {
+        final skillFile = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        );
+        skillFile.writeAsStringSync(
+          '---\nname: reviewer\ndescription: Reviews code.\ndisable-model-invocation: true\n---\nSee references/guide.md\n',
+        );
+        fs.file(
+            fs.path.join(
+              source.path,
+              'skills',
+              'reviewer',
+              'references',
+              'guide.md',
+            ),
+          )
+          ..createSync(recursive: true)
+          ..writeAsStringSync('Guide');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(
+          request(PackOperation.install, PackResourceType.skill),
+        );
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config
+              .readAsStringSync()
+              .replaceFirst('targets = ["codex"]', 'targets = ["claude"]')
+              .replaceFirst(
+                'skill_method = "copy"',
+                'skill_method = "canonical"',
+              ),
+        );
+        skillFile.writeAsStringSync(
+          '---\nname: reviewer\ndescription: Reviews code.\ndisable-model-invocation: true\n---\n# Updated\nSee references/guide.md\n',
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.update,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: sandbox.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            yes: true,
+          ),
+        );
+        expect(result.resources.single.disposition.wireName, 'updated');
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(result.plan!.resources.single.method, 'copy');
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .readAsStringSync(),
+          contains('# Updated'),
+        );
+        expect(
+          fs
+              .directory(
+                fs.path.join(project.path, '.claude', 'skills', 'reviewer'),
+              )
+              .existsSync(),
+          isFalse,
+        );
+      },
+    );
+
     test('update refuses a legacy Skill without recorded route', () async {
       final service = PackLifecycleService(fileSystem: fs);
       await service.execute(
