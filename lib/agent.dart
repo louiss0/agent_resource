@@ -539,6 +539,12 @@ final class AgentListCommand(
         cwd: valueOf(_listCwd),
         projectRoot: valueOf(_projectRoot),
         home: valueOf(_home),
+        claudeConfigDir: valueOf(_claudeConfigDir),
+        codexHome: valueOf(_codexHome),
+        piAgentDir: valueOf(_piAgentDir),
+        geminiDir: valueOf(_geminiDir),
+        readRoots: valueOf(_readRoots) ?? const <String>[],
+        stateDir: valueOf(_stateDir),
       ),
     );
     final selectedScope =
@@ -548,12 +554,12 @@ final class AgentListCommand(
             : AgentScope.project);
     final report = await _inventory(
       AgentInventoryInput(
-        processWorkingDirectory: _lifecycle.fileSystem.currentDirectory.path,
+        processWorkingDirectory: options.processWorkingDirectory,
         environment: Platform.environment,
         scope: selectedScope,
         harness: valueOf(_listHarness),
         verify: valueOf(_verify),
-        cwd: valueOf(_listCwd),
+        cwd: options.cwd,
         projectRoot: options.projectRoot,
         home: valueOf(_home),
         claudeConfigDir: valueOf(_claudeConfigDir),
@@ -568,12 +574,12 @@ final class AgentListCommand(
     final managed = _lifecycle.managementAware(
       report,
       AgentInventoryInput(
-        processWorkingDirectory: _lifecycle.fileSystem.currentDirectory.path,
+        processWorkingDirectory: options.processWorkingDirectory,
         environment: Platform.environment,
         scope: selectedScope,
         harness: valueOf(_listHarness),
         verify: valueOf(_verify),
-        cwd: valueOf(_listCwd),
+        cwd: options.cwd,
         projectRoot: options.projectRoot,
         home: valueOf(_home),
         claudeConfigDir: valueOf(_claudeConfigDir),

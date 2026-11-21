@@ -6,6 +6,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
+import 'components/installation_approval.dart';
 import 'src/installation/installation_plan.dart';
 import 'src/pack/release_policy.dart';
 import 'src/services/lifecycle_state_service.dart';
@@ -62,7 +63,9 @@ final class PackActionCommand extends Command {
     this._fileSystem = const local.LocalFileSystem(),
     bool Function()? stdinIsTerminal,
     bool Function()? stdoutIsTerminal,
-  }) : _stdinIsTerminal = stdinIsTerminal ?? (() => stdin.hasTerminal),
+    Future<bool> Function()? offerUserScope,
+  }) : _offerUserScope = offerUserScope ?? _defaultOfferUserScope,
+       _stdinIsTerminal = stdinIsTerminal ?? (() => stdin.hasTerminal),
        _stdoutIsTerminal = stdoutIsTerminal ?? (() => stdout.hasTerminal),
        _canonical = canonical,
        super(
@@ -121,8 +124,14 @@ final class PackActionCommand extends Command {
        );
 
   final fslib.FileSystem _fileSystem;
+  final Future<bool> Function() _offerUserScope;
   final bool Function() _stdinIsTerminal;
   final bool Function() _stdoutIsTerminal;
+  static Future<bool> _defaultOfferUserScope() =>
+      const InstallationApprovalComponent(
+        label: 'Project context is unavailable. Use user scope instead?',
+      ).render();
+
   final bool _canonical;
   final PackResourceType _resourceType;
   final PackOperation _operation;
@@ -243,6 +252,36 @@ final class PackActionCommand extends Command {
     final format = valueOf(_format);
     final mutating = _operation != PackOperation.validate;
     final yes = mutating && valueOf(_yes);
+    final interactive =
+        _stdinIsTerminal() &&
+        _stdoutIsTerminal() &&
+        !yes &&
+        format == LifecycleOutputFormat.text;
+    final resolvedOptions = await resolveInventoryScope(
+      fileSystem: _fileSystem,
+      interactive: interactive,
+      scopeExplicit: valueOf(_PackContextOptions.scope) != null,
+      offerUserScope: _offerUserScope,
+      options: LifecycleOptions(
+        processWorkingDirectory: _fileSystem.currentDirectory.path,
+        environment: Map<String, String>.unmodifiable(Platform.environment),
+        scope: valueOf(_PackContextOptions.scope) ?? LifecycleScope.project,
+        cwd: valueOf(_PackContextOptions.cwd),
+        projectRoot: valueOf(_PackContextOptions.projectRoot),
+        home: valueOf(_PackContextOptions.home),
+        geminiDir: valueOf(_PackContextOptions.geminiDir),
+        stateDir: valueOf(_PackContextOptions.state),
+      ),
+    );
+    final config = valueOf(_PackContextOptions.config);
+    if (resolvedOptions.cwd != valueOf(_PackContextOptions.cwd) &&
+        config != null &&
+        !_fileSystem.path.isAbsolute(config)) {
+      throw MambaException(
+        'A user-scope fallback with unavailable cwd requires an absolute --config path.',
+        exitCode: 4,
+      );
+    }
     final only = switch (_operation) {
       PackOperation.rollback => valueOf(_rollbackOnly),
       PackOperation.remove ||
@@ -258,11 +297,15 @@ final class PackActionCommand extends Command {
             : [_resourceType],
         includeNew: mutating && valueOf(_includeNew),
         pack: valueOf(_PackContextOptions.pack),
-        processWorkingDirectory: _fileSystem.currentDirectory.path,
+        processWorkingDirectory: resolvedOptions.processWorkingDirectory,
         environment: Map<String, String>.unmodifiable(Platform.environment),
-        scope: valueOf(_PackContextOptions.scope),
-        cwd: valueOf(_PackContextOptions.cwd),
-        projectRoot: valueOf(_PackContextOptions.projectRoot),
+        scope:
+            valueOf(_PackContextOptions.scope) ??
+            (resolvedOptions.scope == LifecycleScope.user
+                ? LifecycleScope.user
+                : null),
+        cwd: resolvedOptions.cwd,
+        projectRoot: resolvedOptions.projectRoot,
         home: valueOf(_PackContextOptions.home),
         geminiDir: valueOf(_PackContextOptions.geminiDir),
         stateDir: valueOf(_PackContextOptions.state),
@@ -298,11 +341,7 @@ final class PackActionCommand extends Command {
         localEdits: mutating && valueOf(_localEdits),
         dryRun: valueOf(_dryRun),
         yes: yes,
-        interactive:
-            _stdinIsTerminal() &&
-            _stdoutIsTerminal() &&
-            !yes &&
-            format == LifecycleOutputFormat.text,
+        interactive: interactive,
       ),
     );
     return switch (format) {

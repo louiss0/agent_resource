@@ -180,15 +180,18 @@ final class LifecycleOptions {
 
   LifecycleOptions copyWith({
     LifecycleScope? scope,
+    String? processWorkingDirectory,
+    String? cwd,
     bool clearProjectRoot = false,
     String? geminiDir,
     bool? dryRun,
     bool? approved,
   }) => LifecycleOptions(
-    processWorkingDirectory: processWorkingDirectory,
+    processWorkingDirectory:
+        processWorkingDirectory ?? this.processWorkingDirectory,
     environment: environment,
     scope: scope ?? this.scope,
-    cwd: cwd,
+    cwd: cwd ?? this.cwd,
     projectRoot: clearProjectRoot ? null : projectRoot,
     home: home,
     claudeConfigDir: claudeConfigDir,
@@ -210,25 +213,60 @@ Future<LifecycleOptions> resolveInventoryScope({
   required bool scopeExplicit,
   required Future<bool> Function() offerUserScope,
 }) async {
-  if (!interactive || scopeExplicit || options.projectRoot == null) {
+  if (!interactive || scopeExplicit) {
     return options;
   }
   try {
     LifecycleContext.resolve(options, fileSystem: fileSystem);
     return options;
   } on MambaException catch (error) {
-    final fallback = options.copyWith(
+    var fallback = options.copyWith(
       scope: LifecycleScope.user,
       clearProjectRoot: true,
     );
     try {
       LifecycleContext.resolve(fallback, fileSystem: fileSystem).requireHome();
     } on MambaException {
-      throw MambaException(
-        'Cannot resolve project or user context. Supply a valid --cwd and --home '
-        'and, if needed, a valid --project-root. ${error.message}',
-        exitCode: 4,
+      final home =
+          options.home ??
+          options.environment['HOME'] ??
+          options.environment['USERPROFILE'];
+      final otherPaths = [
+        options.claudeConfigDir,
+        options.codexHome,
+        options.piAgentDir,
+        options.geminiDir,
+        options.stateDir,
+        ...options.readRoots,
+      ].whereType<String>();
+      if (home == null ||
+          !fileSystem.path.isAbsolute(home) ||
+          fileSystem.typeSync(home) != FileSystemEntityType.directory ||
+          otherPaths.any((path) => !fileSystem.path.isAbsolute(path))) {
+        throw MambaException(
+          'Cannot resolve project or user context. Supply an existing absolute --home '
+          'and absolute user paths, or a valid --cwd and --project-root. ${error.message}',
+          exitCode: 4,
+        );
+      }
+      fallback = options.copyWith(
+        scope: LifecycleScope.user,
+        clearProjectRoot: true,
+        processWorkingDirectory: home,
+        cwd: home,
       );
+      try {
+        LifecycleContext.resolve(
+          fallback,
+          fileSystem: fileSystem,
+        ).requireHome();
+      } on MambaException {
+        throw MambaException(
+          'Cannot resolve project or user context. Supply an existing absolute --home '
+          'and valid absolute user paths. ${error.message}',
+          exitCode: 4,
+        );
+      }
     }
     if (!await offerUserScope()) {
       throw MambaException('Scope selection cancelled.', exitCode: 7);
