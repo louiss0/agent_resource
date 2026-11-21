@@ -7,6 +7,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     required String installationId,
     required String source,
     required Map<String, Object?> origin,
+    InstallationRoute? installationRoute,
     List<ExposureRecord>? exposures,
     List<String>? knownConsumers,
     List<String>? validatedProfiles,
@@ -29,6 +30,8 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     final desired = initial.copyWith(
       baseline: baseline,
       origin: origin,
+      installationRoute: installationRoute,
+      clearInstallationRoute: installationRoute == null,
       exposures: exposures,
       knownConsumers: knownConsumers,
       validatedProfiles: validatedProfiles,

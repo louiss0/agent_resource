@@ -10,8 +10,12 @@ import 'package:yaml/yaml.dart';
 
 import '../authoring/native_field_matrix.dart';
 import '../harness/harness_catalog.dart';
+import '../installation/skill_root_markdown_migration.dart';
+import '../installation/installation_plan.dart';
+import '../installation/installation_route.dart';
 import '../skill_files.dart';
 import '../skill_validation.dart';
+import 'acquisition_service.dart';
 import 'conversion_coordinator_service.dart';
 import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
@@ -333,6 +337,55 @@ interface class SkillLifecycleService implements LifecycleResource {
     );
   }
 
+  /// Checks the source-level admission rules shared by Skill installations.
+  /// Destination, ownership and publication checks are performed separately.
+  Future<Map<String, Object?>> installationAdmission(String path) async {
+    StagedSkill? staged;
+    try {
+      staged = await SkillRootMarkdownMigration(fileSystem: state.io.fs)
+          .stage(path);
+      state.validateSkillTree(staged.path);
+      final name = readDeclaredSkillName(staged.path, fs: state.io.fs);
+      final report = validateSkill(
+        staged.path,
+        expectedDirectoryName: name,
+        fs: state.io.fs,
+      );
+      return <String, Object?>{
+        'eligible': report.valid,
+        'scope': 'source-only',
+        'methods': <String, bool>{
+          'copy': report.valid,
+          'canonical': report.valid,
+          'source-link': report.valid && !staged.migrated,
+        },
+        'diagnostics': [
+          for (final diagnostic in report.diagnostics) diagnostic.toJson(),
+          if (staged.migrated)
+            <String, Object?>{
+              'code': 'SOURCE_LINK_REQUIRES_MIGRATION',
+              'message': 'source-link cannot migrate loose root files; move them into references/ or assets/, or use copy or canonical.',
+            },
+        ],
+      };
+    } on MambaException catch (error) {
+      return <String, Object?>{
+        'eligible': false,
+        'scope': 'source-only',
+        'methods': <String, bool>{
+          'copy': false,
+          'canonical': false,
+          'source-link': false,
+        },
+        'diagnostics': [
+          <String, Object?>{'message': error.message},
+        ],
+      };
+    } finally {
+      await staged?.close();
+    }
+  }
+
   /// The body-free native Skill view of one source for Antigravity.
   ///
   /// Antigravity has no Prompt facet, but it does consume ordinary Skills.
@@ -588,6 +641,31 @@ interface class SkillLifecycleService implements LifecycleResource {
       location: location,
       nativeRoot: root,
       nativeDestination: input.destination.name,
+      installationRoute: InstallationRoute(
+        source: AcquisitionProvenance(
+          kind: AcquisitionLocatorKind.local,
+          requestedLocator: input.source,
+          resolvedLocator: source,
+          subpath: null,
+          temporary: false,
+          directFile: false,
+          durableLocalDirectory:
+              state.io.type(source, followLinks: false) ==
+              FileSystemEntityType.directory,
+        ),
+        sourceKind: AcquisitionSourceKind.resource,
+        sourceRelativePath: '.',
+        scope: context.scope,
+        targets: <InstallationRouteTarget>{
+          InstallationRouteTarget.values.byName(input.destination.name),
+          for (final harness in input.harnesses)
+            InstallationRouteTarget.values.byName(harness.name),
+        }.toList()..sort((a, b) => a.name.compareTo(b.name)),
+        method: input.mode == SkillMode.copy
+            ? InstallationMethod.copy
+            : InstallationMethod.sourceLink,
+        derivedArtifacts: const [],
+      ),
     );
   }
 

@@ -201,6 +201,8 @@ interface class AuthoringPlanService {
       'profile': inputs.profile.name,
       'scope': context.scope.name,
       'conversion': effectiveConversion?.name,
+      if (effectiveConversion == ConversionDirection.skillToPrompt)
+        'conversionTargetForm': _promptConversionForm(inputs.profile).name,
       'source': source == null
           ? null
           : <String, Object?>{
@@ -254,6 +256,8 @@ interface class AuthoringPlanService {
       'scope': context.scope.name,
       'ownership': ownership.name,
       'conversion': effectiveConversion?.name,
+      if (effectiveConversion == ConversionDirection.skillToPrompt)
+        'conversionTargetForm': _promptConversionForm(inputs.profile).name,
       'target': <String, Object?>{
         'output': placement.output,
         'root': placement.root,
@@ -841,6 +845,28 @@ interface class AuthoringPlanService {
     return (output: _fileSystem.path.join(path, 'SKILL.md'), directory: path);
   }
 
+  PromptConversionForm _promptConversionForm(AuthoringProfile profile) {
+    final ids = switch (profile) {
+      AuthoringProfile.global => const [HarnessId.claude, HarnessId.codex],
+      AuthoringProfile.claude => const [HarnessId.claude],
+      AuthoringProfile.codex => const [HarnessId.codex],
+      AuthoringProfile.pi => const [HarnessId.pi],
+      AuthoringProfile.antigravity => const [HarnessId.antigravity],
+    };
+    final forms = <PromptConversionForm>{};
+    for (final id in ids) {
+      HarnessCatalog.instance.requirePromptFacet(id);
+      forms.add((HarnessCatalog.instance.byId(id).prompt!).skillConversionForm);
+    }
+    if (forms.length != 1) {
+      throw MambaException(
+        'The selected Prompt profile has incompatible conversion forms.',
+        exitCode: 4,
+      );
+    }
+    return forms.single;
+  }
+
   _ConversionAnalysis _analyzeConversion(
     AuthoringInputs inputs,
     LifecycleContext context,
@@ -879,7 +905,8 @@ interface class AuthoringPlanService {
         }
         final name = fields['name'];
         final nameText = name is String ? name.trim() : '';
-        if (inputs.profile == AuthoringProfile.pi) {
+        if (_promptConversionForm(inputs.profile) ==
+            PromptConversionForm.template) {
           // The Pi conversion replaces the Skill with a standalone native
           // template instead of keeping a second active resource.
           final nativeRoot = _nativeRoot(inputs, context);

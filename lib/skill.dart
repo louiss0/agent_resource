@@ -308,7 +308,9 @@ final class ValidateCommand extends Command {
          longDescription:
              'Validate SKILL.md per native consumer using native Skill or Prompt rules. '
              'Without --target each view is reported separately. '
-             'Invalid or unclassified views fail with status 2.',
+             'Source-only installation admission is reported separately; '
+             'destination and ownership checks still apply. '
+             'Invalid or unclassified native views fail with status 2.',
        );
   final PromptReadService _read;
   final SkillLifecycleService _lifecycle;
@@ -333,6 +335,9 @@ final class ValidateCommand extends Command {
     final target = valueOf(_target);
     if (target == PromptConsumer.antigravity) {
       final report = await _lifecycle.antigravityView(skill);
+      report['installationAdmission'] = await _lifecycle.installationAdmission(
+        skill,
+      );
       final view = (report['views'] as List).single as Map<String, Object?>;
       if (view['valid'] == true) return jsonEncode(report);
       throw MambaException(jsonEncode(report), exitCode: 2);
@@ -356,7 +361,11 @@ final class ValidateCommand extends Command {
       }
       rendered.add(item);
     }
-    final output = jsonEncode({...views.toJson(), 'views': rendered});
+    final output = jsonEncode({
+      ...views.toJson(),
+      'views': rendered,
+      'installationAdmission': await _lifecycle.installationAdmission(skill),
+    });
     if (failed) throw MambaException(output, exitCode: 2);
     return output;
   }

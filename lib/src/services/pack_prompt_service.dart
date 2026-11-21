@@ -317,14 +317,10 @@ interface class PackPromptService {
   /// precede any installation effect.
   void requireSupportedTargets(List<String> targets) {
     for (final target in targets) {
-      if (target == 'pi') {
-        throw MambaException(
-          'A Pi Prompt installation is not supported; the selection is '
-          'refused before any installation effect.',
-          exitCode: PackProcessStatus.invalidInput.code,
-        );
+      if (target == 'shared') {
+        requireSupportedTargets(['claude', 'codex']);
+        continue;
       }
-      if (const {'claude', 'codex', 'shared'}.contains(target)) continue;
       HarnessId? id;
       for (final value in HarnessId.values) {
         if (value.wireName == target) id = value;
@@ -339,6 +335,13 @@ interface class PackPromptService {
         id,
         exitCode: PackProcessStatus.invalidInput.code,
       );
+      final prompt = HarnessCatalog.instance.byId(id).prompt!;
+      if (!prompt.supportsSkillBackedInstallation) {
+        throw MambaException(
+          'A ${id.wireName == 'pi' ? 'Pi' : id.wireName} Prompt installation is not supported; the selection is refused before any installation effect.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
     }
   }
 

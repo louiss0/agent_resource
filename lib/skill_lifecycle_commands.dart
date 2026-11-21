@@ -9,6 +9,7 @@ import 'components/installation_approval.dart';
 import 'installation_command_support.dart';
 import 'lifecycle.dart'
     show LifecycleConfirmation, LifecycleOutputFormat, RecoveryAction;
+import 'src/harness/harness_catalog.dart';
 import 'src/installation/installation_plan.dart';
 import 'src/installation/installation_request.dart';
 import 'src/services/acquisition_service.dart';
@@ -137,10 +138,9 @@ final class SkillInstallCommand extends Command {
   );
   static final _targets = RepeatableChoiceOption(
     'target',
-    const [
-      InstallationTarget.claude,
-      InstallationTarget.codex,
-      InstallationTarget.antigravity,
+    [
+      for (final id in HarnessCatalog.instance.skillInstallationTargets)
+        InstallationTarget.values.byName(id.wireName),
     ],
     unique: true,
     description: 'Consuming harness; repeat to select several.',
