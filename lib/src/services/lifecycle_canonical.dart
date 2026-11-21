@@ -64,7 +64,8 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     final initial = recordById(context, installationId);
     _requireResource(initial, resource, context, live: true);
     _requireCanonicalUnchanged(initial);
-    if (target == 'codex' || target == 'antigravity') {
+    if (target == 'codex' ||
+        target == 'antigravity' && context.scope == LifecycleScope.project) {
       throw MambaException(
         'A direct $target reader cannot be revoked by metadata removal while '
         'shared canonical content remains discoverable. Remove the whole '
@@ -72,7 +73,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         exitCode: 4,
       );
     }
-    if (target != null && target != 'claude') {
+    if (target != null && target != 'claude' && target != 'antigravity') {
       throw MambaException('Unsupported canonical exposure target: $target');
     }
     final remainingExposures = initial.exposures
@@ -137,7 +138,6 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         exitCode: 4,
       );
     }
-    final expectedExposure = p.join(context.claudeSkillsRoot(), initial.name);
     if (historical.installationId != backup.installationId ||
         historical.kind != ArtifactKind.skillCanonical ||
         historical.scope != backup.scope ||
@@ -145,17 +145,13 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         historical.lifecycle != 'live' ||
         !p.equals(historical.location, backup.location) ||
         !p.equals(historical.nativeRoot, backup.nativeRoot) ||
-        historical.baseline.digest != backup.baseline.digest ||
-        historical.exposures.any(
-          (exposure) =>
-              exposure.target != 'claude' ||
-              !p.equals(exposure.path, expectedExposure),
-        )) {
+        historical.baseline.digest != backup.baseline.digest) {
       throw MambaException(
         'Canonical backup evidence does not match its installation authority.',
         exitCode: 4,
       );
     }
+    resource.validateAuthority(historical, context);
     if (initial.lifecycle == 'live') {
       _requireCanonicalUnchanged(initial);
     } else {

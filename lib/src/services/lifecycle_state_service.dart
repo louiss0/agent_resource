@@ -793,7 +793,11 @@ final class ExposureRecord {
     final map = _object(value, 'canonical exposure');
     return ExposureRecord(
       path: _absolutePath(_string(map, 'path')),
-      target: _enumValue(_string(map, 'target'), const ['claude', 'codex']),
+      target: _enumValue(_string(map, 'target'), const [
+        'claude',
+        'codex',
+        'antigravity',
+      ]),
       nativeKind: _string(map, 'nativeKind'),
       baseline: ArtifactBaseline.fromJson(map['baseline']),
     );

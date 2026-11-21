@@ -996,6 +996,17 @@ interface class SkillLifecycleService implements LifecycleResource {
     return path;
   }
 
+  /// The native root that requires a link to shared canonical content.
+  String? canonicalExposureRoot(LifecycleContext context, String target) =>
+      switch (target) {
+        'claude' => _root(context, SkillDestination.claude),
+        'antigravity' when context.scope == LifecycleScope.user => _root(
+          context,
+          SkillDestination.antigravity,
+        ),
+        _ => null,
+      };
+
   @override
   void validateAuthority(InstallationRecord record, LifecycleContext context) {
     final canonical = record.kind == ArtifactKind.skillCanonical;
@@ -1025,14 +1036,14 @@ interface class SkillLifecycleService implements LifecycleResource {
       );
     }
     if (canonical) {
-      final expectedExposure = state.io.fs.path.join(
-        context.claudeSkillsRoot(),
-        record.name,
-      );
       final paths = <String>{};
       for (final exposure in record.exposures) {
-        if (exposure.target != 'claude' ||
-            !state.io.fs.path.equals(exposure.path, expectedExposure) ||
+        final exposureRoot = canonicalExposureRoot(context, exposure.target);
+        if (exposureRoot == null ||
+            !state.io.fs.path.equals(
+              exposure.path,
+              state.io.fs.path.join(exposureRoot, record.name),
+            ) ||
             !paths.add(state.io.fs.path.normalize(exposure.path)) ||
             exposure.baseline.entries.length != 1 ||
             exposure.baseline.entries.single.type != 'link') {

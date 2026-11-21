@@ -1677,6 +1677,7 @@ track = { kind = "local" }
       String? target,
       bool useDefaultTarget = true,
       LifecycleScope scope = LifecycleScope.project,
+      String? geminiDir,
     }) => PackLifecycleRequest(
       operation: operation,
       resourceType: type,
@@ -1691,6 +1692,7 @@ track = { kind = "local" }
         'PI_CODING_AGENT_DIR': p.join(sandbox.path, 'pi'),
       },
       scope: scope,
+      geminiDir: geminiDir,
       configPath: scope == LifecycleScope.user
           ? p.join(project.path, 'agent-resources.toml')
           : null,
@@ -1747,6 +1749,40 @@ track = { kind = "local" }
         );
       }
     }
+
+    test('user canonical Antigravity pack installs and removes its native exposure', () async {
+      final service = PackLifecycleService();
+      final gemini = p.join(sandbox.path, 'gemini');
+      final installed = await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          scope: LifecycleScope.user,
+          geminiDir: gemini,
+          method: 'canonical',
+          target: 'antigravity',
+        ),
+      );
+      expect(installed.resources.single.disposition.wireName, 'installed');
+      final canonical = p.join(home.path, '.agents', 'skills', 'reviewer');
+      final exposure = Link(p.join(gemini, 'config', 'skills', 'reviewer'));
+      expect(exposure.existsSync(), isTrue);
+      expect(exposure.targetSync(), canonical);
+      expect(File(p.join(exposure.path, 'SKILL.md')).existsSync(), isTrue);
+
+      final removed = await service.execute(
+        request(
+          PackOperation.remove,
+          PackResourceType.skill,
+          scope: LifecycleScope.user,
+          geminiDir: gemini,
+          only: const ['reviewer'],
+        ),
+      );
+      expect(removed.resources.single.disposition.wireName, 'removed');
+      expect(exposure.existsSync(), isFalse);
+      expect(Directory(canonical).existsSync(), isFalse);
+    });
 
     test(
       'canonical rollback restores historical exposures and consumers',

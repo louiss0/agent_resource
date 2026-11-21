@@ -454,7 +454,7 @@ final class SkillRemoveCommand extends Command {
   static final _target = ChoiceOption(
     'target',
     choices: SkillHarness.values,
-    description: 'Detach one managed canonical exposure (Claude only).',
+    description: 'Detach one managed canonical exposure link.',
   );
   static final _scope = ChoiceOption.withDefault(
     'scope',

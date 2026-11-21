@@ -344,6 +344,105 @@ void main() {
           );
         }
 
+        test(
+          'user canonical Antigravity exposure can be detached and restored',
+          () async {
+            useLocalFileSystem();
+            final source = skill('source');
+            final gemini = fs.path.join(sandbox.path, 'gemini');
+            final roots = [
+              ...context(scope: 'user'),
+              '--gemini-dir',
+              '$gemini${fs.path.separator}',
+            ];
+            final install = [
+              'skill',
+              'install',
+              source.path,
+              '--source-kind',
+              'resource',
+              '--target',
+              'antigravity',
+              '--target',
+              'codex',
+              '--method',
+              'canonical',
+              ...roots,
+              '--yes',
+              '--format',
+              'json',
+            ];
+            Future<Map<String, Object?>> run(
+              List<String> args,
+              String outcome,
+            ) async {
+              final result = await executor().fake().execute(args);
+              expect(
+                result,
+                isA<MambaSuccessResult>().having(
+                  (r) => r.exitCode,
+                  'status',
+                  0,
+                ),
+                reason: result is MambaFailureResult ? result.message : null,
+              );
+              final json = jsonDecode(
+                (result as MambaSuccessResult).output!,
+              ) as Map<String, Object?>;
+              expect(json['outcome'], outcome);
+              return json['data']! as Map<String, Object?>;
+            }
+
+            final installed = await run(install, 'installed');
+            final canonical = fs.path.join(
+              home.path,
+              '.agents',
+              'skills',
+              'review',
+            );
+            final exposure = fs.link(
+              fs.path.join(gemini, 'config', 'skills', 'review'),
+            );
+            expect(exposure.existsSync(), isTrue);
+            expect(exposure.targetSync(), canonical);
+            await run(install, 'unchanged');
+            final unit =
+                (installed['units']! as List<Object?>).single!
+                    as Map<String, Object?>;
+            final id =
+                (unit['installationIds']! as List<Object?>).single! as String;
+
+            final detached = await run([
+              'skill',
+              'remove',
+              id,
+              '--target',
+              'antigravity',
+              ...roots,
+              '--yes',
+              '--format',
+              'json',
+            ], 'detached');
+            expect(exposure.existsSync(), isFalse);
+            expect(
+              fs.file(fs.path.join(canonical, 'SKILL.md')).existsSync(),
+              isTrue,
+            );
+
+            await run([
+              'skill',
+              'backup',
+              'restore',
+              detached['outgoingBackupId']! as String,
+              ...roots,
+              '--yes',
+              '--format',
+              'json',
+            ], 'restored');
+            expect(exposure.targetSync(), canonical);
+          },
+        );
+
         test('initializes user state containing only coordination', () async {
           final source = skill('source');
           final coordination = fs.directory(

@@ -322,7 +322,8 @@ interface class SkillInstallationService {
           action: InstallationEntryAction.createContent,
           target: targets.contains(InstallationTarget.codex)
               ? 'codex'
-              : targets.contains(InstallationTarget.antigravity)
+              : context.scope == LifecycleScope.project &&
+                    targets.contains(InstallationTarget.antigravity)
               ? 'antigravity'
               : null,
           nativeRoot: canonicalRoot,
@@ -330,34 +331,32 @@ interface class SkillInstallationService {
           artifactKind: OwnedArtifactKind.skillCanonical,
         ),
       );
-      if (targets.contains(InstallationTarget.claude)) {
-        final root = _fileSystem.path.normalize(context.claudeSkillsRoot());
-        entries.add(
-          InstallationEntryPlan(
-            path: _fileSystem.path.join(root, inspected.name),
-            kind: InstallationEntryKind.link,
-            action: InstallationEntryAction.createLink,
-            target: 'claude',
-            linkTarget: canonicalPath,
-            nativeLinkKind: _nativeDirectoryLinkKind,
-            nativeRoot: root,
-            nativeDestination: 'claude',
-            artifactKind: OwnedArtifactKind.skillLink,
-          ),
-        );
-      }
-      for (final direct in <InstallationTarget>[
+      for (final target in const [
+        InstallationTarget.claude,
         InstallationTarget.codex,
         InstallationTarget.antigravity,
       ]) {
-        if (!targets.contains(direct)) continue;
+        if (!targets.contains(target)) continue;
+        final root = _lifecycle.canonicalExposureRoot(context, target.name);
         entries.add(
-          InstallationEntryPlan(
-            path: canonicalPath,
-            kind: InstallationEntryKind.consumer,
-            action: InstallationEntryAction.recordConsumer,
-            target: direct.name,
-          ),
+          root == null
+              ? InstallationEntryPlan(
+                  path: canonicalPath,
+                  kind: InstallationEntryKind.consumer,
+                  action: InstallationEntryAction.recordConsumer,
+                  target: target.name,
+                )
+              : InstallationEntryPlan(
+                  path: _fileSystem.path.join(root, inspected.name),
+                  kind: InstallationEntryKind.link,
+                  action: InstallationEntryAction.createLink,
+                  target: target.name,
+                  linkTarget: canonicalPath,
+                  nativeLinkKind: _nativeDirectoryLinkKind,
+                  nativeRoot: root,
+                  nativeDestination: target.name,
+                  artifactKind: OwnedArtifactKind.skillLink,
+                ),
         );
       }
     } else {
