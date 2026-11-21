@@ -245,7 +245,11 @@ final class LifecycleActionCommand extends Command {
            _claudeConfigDir,
            _codexHome,
            _stateDir,
-           if (_resource == _Resource.agent) ...[_piAgentDir, _readRoots],
+           if (_resource == _Resource.agent) ...[
+             _piAgentDir,
+             _geminiDir,
+             _readRoots,
+           ],
            if (_resource == _Resource.skill && _operation == _Operation.adopt)
              _readRoots,
          ],
@@ -402,6 +406,7 @@ final class LifecycleActionCommand extends Command {
   static final _codexHome = FolderPathOption('codex-home');
   static final _stateDir = FolderPathOption('state-dir');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _readRoots = RepeatableFolderPathOption('read-root');
 
   static const _dryRun = BooleanFlag('dry-run');
@@ -493,6 +498,7 @@ final class LifecycleActionCommand extends Command {
     claudeConfigDir: valueOf(_claudeConfigDir),
     codexHome: valueOf(_codexHome),
     piAgentDir: _resource == _Resource.agent ? valueOf(_piAgentDir) : null,
+    geminiDir: _resource == _Resource.agent ? valueOf(_geminiDir) : null,
     stateDir: valueOf(_stateDir),
     readRoots: _resource == _Resource.agent || _operation == _Operation.adopt
         ? valueOf(_readRoots) ?? const <String>[]
@@ -515,6 +521,7 @@ final class LifecycleActionCommand extends Command {
     claudeConfigDir: input.claudeConfigDir,
     codexHome: input.codexHome,
     piAgentDir: input.piAgentDir,
+    geminiDir: input.geminiDir,
     stateDir: input.stateDir,
     readRoots: input.readRoots,
     dryRun: dryRun ?? input.dryRun,

@@ -28,8 +28,10 @@ final class AgentComposeCommand extends Command {
            _claudeConfigDir,
            _codexHome,
            _piAgentDir,
+           _geminiDir,
            _stateDir,
            _planId,
+           authoringHarnessOption,
          ],
          flags: const [_apply, _dryRun, _yes, _interactive, _showInstructions],
          conflicts: const {
@@ -76,6 +78,7 @@ final class AgentComposeCommand extends Command {
   static final _claudeConfigDir = FolderPathOption('claude-config-dir');
   static final _codexHome = FolderPathOption('codex-home');
   static final _piAgentDir = FolderPathOption('pi-agent-dir');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _stateDir = FolderPathOption('state-dir');
   static final _planId = StringOption(
     'plan-id',
@@ -127,6 +130,7 @@ final class AgentComposeCommand extends Command {
       claudeConfigDir: valueOf(_claudeConfigDir),
       codexHome: valueOf(_codexHome),
       piAgentDir: valueOf(_piAgentDir),
+      geminiDir: valueOf(_geminiDir),
       stateDir: valueOf(_stateDir),
       dryRun: valueOf(_dryRun),
       approved: valueOf(_yes),
@@ -135,6 +139,7 @@ final class AgentComposeCommand extends Command {
       requestFile,
       options.cwd ?? options.processWorkingDirectory,
       fileSystem: _fileSystem,
+      harnessOverride: authoringHarnessOverride(valueOf),
     );
     if (request.operation != AuthoringOperation.compose) {
       throw MambaException('The request operation must be compose.');

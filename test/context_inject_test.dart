@@ -151,6 +151,412 @@ void main() {
           }
         });
 
+        group('antigravity', () {
+          const geminiDirArgs = <String>['--gemini-dir', '/sandbox/gemini/'];
+
+          test(
+            'plans a standard antigravity target at project scope',
+            () async {
+              writeTemplate('styles', 'project rules\n');
+
+              final envelope = successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'antigravity',
+                  '--variant',
+                  'standard',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: isA<int>(),
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['antigravity'],
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/AGENTS.md',
+                      harnesses: <String>['antigravity'],
+                    ),
+                  ],
+                ),
+              );
+              final targets =
+                  (envelope['data'] as Map<String, dynamic>)['targets']
+                      as List<dynamic>;
+              expect(
+                targets.single,
+                containsPair('harnesses', ['antigravity']),
+              );
+              expect(
+                fs.file('/sandbox/project/AGENTS.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test('plans a gemini antigravity target at project scope', () async {
+            writeTemplate('styles', 'project rules\n');
+
+            successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'antigravity',
+                '--variant',
+                'gemini',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              outcome: 'planned',
+              data: injectData(
+                templateName: 'styles',
+                templateByteLength: isA<int>(),
+                targetDirectory: '/sandbox/project',
+                harnesses: <String>['antigravity'],
+                variant: 'gemini',
+                targets: <Object?>[
+                  injectTarget(
+                    path: '/sandbox/project/GEMINI.md',
+                    harnesses: <String>['antigravity'],
+                    variant: 'gemini',
+                  ),
+                ],
+              ),
+            );
+            expect(fs.file('/sandbox/project/GEMINI.md').existsSync(), isFalse);
+          });
+
+          test(
+            'plans a dot-agents antigravity target at project scope',
+            () async {
+              writeTemplate('styles', 'project rules\n');
+
+              successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'antigravity',
+                  '--variant',
+                  'dot-agents',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: isA<int>(),
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['antigravity'],
+                  variant: 'dot-agents',
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/.agents/AGENTS.md',
+                      harnesses: <String>['antigravity'],
+                      variant: 'dot-agents',
+                    ),
+                  ],
+                ),
+              );
+              expect(
+                fs.file('/sandbox/project/.agents/AGENTS.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test(
+            'deduplicates antigravity with codex and pi project standard',
+            () async {
+              writeTemplate('styles', 'project rules\n');
+
+              final envelope = successJson(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'codex',
+                  '--harness',
+                  'pi',
+                  '--harness',
+                  'antigravity',
+                  '--variant',
+                  'standard',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                outcome: 'planned',
+                data: injectData(
+                  templateName: 'styles',
+                  templateByteLength: isA<int>(),
+                  targetDirectory: '/sandbox/project',
+                  harnesses: <String>['codex', 'pi', 'antigravity'],
+                  targets: <Object?>[
+                    injectTarget(
+                      path: '/sandbox/project/AGENTS.md',
+                      harnesses: <String>['codex', 'pi', 'antigravity'],
+                    ),
+                  ],
+                ),
+              );
+              final targets =
+                  (envelope['data'] as Map<String, dynamic>)['targets']
+                      as List<dynamic>;
+              expect(targets, hasLength(1));
+              expect(
+                targets.single,
+                containsPair('harnesses', ['codex', 'pi', 'antigravity']),
+              );
+              expect(
+                fs.file('/sandbox/project/AGENTS.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          for (final testCase in <Map<String, String>>[
+            {'variant': 'standard', 'path': '/sandbox/gemini/AGENTS.md'},
+            {'variant': 'gemini', 'path': '/sandbox/gemini/GEMINI.md'},
+            {
+              'variant': 'dot-agents',
+              'path': '/sandbox/gemini/config/AGENTS.md',
+            },
+          ]) {
+            test(
+              'honors a user-scope root override for ${testCase['variant']}',
+              () async {
+                writeTemplate('styles', 'global rules\n');
+
+                final envelope = successJson(
+                  await exec(<String>[
+                    'styles',
+                    '--harness',
+                    'antigravity',
+                    '--scope',
+                    'user',
+                    '--variant',
+                    testCase['variant']!,
+                    ...geminiDirArgs,
+                    '--format',
+                    'json',
+                    '--unattended',
+                  ]),
+                  outcome: 'planned',
+                  data: injectData(
+                    templateName: 'styles',
+                    templateByteLength: isA<int>(),
+                    targetDirectory: '/sandbox/state',
+                    scope: 'user',
+                    harnesses: <String>['antigravity'],
+                    variant: testCase['variant']!,
+                    targets: <Object?>[
+                      injectTarget(
+                        path: testCase['path']!,
+                        harnesses: <String>['antigravity'],
+                        variant: testCase['variant']!,
+                      ),
+                    ],
+                  ),
+                );
+                final targets =
+                    (envelope['data'] as Map<String, dynamic>)['targets']
+                        as List<dynamic>;
+                expect(targets.single, containsPair('path', testCase['path']!));
+                expect(fs.file(testCase['path']!).existsSync(), isFalse);
+              },
+            );
+          }
+
+          test('resolves the default gemini user root from --home', () async {
+            writeTemplate('styles', 'global rules\n');
+
+            successJson(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'antigravity',
+                '--scope',
+                'user',
+                '--variant',
+                'standard',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              outcome: 'planned',
+              data: injectData(
+                templateName: 'styles',
+                templateByteLength: isA<int>(),
+                targetDirectory: '/sandbox/state',
+                scope: 'user',
+                harnesses: <String>['antigravity'],
+                targets: <Object?>[
+                  injectTarget(
+                    path: '/sandbox/home/.gemini/AGENTS.md',
+                    harnesses: <String>['antigravity'],
+                  ),
+                ],
+              ),
+            );
+            expect(
+              fs.file('/sandbox/home/.gemini/AGENTS.md').existsSync(),
+              isFalse,
+            );
+          });
+
+          test('refuses the gemini variant for claude', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--variant',
+                'gemini',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'UNSUPPORTED_CONTEXT_VARIANT',
+            );
+            expect(fs.file('/sandbox/project/GEMINI.md').existsSync(), isFalse);
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+
+          test('refuses the dot-claude variant for antigravity', () async {
+            writeTemplate('styles', 'rules\n');
+
+            expectFailure(
+              await exec(const <String>[
+                'styles',
+                '--harness',
+                'antigravity',
+                '--variant',
+                'dot-claude',
+                '--format',
+                'json',
+                '--unattended',
+              ]),
+              'UNSUPPORTED_CONTEXT_VARIANT',
+            );
+            expect(fs.file('/sandbox/project/AGENTS.md').existsSync(), isFalse);
+          });
+
+          test(
+            'refuses the whole multi-harness invocation on one bad combo',
+            () async {
+              writeTemplate('styles', 'rules\n');
+
+              expectFailure(
+                await exec(const <String>[
+                  'styles',
+                  '--harness',
+                  'codex',
+                  '--harness',
+                  'antigravity',
+                  '--variant',
+                  'gemini',
+                  '--format',
+                  'json',
+                  '--unattended',
+                ]),
+                'UNSUPPORTED_CONTEXT_VARIANT',
+              );
+              expect(
+                fs.file('/sandbox/project/AGENTS.md').existsSync(),
+                isFalse,
+              );
+              expect(
+                fs.file('/sandbox/project/GEMINI.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test('honors --dry-run for an antigravity apply', () async {
+            writeTemplate('styles', 'rules\n');
+
+            final result = await exec(const <String>[
+              'styles',
+              '--harness',
+              'antigravity',
+              '--variant',
+              'gemini',
+              '--apply',
+              '--dry-run',
+              '--yes',
+              '--unattended',
+              '--format',
+              'json',
+            ]);
+            expect(result, isA<MambaSuccessResult>());
+            expect(fs.file('/sandbox/project/GEMINI.md').existsSync(), isFalse);
+          });
+
+          test('renders a text envelope for antigravity', () async {
+            writeTemplate('styles', 'rules\n');
+
+            final result = await exec(const <String>[
+              'styles',
+              '--harness',
+              'antigravity',
+              '--variant',
+              'standard',
+              '--unattended',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>()
+                  .having((value) => value.exitCode, 'exit code', 0)
+                  .having(
+                    (value) => value.output,
+                    'output',
+                    contains('context inject: planned'),
+                  ),
+            );
+            expect(fs.file('/sandbox/project/AGENTS.md').existsSync(), isFalse);
+          });
+
+          test(
+            'injects an interactively selected antigravity harness',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final injected = ContextInjectCommand(
+                ContextInjectionService(fileSystem: fs),
+                ContextTemplateService(fileSystem: fs),
+                selectHarnesses: () async => <ContextHarness>[
+                  ContextHarness.antigravity,
+                ],
+                selectTemplate: (names) async => 'styles',
+                hasTerminal: () => true,
+              );
+
+              final result =
+                  await createExecutor(
+                    fileSystem: fs,
+                    contextInject: injected,
+                  ).fake().execute(
+                    command(const <String>[
+                      '--interactive',
+                      '--variant',
+                      'gemini',
+                    ]),
+                  );
+              expect(result, isA<MambaSuccessResult>());
+              expect(
+                (result as MambaSuccessResult).output,
+                contains('planned'),
+              );
+            },
+          );
+        });
+
         test('plans default project-root injection without writing', () async {
           writeTemplate('styles', 'project rules\n');
 

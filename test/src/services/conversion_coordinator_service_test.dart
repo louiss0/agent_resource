@@ -156,6 +156,7 @@ void main() {
     required String nativeRoot,
     required String artifactKind,
     required String nativeForm,
+    String nativeProfile = 'claude',
   }) {
     final baseline = ConversionBaseline(
       entries: conversionManifestEntries(io, location),
@@ -165,7 +166,7 @@ void main() {
       intent: ConversionParticipantIntent.retired,
       artifactKind: artifactKind,
       nativeForm: nativeForm,
-      nativeProfile: 'claude',
+      nativeProfile: nativeProfile,
       location: location,
       nativeRoot: nativeRoot,
       scope: 'project',
@@ -173,7 +174,7 @@ void main() {
         managed: true,
         installationId: sourceInstallationId,
         nativeForm: nativeForm,
-        nativeProfile: 'claude',
+        nativeProfile: nativeProfile,
         location: location,
         nativeRoot: nativeRoot,
         scope: 'project',
@@ -189,12 +190,13 @@ void main() {
     required String nativeForm,
     String installationId = sourceInstallationId,
     String scope = 'project',
+    String nativeProfile = 'claude',
   }) => ConversionParticipant(
     role: ConversionParticipantRole.target,
     intent: ConversionParticipantIntent.created,
     artifactKind: artifactKind,
     nativeForm: nativeForm,
-    nativeProfile: 'claude',
+    nativeProfile: nativeProfile,
     location: location,
     nativeRoot: nativeRoot,
     scope: scope,
@@ -202,7 +204,7 @@ void main() {
       managed: true,
       installationId: installationId,
       nativeForm: nativeForm,
-      nativeProfile: 'claude',
+      nativeProfile: nativeProfile,
       location: location,
       nativeRoot: nativeRoot,
       scope: scope,
@@ -551,6 +553,94 @@ void main() {
       },
     );
 
+    final antigravityDirections =
+        <
+          ({
+            String sourceRoot,
+            String sourceForm,
+            String sourceProfile,
+            String targetRoot,
+            String targetForm,
+            String targetProfile,
+          })
+        >[
+          (
+            sourceRoot: '/work/project/.claude/agents',
+            sourceForm: 'claude-agent-file',
+            sourceProfile: 'claude',
+            targetRoot: '/work/project/.agents/agents',
+            targetForm: 'antigravity-agent-file',
+            targetProfile: 'antigravity-agent-native-v1',
+          ),
+          (
+            sourceRoot: '/work/project/.agents/agents',
+            sourceForm: 'antigravity-agent-file',
+            sourceProfile: 'antigravity-agent-native-v1',
+            targetRoot: '/work/project/.claude/agents',
+            targetForm: 'claude-agent-file',
+            targetProfile: 'claude',
+          ),
+        ];
+    for (final direction in antigravityDirections) {
+      test(
+        'interrupted conversion recovers with ${direction.targetForm} target',
+        () async {
+          final source = '${direction.sourceRoot}/reviewer.md';
+          final target = '${direction.targetRoot}/reviewer.md';
+          fs.file(source)
+            ..createSync(recursive: true)
+            ..writeAsStringSync('original');
+          seedLedger(
+            location: source,
+            nativeRoot: direction.sourceRoot,
+            nativeForm: direction.sourceForm,
+          );
+          final request = ConversionTransitionRequest(
+            transactionId: 'cvx_0123456789abcdef0123456789abcdef',
+            options: options,
+            source: sourceParticipant(
+              location: source,
+              nativeRoot: direction.sourceRoot,
+              artifactKind: 'agent-file',
+              nativeForm: direction.sourceForm,
+              nativeProfile: direction.sourceProfile,
+            ),
+            target: targetParticipant(
+              location: target,
+              nativeRoot: direction.targetRoot,
+              artifactKind: 'agent-file',
+              nativeForm: direction.targetForm,
+              nativeProfile: direction.targetProfile,
+            ),
+            targetFiles: {'reviewer.md': utf8.encode('converted')},
+          );
+          io.after = (operation, path) {
+            if (operation == 'write' &&
+                path.endsWith('/conversions/${request.transactionId}.json')) {
+              throw StateError('Interrupted before publication');
+            }
+          };
+          await expectLater(coordinator.execute(request), throwsStateError);
+          io.after = null;
+          final fresh = ConversionCoordinator(
+            io: LifecycleIO(fs: fs),
+            state: LifecycleStateService(io: LifecycleIO(fs: fs)),
+          );
+          final review = await fresh.recoverReviewed(
+            options.copyWith(dryRun: true),
+            request.transactionId,
+          );
+          final recovered = await fresh.recoverReviewed(
+            options.copyWith(approved: true),
+            request.transactionId,
+            planId: review.data['planId'] as String,
+          );
+          expect(recovered.outcome, 'recovered');
+          expect(fs.file(source).readAsStringSync(), 'original');
+          expect(fs.file(target).existsSync(), isFalse);
+        },
+      );
+    }
     test('Skill install reserves pending names across visible roots, not unrelated names', () async {
       final original = seedRequest();
       final request = ConversionTransitionRequest(

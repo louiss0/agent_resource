@@ -1490,6 +1490,7 @@ interface class AuthoringPublicationService {
         AuthoringProfile.codex => SkillDestination.codex,
         AuthoringProfile.global => SkillDestination.shared,
         AuthoringProfile.pi => null,
+        AuthoringProfile.antigravity => SkillDestination.antigravity,
       };
 
   /// The Agent harness of a profile.

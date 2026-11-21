@@ -48,6 +48,7 @@ final class _PackContextOptions {
   static final cwd = FolderPathOption('cwd');
   static final projectRoot = FolderPathOption('project-root');
   static final home = FolderPathOption('home');
+  static final geminiDir = FolderPathOption('gemini-dir');
   static final state = FolderPathOption('state-dir');
   static final config = FilePathOption('config');
 }
@@ -67,9 +68,10 @@ final class PackActionCommand extends Command {
            _PackContextOptions.cwd,
            _PackContextOptions.projectRoot,
            _PackContextOptions.home,
+           _PackContextOptions.geminiDir,
            _PackContextOptions.state,
            _PackContextOptions.config,
-           if (_operation != PackOperation.validate) _target,
+           if (_operation != PackOperation.validate) ...[_target, _harness],
            switch (_operation) {
              PackOperation.rollback => _rollbackOnly,
              PackOperation.remove ||
@@ -120,6 +122,10 @@ final class PackActionCommand extends Command {
   final PackOperation _operation;
   final PackLifecycleService _service;
   static final _target = StringOption('target');
+  static final _harness = StringOption(
+    'harness',
+    description: 'The consuming harness of the pack operation.',
+  );
   static final _only = RepeatableStringOption(
     'only',
     regex: RegExp(r'^\s*\S[\s\S]*$'),
@@ -252,9 +258,10 @@ final class PackActionCommand extends Command {
         cwd: valueOf(_PackContextOptions.cwd),
         projectRoot: valueOf(_PackContextOptions.projectRoot),
         home: valueOf(_PackContextOptions.home),
+        geminiDir: valueOf(_PackContextOptions.geminiDir),
         stateDir: valueOf(_PackContextOptions.state),
         configPath: valueOf(_PackContextOptions.config),
-        target: mutating ? valueOf(_target) : null,
+        target: mutating ? valueOf(_harness) ?? valueOf(_target) : null,
         only: only,
         method: mutating ? valueOf(_method)?.wireName : null,
         release: valueOf(_release),
@@ -311,9 +318,11 @@ final class PackDiscoverCommand extends Command {
            _PackContextOptions.cwd,
            _PackContextOptions.projectRoot,
            _PackContextOptions.home,
+           _PackContextOptions.geminiDir,
            _PackContextOptions.state,
            _PackContextOptions.config,
            _target,
+           PackActionCommand._harness,
            _type,
            _format,
          ],
@@ -355,13 +364,14 @@ final class PackDiscoverCommand extends Command {
       PackDiscoveryRequest(
         pack: valueOf(_PackContextOptions.pack),
         types: valueOf(_type) ?? const <PackResourceType>[],
-        target: valueOf(_target),
+        target: valueOf(PackActionCommand._harness) ?? valueOf(_target),
         processWorkingDirectory: _fileSystem.currentDirectory.path,
         environment: Map<String, String>.unmodifiable(Platform.environment),
         scope: valueOf(_PackContextOptions.scope),
         cwd: valueOf(_PackContextOptions.cwd),
         projectRoot: valueOf(_PackContextOptions.projectRoot),
         home: valueOf(_PackContextOptions.home),
+        geminiDir: valueOf(_PackContextOptions.geminiDir),
         stateDir: valueOf(_PackContextOptions.state),
         configPath: valueOf(_PackContextOptions.config),
       ),

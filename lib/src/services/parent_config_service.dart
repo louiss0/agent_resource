@@ -8,6 +8,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:toml/toml.dart';
 
+import '../harness/harness_id.dart';
 import 'lifecycle_state_service.dart';
 
 const parentDocumentLimit = 8 * 1024 * 1024;
@@ -32,7 +33,14 @@ const mcpParentRetirementMessage =
     'Use the singular `mcp` command group instead '
     '(for example: mcp list, mcp register, mcp replace).';
 
-enum ParentHarness { claude, codex, pi }
+enum ParentHarness implements HarnessWireNamed {
+  claude,
+  codex,
+  pi;
+
+  @override
+  String get wireName => name;
+}
 
 enum ParentLayer { user, project, profile }
 

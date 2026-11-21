@@ -83,6 +83,22 @@ void main() {
         expect(report.targetHarnesses, McpHarness.values);
       });
 
+      test('admits an Antigravity project selection through its facet', () {
+        final report = service().admit(
+          request(
+            declarations: <PackMcpDeclaration>[
+              declaration('remote', <String, Object?>{
+                'serverUrl': 'https://docs.example.test/mcp',
+                'headers': <String, Object?>{'X-Ref': 'DOCS_REF'},
+              }),
+            ],
+            targets: const <McpHarness>[McpHarness.antigravity],
+          ),
+        );
+        expect(report.admittedNames, <String>['remote']);
+        expect(report.targetHarnesses, <McpHarness>[McpHarness.antigravity]);
+      });
+
       test('refuses the whole selection when one target cannot support it', () {
         expect(
           () => service().admit(
@@ -149,7 +165,7 @@ void main() {
     });
 
     group('bounded native discovery (story 37)', () {
-      test('reads only the three fixed project-level files', () {
+      test('reads only the four fixed project-level files', () {
         writeFile(
           '.mcp.json',
           jsonEncode(<String, Object?>{
@@ -170,11 +186,22 @@ void main() {
             },
           }),
         );
+        writeFile(
+          '.agents/mcp_config.json',
+          jsonEncode(<String, Object?>{
+            'mcpServers': <String, Object?>{
+              'docs': <String, Object?>{
+                'serverUrl': 'https://docs.example.test/mcp',
+              },
+            },
+          }),
+        );
 
         final discovered = service().discoverNative(sourceRoot);
         expect(discovered[McpHarness.claude], <String>{'github'});
         expect(discovered[McpHarness.codex], <String>{'build'});
         expect(discovered[McpHarness.pi], <String>{'search'});
+        expect(discovered[McpHarness.antigravity], <String>{'docs'});
       });
 
       test('never recursively sweeps the source tree', () {

@@ -20,6 +20,8 @@ import 'src/services/skill_lifecycle_service.dart';
 Future<bool> _defaultConfirmation(String prompt) =>
     InstallationApprovalComponent(label: prompt).render();
 
+final FolderPathOption _geminiDir = FolderPathOption('gemini-dir');
+
 LifecycleOptions _options(
   String processWorkingDirectory,
   LifecycleScope scope,
@@ -31,8 +33,9 @@ LifecycleOptions _options(
   String? state,
   List<String> readRoots,
   bool dryRun,
-  bool approved,
-) => LifecycleOptions(
+  bool approved, {
+  String? gemini,
+}) => LifecycleOptions(
   processWorkingDirectory: processWorkingDirectory,
   environment: Map<String, String>.unmodifiable(Platform.environment),
   scope: scope,
@@ -41,6 +44,7 @@ LifecycleOptions _options(
   home: home,
   claudeConfigDir: claude,
   codexHome: codex,
+  geminiDir: gemini,
   stateDir: state,
   readRoots: readRoots,
   dryRun: dryRun,
@@ -96,6 +100,7 @@ final class SkillInstallCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
           _readRoots,
           _destination,
           _harness,
@@ -132,9 +137,13 @@ final class SkillInstallCommand extends Command {
   );
   static final _targets = RepeatableChoiceOption(
     'target',
-    const [InstallationTarget.claude, InstallationTarget.codex],
+    const [
+      InstallationTarget.claude,
+      InstallationTarget.codex,
+      InstallationTarget.antigravity,
+    ],
     unique: true,
-    description: 'Consuming harness; repeat to select both.',
+    description: 'Consuming harness; repeat to select several.',
   );
   static final _scope = ChoiceOption(
     'scope',
@@ -207,6 +216,7 @@ final class SkillInstallCommand extends Command {
           home: valueOf(_home),
           claudeConfigDir: valueOf(_claude),
           codexHome: valueOf(_codex),
+          geminiDir: valueOf(_geminiDir),
           stateDir: valueOf(_state),
           readRoots: valueOf(_readRoots) ?? const <String>[],
           dryRun: valueOf(_dryRun),
@@ -306,6 +316,7 @@ final class SkillAdoptCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
           _readRoots,
         ],
         flags: const [_dryRun, _yes, _interactive],
@@ -331,6 +342,7 @@ final class SkillAdoptCommand extends Command {
           valueOf(_claude),
           valueOf(_codex),
           valueOf(_state),
+          gemini: valueOf(_geminiDir),
           valueOf(_readRoots) ?? const [],
           valueOf(_dryRun),
           valueOf(_yes),
@@ -384,6 +396,7 @@ final class SkillReplaceCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
         ],
         flags: const [_dryRun, _yes, _interactive],
       );
@@ -411,6 +424,7 @@ final class SkillReplaceCommand extends Command {
             valueOf(_claude),
             valueOf(_codex),
             valueOf(_state),
+            gemini: valueOf(_geminiDir),
             const [],
             planned,
             approved,
@@ -441,7 +455,7 @@ final class SkillRemoveCommand extends Command {
   static final _target = ChoiceOption(
     'target',
     choices: SkillHarness.values,
-    description: 'Detach one managed canonical exposure (Claude only).',
+    description: 'Detach one managed canonical exposure link.',
   );
   static final _scope = ChoiceOption.withDefault(
     'scope',
@@ -476,6 +490,7 @@ final class SkillRemoveCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
         ],
         flags: const [_dryRun, _yes, _interactive],
       );
@@ -502,6 +517,7 @@ final class SkillRemoveCommand extends Command {
         valueOf(_claude),
         valueOf(_codex),
         valueOf(_state),
+        gemini: valueOf(_geminiDir),
         const [],
         planned,
         approved,
@@ -572,6 +588,7 @@ final class SkillRecoverCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
         ],
         flags: const [_dryRun, _yes, _interactive],
       );
@@ -598,6 +615,7 @@ final class SkillRecoverCommand extends Command {
       valueOf(_claude),
       valueOf(_codex),
       valueOf(_state),
+      gemini: valueOf(_geminiDir),
       const [],
       planned,
       approved,
@@ -696,6 +714,7 @@ final class SkillBackupListCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
         ],
       );
 
@@ -716,6 +735,7 @@ final class SkillBackupListCommand extends Command {
         valueOf(_claude),
         valueOf(_codex),
         valueOf(_state),
+        gemini: valueOf(_geminiDir),
         const [],
         false,
         false,
@@ -762,6 +782,7 @@ final class SkillBackupRestoreCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
         ],
         flags: const [_dryRun, _yes, _interactive],
       );
@@ -788,6 +809,7 @@ final class SkillBackupRestoreCommand extends Command {
         valueOf(_claude),
         valueOf(_codex),
         valueOf(_state),
+        gemini: valueOf(_geminiDir),
         const [],
         planned,
         approved,
@@ -843,6 +865,7 @@ final class SkillBackupCleanupCommand extends Command {
           _claude,
           _codex,
           _state,
+          _geminiDir,
         ],
         flags: const [_dryRun, _yes, _interactive],
       );
@@ -869,6 +892,7 @@ final class SkillBackupCleanupCommand extends Command {
         valueOf(_claude),
         valueOf(_codex),
         valueOf(_state),
+        gemini: valueOf(_geminiDir),
         const [],
         planned,
         approved,

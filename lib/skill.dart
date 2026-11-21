@@ -14,6 +14,8 @@ import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
 import 'lifecycle.dart';
 import 'skill_create_command.dart';
+import 'skill_edit_command.dart';
+import 'skill_clone_command.dart';
 import 'skill_lifecycle_commands.dart';
 
 typedef InspectOperation = String Function(String skill);
@@ -53,9 +55,20 @@ final class SkillCommand extends GroupCommand {
       SkillCreateCommand(
         guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
       ),
+      SkillEditCommand(
+        guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
+      ),
+      SkillCloneCommand(
+        guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
+      ),
       SkillListCommand(service),
-      InspectCommand(inspect, read: reader, fileSystem: fileSystem),
-      ValidateCommand(read: reader, fileSystem: fileSystem),
+      InspectCommand(
+        inspect,
+        read: reader,
+        lifecycle: service,
+        fileSystem: fileSystem,
+      ),
+      ValidateCommand(read: reader, lifecycle: service, fileSystem: fileSystem),
       SkillInstallCommand(
         installation ??
             SkillInstallationService(
@@ -92,6 +105,7 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
           _claudeConfigDir,
           _codexHome,
           _stateDir,
+          _geminiDir,
           _readRoots,
         ],
         flags: [_verify],
@@ -124,6 +138,7 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
   static final _home = FolderPathOption('home');
   static final _claudeConfigDir = FolderPathOption('claude-config-dir');
   static final _codexHome = FolderPathOption('codex-home');
+  static final _geminiDir = FolderPathOption('gemini-dir');
   static final _stateDir = FolderPathOption('state-dir');
   static final _readRoots = RepeatableFolderPathOption('read-root');
   static const _verify = BooleanFlag('verify');
@@ -146,6 +161,7 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
         home: valueOf(_home),
         claudeConfigDir: valueOf(_claudeConfigDir),
         codexHome: valueOf(_codexHome),
+        geminiDir: valueOf(_geminiDir),
         stateDir: valueOf(_stateDir),
         readRoots: valueOf(_readRoots) ?? const <String>[],
       ),
@@ -165,8 +181,10 @@ final class InspectCommand extends Command {
   InspectCommand(
     this._inspect, {
     PromptReadService? read,
+    SkillLifecycleService? lifecycle,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   }) : _read = read ?? PromptReadService(fileSystem: fileSystem),
+       _lifecycle = lifecycle ?? SkillLifecycleService(fileSystem: fileSystem),
        _fileSystem = fileSystem,
        super(
          options: [_inspectSkill, _target],
@@ -179,6 +197,7 @@ final class InspectCommand extends Command {
 
   final InspectOperation _inspect;
   final PromptReadService _read;
+  final SkillLifecycleService _lifecycle;
   final fslib.FileSystem _fileSystem;
   static final _inspectSkill = StringOption.required(
     'skill',
@@ -208,8 +227,11 @@ final class InspectCommand extends Command {
       _fileSystem.path.normalize(_fileSystem.directory(skill).absolute.path),
       _fileSystem,
     );
-    final views = await _read.inspect(skill, consumer: valueOf(_target));
     final target = valueOf(_target);
+    if (target == PromptConsumer.antigravity) {
+      return jsonEncode(await _lifecycle.antigravityView(skill));
+    }
+    final views = await _read.inspect(skill, consumer: target);
     final report = views.toJson();
     if (target != null) {
       report['views'] = [
@@ -276,8 +298,10 @@ void _requireInspectDirectory(String skillPath, fslib.FileSystem fs) {
 final class ValidateCommand extends Command {
   ValidateCommand({
     PromptReadService? read,
+    SkillLifecycleService? lifecycle,
     fslib.FileSystem fileSystem = const local.LocalFileSystem(),
   }) : _read = read ?? PromptReadService(fileSystem: fileSystem),
+       _lifecycle = lifecycle ?? SkillLifecycleService(fileSystem: fileSystem),
        _fileSystem = fileSystem,
        super(
          options: [_validateSkill, _target],
@@ -287,6 +311,7 @@ final class ValidateCommand extends Command {
              'Invalid or unclassified views fail with status 2.',
        );
   final PromptReadService _read;
+  final SkillLifecycleService _lifecycle;
   final fslib.FileSystem _fileSystem;
   static final _validateSkill = StringOption.required(
     'skill',
@@ -305,9 +330,15 @@ final class ValidateCommand extends Command {
       _fileSystem.path.normalize(_fileSystem.directory(skill).absolute.path),
       _fileSystem,
     );
-    final views = await _read.inspect(skill, consumer: valueOf(_target));
-    final rendered = <Map<String, Object?>>[];
     final target = valueOf(_target);
+    if (target == PromptConsumer.antigravity) {
+      final report = await _lifecycle.antigravityView(skill);
+      final view = (report['views'] as List).single as Map<String, Object?>;
+      if (view['valid'] == true) return jsonEncode(report);
+      throw MambaException(jsonEncode(report), exitCode: 2);
+    }
+    final views = await _read.inspect(skill, consumer: target);
+    final rendered = <Map<String, Object?>>[];
     final selected = views.views.values.where(
       (view) => target == null || view.consumer == target,
     );

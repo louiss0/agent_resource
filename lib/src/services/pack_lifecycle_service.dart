@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 import '../../components/installation_approval.dart';
 import '../../components/resource_selector.dart';
 import '../agent_inspection.dart';
+import '../harness/harness_catalog.dart';
 import '../installation/installation_plan.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_source_discovery.dart';
@@ -94,6 +95,7 @@ final class const PackLifecycleRequest({
   final String? cwd,
   final String? projectRoot,
   final String? home,
+  final String? geminiDir,
   final String? stateDir,
   final String? configPath,
   final String? target,
@@ -137,6 +139,7 @@ final class PackDiscoveryRequest {
     this.cwd,
     this.projectRoot,
     this.home,
+    this.geminiDir,
     this.stateDir,
     this.configPath,
   });
@@ -167,6 +170,9 @@ final class PackDiscoveryRequest {
 
   /// The explicit home directory.
   final String? home;
+
+  /// The explicit Antigravity user root.
+  final String? geminiDir;
 
   /// The explicit state directory.
   final String? stateDir;
@@ -558,6 +564,8 @@ interface class PackLifecycleService {
             resolved.add(McpHarness.codex);
           case 'pi':
             resolved.add(McpHarness.pi);
+          case 'antigravity':
+            resolved.add(McpHarness.antigravity);
           case 'shared':
             resolved.addAll(const <McpHarness>[
               McpHarness.claude,
@@ -1058,6 +1066,7 @@ interface class PackLifecycleService {
     cwd: request.cwd,
     projectRoot: request.projectRoot,
     home: request.home,
+    geminiDir: request.geminiDir,
     stateDir: request.stateDir,
     configPath: request.configPath,
     target: request.target,
@@ -1331,10 +1340,11 @@ interface class PackLifecycleService {
       );
     }
     final target = request.target;
-    if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
+    if (target != null &&
+        !const {'claude', 'codex', 'pi', 'antigravity'}.contains(target)) {
       throw MambaException(
         'Unsupported MCP discovery target: $target. The supported targets '
-        'are claude, codex, and pi.',
+        'are claude, codex, pi, and antigravity.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
@@ -1345,6 +1355,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
     );
     final configuration = _loadPackConfiguration(
@@ -1371,6 +1382,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
       configPath: request.configPath,
       dryRun: true,
@@ -1437,7 +1449,8 @@ interface class PackLifecycleService {
       return _discoverMcp(request);
     }
     final target = request.target;
-    if (target != null && !const {'claude', 'codex', 'pi'}.contains(target)) {
+    if (target != null &&
+        !const {'claude', 'codex', 'pi', 'antigravity'}.contains(target)) {
       throw MambaException(
         'Unsupported discovery target: $target. The supported targets are '
         'claude, codex, and pi.',
@@ -1451,6 +1464,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
     );
     final configuration = _loadPackConfiguration(
@@ -1477,6 +1491,7 @@ interface class PackLifecycleService {
       cwd: request.cwd,
       projectRoot: request.projectRoot,
       home: request.home,
+      geminiDir: request.geminiDir,
       stateDir: request.stateDir,
       configPath: request.configPath,
       dryRun: true,
@@ -2993,7 +3008,11 @@ interface class PackLifecycleService {
       final root = _agents.installRoot(context, harness);
       final location = _fileSystem.path.join(
         root,
-        _fileSystem.path.basename(candidate.path),
+        _agentSpec(harness).installationFileName(
+          candidate.path,
+          candidate.name,
+          _fileSystem.path,
+        ),
       );
       return InstallationUnitPlan(
         resourceType: InstallationResourceType.agent,
@@ -3030,47 +3049,44 @@ interface class PackLifecycleService {
           path: canonical,
           kind: InstallationEntryKind.content,
           action: InstallationEntryAction.createContent,
-          target: targets.contains('codex') ? 'codex' : null,
+          target: targets.contains('codex')
+              ? 'codex'
+              : context.scope == LifecycleScope.project &&
+                    targets.contains('antigravity')
+              ? 'antigravity'
+              : null,
           nativeRoot: root,
           nativeDestination: 'canonical',
           artifactKind: OwnedArtifactKind.skillCanonical,
         ),
       );
-      if (targets.contains('claude')) {
-        final claudeRoot = _fileSystem.path.normalize(
-          context.claudeSkillsRoot(),
-        );
+      for (final target in const ['claude', 'codex', 'antigravity']) {
+        if (!targets.contains(target)) continue;
+        final exposureRoot = _skills.canonicalExposureRoot(context, target);
         entries.add(
-          InstallationEntryPlan(
-            path: _fileSystem.path.join(claudeRoot, candidate.name),
-            kind: InstallationEntryKind.link,
-            action: InstallationEntryAction.createLink,
-            target: 'claude',
-            linkTarget: canonical,
-            nativeLinkKind: _nativeDirectoryLinkKind,
-            nativeRoot: claudeRoot,
-            nativeDestination: 'claude',
-            artifactKind: OwnedArtifactKind.skillLink,
-          ),
-        );
-      }
-      if (targets.contains('codex')) {
-        entries.add(
-          InstallationEntryPlan(
-            path: canonical,
-            kind: InstallationEntryKind.consumer,
-            action: InstallationEntryAction.recordConsumer,
-            target: 'codex',
-          ),
+          exposureRoot == null
+              ? InstallationEntryPlan(
+                  path: canonical,
+                  kind: InstallationEntryKind.consumer,
+                  action: InstallationEntryAction.recordConsumer,
+                  target: target,
+                )
+              : InstallationEntryPlan(
+                  path: _fileSystem.path.join(exposureRoot, candidate.name),
+                  kind: InstallationEntryKind.link,
+                  action: InstallationEntryAction.createLink,
+                  target: target,
+                  linkTarget: canonical,
+                  nativeLinkKind: _nativeDirectoryLinkKind,
+                  nativeRoot: exposureRoot,
+                  nativeDestination: target,
+                  artifactKind: OwnedArtifactKind.skillLink,
+                ),
         );
       }
     } else {
       for (final target in targets) {
-        final root = _fileSystem.path.normalize(
-          target == 'claude'
-              ? context.claudeSkillsRoot()
-              : context.sharedSkillsRoot(),
-        );
+        final root = _fileSystem.path.normalize(_skillRoot(context, target));
         entries.add(
           InstallationEntryPlan(
             path: _fileSystem.path.join(root, candidate.name),
@@ -3080,7 +3096,8 @@ interface class PackLifecycleService {
             action: selectedMethod == SkillInstallMethod.copy
                 ? InstallationEntryAction.createCopy
                 : InstallationEntryAction.createLink,
-            target: target,
+            // Shared is a storage destination, not a compatibility profile.
+            target: target == 'shared' ? null : target,
             linkTarget: selectedMethod == SkillInstallMethod.sourceLink
                 ? candidate.originalPath ?? candidate.path
                 : null,
@@ -3088,7 +3105,12 @@ interface class PackLifecycleService {
                 ? _nativeDirectoryLinkKind
                 : null,
             nativeRoot: root,
-            nativeDestination: target == 'claude' ? 'claude' : 'shared',
+            nativeDestination: target == 'claude'
+                ? 'claude'
+                : target == 'antigravity' &&
+                      context.scope == LifecycleScope.user
+                ? 'antigravity'
+                : 'shared',
             artifactKind: selectedMethod == SkillInstallMethod.copy
                 ? OwnedArtifactKind.skillCopy
                 : OwnedArtifactKind.skillLink,
@@ -3378,7 +3400,8 @@ interface class PackLifecycleService {
       } else if (candidate.profile == null) {
         failures.add(
           'NATIVE_PROFILE_REQUIRED: discovered Agents require an explicit '
-          'catalog profile (claude, codex, or pi-common); no profile was inferred',
+          'catalog profile (claude, codex, pi-common, or antigravity); no '
+          'profile was inferred',
         );
       } else {
         final report = inspectNativeAgent(
@@ -3633,7 +3656,7 @@ interface class PackLifecycleService {
       } else {
         if (profile == null) {
           throw MambaException(
-            'Catalog-less Agent discovery cannot infer a native profile for $relative; add an explicit publisher catalog entry with profile = "claude", "codex", or "pi-common".',
+            'Catalog-less Agent discovery cannot infer a native profile for $relative; add an explicit publisher catalog entry with profile = "claude", "codex", "pi-common", or "antigravity".',
             exitCode: PackProcessStatus.invalidInput.code,
           );
         }
@@ -3964,6 +3987,9 @@ interface class PackLifecycleService {
     // The targets are resolved without an interactive choice: the selection
     // is checked before the installation asks for a target.
     final requestedTargets = _requestedTargets(request, pack, configuration);
+    if (request.promptSelection) {
+      _promptService.requireSupportedTargets(requestedTargets);
+    }
     if (request.promptSelection && requestedTargets.isEmpty) {
       throw MambaException(
         'The prompt selection requires an explicit claude or codex '
@@ -4032,10 +4058,16 @@ interface class PackLifecycleService {
     final targets = _requestedTargets(request, pack, configuration);
     if (targets.isEmpty ||
         targets.any(
-          (target) => !const {'claude', 'codex', 'shared'}.contains(target),
+          (target) => !const {
+            'claude',
+            'codex',
+            'shared',
+            'antigravity',
+          }.contains(target),
         )) {
       throw MambaException(
-        'Skill installation requires an explicit claude or codex --target/configuration choice.',
+        'Skill installation requires an explicit claude, codex, or '
+        'antigravity --target/configuration choice.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
@@ -4459,6 +4491,7 @@ interface class PackLifecycleService {
     cwd: request.cwd,
     projectRoot: request.projectRoot,
     home: request.home,
+    geminiDir: request.geminiDir,
     stateDir: request.stateDir,
     dryRun: request.dryRun,
     approved: request.yes || request.interactive,
@@ -4472,6 +4505,7 @@ interface class PackLifecycleService {
     String? cwd,
     String? projectRoot,
     String? home,
+    String? geminiDir,
     String? stateDir,
     bool dryRun = false,
     bool approved = false,
@@ -4483,6 +4517,7 @@ interface class PackLifecycleService {
       cwd: cwd,
       projectRoot: projectRoot,
       home: home,
+      geminiDir: geminiDir,
       stateDir: stateDir,
       dryRun: dryRun,
       approved: approved,
@@ -4545,6 +4580,20 @@ interface class PackLifecycleService {
     );
   }
 
+  String _skillRoot(LifecycleContext context, String target) {
+    final id = switch (target) {
+      'claude' => HarnessId.claude,
+      'antigravity' => HarnessId.antigravity,
+      _ => null,
+    };
+    if (id == null) return context.sharedSkillsRoot();
+    final spec = HarnessCatalog.instance.requireFacet(
+      id,
+      HarnessFacet.skill,
+    ) as SkillHarnessSpec;
+    return spec.root(context, userScope: context.scope == LifecycleScope.user);
+  }
+
   Future<List<String>> _targets(
     PackLifecycleRequest request,
     PackDefinition pack,
@@ -4569,10 +4618,10 @@ interface class PackLifecycleService {
         : configuration.cli.install.targets;
     if (targets.isEmpty && record != null) return record.validatedProfiles;
     if (targets.isEmpty && request.interactive && !request.yes) {
-      final target = await _promptChoice('Skill target [claude/codex]:', const [
-        'claude',
-        'codex',
-      ]);
+      final target = await _promptChoice(
+        'Skill target [claude/codex/antigravity]:',
+        const ['claude', 'codex', 'antigravity'],
+      );
       if (target == null) {
         throw MambaException(
           'Skill target selection was cancelled; no resource was published.',
@@ -4583,10 +4632,16 @@ interface class PackLifecycleService {
     }
     if (targets.isEmpty ||
         targets.any(
-          (target) => !const {'claude', 'codex', 'shared'}.contains(target),
+          (target) => !const {
+            'claude',
+            'codex',
+            'shared',
+            'antigravity',
+          }.contains(target),
         )) {
       throw MambaException(
-        'Skill installation requires an explicit claude or codex --target/configuration choice.',
+        'Skill installation requires an explicit claude, codex, or '
+        'antigravity --target/configuration choice.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }
@@ -5102,7 +5157,14 @@ interface class PackLifecycleService {
     NativeAgentProfile.claude => AgentHarness.claude,
     NativeAgentProfile.codex => AgentHarness.codex,
     NativeAgentProfile.piCommon => AgentHarness.pi,
+    NativeAgentProfile.antigravity => AgentHarness.antigravity,
   };
+
+  AgentHarnessSpec _agentSpec(AgentHarness harness) =>
+      HarnessCatalog.instance.requireFacet(
+        HarnessId.of(harness),
+        HarnessFacet.agent,
+      ) as AgentHarnessSpec;
 
   String _methodName(String value) =>
       value == 'source-link' ? 'sourceLink' : value;

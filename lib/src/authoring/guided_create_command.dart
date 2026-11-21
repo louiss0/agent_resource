@@ -56,6 +56,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   /// The shared named options of the guided create commands.
   static final List<Option<Object?>> sharedOptions = <Option<Object?>>[
     GuidedCreateFields.profile,
+    GuidedCreateFields.harness,
     GuidedCreateFields.scope,
     GuidedCreateFields.format,
     GuidedCreateFields.cwd,
@@ -64,6 +65,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     GuidedCreateFields.claudeConfigDir,
     GuidedCreateFields.codexHome,
     GuidedCreateFields.piAgentDir,
+    GuidedCreateFields.geminiDir,
     GuidedCreateFields.stateDir,
     GuidedCreateFields.bodyFile,
     GuidedCreateFields.bodyText,
@@ -86,6 +88,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   /// The shared flags of the guided create commands.
   static final List<Flag<Object?>> sharedFlags = <Flag<Object?>>[
     GuidedCreateFields.bodyStdin,
+    GuidedCreateFields.mainAgent,
     GuidedCreateFields.manage,
     GuidedCreateFields.apply,
     GuidedCreateFields.yes,
@@ -104,6 +107,12 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
 
   /// The canonical command path of the create route.
   String get commandPath;
+
+  /// The authoring operation performed by this route.
+  AuthoringOperation get operation => AuthoringOperation.create;
+
+  /// The selected source of an edit, clone or compose route.
+  String? sourcePath(ValueOf valueOf) => null;
 
   /// The question that confirms the publication.
   ///
@@ -200,6 +209,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     claudeConfigDir: valueOf(GuidedCreateFields.claudeConfigDir),
     codexHome: valueOf(GuidedCreateFields.codexHome),
     piAgentDir: valueOf(GuidedCreateFields.piAgentDir),
+    geminiDir: valueOf(GuidedCreateFields.geminiDir),
     stateDir: valueOf(GuidedCreateFields.stateDir),
     dryRun: valueOf(GuidedCreateFields.dryRun),
     approved: valueOf(GuidedCreateFields.yes),
@@ -207,7 +217,9 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
 
   /// The named native inputs of the run.
   Future<AuthoringInputs> buildInputs(ValueOf valueOf, bool interactive) async {
-    var profile = valueOf(GuidedCreateFields.profile);
+    var profile =
+        valueOf(GuidedCreateFields.profile) ??
+        valueOf(GuidedCreateFields.harness);
     if (profile == null && interactive) {
       final answer = await guided.valueQuestion?.call(
         'Select a native profile ():',
@@ -221,7 +233,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     }
     if (profile == null) {
       throw MambaException(
-        'Select the native profile explicitly with --profile '
+        'Select the native profile explicitly with --profile or --harness '
         '(${supportedProfiles.map((value) => value.name).join(', ')}).',
         exitCode: 4,
       );
@@ -240,10 +252,11 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       );
     }
     return parseAuthoringInputs(
-      operation: AuthoringOperation.create,
+      operation: operation,
       kind: kind,
       profile: profile,
       scope: valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
+      sourcePath: sourcePath(valueOf),
       bodyFile: valueOf(GuidedCreateFields.bodyFile),
       bodyStandardInput: valueOf(GuidedCreateFields.bodyStdin),
       bodyText: valueOf(GuidedCreateFields.bodyText),
@@ -252,6 +265,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
         description: valueOf(GuidedCreateFields.description),
         model: valueOf(GuidedCreateFields.model),
         tools: valueOf(GuidedCreateFields.tools),
+        mainAgent: valueOf(GuidedCreateFields.mainAgent),
         skills: skills,
         allowedTools: valueOf(GuidedCreateFields.allowedTools),
         disallowedTools: valueOf(GuidedCreateFields.disallowedTools),
