@@ -2,15 +2,25 @@ import 'package:mamba/mamba.dart';
 
 import 'harness_catalog.dart';
 
+/// Native output supported when converting a Skill to a Prompt.
+enum PromptConversionForm { skillBacked, template }
+
 /// The Prompt capability declared by one harness.
 abstract interface class PromptHarnessSpec implements HarnessFacetSpec {
   /// The documented explanation carried by the facet itself.
   String get nativeExplanation;
+  PromptConversionForm get skillConversionForm;
+  bool get supportsSkillBackedInstallation;
 }
 
 /// A concrete Prompt facet with its own declarative refusal explanation.
 final class PromptHarnessFacet implements PromptHarnessSpec {
-  const PromptHarnessFacet(this.harness, this.nativeExplanation);
+  const PromptHarnessFacet(
+    this.harness,
+    this.nativeExplanation,
+    this.skillConversionForm, {
+    this.supportsSkillBackedInstallation = false,
+  });
 
   @override
   final HarnessId harness;
@@ -20,6 +30,12 @@ final class PromptHarnessFacet implements PromptHarnessSpec {
 
   @override
   final String nativeExplanation;
+
+  @override
+  final PromptConversionForm skillConversionForm;
+
+  @override
+  final bool supportsSkillBackedInstallation;
 }
 
 /// The registered Prompt facets. Antigravity deliberately has none: version
@@ -29,14 +45,19 @@ const promptHarnessFacets = <HarnessId, PromptHarnessSpec>{
   HarnessId.claude: PromptHarnessFacet(
     HarnessId.claude,
     'Claude declares its native Prompt controls.',
+    PromptConversionForm.skillBacked,
+    supportsSkillBackedInstallation: true,
   ),
   HarnessId.codex: PromptHarnessFacet(
     HarnessId.codex,
     'Codex declares its native Prompt controls.',
+    PromptConversionForm.skillBacked,
+    supportsSkillBackedInstallation: true,
   ),
   HarnessId.pi: PromptHarnessFacet(
     HarnessId.pi,
     'Pi declares its native Prompt controls.',
+    PromptConversionForm.template,
   ),
 };
 

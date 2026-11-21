@@ -77,11 +77,13 @@ final class InstallationCandidateSet {
   const InstallationCandidateSet(
     this.candidates,
     this.provenance, {
+    required this.sourceKind,
     this.selectionWarning,
   });
 
   final List<InstallationCandidate> candidates;
   final AcquisitionProvenance provenance;
+  final AcquisitionSourceKind sourceKind;
   final String? selectionWarning;
 }
 
@@ -217,6 +219,7 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
           return InstallationCandidateSet(
             const [],
             workspace.provenance,
+            sourceKind: kind,
             selectionWarning: 'No Skill groups were selected; nothing was installed and no management state was written.',
           );
         }
@@ -262,6 +265,7 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
       catalog == null
           ? workspace.provenance
           : workspace.provenance.withConfigDigest(catalog.configDigest),
+      sourceKind: kind,
     );
   }
 
@@ -311,15 +315,19 @@ Future<InstallationCandidateSet?> resolveInstallationCandidates({
       resourceType == CatalogResourceType.skill && selectedFile != null
       ? fileSystem.path.dirname(selectedFile)
       : selectedFile ?? workspace.selectedRoot;
-  return InstallationCandidateSet([
-    InstallationCandidate(
-      id: null,
-      path: checkedPath(selectedPath),
-      label: null,
-      profile: profile,
-      catalogEntry: false,
-    ),
-  ], workspace.provenance);
+  return InstallationCandidateSet(
+    [
+      InstallationCandidate(
+        id: null,
+        path: checkedPath(selectedPath),
+        label: null,
+        profile: profile,
+        catalogEntry: false,
+      ),
+    ],
+    workspace.provenance,
+    sourceKind: kind,
+  );
 }
 
 AcquisitionSourceKind _sourceKind(
