@@ -1839,6 +1839,85 @@ void main() {
           },
         );
 
+        test('serializes shared target publications from separate processes', () async {
+          final root = io.Directory.systemTemp.createTempSync(
+            'config-coordination-',
+          );
+          try {
+            final projectA = io.Directory(
+              '${root.path}${io.Platform.pathSeparator}a',
+            )..createSync();
+            final projectB = io.Directory(
+              '${root.path}${io.Platform.pathSeparator}b',
+            )..createSync();
+            final target = io.File(
+              '${root.path}${io.Platform.pathSeparator}config.toml',
+            )..writeAsStringSync('schema_version = 1\n');
+            final marker = io.File(
+              '${root.path}${io.Platform.pathSeparator}held',
+            );
+            final script = io.File(
+              '${root.path}${io.Platform.pathSeparator}worker.dart',
+            )..writeAsStringSync(_coordinationWorker);
+            final packages = io.File('.dart_tool/package_config.json')
+                .absolute
+                .path;
+            final kernel =
+                '${root.path}${io.Platform.pathSeparator}worker.dill';
+            final compiled = await io.Process.run(
+              io.Platform.resolvedExecutable,
+              [
+                'compile',
+                'kernel',
+                '--packages=$packages',
+                '-o',
+                kernel,
+                script.path,
+              ],
+            ).timeout(const Duration(seconds: 45));
+            expect(
+              compiled.exitCode,
+              0,
+              reason: '${compiled.stdout} ${compiled.stderr}',
+            );
+            Future<io.Process> start(io.Directory project, bool hold) =>
+                io.Process.start(io.Platform.resolvedExecutable, [
+                  '--packages=$packages',
+                  kernel,
+                  project.path,
+                  target.path,
+                  marker.path,
+                  hold.toString(),
+                ]);
+            final first = await start(projectA, true);
+            final firstOut = first.stdout.transform(utf8.decoder).join();
+            final firstErr = first.stderr.transform(utf8.decoder).join();
+            for (var i = 0; i < 150 && !marker.existsSync(); i++) {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+            }
+            if (!marker.existsSync()) {
+              final code = await first.exitCode;
+              fail(
+                'First worker exited $code: ${await firstOut} ${await firstErr}',
+              );
+            }
+            final second = await start(projectB, false);
+            final secondOut = second.stdout.transform(utf8.decoder).join();
+            final secondErr = second.stderr.transform(utf8.decoder).join();
+            final secondCode = await second.exitCode;
+            final firstCode = await first.exitCode;
+            expect(firstCode, 0, reason: '${await firstOut} ${await firstErr}');
+            expect(
+              secondCode,
+              isNot(0),
+              reason: '${await secondOut} ${await secondErr}',
+            );
+            expect(target.readAsStringSync(), contains('snapshot_days = 14'));
+          } finally {
+            root.deleteSync(recursive: true);
+          }
+        }, timeout: const Timeout(Duration(seconds: 90)));
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
@@ -2755,3 +2834,41 @@ final class _OrphanStageIO extends LifecycleIO {
     super.delete(path);
   }
 }
+
+const _coordinationWorker = r'''
+import 'dart:io';
+import 'package:agent_resource/config.dart';
+import 'package:agent_resource/src/services/configuration_workflow_service.dart';
+import 'package:agent_resource/src/services/configuration_publication_service.dart';
+import 'package:agent_resource/src/services/lifecycle_state_service.dart';
+import 'package:file/local.dart';
+import 'package:mamba/mamba.dart';
+import 'package:mamba/executor.dart';
+class PausingIO extends LifecycleIO {
+  PausingIO(this.target, this.marker, this.hold) : super(fs: const LocalFileSystem());
+  final String target;
+  final String marker;
+  final bool hold;
+  bool paused = false;
+  @override
+  void write(String path, List<int> bytes) {
+    if (hold && !paused && path.contains('configuration-transactions') && path.endsWith('.json')) {
+      paused = true;
+      File(marker).writeAsStringSync('held');
+      sleep(const Duration(seconds: 10));
+    }
+    super.write(path, bytes);
+  }
+}
+Future<void> main(List<String> args) async {
+  final project = args[0], target = args[1], marker = args[2], hold = args[3] == 'true';
+  const fs = LocalFileSystem();
+  final workflow = ConfigurationWorkflowService(fileSystem: fs, environment: {'HOME': project},
+    publication: ConfigurationPublicationService(fileSystem: fs, io: PausingIO(target, marker, hold)));
+  final executor = Executor('agent_resource', 'test', '1.0.0', [ConfigCommand(workflow: workflow, fileSystem: fs)]);
+  final result = await executor.fake().execute(['config', 'prefer', '--scope', 'user', '--user-config', target,
+    '--project-config', '$project${Platform.pathSeparator}config.toml', '--cwd', '$project${Platform.pathSeparator}',
+    '--project-root', '$project${Platform.pathSeparator}', '--set', 'cli.retention.snapshot_days=14', '--apply']);
+  if (result is MambaFailureResult) { stderr.writeln(result.message); exitCode = 1; } else { stdout.writeln((result as MambaSuccessResult).output); }
+}
+''';

@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show FileSystemEntityType, FileSystemException;
+import 'dart:io'
+    show FileSystemEntityType, FileSystemException, FileMode, FileLock;
 
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:file/file.dart' as fslib;
+import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart' show MambaException;
 import 'package:path/path.dart' as p;
 
@@ -67,7 +70,8 @@ interface class ConfigurationPublicationService {
     return _state.runMutation(
       context: request.context,
       locations: [target],
-      body: () async => _publishLocked(request, target),
+      body: () =>
+          _withTargetLock(target, () async => _publishLocked(request, target)),
     );
   }
 
@@ -413,7 +417,7 @@ interface class ConfigurationPublicationService {
         excludedConfigurationEvidencePaths: {
           transactions.single['evidencePath']! as String,
         },
-        body: perform,
+        body: () => _withTargetLock(target, perform),
       );
     }
     return LifecycleResult(
@@ -421,6 +425,47 @@ interface class ConfigurationPublicationService {
       outcome: transactionId == null ? 'inventoried' : 'inspected',
       data: {'configurationTarget': target, 'transactions': transactions},
     );
+  }
+
+  static final _targetLocks = <String, Future<void>>{};
+
+  Future<T> _withTargetLock<T>(String target, Future<T> Function() body) async {
+    final root = _targetEvidenceRoot(target);
+    final lockPath = _io.fs.path.join(root, 'coordination.lock');
+    final key = _io.fs.path.style == p.Style.windows
+        ? lockPath.toLowerCase()
+        : lockPath;
+    final previous = _targetLocks[key] ?? Future<void>.value();
+    final completion = Completer<void>.sync();
+    _targetLocks[key] = completion.future;
+    await previous;
+    fslib.RandomAccessFile? lock;
+    try {
+      _refuseUnsupportedTargetPath(lockPath);
+      _io.createDirectory(root);
+      _state.protectDirectory(root);
+      if (_io.fs is local.LocalFileSystem) {
+        lock = _io.fs.file(lockPath).openSync(mode: FileMode.append);
+        await lock.lock(FileLock.exclusive);
+      }
+      return await body();
+    } finally {
+      try {
+        if (lock != null) {
+          try {
+            lock.unlockSync();
+          } on FileSystemException {
+            // Closing releases the lock.
+          }
+          lock.closeSync();
+        }
+      } finally {
+        completion.complete();
+        if (identical(_targetLocks[key], completion.future)) {
+          _targetLocks.remove(key);
+        }
+      }
+    }
   }
 
   ConfigurationPublicationResult _publishLocked(
