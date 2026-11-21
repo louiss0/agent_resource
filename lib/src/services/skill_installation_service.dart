@@ -58,7 +58,7 @@ interface class SkillInstallationService {
       if (!request.scopeExplicit) {
         throw MambaException(
           'Unattended Skill installation requires explicit --scope; the '
-          'interactive user-scope default is not assumed.',
+          'interactive project-scope default is not assumed.',
         );
       }
       if (request.method == null) {
@@ -81,6 +81,12 @@ interface class SkillInstallationService {
     for (final target in request.targets) {
       HarnessCatalog.instance.requireSkillInstallation(HarnessId.of(target));
     }
+    request = await resolveInstallationScope(
+      request,
+      _interaction,
+      _fileSystem,
+      interactive: interactive,
+    );
     final source = await _source(request, interactive);
     if (source == null) {
       return const InstallationCancelledResult('skill install');
@@ -228,10 +234,26 @@ interface class SkillInstallationService {
               },
           ],
         );
+        final explicitCommand = interactive
+            ? installationExplicitCommand(
+                request: request,
+                plan: plan,
+                candidates: candidates,
+                source: source,
+                context: context,
+                targets: targets,
+                resourceType: CatalogResourceType.skill,
+                method: method,
+              )
+            : null;
         if (request.options.dryRun) {
-          return InstallationCompletedResult(plan, InstallationOutcome.planned);
+          return InstallationCompletedResult(
+            plan,
+            InstallationOutcome.planned,
+            explicitCommand: explicitCommand,
+          );
         }
-        return await _batch.execute(
+        final result = await _batch.execute(
           plan: plan,
           context: context,
           state: state,
@@ -240,6 +262,14 @@ interface class SkillInstallationService {
           interactive: interactive,
           approved: request.options.approved,
         );
+        if (result is InstallationCompletedResult) {
+          return InstallationCompletedResult(
+            result.plan,
+            result.outcome,
+            explicitCommand: explicitCommand,
+          );
+        }
+        return result;
       } finally {
         for (final staged in stagedSkills) {
           await staged.close();

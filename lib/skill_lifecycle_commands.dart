@@ -210,7 +210,7 @@ final class SkillInstallCommand extends Command {
           processWorkingDirectory:
               _installation.state.io.fs.currentDirectory.path,
           environment: Map<String, String>.unmodifiable(Platform.environment),
-          scope: valueOf(_scope) ?? LifecycleScope.user,
+          scope: valueOf(_scope) ?? LifecycleScope.project,
           cwd: valueOf(_cwd),
           projectRoot: valueOf(_projectRoot),
           home: valueOf(_home),

@@ -9,8 +9,14 @@ String renderInstallationResult(
 ) => switch (result) {
   InstallationCancelledResult(command: final command) =>
     '$command: cancelled\nNo installation writes occurred.',
-  InstallationCompletedResult(:final plan, :final outcome) => switch (format) {
-    LifecycleOutputFormat.json => jsonEncode(plan.envelope(outcome)),
-    LifecycleOutputFormat.text => plan.renderText(outcome),
-  },
+  InstallationCompletedResult(
+    :final plan,
+    :final outcome,
+    :final explicitCommand,
+  ) =>
+    switch (format) {
+      LifecycleOutputFormat.json => jsonEncode(plan.envelope(outcome)),
+      LifecycleOutputFormat.text =>
+        '${plan.renderText(outcome)}${explicitCommand == null ? '' : '\n$explicitCommand'}',
+    },
 };
