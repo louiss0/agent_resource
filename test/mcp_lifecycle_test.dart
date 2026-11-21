@@ -220,6 +220,167 @@ void main() {
       });
 
       group('register', () {
+        test('Pi supports native command and variable substitutions', () async {
+          success(
+            await exec(
+              cmd('register', <String>[
+                ...sel('svc', harness: 'pi', scope: 'user'),
+                '--command',
+                'node',
+                '--env',
+                'TOKEN=!credential-helper',
+                '--env',
+                kvRef('OTHER', 'OTHER'),
+                '--format',
+                'json',
+              ]),
+            ),
+          );
+          final data = jsonDecode(readText('/sandbox/pi/mcp.json')) as Map;
+          expect((data['mcpServers'] as Map)['svc'], {
+            'command': 'node',
+            'env': {'TOKEN': '!credential-helper', 'OTHER': ref('OTHER')},
+          });
+        });
+
+        test(
+          'refuses an empty Pi command substitution before writing',
+          () async {
+            final result = await exec(
+              cmd('register', <String>[
+                ...sel('svc', harness: 'pi', scope: 'user'),
+                '--command',
+                'node',
+                '--env',
+                'TOKEN=!',
+              ]),
+            );
+            failure(
+              result,
+              exitCode: 2,
+              token: 'Unsupported credential reference',
+            );
+            expect(fileExists('/sandbox/pi/mcp.json'), isFalse);
+          },
+        );
+
+        test(
+          'refuses credential references containing literal defaults',
+          () async {
+            final result = await exec(
+              cmd('register', <String>[
+                ...sel('svc'),
+                '--command',
+                'node',
+                '--env',
+                'TOKEN=\${TOKEN:-LITERAL-INTRODUCED-SECRET}',
+              ]),
+            );
+            failure(
+              result,
+              exitCode: 2,
+              token: 'Unsupported credential reference',
+            );
+            expectNoSecrets((result as MambaFailureResult).message);
+            expect(fileExists(claudeProjectPath), isFalse);
+          },
+        );
+
+        test('forwards a Codex stdio environment variable by name', () async {
+          success(
+            await exec(
+              cmd('register', <String>[
+                ...sel('svc', harness: 'codex', scope: 'user'),
+                '--command',
+                'node',
+                '--env',
+                kvRef('TOKEN', 'TOKEN'),
+                '--format',
+                'json',
+              ]),
+            ),
+          );
+          expect(entryAt(codexUser(), 'svc'), {
+            'command': 'node',
+            'env_vars': ['TOKEN'],
+          });
+        });
+
+        test(
+          'rejects unsupported Codex substitutions before any write',
+          () async {
+            for (final token in [
+              'TOKEN=!helper',
+              'TOKEN=\${OTHER}',
+              'TOKEN=\${TOKEN:-fallback}',
+            ]) {
+              failure(
+                await exec(
+                  cmd('register', <String>[
+                    ...sel('svc', harness: 'codex', scope: 'user'),
+                    '--command',
+                    'node',
+                    '--env',
+                    token,
+                  ]),
+                ),
+                exitCode: 2,
+                token: 'Codex',
+              );
+              expect(fileExists(codexUserPath), isFalse);
+              expect(fileExists(ledgerPath), isFalse);
+            }
+          },
+        );
+
+        test(
+          'Codex HTTP plan shows native environment variable names',
+          () async {
+            final data =
+                success(
+                      await exec(
+                        cmd('register', <String>[
+                          ...sel('remote', harness: 'codex', scope: 'user'),
+                          '--url',
+                          'https://example.com/mcp',
+                          '--header',
+                          kvRef('X-Token', 'AUTH_TOKEN'),
+                          '--dry-run',
+                          '--format',
+                          'json',
+                        ]),
+                      ),
+                    )['data']
+                    as Map<String, dynamic>;
+            expect(data['proposedEntry'], {
+              'url': 'https://example.com/mcp',
+              'env_http_headers': {'X-Token': 'AUTH_TOKEN'},
+            });
+            expect(fileExists(codexUserPath), isFalse);
+          },
+        );
+
+        test('encodes Codex HTTP environment references natively', () async {
+          final result = await exec(
+            cmd('register', <String>[
+              ...sel('remote', harness: 'codex', scope: 'user'),
+              '--url',
+              'https://example.com/mcp',
+              '--header',
+              kvRef('Authorization', 'AUTH_TOKEN'),
+              '--format',
+              'json',
+            ]),
+          );
+          success(result);
+          expect(entryAt(codexUser(), 'remote'), <String, Object?>{
+            'url': 'https://example.com/mcp',
+            'env_http_headers': <String, Object?>{
+              'Authorization': 'AUTH_TOKEN',
+            },
+          });
+        });
+
         test('register declares every typed input', () async {
           final result = await exec(<String>['mcp', 'register', '--help']);
           expect(result, isA<MambaSuccessResult>());
@@ -644,8 +805,255 @@ void main() {
       });
 
       group('replace', () {
+        test('TOML replacement handles an implicit server table', () async {
+          writeText(
+            codexUserPath,
+            '[mcp_servers.svc.env]\nTOKEN = "old"\n'
+            '[other]\nvalue = "keep"\n',
+          );
+          seedManaged(codexUser(), 'svc');
+          success(
+            await exec(
+              cmd('replace', <String>[
+                ...sel('svc', harness: 'codex', scope: 'user'),
+                '--url',
+                'https://example.com/mcp',
+                '--format',
+                'json',
+              ]),
+            ),
+          );
+          expect(entryAt(codexUser(), 'svc'), {
+            'url': 'https://example.com/mcp',
+          });
+          expect(readText(codexUserPath), contains('[other]\nvalue = "keep"'));
+        });
+
         test(
-          'JSON: existing literal retained, only the changed field moves',
+          'refuses replacement of parent dotted server keys without writes',
+          () async {
+            const original = '[mcp_servers]\nsvc.command = "node"\n';
+            writeText(codexUserPath, original);
+            seedManaged(codexUser(), 'svc');
+            final ledger = readText(ledgerPath);
+            final result = await exec(
+              cmd('replace', <String>[
+                ...sel('svc', harness: 'codex', scope: 'user'),
+                '--url',
+                'https://example.com/mcp',
+                '--format',
+                'json',
+              ]),
+            );
+            failure(
+              result,
+              exitCode: 1,
+              token: 'cannot be edited',
+              command: 'replace',
+            );
+            expect(readText(codexUserPath), original);
+            expect(readText(ledgerPath), ledger);
+          },
+        );
+
+        test(
+          'TOML replacement removes dotted obsolete transport fields',
+          () async {
+            writeText(
+              codexUserPath,
+              '[mcp_servers.svc]\ncommand = "node"\nenv.TOKEN = "old"\n'
+              '[other]\nvalue = "keep"\n',
+            );
+            seedManaged(codexUser(), 'svc');
+            success(
+              await exec(
+                cmd('replace', <String>[
+                  ...sel('svc', harness: 'codex', scope: 'user'),
+                  '--url',
+                  'https://example.com/mcp',
+                  '--format',
+                  'json',
+                ]),
+              ),
+            );
+            expect(entryAt(codexUser(), 'svc'), {
+              'url': 'https://example.com/mcp',
+            });
+            expect(
+              readText(codexUserPath),
+              contains('[other]\nvalue = "keep"'),
+            );
+          },
+        );
+
+        test('preserves comments before an unrelated table when pruning descendants', () async {
+          writeText(
+            codexUserPath,
+            '[mcp_servers.svc]\ncommand = "node"\n'
+            '[mcp_servers.svc.env]\nTOKEN = "old"\n'
+            '# belongs to other\n[other]\nvalue = "keep"\n',
+          );
+          seedManaged(codexUser(), 'svc');
+          success(
+            await exec(
+              cmd('replace', <String>[
+                ...sel('svc', harness: 'codex', scope: 'user'),
+                '--url',
+                'https://example.com/mcp',
+                '--format',
+                'json',
+              ]),
+            ),
+          );
+          expect(
+            readText(codexUserPath),
+            contains('# belongs to other\n[other]'),
+          );
+        });
+
+        test(
+          'TOML replacement changes a descendant table into native header map',
+          () async {
+            writeText(
+              codexUserPath,
+              '[mcp_servers.svc]\nurl = "https://old.example/mcp"\n'
+              '[mcp_servers.svc.env_http_headers]\nX-Old = "OLD"\n'
+              '[other]\nvalue = "keep"\n',
+            );
+            seedManaged(codexUser(), 'svc');
+            success(
+              await exec(
+                cmd('replace', <String>[
+                  ...sel('svc', harness: 'codex', scope: 'user'),
+                  '--url',
+                  'https://example.com/mcp',
+                  '--header',
+                  kvRef('X-New', 'NEW_TOKEN'),
+                  '--format',
+                  'json',
+                ]),
+              ),
+            );
+            expect(entryAt(codexUser(), 'svc'), {
+              'url': 'https://example.com/mcp',
+              'env_http_headers': {'X-New': 'NEW_TOKEN'},
+            });
+            expect(
+              readText(codexUserPath),
+              contains('[other]\nvalue = "keep"'),
+            );
+          },
+        );
+
+        test(
+          'review redacts literal defaults in existing references',
+          () async {
+            writeJson(claudeProjectPath, {
+              'mcpServers': {
+                'svc': {
+                  'command': 'node',
+                  'env': {'TOKEN': r'${TOKEN:-LITERAL-INTRODUCED-SECRET}'},
+                },
+              },
+            });
+            seedManaged(claudeProject(), 'svc');
+            final result = await exec(
+              cmd('replace', <String>[
+                ...sel('svc'),
+                '--command',
+                'node2',
+                '--dry-run',
+                '--format',
+                'json',
+              ]),
+            );
+            success(result);
+            expectNoSecrets((result as MambaSuccessResult).output!);
+          },
+        );
+
+        test(
+          'HTTP to stdio preview and publication agree on the desired entry',
+          () async {
+            writeJson(claudeProjectPath, {
+              'mcpServers': {
+                'svc': {
+                  'type': 'http',
+                  'url': 'https://old.example/mcp',
+                  'headers': {'Authorization': ref('OLD')},
+                },
+              },
+            });
+            seedManaged(claudeProject(), 'svc');
+            final result = await exec(
+              cmd('replace', <String>[
+                ...sel('svc'),
+                '--command',
+                'node',
+                '--args',
+                'new.js',
+                '--dry-run',
+                '--format',
+                'json',
+              ]),
+            );
+            final data = success(result)['data'] as Map<String, dynamic>;
+            expect(data['proposedEntry'], {
+              'command': 'node',
+              'args': ['new.js'],
+            });
+            expect(
+              entryAt(claudeProject(), 'svc')!['url'],
+              'https://old.example/mcp',
+            );
+            final published = await exec(
+              cmd('replace', <String>[
+                ...sel('svc'),
+                '--command',
+                'node',
+                '--args',
+                'new.js',
+                '--format',
+                'json',
+              ]),
+            );
+            success(published);
+            expect(entryAt(claudeProject(), 'svc'), {
+              'command': 'node',
+              'args': ['new.js'],
+            });
+          },
+        );
+
+        test('replaces stdio with a complete HTTP registration', () async {
+          writeJson(claudeProjectPath, <String, Object?>{
+            'mcpServers': <String, Object?>{
+              'svc': <String, Object?>{
+                'command': 'node',
+                'args': <String>['old.js'],
+                'env': <String, String>{'OLD': ref('OLD')},
+              },
+            },
+          });
+          seedManaged(claudeProject(), 'svc');
+          final result = await exec(
+            cmd('replace', <String>[
+              ...sel('svc'),
+              '--url',
+              'https://example.com/mcp',
+              '--format',
+              'json',
+            ]),
+          );
+          success(result);
+          expect(entryAt(claudeProject(), 'svc'), <String, Object?>{
+            'url': 'https://example.com/mcp',
+            'type': 'http',
+          });
+        });
+
+        test(
+          'JSON: replacement removes omitted fields without exposing literals',
           () async {
             final projectRef = ref('PROJECT_TOKEN');
             final before =
@@ -679,60 +1087,51 @@ void main() {
             expectNoSecrets((result as MambaSuccessResult).output!);
             expectNoSecrets(previews.single);
 
-            // Byte-for-byte: only the command value changed.
             final after = readText(claudeProjectPath);
-            expect(
-              after,
-              before.replaceFirst('"command": "node"', '"command": "node2"'),
-            );
-            expect(after, contains(jsonSecret)); // literal retained in place
-            expect(after, contains(projectRef));
-            expect(after, contains('unrelatedTopLevel'));
+            expect(entryAt(claudeProject(), 'svc'), {'command': 'node2'});
+            expect(after, isNot(contains(jsonSecret)));
+            expect(after, isNot(contains(projectRef)));
+            expect(after, contains('"unrelatedTopLevel": "keep-me"'));
           },
         );
 
-        test(
-          'TOML: comments, unrelated keys and literal preserved verbatim',
-          () async {
-            final codexRef = ref('CODEX_TOKEN');
-            final before =
-                '# keep this comment\n'
-                'model = "o3"\n'
-                '\n'
-                '[mcp_servers.svc]\n'
-                'command = "gh-mcp"  # inline command comment\n'
-                'args = ["serve"]\n'
-                'env = { API_KEY = "$tomlSecret", REF = "$codexRef" }\n';
-            writeText(codexUserPath, before);
-            seedManaged(codexUser(), 'svc');
+        test('TOML: replacement removes omitted fields and preserves unrelated bytes', () async {
+          final codexRef = ref('CODEX_TOKEN');
+          final before =
+              '# keep this comment\n'
+              'model = "o3"\n'
+              '\n'
+              '[mcp_servers.svc]\n'
+              'command = "gh-mcp"  # inline command comment\n'
+              'args = ["serve"]\n'
+              'env = { API_KEY = "$tomlSecret", REF = "$codexRef" }\n';
+          writeText(codexUserPath, before);
+          seedManaged(codexUser(), 'svc');
 
-            final result = await exec(
-              cmd('replace', <String>[
-                ...sel('svc', harness: 'codex', scope: 'user'),
-                '--command',
-                'gh-mcp-v2',
-                '--format',
-                'json',
-              ]),
-            );
-            success(result);
-            expectNoSecrets((result as MambaSuccessResult).output!);
-            expectNoSecrets(previews.single);
+          final result = await exec(
+            cmd('replace', <String>[
+              ...sel('svc', harness: 'codex', scope: 'user'),
+              '--command',
+              'gh-mcp-v2',
+              '--format',
+              'json',
+            ]),
+          );
+          success(result);
+          expectNoSecrets((result as MambaSuccessResult).output!);
+          expectNoSecrets(previews.single);
 
-            final after = readText(codexUserPath);
-            expect(
-              after,
-              before.replaceFirst(
-                'command = "gh-mcp"  # inline command comment',
-                'command = "gh-mcp-v2"  # inline command comment',
-              ),
-            );
-            expect(after, contains('# keep this comment'));
-            expect(after, contains('model = "o3"'));
-            expect(after, contains(tomlSecret));
-            expect(after, contains(codexRef));
-          },
-        );
+          final after = readText(codexUserPath);
+          expect(entryAt(codexUser(), 'svc'), {'command': 'gh-mcp-v2'});
+          expect(after, contains('# keep this comment'));
+          expect(after, contains('model = "o3"'));
+          expect(
+            after,
+            contains('command = "gh-mcp-v2"  # inline command comment'),
+          );
+          expect(after, isNot(contains(tomlSecret)));
+          expect(after, isNot(contains(codexRef)));
+        });
 
         test('TOML replace keeps a header with a trailing comment', () async {
           const header = '[mcp_servers.svc] # server configuration';
@@ -1074,48 +1473,36 @@ void main() {
       });
 
       group('replace', () {
-        test(
-          'TOML replace patches entry keys when descendants exist',
-          () async {
-            const before =
-                '[mcp_servers.svc]\n'
-                'command = "old"\n'
-                '\n'
-                '[mcp_servers.svc.env]\n'
-                'command = "descendant-command"\n'
-                'TOKEN = "\${TOKEN}"\n'
-                '\n'
-                '[other]\n'
-                'value = "unchanged"\n';
-            writeText(codexUserPath, before);
-            seedManaged(codexUser(), 'svc');
-
-            success(
-              await exec(
-                cmd('replace', <String>[
-                  ...sel('svc', harness: 'codex', scope: 'user'),
-                  '--command',
-                  'new',
-                  '--format',
-                  'json',
-                ]),
-              ),
-            );
-
-            final after = readText(codexUserPath);
-            expect(
-              after,
-              before.replaceFirst('command = "old"', 'command = "new"'),
-            );
-            expect(after, contains('command = "descendant-command"'));
-            final servers = parsedTomlServers(after);
-            expect((servers['svc']! as Map)['command'], 'new');
-            expect(
-              (((servers['svc']! as Map)['env']! as Map)['command']),
-              'descendant-command',
-            );
-          },
-        );
+        test('TOML replacement removes obsolete descendant tables without touching others', () async {
+          const before =
+              '[mcp_servers.svc]\n'
+              'command = "old"\n'
+              '[mcp_servers.svc.env]\n'
+              'TOKEN = "old"\n'
+              '[other]\n'
+              'value = "unchanged"\n'
+              '[mcp_servers.svc.oauth]\n'
+              'client_id = "old"\n';
+          writeText(codexUserPath, before);
+          seedManaged(codexUser(), 'svc');
+          final result = await exec(
+            cmd('replace', <String>[
+              ...sel('svc', harness: 'codex', scope: 'user'),
+              '--url',
+              'https://example.com/mcp',
+              '--format',
+              'json',
+            ]),
+          );
+          success(result);
+          final after = readText(codexUserPath);
+          expect(entryAt(codexUser(), 'svc'), {
+            'url': 'https://example.com/mcp',
+          });
+          expect(after, contains('[other]\nvalue = "unchanged"'));
+          expect(after, isNot(contains('[mcp_servers.svc.env]')));
+          expect(after, isNot(contains('[mcp_servers.svc.oauth]')));
+        });
       });
 
       group('register', () {
@@ -1180,7 +1567,9 @@ void main() {
             expect(text, contains('model = "o3"'));
             expect(text, contains('[mcp_servers.remote]'));
             expect(text, contains('url = "https://codex.example.com/mcp"'));
-            expect(text, contains(ref('CODEX_TOKEN')));
+            expect(entryAt(codexUser(), 'remote')!['env_http_headers'], {
+              'Authorization': 'CODEX_TOKEN',
+            });
             expectNoSecrets((result as MambaSuccessResult).output!);
 
             // The ledger baseline must match the TOML-parsed digest exactly.
@@ -1328,7 +1717,9 @@ void main() {
             success(result);
             expect(
               readText(codexUserPath),
-              crlf.replaceFirst('command = "gh-mcp"', 'command = "gh-mcp-v2"'),
+              crlf
+                  .replaceFirst('command = "gh-mcp"', 'command = "gh-mcp-v2"')
+                  .replaceFirst('args = ["serve"]\r\n', ''),
             );
             expect(
               readText(codexUserPath),

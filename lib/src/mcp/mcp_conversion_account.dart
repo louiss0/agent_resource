@@ -133,8 +133,6 @@ const Set<String> mcpCredentialPolicyFields = <String>{
   'http_headers_helper',
   'headersHelper',
   'authProviderType',
-  'env_http_headers',
-  'env_vars',
 };
 
 /// Codex runtime controls with no equivalent in Claude or native Pi. The

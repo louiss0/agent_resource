@@ -711,6 +711,29 @@ source-qualified capabilities, exposure notes, and missing-reference blockers
 without executing or inferring runtime dependencies. Regular-file lifecycle
 operations are documented above.
 
+### Replace an MCP registration
+
+`mcp replace` requires a managed registration and a **complete desired entry**,
+not a field-by-field patch. Supply its name, harness and scope, exactly one of
+`--command` or `--url`, and every supported argument, environment reference,
+header and type to retain. Omitted fields?including old credentials, unknown
+native settings and fields of a previous transport?are removed. Review the
+redacted `observedEntry` and `proposedEntry` with `--dry-run` before approval;
+unrelated entries in the shared native file are preserved.
+
+New `--env` and `--header` values require a supported native credential
+reference, not a literal. Claude project registrations accept `${NAME}`; Pi
+accepts `${NAME}` or `!command` (which can execute code); Codex accepts
+`${NAME}` and writes `env_vars` for matching stdio variable names or
+`env_http_headers` for HTTP headers. Defaults and renamed Codex stdio variables
+are refused. Antigravity substitutions are refused because native support has
+not been established. Do not put literal secrets in helper commands.
+
+These checks and plans are **static only**: Agent Resource does not launch a
+server or helper, test authentication, or verify that a harness interpolates or
+activates the registration. See `docs/specs/mcp-support.md` for the full
+contract and recovery boundaries.
+
 ### Create native Skills, Agents, and Prompts from plain text
 
 ```text
