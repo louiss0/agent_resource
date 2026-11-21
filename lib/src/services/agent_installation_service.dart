@@ -8,6 +8,7 @@ import 'package:mamba/mamba.dart';
 
 import '../../components/acquisition_progress.dart';
 import '../agent_inspection.dart';
+import '../configuration/effective_configuration.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/installation_batch.dart';
 import '../installation/installation_interaction.dart';
@@ -95,6 +96,25 @@ interface class AgentInstallationService {
       request.options,
       fileSystem: _fileSystem,
     );
+    final effective = interactive
+        ? await effectiveInstallationConfiguration(
+            request,
+            context,
+            _fileSystem,
+          )
+        : null;
+    final targetSetting = effective?.settings.singleWhere(
+      (setting) => setting.key == EligiblePreference.installTargets.wireName,
+    );
+    final configuredTargets =
+        (targetSetting?.value as List<Object?>?)?.cast<String>() ??
+        const <String>[];
+    if (request.targets.isEmpty && configuredTargets.isNotEmpty) {
+      request = request.withTargets([
+        for (final target in configuredTargets)
+          InstallationTarget.values.byName(target),
+      ]);
+    }
     final workspace = interactive
         ? await _progress(
             'Acquiring Agent source',
@@ -157,6 +177,12 @@ interface class AgentInstallationService {
         scope: context.scope.name,
         units: units,
         diagnostics: [
+          if (targetSetting != null && configuredTargets.isNotEmpty)
+            {
+              'code': 'target-origin',
+              'message':
+                  'Targets: ${configuredTargets.join(', ')} [${targetSetting.origin.wireName}]',
+            },
           if (candidates.provenance.directFile)
             const <String, Object?>{
               'code': 'single-file-boundary',

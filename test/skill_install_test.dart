@@ -6,6 +6,8 @@ import 'package:file/local.dart';
 import 'package:file/memory.dart';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/pack_action.dart';
+import 'package:agent_resource/src/services/pack_lifecycle_service.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
@@ -1296,6 +1298,87 @@ path = "skills/review"
             (replay as MambaSuccessResult).output,
             contains('Scope: project'),
           );
+        });
+
+        test('direct and pack previews disclose the same configured defaults and origins', () async {
+          final collection = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          final source = fs.directory(
+            fs.path.join(collection.path, 'skills', 'review'),
+          )..createSync(recursive: true);
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
+          fs
+              .file(fs.path.join(collection.path, 'agent-resources.toml'))
+              .writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/review"
+''');
+          fs
+              .file(fs.path.join(project.path, 'agent-resources.toml'))
+              .writeAsStringSync('''
+schema_version = 1
+[cli.install]
+targets = ["codex"]
+skill_method = "copy"
+[packs."local/demo".source]
+kind = "local"
+path = "../source"
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+          final direct = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            ...context(),
+            '--dry-run',
+          ]);
+          final pack =
+              await Executor('agent_resource', 'Test.', '1.0.0', [
+                PackActionCommand(
+                  PackResourceType.skill,
+                  PackOperation.install,
+                  PackLifecycleService(fileSystem: fs),
+                  fileSystem: fs,
+                  stdinIsTerminal: () => true,
+                  stdoutIsTerminal: () => true,
+                ),
+              ]).fake().execute([
+                'install',
+                'local/demo',
+                '--scope',
+                'project',
+                '--cwd',
+                '${project.path}/',
+                '--project-root',
+                '${project.path}/',
+                '--home',
+                '${home.path}/',
+                '--dry-run',
+              ]);
+          expect(
+            direct,
+            isA<MambaSuccessResult>(),
+            reason: direct is MambaFailureResult ? direct.message : null,
+          );
+          expect(
+            pack,
+            isA<MambaSuccessResult>(),
+            reason: pack is MambaFailureResult ? pack.message : null,
+          );
+          for (final output in [
+            (direct as MambaSuccessResult).output!,
+            (pack as MambaSuccessResult).output!,
+          ]) {
+            expect(output, contains('codex'));
+            expect(output, contains('copy'));
+            expect(output, contains('project-config'));
+          }
         });
 
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {

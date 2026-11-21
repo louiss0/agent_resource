@@ -10,6 +10,8 @@ import 'package:path/path.dart' as p;
 import '../../components/installation_approval.dart';
 import '../../components/resource_selector.dart';
 import '../agent_inspection.dart';
+import '../configuration/effective_configuration.dart';
+import 'configuration_workflow_service.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/installation_plan.dart';
 import '../installation/installation_route.dart';
@@ -1721,6 +1723,7 @@ interface class PackLifecycleService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
+      final effectiveInstall = await _effectiveInstall(request, context);
       final actions = <String, String>{};
       final installMethods = <String, SkillInstallMethod?>{};
       final installTargets = <String, List<String>>{};
@@ -1787,6 +1790,7 @@ interface class PackLifecycleService {
             configuration,
             candidate,
             null,
+            effectiveInstall,
           );
           final method = await _method(
             request,
@@ -1794,6 +1798,7 @@ interface class PackLifecycleService {
             configuration,
             candidate,
             null,
+            effectiveInstall,
           );
           if (method == SkillInstallMethod.sourceLink && candidate.migrated) {
             throw MambaException(
@@ -1889,7 +1894,15 @@ interface class PackLifecycleService {
       }
       final plan = PackPlan.create(
         operation: '${request.resourceType.name}s.${request.operation.name}',
-        context: _contextJson(request, context, configuration),
+        context: {
+          ..._contextJson(request, context, configuration),
+          'preferenceOrigins': [
+            for (final setting in effectiveInstall.settings)
+              if (setting.key == EligiblePreference.installTargets.wireName ||
+                  setting.key == EligiblePreference.installSkillMethod.wireName)
+                setting.toJson(),
+          ],
+        },
         source: _sourceJson(pack, workspace.provenance),
         resources: planResources,
         warnings: warnings,
@@ -2060,7 +2073,7 @@ interface class PackLifecycleService {
                 )
               ? 'no-op'
               : 'completed',
-          context: _contextJson(request, context, configuration),
+          context: plan.context,
           source: _sourceJson(pack, workspace.provenance),
           resources: results,
           warnings: warnings,
@@ -4677,12 +4690,39 @@ interface class PackLifecycleService {
     };
   }
 
+  Future<ConfigurationWorkflowResult> _effectiveInstall(
+    PackLifecycleRequest request,
+    LifecycleContext context,
+  ) =>
+      ConfigurationWorkflowService(
+        fileSystem: _fileSystem,
+        environment: request.environment,
+        operatingSystem: operatingSystem,
+      ).execute(
+        ConfigurationWorkflowRequest(
+          operation: ConfigurationWorkflowOperation.effective,
+          scope: context.scope == LifecycleScope.project
+              ? PackConfigurationScope.project
+              : PackConfigurationScope.user,
+          cwd: context.cwd,
+          projectRoot: context.projectRoot,
+          home: context.home,
+          configPath: request.configPath,
+          packKey: request.pack,
+          explicitTargets: [if (request.target != null) request.target!],
+          explicitMethod: request.operation == PackOperation.install
+              ? request.method
+              : null,
+        ),
+      );
+
   Future<List<String>> _targets(
     PackLifecycleRequest request,
     PackDefinition pack,
     PackConfiguration configuration,
     _PackCandidate candidate,
     InstallationRecord? record,
+    ConfigurationWorkflowResult effective,
   ) async {
     if (candidate.type == PackResourceType.agent) {
       final target = _harness(candidate.profile!).name;
@@ -4694,11 +4734,16 @@ interface class PackLifecycleService {
       }
       return [target];
     }
-    final targets = request.target != null
-        ? [request.target!]
-        : pack.install.targets.isNotEmpty
-        ? pack.install.targets
-        : configuration.cli.install.targets;
+    final targets =
+        (effective.settings
+                    .singleWhere(
+                      (setting) =>
+                          setting.key ==
+                          EligiblePreference.installTargets.wireName,
+                    )
+                    .value
+                as List<Object?>)
+            .cast<String>();
     if (targets.isEmpty && record != null) return record.validatedProfiles;
     if (targets.isEmpty && request.interactive && !request.yes) {
       final target = await _promptChoice(
@@ -4736,6 +4781,7 @@ interface class PackLifecycleService {
     PackConfiguration configuration,
     _PackCandidate candidate,
     InstallationRecord? record,
+    ConfigurationWorkflowResult effective,
   ) async {
     if (candidate.type == PackResourceType.agent) return null;
     final requested =
@@ -4744,10 +4790,22 @@ interface class PackLifecycleService {
         : SkillInstallMethod.values.firstWhere(
             (method) => method.name == _methodName(request.method!),
           );
+    final methodName =
+        effective.settings
+                .singleWhere(
+                  (setting) =>
+                      setting.key ==
+                      EligiblePreference.installSkillMethod.wireName,
+                )
+                .value
+            as String?;
     final method =
         requested ??
-        pack.install.skillMethod ??
-        configuration.cli.install.skillMethod;
+        (methodName == null
+            ? null
+            : SkillInstallMethod.values.firstWhere(
+                (method) => method.name == _methodName(methodName),
+              ));
     if (method == null && record != null) {
       return switch (record.kind) {
         ArtifactKind.skillCanonical => SkillInstallMethod.canonical,

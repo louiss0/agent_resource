@@ -15,6 +15,7 @@ import '../installation/installation_route.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../harness/harness_catalog.dart';
+import '../configuration/effective_configuration.dart';
 import 'acquisition_service.dart';
 import 'lifecycle_state_service.dart';
 import 'skill_lifecycle_service.dart';
@@ -95,7 +96,28 @@ interface class SkillInstallationService {
       request.options,
       fileSystem: _fileSystem,
     );
-    final method = request.method ?? InstallationMethod.canonical;
+    final effective = interactive
+        ? await effectiveInstallationConfiguration(
+            request,
+            context,
+            _fileSystem,
+          )
+        : null;
+    final targetSetting = effective?.settings.firstWhere(
+      (setting) => setting.key == EligiblePreference.installTargets.wireName,
+    );
+    final methodSetting = effective?.settings.firstWhere(
+      (setting) =>
+          setting.key == EligiblePreference.installSkillMethod.wireName,
+    );
+    final configuredMethod = methodSetting?.value as String?;
+    final method =
+        request.method ??
+        (configuredMethod == null
+            ? InstallationMethod.canonical
+            : InstallationMethod.values.singleWhere(
+                (value) => value.wireName == configuredMethod,
+              ));
     final acquisition = AcquisitionRequest(
       locator: source,
       cwd: context.cwd,
@@ -145,7 +167,15 @@ interface class SkillInstallationService {
           exitCode: 4,
         );
       }
-      final targets = await _targets(request, context, interactive);
+      final configuredTargets =
+          (targetSetting?.value as List<Object?>?)?.cast<String>() ??
+          const <String>[];
+      final targets = request.targets.isEmpty && configuredTargets.isNotEmpty
+          ? [
+              for (final target in configuredTargets)
+                InstallationTarget.values.byName(target),
+            ]
+          : await _targets(request, context, interactive);
       if (targets == null) {
         return const InstallationCancelledResult('skill install');
       }
@@ -227,6 +257,18 @@ interface class SkillInstallationService {
           units: units,
           diagnostics: [
             ...migrationDiagnostics,
+            if (targetSetting != null && configuredTargets.isNotEmpty)
+              {
+                'code': 'target-origin',
+                'message':
+                    'Targets: ${targets.map((target) => target.name).join(', ')} [${targetSetting.origin.wireName}]',
+              },
+            if (methodSetting != null)
+              {
+                'code': 'method-origin',
+                'message':
+                    'Method: ${method.wireName} [${methodSetting.origin.wireName}]',
+              },
             if (candidates.provenance.directFile)
               const <String, Object?>{
                 'code': 'single-file-boundary',

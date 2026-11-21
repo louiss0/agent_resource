@@ -116,6 +116,58 @@ void main() {
           expect(project.listSync(recursive: true), isEmpty);
         });
 
+        test(
+          'interactive collection applies project target preference',
+          () async {
+            final collection = fs.directory('/sandbox/collection')
+              ..createSync();
+            fs
+                .file('${collection.path}/agent-resources.toml')
+                .writeAsStringSync('''
+schema_version = 1
+[[agents]]
+id = "claude-reviewer"
+path = "claude.md"
+profile = "claude"
+[[agents]]
+id = "codex-reviewer"
+path = "codex.md"
+profile = "codex"
+''');
+            for (final name in ['claude', 'codex']) {
+              fs
+                  .file('${collection.path}/$name.md')
+                  .writeAsStringSync(
+                    '---\nname: reviewer\ndescription: Reviews.\n---\nBody.\n',
+                  );
+            }
+            fs.file('${project.path}/agent-resources.toml').writeAsStringSync(
+              '''
+schema_version = 1
+[cli.install]
+targets = ["claude"]
+''',
+            );
+            interaction.resourceSelections.add(['claude-reviewer']);
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              collection.path,
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final output = (result as MambaSuccessResult).output!;
+            expect(output, contains('Profile: claude'));
+            expect(output, contains('project-config'));
+            expect(output, isNot(contains('codex-reviewer')));
+          },
+        );
+
         test('interactive direct file asks profile but not a redundant target question', () async {
           final source = agent();
           interaction.sources.add(source.path);
