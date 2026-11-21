@@ -749,7 +749,20 @@ interface class SkillLifecycleService implements LifecycleResource {
   }
 
   /// Update a direct installation from its recorded acquisition and route.
-  Future<LifecycleResult> update(LifecycleIdInput input) async {
+  Future<LifecycleResult> update(LifecycleIdInput input) => _replay(input);
+
+  /// Review and change the method of a direct copied or linked Skill.
+  Future<LifecycleResult> migrate(
+    LifecycleIdInput input, {
+    required InstallationMethod method,
+    String? reviewedPlan,
+  }) => _replay(input, migrationMethod: method, reviewedPlan: reviewedPlan);
+
+  Future<LifecycleResult> _replay(
+    LifecycleIdInput input, {
+    InstallationMethod? migrationMethod,
+    String? reviewedPlan,
+  }) async {
     final context = LifecycleContext.resolve(
       input.options,
       fileSystem: state.io.fs,
@@ -777,6 +790,21 @@ interface class SkillLifecycleService implements LifecycleResource {
         exitCode: 4,
       );
     }
+    if (migrationMethod != null &&
+        (migrationMethod == InstallationMethod.canonical ||
+            route.method == InstallationMethod.canonical ||
+            migrationMethod == route.method)) {
+      throw MambaException(
+        'This migration requires distinct copy and source-link methods.',
+        exitCode: 4,
+      );
+    }
+    final method = migrationMethod ?? route.method;
+    final desiredKind = switch (method) {
+      InstallationMethod.copy => ArtifactKind.skillCopy,
+      InstallationMethod.canonical => ArtifactKind.skillCanonical,
+      InstallationMethod.sourceLink => ArtifactKind.skillLink,
+    };
     final source = route.source;
     final workspace = await AcquisitionService(fileSystem: state.io.fs).acquire(
       AcquisitionRequest(
@@ -820,7 +848,8 @@ interface class SkillLifecycleService implements LifecycleResource {
       final staged = await SkillRootMarkdownMigration(fileSystem: fs)
           .stage(path);
       try {
-        if (route.method == InstallationMethod.sourceLink && staged.migrated) {
+        if (method == InstallationMethod.sourceLink &&
+            (!workspace.provenance.durableLocalDirectory || staged.migrated)) {
           throw MambaException(
             'source-link cannot migrate loose root files.',
             exitCode: 4,
@@ -847,7 +876,7 @@ interface class SkillLifecycleService implements LifecycleResource {
           entryId: route.entryId,
           scope: route.scope,
           targets: route.targets,
-          method: route.method,
+          method: method,
           derivedArtifacts: [
             for (final item in [...staged.movedMarkdown, ...staged.movedImages])
               ManagedDerivedArtifact(
@@ -865,7 +894,7 @@ interface class SkillLifecycleService implements LifecycleResource {
         );
         final resource = installationResource(
           targets: [for (final target in route.targets) target.name],
-          kind: expectedKind,
+          kind: desiredKind,
         );
         final digest = state.contentDigest(staged.path, ArtifactKind.skillCopy);
         final origin = <String, Object?>{
@@ -873,7 +902,32 @@ interface class SkillLifecycleService implements LifecycleResource {
           'source': replayedSource.toJson(),
           'contentDigest': digest,
         };
-        if (expectedKind == ArtifactKind.skillLink) {
+        final planId = migrationMethod == null
+            ? null
+            : sha256
+                  .convert(
+                    utf8.encode(
+                      jsonEncode({
+                        'installationId': record.installationId,
+                        'location': record.location,
+                        'baseline': record.baseline.toJson(),
+                        'origin': record.origin,
+                        'from': route.toJson(),
+                        'to': newRoute.toJson(),
+                        'sourceDigest': digest,
+                      }),
+                    ),
+                  )
+                  .toString();
+        if (migrationMethod != null &&
+            !context.dryRun &&
+            reviewedPlan != planId) {
+          throw MambaException(
+            'Review a current migration preview and supply its plan ID with --reviewed-plan.',
+            exitCode: 4,
+          );
+        }
+        if (expectedKind == ArtifactKind.skillLink && migrationMethod == null) {
           if (!workspace.provenance.durableLocalDirectory ||
               state.verify(record) != ModificationStatus.unchanged) {
             throw MambaException(
@@ -924,14 +978,28 @@ interface class SkillLifecycleService implements LifecycleResource {
                 resource: resource,
                 context: context,
                 installationId: input.id,
-                source: staged.path,
+                source: desiredKind == ArtifactKind.skillLink
+                    ? path
+                    : staged.path,
                 origin: origin,
                 installationRoute: newRoute,
               );
         return LifecycleResult(
-          command: 'skill update',
-          outcome: context.dryRun ? 'planned' : 'updated',
-          data: {...result.data, 'route': newRoute.toJson()},
+          command: migrationMethod == null ? 'skill update' : 'skill migrate',
+          outcome: context.dryRun
+              ? 'planned'
+              : migrationMethod == null
+              ? 'updated'
+              : 'migrated',
+          data: {
+            ...result.data,
+            if (migrationMethod != null) ...{
+              'fromMethod': route.method.wireName,
+              'toMethod': method.wireName,
+              'planId': planId,
+            },
+            'route': newRoute.toJson(),
+          },
         );
       } finally {
         await staged.close();
