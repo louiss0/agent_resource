@@ -56,6 +56,8 @@ Future<void> main() async {
     });
 
     List<String> contextArguments({bool withState = false}) => [
+      '--scope',
+      'project',
       '--cwd',
       '${project.path}${fs.path.separator}',
       '--project-root',
@@ -596,6 +598,8 @@ Future<void> main() async {
             'Demo resource.',
             '--body-text',
             'Follow the selected task.',
+            '--scope',
+            'project',
             '--apply',
             '--yes',
             '--unattended',
@@ -651,6 +655,8 @@ Future<void> main() async {
             '--description',
             'Demo resource.',
             '--body-stdin',
+            '--scope',
+            'project',
             '--apply',
             '--yes',
             '--unattended',

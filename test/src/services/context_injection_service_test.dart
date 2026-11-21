@@ -159,6 +159,7 @@ void main() {
               '--apply',
               '--yes',
               '--unattended',
+              if (!extra.contains('--scope')) ...['--scope', 'project'],
               '--format',
               'json',
             ]),
@@ -197,6 +198,8 @@ void main() {
               '--apply',
               '--yes',
               '--unattended',
+              '--scope',
+              'project',
             ]),
           );
 
@@ -240,6 +243,8 @@ void main() {
                     '--apply',
                     '--yes',
                     '--unattended',
+                    '--scope',
+                    'project',
                   ]),
                 );
             expect(
@@ -291,6 +296,8 @@ void main() {
                     '--apply',
                     '--yes',
                     '--unattended',
+                    '--scope',
+                    'project',
                   ]),
                 );
             expect(
@@ -332,6 +339,8 @@ void main() {
               '--apply',
               '--yes',
               '--unattended',
+              '--scope',
+              'project',
             ]),
           );
           expect(
@@ -373,6 +382,8 @@ void main() {
                   '--apply',
                   '--yes',
                   '--unattended',
+                  '--scope',
+                  'project',
                 ]),
               );
           expect(
@@ -421,6 +432,8 @@ void main() {
                     '--apply',
                     '--yes',
                     '--unattended',
+                    '--scope',
+                    'project',
                   ]),
                 );
             expect(
@@ -469,6 +482,8 @@ void main() {
                     '--apply',
                     '--yes',
                     '--unattended',
+                    '--scope',
+                    'project',
                   ]),
                 );
             expect(

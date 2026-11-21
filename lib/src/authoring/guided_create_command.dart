@@ -125,8 +125,9 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(GuidedCreateFields.format);
     final interactive = resolveInteractive(valueOf, format);
-    final options = buildOptions(valueOf);
-    final inputs = buildInputs(valueOf);
+    validatePublicationScope(valueOf, interactive);
+    final options = await resolveOptions(valueOf, interactive);
+    final inputs = await buildInputs(valueOf, interactive, options.scope);
     final outcome = await guided.run(
       GuidedAuthoringRequest(
         command: commandPath,
@@ -144,7 +145,123 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     if (outcome.rejected) {
       throw MambaException(rendered, exitCode: 4);
     }
-    return rendered;
+    if (!interactive || format != LifecycleOutputFormat.text) return rendered;
+    return '$rendered\n${_explicitCommand(valueOf, inputs, options, outcome)}';
+  }
+
+  String _explicitCommand(
+    ValueOf valueOf,
+    AuthoringInputs inputs,
+    LifecycleOptions options,
+    GuidedAuthoringOutcome outcome,
+  ) {
+    final body = inputs.body;
+    if (operation != AuthoringOperation.create &&
+        operation != AuthoringOperation.clone &&
+        operation != AuthoringOperation.edit) {
+      return 'Explicit command omitted: this authoring operation cannot be represented safely.';
+    }
+    if (operation != AuthoringOperation.create && inputs.source.path == null) {
+      return 'Explicit command omitted: the selected source cannot be represented safely.';
+    }
+    final useBodyFile =
+        body?.kind == BodyInputKind.file && body?.filePath != null;
+    final needsBody = operation != AuthoringOperation.clone;
+    final fields = outcome.data['fields'];
+    if (fields is! Map) {
+      return 'Explicit command omitted: selected fields cannot be represented safely.';
+    }
+    const supported = {
+      'name',
+      'description',
+      'model',
+      'tools',
+      'mainAgent',
+      'skills',
+      'allowed-tools',
+      'disallowed-tools',
+      'metadata',
+      'argument-hint',
+      'license',
+      'compatibility',
+    };
+    final intents = outcome.data['fieldIntents'];
+    if (intents is! Map || intents.values.any((value) => value != 'supplied')) {
+      return 'Explicit command omitted: selected field intents cannot be represented safely.';
+    }
+    if (intents.keys.any((key) => key is! String || !supported.contains(key))) {
+      return 'Explicit command omitted: selected fields cannot be represented safely.';
+    }
+    final words = <String>[
+      ...commandPath.split(' '),
+      '--profile',
+      inputs.profile.name,
+      '--scope',
+      options.scope.name,
+      if (operation != AuthoringOperation.create) ...[
+        '--source',
+        inputs.source.path!,
+      ],
+      if (needsBody && useBodyFile) ...[
+        '--body-file',
+        body!.filePath!,
+      ] else if (needsBody)
+        '--body-stdin',
+    ];
+    for (final entry in fields.entries) {
+      if (intents[entry.key] != 'supplied') continue;
+      final name = entry.key as String;
+      final value = entry.value;
+      final option = name == 'mainAgent' ? 'main-agent' : name;
+      if (value is String) {
+        words.addAll(['--$option', value]);
+      } else if (value is List && value.every((item) => item is String)) {
+        for (final item in value) {
+          words.addAll(['--$option', item as String]);
+        }
+      } else if (name == 'mainAgent' && value == true) {
+        words.add('--main-agent');
+      } else if (name == 'metadata' &&
+          value is Map &&
+          value.values.every((item) => item is String)) {
+        for (final item in value.entries) {
+          words.addAll(['--metadata', '${item.key}=${item.value}']);
+        }
+      } else {
+        return 'Explicit command omitted: selected fields cannot be represented safely.';
+      }
+    }
+    if (inputs.output != null) words.addAll(['--output', inputs.output!]);
+    if (inputs.manage) words.add('--manage');
+    for (final pair in <(String, String?)>[
+      ('cwd', options.cwd),
+      ('project-root', options.projectRoot),
+      ('home', options.home),
+      ('claude-config-dir', options.claudeConfigDir),
+      ('codex-home', options.codexHome),
+      ('pi-agent-dir', options.piAgentDir),
+      ('gemini-dir', options.geminiDir),
+      ('state-dir', options.stateDir),
+    ]) {
+      if (pair.$2 != null) words.addAll(['--${pair.$1}', pair.$2!]);
+    }
+    if (options.dryRun) words.add('--dry-run');
+    if (valueOf(GuidedCreateFields.apply) && !options.dryRun) {
+      words.addAll(['--apply', '--yes']);
+    }
+    words.add('--unattended');
+    String quote(String value) {
+      if (RegExp(r'^[A-Za-z0-9_./:-]+$').hasMatch(value)) return value;
+      return Platform.isWindows
+          ? "'${value.replaceAll("'", "''")}'"
+          : "'${value.replaceAll("'", "'\\''")}'";
+    }
+
+    final guidance = !needsBody || useBodyFile
+        ? ''
+        : 'To replay, provide the original instruction text on stdin; it is not disclosed here.\n';
+    return '${guidance}Explicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
+        'agent_resource ${words.map(quote).join(' ')}';
   }
 
   @override
@@ -189,11 +306,57 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     return explicit || hasTerminal;
   }
 
+  /// Require an explicit scope for unattended publication.
+  void validatePublicationScope(ValueOf valueOf, bool interactive) {
+    if (!interactive &&
+        valueOf(GuidedCreateFields.apply) &&
+        !valueOf(GuidedCreateFields.dryRun) &&
+        valueOf(GuidedCreateFields.scope) == null) {
+      throw MambaException(
+        'Unattended publication requires explicit --scope project|user.',
+        exitCode: 4,
+      );
+    }
+  }
+
+  /// Offers a separately resolvable user context when project context fails.
+  Future<LifecycleOptions> resolveOptions(
+    ValueOf valueOf,
+    bool interactive,
+  ) async {
+    final options = buildOptions(valueOf);
+    final resolved = await resolveInteractiveUserScope(
+      options: options,
+      fileSystem: fileSystem,
+      interactive: interactive,
+      scopeExplicit: valueOf(GuidedCreateFields.scope) != null,
+      offerUserScope: () async =>
+          (await guided.valueQuestion?.call(
+            'Project context is unavailable. Use user scope instead? Type user to continue:',
+          ))?.trim() ==
+          'user',
+    );
+    if (resolved.cwd != options.cwd) {
+      final paths = [
+        valueOf(GuidedCreateFields.bodyFile),
+        valueOf(GuidedCreateFields.output),
+        sourcePath(valueOf),
+      ].whereType<String>();
+      if (paths.any((path) => !fileSystem.path.isAbsolute(path))) {
+        throw MambaException(
+          'User-scope fallback requires absolute source, body and output paths when cwd is unavailable.',
+          exitCode: 4,
+        );
+      }
+    }
+    return resolved;
+  }
+
   /// The lifecycle context of the run.
   LifecycleOptions buildOptions(ValueOf valueOf) => LifecycleOptions(
     processWorkingDirectory: fileSystem.currentDirectory.path,
     environment: Map<String, String>.unmodifiable(Platform.environment),
-    scope: valueOf(GuidedCreateFields.scope),
+    scope: valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
     cwd: valueOf(GuidedCreateFields.cwd),
     projectRoot: valueOf(GuidedCreateFields.projectRoot),
     home: valueOf(GuidedCreateFields.home),
@@ -207,10 +370,30 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   );
 
   /// The named native inputs of the run.
-  AuthoringInputs buildInputs(ValueOf valueOf) {
-    final profile =
+  Future<AuthoringInputs> buildInputs(
+    ValueOf valueOf,
+    bool interactive,
+    LifecycleScope scope,
+  ) async {
+    var profile =
         valueOf(GuidedCreateFields.profile) ??
         valueOf(GuidedCreateFields.harness);
+    if (profile == null && interactive) {
+      for (var attempt = 0; attempt < maxGuidedCorrectionAttempts; attempt++) {
+        final answer = await guided.valueQuestion?.call(
+          '${attempt == 0 ? '' : 'Invalid profile. '}'
+          'Select a native profile '
+          '(${supportedProfiles.map((value) => value.name).join(', ')}):',
+        );
+        if (answer == null || answer.trim().isEmpty) {
+          throw MambaException('Profile selection cancelled.', exitCode: 7);
+        }
+        profile = supportedProfiles
+            .where((value) => value.name == answer.trim())
+            .firstOrNull;
+        if (profile != null) break;
+      }
+    }
     if (profile == null) {
       throw MambaException(
         'Select the native profile explicitly with --profile or --harness '
@@ -235,7 +418,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       operation: operation,
       kind: kind,
       profile: profile,
-      scope: valueOf(GuidedCreateFields.scope),
+      scope: scope,
       sourcePath: sourcePath(valueOf),
       bodyFile: valueOf(GuidedCreateFields.bodyFile),
       bodyStandardInput: valueOf(GuidedCreateFields.bodyStdin),

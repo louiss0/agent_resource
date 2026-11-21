@@ -140,6 +140,46 @@ void main() {
             (result as MambaSuccessResult).output,
             contains('Profile: claude'),
           );
+          final output = result.output!;
+          expect(output, contains('Explicit command'));
+          expect(output, contains('--profile claude'));
+          expect(output, contains('--target claude'));
+          expect(output, contains('--source-kind resource'));
+          final command = output.split('\n').last.split('): ').last;
+          final shell = await Process.run(
+            Platform.isWindows ? 'powershell.exe' : 'sh',
+            Platform.isWindows
+                ? [
+                    '-NoProfile',
+                    '-Command',
+                    'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+                  ]
+                : [
+                    '-c',
+                    'agent_resource() { printf "%s\\n" "\$@"; }; $command',
+                  ],
+          );
+          expect(shell.exitCode, 0, reason: '${shell.stderr}');
+          final args = Platform.isWindows
+              ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+              : (shell.stdout as String).trimRight().split('\n');
+          final replay = await createExecutor(
+            fileSystem: fs,
+            agentInstallation: AgentInstallationService(
+              fileSystem: fs,
+              interaction: ScriptedInstallationInteraction(interactive: false),
+              progress: noInstallationProgress,
+            ),
+          ).fake().execute(args);
+          expect(
+            replay,
+            isA<MambaSuccessResult>(),
+            reason: replay is MambaFailureResult ? replay.message : null,
+          );
+          expect(
+            (replay as MambaSuccessResult).output,
+            contains('Profile: claude'),
+          );
           expect(interaction.targetSelections, isEmpty);
           expect(interaction.approvals, isEmpty);
         });

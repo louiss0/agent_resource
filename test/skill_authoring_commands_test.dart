@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform, Process;
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/src/services/guided_authoring_service.dart';
@@ -79,6 +80,56 @@ void main() {
         expect(leaf.output, contains('--harness'));
         expect(leaf.output, contains('--source'));
       }
+    });
+
+    test('prints a replayable guided clone command', () async {
+      final interactive = createExecutor(
+        fileSystem: fs,
+        guided: GuidedAuthoringService(fileSystem: fs, terminal: () => true),
+      ).fake();
+      final result = await interactive.execute([
+        'skill',
+        'clone',
+        '--profile',
+        'claude',
+        '--source',
+        source.path,
+        '--name',
+        'copy',
+        '--cwd',
+        '${project.path}/',
+        '--home',
+        '${home.path}/',
+      ]);
+      expect(
+        result,
+        isA<MambaSuccessResult>(),
+        reason: result is MambaFailureResult ? result.message : null,
+      );
+      final output = (result as MambaSuccessResult).output!;
+      expect(output, contains('Explicit command ('));
+      expect(output, contains('--source ${source.path}'));
+      final command = output.split('\n').last.split('): ').last;
+      final shell = await Process.run(
+        Platform.isWindows ? 'powershell.exe' : 'sh',
+        Platform.isWindows
+            ? [
+                '-NoProfile',
+                '-Command',
+                'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+              ]
+            : ['-c', 'agent_resource() { printf "%s\\n" "\$@"; }; $command'],
+      );
+      expect(shell.exitCode, 0, reason: '${shell.stderr}');
+      final args = Platform.isWindows
+          ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+          : (shell.stdout as String).trimRight().split('\n');
+      final replay = await executor.execute(args);
+      expect(
+        replay,
+        isA<MambaSuccessResult>(),
+        reason: replay is MambaFailureResult ? replay.message : null,
+      );
     });
 
     test('clones an Antigravity skill into the config skills root', () async {
