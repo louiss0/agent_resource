@@ -1,4 +1,7 @@
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/pack_action.dart';
+import 'package:mamba/mamba.dart';
+import 'package:file/memory.dart';
 import 'package:agent_resource/src/pack/pack_discovery.dart';
 import 'package:agent_resource/src/pack/pack_models.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
@@ -51,6 +54,38 @@ void main() {
   group('agent_resource', () {
     group('pack', () {
       group('install', () {
+        test('does not prompt when stdout is redirected', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/project').createSync();
+          fs.directory('/source').createSync();
+          fs.file('/project/agent-resources.toml').writeAsStringSync('''
+schema_version = 1
+[packs."local/demo".source]
+kind = "local"
+path = "../source"
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+          final command = PackActionCommand(
+            PackResourceType.skill,
+            PackOperation.install,
+            PackLifecycleService(fileSystem: fs),
+            fileSystem: fs,
+            stdinIsTerminal: () => true,
+            stdoutIsTerminal: () => false,
+          );
+          final result = await Executor('agent_resource', 'Test.', '1.0.0', [
+            command,
+          ]).fake().execute(['install', 'local/demo', '--cwd', '/project/']);
+          expect(
+            result,
+            isA<MambaFailureResult>().having(
+              (value) => value.message,
+              'message',
+              contains('Noninteractive mutations require explicit --scope'),
+            ),
+          );
+        });
         test(
           'passes repeated native names and context to the lifecycle',
           () async {

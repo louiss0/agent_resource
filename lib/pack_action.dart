@@ -60,7 +60,11 @@ final class PackActionCommand extends Command {
     this._service, {
     bool canonical = false,
     this._fileSystem = const local.LocalFileSystem(),
-  }) : _canonical = canonical,
+    bool Function()? stdinIsTerminal,
+    bool Function()? stdoutIsTerminal,
+  }) : _stdinIsTerminal = stdinIsTerminal ?? (() => stdin.hasTerminal),
+       _stdoutIsTerminal = stdoutIsTerminal ?? (() => stdout.hasTerminal),
+       _canonical = canonical,
        super(
          mandatoryPositionals: [_PackContextOptions.pack],
          options: [
@@ -117,6 +121,8 @@ final class PackActionCommand extends Command {
        );
 
   final fslib.FileSystem _fileSystem;
+  final bool Function() _stdinIsTerminal;
+  final bool Function() _stdoutIsTerminal;
   final bool _canonical;
   final PackResourceType _resourceType;
   final PackOperation _operation;
@@ -293,7 +299,10 @@ final class PackActionCommand extends Command {
         dryRun: valueOf(_dryRun),
         yes: yes,
         interactive:
-            stdin.hasTerminal && !yes && format == LifecycleOutputFormat.text,
+            _stdinIsTerminal() &&
+            _stdoutIsTerminal() &&
+            !yes &&
+            format == LifecycleOutputFormat.text,
       ),
     );
     return switch (format) {
