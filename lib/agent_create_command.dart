@@ -167,7 +167,7 @@ final class AgentCreateCommand extends GuidedCreateCommand {
     final format = valueOf(GuidedCreateFields.format);
     final interactive = resolveInteractive(valueOf, format);
     validatePublicationScope(valueOf, interactive);
-    final options = buildOptions(valueOf);
+    final options = await resolveOptions(valueOf, interactive);
     final inputs = parseBoundRoleAuthoringInputs(
       roleKey: valueOf(_roleKey),
       configFile: valueOf(_configFile),

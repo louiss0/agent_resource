@@ -72,6 +72,95 @@ void main() {
           expect((result as MambaFailureResult).message, contains('--scope'));
           expect(fs.directory('/project/.claude').existsSync(), isFalse);
         });
+        test('offers user scope when the project root is unusable', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/project').createSync();
+          fs.directory('/home').createSync();
+          final questions = <String>[];
+          final result =
+              await createExecutor(
+                fileSystem: fs,
+                guided: GuidedAuthoringService(
+                  fileSystem: fs,
+                  terminal: () => true,
+                  ask: (question) async {
+                    questions.add(question);
+                    return 'user';
+                  },
+                ),
+              ).fake().execute([
+                'skill',
+                'create',
+                '--cwd',
+                '/project/',
+                '--project-root',
+                '/missing/',
+                '--home',
+                '/home/',
+                '--profile',
+                'claude',
+                '--name',
+                'demo',
+                '--description',
+                'Demo.',
+                '--body-text',
+                'Body.',
+                '--dry-run',
+              ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          expect(questions.single, contains('user'));
+          expect((result as MambaSuccessResult).output, contains('/home/'));
+          expect(fs.directory('/home/.claude').existsSync(), isFalse);
+        });
+        test(
+          'does not fall back without consent or override explicit scope',
+          () async {
+            for (final explicit in [false, true]) {
+              final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+              fs.directory('/project').createSync();
+              fs.directory('/home').createSync();
+              var questions = 0;
+              final result =
+                  await createExecutor(
+                    fileSystem: fs,
+                    guided: GuidedAuthoringService(
+                      fileSystem: fs,
+                      terminal: () => true,
+                      ask: (_) async {
+                        questions++;
+                        return null;
+                      },
+                    ),
+                  ).fake().execute([
+                    'skill',
+                    'create',
+                    '--cwd',
+                    '/project/',
+                    '--project-root',
+                    '/missing/',
+                    '--home',
+                    '/home/',
+                    '--profile',
+                    'claude',
+                    '--name',
+                    'demo',
+                    '--description',
+                    'Demo.',
+                    '--body-text',
+                    'Body.',
+                    '--dry-run',
+                    if (explicit) ...['--scope', 'project'],
+                  ]);
+              expect(result, isA<MambaFailureResult>());
+              expect(questions, explicit ? 0 : 1);
+              expect(fs.directory('/home/.claude').existsSync(), isFalse);
+            }
+          },
+        );
         test('re-prompts with the choices after an invalid profile', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           fs.directory('/project').createSync();

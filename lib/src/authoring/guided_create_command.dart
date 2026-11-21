@@ -126,8 +126,8 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     final format = valueOf(GuidedCreateFields.format);
     final interactive = resolveInteractive(valueOf, format);
     validatePublicationScope(valueOf, interactive);
-    final options = buildOptions(valueOf);
-    final inputs = await buildInputs(valueOf, interactive);
+    final options = await resolveOptions(valueOf, interactive);
+    final inputs = await buildInputs(valueOf, interactive, options.scope);
     final outcome = await guided.run(
       GuidedAuthoringRequest(
         command: commandPath,
@@ -203,13 +203,52 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     }
   }
 
+  /// Offers user scope only when discarding an unusable project root resolves
+  /// the context, and the operator did not explicitly select a scope.
+  Future<LifecycleOptions> resolveOptions(
+    ValueOf valueOf,
+    bool interactive,
+  ) async {
+    final options = buildOptions(valueOf);
+    if (!interactive ||
+        valueOf(GuidedCreateFields.scope) != null ||
+        options.projectRoot == null) {
+      return options;
+    }
+    try {
+      LifecycleContext.resolve(options, fileSystem: fileSystem);
+      return options;
+    } on MambaException catch (error, stack) {
+      final fallback = buildOptions(valueOf, fallbackToUser: true);
+      try {
+        LifecycleContext.resolve(fallback, fileSystem: fileSystem);
+      } on MambaException {
+        Error.throwWithStackTrace(error, stack);
+      }
+      final answer = await guided.valueQuestion?.call(
+        'Project context is unavailable. Use user scope instead? Type user to continue:',
+      );
+      if (answer?.trim() != 'user') {
+        throw MambaException('Scope selection cancelled.', exitCode: 7);
+      }
+      return fallback;
+    }
+  }
+
   /// The lifecycle context of the run.
-  LifecycleOptions buildOptions(ValueOf valueOf) => LifecycleOptions(
+  LifecycleOptions buildOptions(
+    ValueOf valueOf, {
+    bool fallbackToUser = false,
+  }) => LifecycleOptions(
     processWorkingDirectory: fileSystem.currentDirectory.path,
     environment: Map<String, String>.unmodifiable(Platform.environment),
-    scope: valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
+    scope: fallbackToUser
+        ? LifecycleScope.user
+        : valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
     cwd: valueOf(GuidedCreateFields.cwd),
-    projectRoot: valueOf(GuidedCreateFields.projectRoot),
+    projectRoot: fallbackToUser
+        ? null
+        : valueOf(GuidedCreateFields.projectRoot),
     home: valueOf(GuidedCreateFields.home),
     claudeConfigDir: valueOf(GuidedCreateFields.claudeConfigDir),
     codexHome: valueOf(GuidedCreateFields.codexHome),
@@ -221,7 +260,11 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
   );
 
   /// The named native inputs of the run.
-  Future<AuthoringInputs> buildInputs(ValueOf valueOf, bool interactive) async {
+  Future<AuthoringInputs> buildInputs(
+    ValueOf valueOf,
+    bool interactive,
+    LifecycleScope scope,
+  ) async {
     var profile =
         valueOf(GuidedCreateFields.profile) ??
         valueOf(GuidedCreateFields.harness);
@@ -265,7 +308,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       operation: operation,
       kind: kind,
       profile: profile,
-      scope: valueOf(GuidedCreateFields.scope) ?? LifecycleScope.project,
+      scope: scope,
       sourcePath: sourcePath(valueOf),
       bodyFile: valueOf(GuidedCreateFields.bodyFile),
       bodyStandardInput: valueOf(GuidedCreateFields.bodyStdin),
