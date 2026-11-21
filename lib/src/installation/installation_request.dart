@@ -5,6 +5,10 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
+import '../configuration/effective_configuration.dart';
+import '../harness/harness_catalog.dart';
+import '../pack/pack_configuration.dart' show PackConfigurationScope;
+import '../services/configuration_workflow_service.dart';
 import '../services/acquisition_service.dart';
 import '../services/lifecycle_state_service.dart';
 import 'installation_interaction.dart';
@@ -39,6 +43,21 @@ final class InstallationWorkflowRequest {
   final String? subpath;
   final bool scopeExplicit;
 
+  InstallationWorkflowRequest withTargets(List<InstallationTarget> value) =>
+      InstallationWorkflowRequest(
+        source: source,
+        options: options,
+        sourceKind: sourceKind,
+        resourceIds: resourceIds,
+        allResources: allResources,
+        targets: value,
+        method: method,
+        profile: profile,
+        ref: ref,
+        subpath: subpath,
+        scopeExplicit: scopeExplicit,
+      );
+
   InstallationWorkflowRequest withOptions(LifecycleOptions value) =>
       InstallationWorkflowRequest(
         source: source,
@@ -53,6 +72,90 @@ final class InstallationWorkflowRequest {
         subpath: subpath,
         scopeExplicit: scopeExplicit,
       );
+}
+
+Set<InstallationTarget> detectSkillInstallationTargets(
+  LifecycleContext context,
+  fslib.FileSystem fileSystem,
+) {
+  bool directory(String path) =>
+      fileSystem.typeSync(path, followLinks: false) ==
+      FileSystemEntityType.directory;
+  final antigravity = HarnessCatalog.instance.requireSkillInstallation(
+    HarnessId.of(InstallationTarget.antigravity),
+  );
+  return {
+    if (directory(context.claudeSkillsRoot())) InstallationTarget.claude,
+    if (directory(context.codexSkillsRoot()) ||
+        directory(context.sharedSkillsRoot()))
+      InstallationTarget.codex,
+    if (directory(
+      antigravity.root(
+        context,
+        userScope: context.scope == LifecycleScope.user,
+      ),
+    ))
+      InstallationTarget.antigravity,
+  };
+}
+
+Future<ConfigurationWorkflowResult> effectiveInstallationConfiguration(
+  InstallationWorkflowRequest request,
+  LifecycleContext context,
+  fslib.FileSystem fileSystem,
+) =>
+    ConfigurationWorkflowService(
+      fileSystem: fileSystem,
+      environment: request.options.environment,
+    ).execute(
+      ConfigurationWorkflowRequest(
+        operation: ConfigurationWorkflowOperation.effective,
+        scope: context.scope == LifecycleScope.project
+            ? PackConfigurationScope.project
+            : PackConfigurationScope.user,
+        cwd: context.cwd,
+        projectRoot: context.projectRoot,
+        home: context.home,
+        explicitTargets: [for (final target in request.targets) target.name],
+        explicitMethod: request.method?.wireName,
+      ),
+    );
+
+Future<void> offerInstallationPreferenceSave({
+  required InstallationWorkflowRequest request,
+  required LifecycleContext context,
+  required fslib.FileSystem fileSystem,
+  required InstallationInteraction interaction,
+  required List<String> preferences,
+}) async {
+  try {
+    if (!await interaction.offerPreferenceSave(
+      preferences,
+      scope: context.scope.name,
+    )) {
+      return;
+    }
+    await ConfigurationWorkflowService(
+      fileSystem: fileSystem,
+      environment: request.options.environment,
+    ).execute(
+      ConfigurationWorkflowRequest(
+        operation: ConfigurationWorkflowOperation.prefer,
+        scope: context.scope == LifecycleScope.project
+            ? PackConfigurationScope.project
+            : PackConfigurationScope.user,
+        cwd: context.cwd,
+        projectRoot: context.projectRoot,
+        home: context.home,
+        preferences: preferences,
+        apply: true,
+      ),
+    );
+  } on Exception catch (error) {
+    interaction.presentPlan(
+      'Installation succeeded, but preferences were not saved: $error',
+    );
+  }
 }
 
 /// Offers user scope only when removing the invalid project root resolves the

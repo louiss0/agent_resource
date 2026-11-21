@@ -145,6 +145,252 @@ track = { kind = "local" }
       );
     }
 
+    test('interactive Skill pack ignores shared preferred target like direct install', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["shared"]',
+        ),
+      );
+      final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
+        prompts: PackPrompts(choice: (_, _) async => 'codex'),
+      );
+      final result = await service.execute(
+        PackLifecycleRequest(
+          operation: PackOperation.install,
+          resourceType: PackResourceType.skill,
+          pack: 'local/demo',
+          processWorkingDirectory: project.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+          interactive: true,
+          dryRun: true,
+        ),
+      );
+      expect(result.plan!.resources.single.targets, ['codex']);
+      expect(
+        result.plan!.resources.single.targetOrigin,
+        'interactive-selection',
+      );
+    });
+
+    test(
+      'interactive Skill pack retains supported targets alongside shared',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst(
+            'targets = ["codex"]',
+            'targets = ["shared", "codex"]',
+          ),
+        );
+        final result = await PackLifecycleService(fileSystem: fs).execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(result.plan!.resources.single.targetOrigin, 'project-config');
+      },
+    );
+
+    test(
+      'interactive Skill pack ignores ineligible preferred targets',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst(
+            'targets = ["codex"]',
+            'targets = ["pi"]',
+          ),
+        );
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(choice: (_, _) async => 'codex'),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(
+          result.plan!.resources.single.targetOrigin,
+          'interactive-selection',
+        );
+      },
+    );
+
+    test(
+      'interactive Skill pack uses a single detected target default',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst('targets = ["codex"]\n', ''),
+        );
+        fs
+            .directory('${project.path}/.claude/skills')
+            .createSync(recursive: true);
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            choice: (_, _) async =>
+                throw StateError('unexpected target prompt'),
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['claude']);
+        expect(result.plan!.resources.single.targetOrigin, 'detection');
+      },
+    );
+
+    test(
+      'interactive Skill pack shares the canonical method default',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst('skill_method = "copy"\n', ''),
+        );
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            choice: (_, _) async =>
+                throw StateError('unexpected method prompt'),
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            target: 'codex',
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.method, 'canonical');
+        expect(result.plan!.resources.single.methodOrigin, 'built-in-default');
+      },
+    );
+
+    test(
+      'interactive Agent pack refuses an incompatible preferred target',
+      () async {
+        await expectLater(
+          PackLifecycleService(fileSystem: fs).execute(
+            PackLifecycleRequest(
+              operation: PackOperation.install,
+              resourceType: PackResourceType.agent,
+              pack: 'local/demo',
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+              interactive: true,
+              dryRun: true,
+            ),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (e) => e.message,
+              'message',
+              contains('No Agent resources match'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'successful interactive pack install offers to save eligible preferences',
+      () async {
+        final offers = <String>[];
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            confirmation: (label) async {
+              offers.add(label);
+              return true;
+            },
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            only: const ['reviewer'],
+            target: 'claude',
+            method: 'copy',
+            interactive: true,
+            planReview: (_) async => true,
+          ),
+        );
+        expect(result.outcome, 'completed');
+        expect(offers.where((offer) => offer.contains('Save')).length, 1);
+        expect(
+          fs.file('${project.path}/agent-resources.toml').readAsStringSync(),
+          contains('targets = ["claude"]'),
+        );
+      },
+    );
+
     test(
       'validates consumer configuration without reading the source',
       () async {
@@ -301,13 +547,22 @@ track = { kind = "local" }
     });
 
     test('mixed interactive approval publishes both types', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final confirmations = <String>[];
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: PackPrompts(
           confirmation: (label) async {
             confirmations.add(label);
-            return true;
+            return !label.startsWith('Save ');
           },
         ),
       );
@@ -324,7 +579,7 @@ track = { kind = "local" }
 
       expect(result.operation, 'pack.install');
       expect(result.resources, hasLength(2));
-      expect(confirmations, hasLength(1));
+      expect(confirmations, hasLength(2));
       expect(
         fs
             .file(
@@ -350,6 +605,15 @@ track = { kind = "local" }
     });
 
     test('mixed interactive cancellation publishes no type or state', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: const PackPrompts(),
@@ -390,6 +654,15 @@ track = { kind = "local" }
     });
 
     test('mixed interactive prompt failure releases every review', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: PackPrompts(
@@ -458,6 +731,15 @@ track = { kind = "local" }
         expect(replay.outcome, 'no-op');
         expect(replay.resources.single.disposition.wireName, 'unchanged');
         expect(replay.source['exactLockReplay'], isTrue);
+        expect(
+          replay.plan!.resources.single.targetOrigin,
+          'installation-record',
+        );
+        expect(
+          replay.plan!.resources.single.methodOrigin,
+          'installation-record',
+        );
+        expect(replay.plan!.context['scopeOrigin'], 'explicit-argument');
       },
     );
 

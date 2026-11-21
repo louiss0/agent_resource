@@ -6,6 +6,8 @@ import 'package:file/local.dart';
 import 'package:file/memory.dart';
 
 import 'package:agent_resource/agent_resource.dart';
+import 'package:agent_resource/pack_action.dart';
+import 'package:agent_resource/src/services/pack_lifecycle_service.dart';
 import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
@@ -1298,6 +1300,217 @@ path = "skills/review"
           );
         });
 
+        test('direct and pack previews disclose the same configured defaults and origins', () async {
+          final collection = fs.directory(fs.path.join(sandbox.path, 'source'))
+            ..createSync();
+          final source = fs.directory(
+            fs.path.join(collection.path, 'skills', 'review'),
+          )..createSync(recursive: true);
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
+              );
+          fs
+              .file(fs.path.join(collection.path, 'agent-resources.toml'))
+              .writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/review"
+''');
+          fs
+              .file(fs.path.join(project.path, 'agent-resources.toml'))
+              .writeAsStringSync('''
+schema_version = 1
+[cli.install]
+targets = ["codex"]
+skill_method = "copy"
+[packs."local/demo".source]
+kind = "local"
+path = "../source"
+[packs."local/demo".update]
+track = { kind = "local" }
+''');
+          final direct = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            ...context(),
+            '--dry-run',
+          ]);
+          final pack =
+              await Executor('agent_resource', 'Test.', '1.0.0', [
+                PackActionCommand(
+                  PackResourceType.skill,
+                  PackOperation.install,
+                  PackLifecycleService(fileSystem: fs),
+                  fileSystem: fs,
+                  stdinIsTerminal: () => true,
+                  stdoutIsTerminal: () => true,
+                ),
+              ]).fake().execute([
+                'install',
+                'local/demo',
+                '--scope',
+                'project',
+                '--cwd',
+                '${project.path}/',
+                '--project-root',
+                '${project.path}/',
+                '--home',
+                '${home.path}/',
+                '--dry-run',
+              ]);
+          expect(
+            direct,
+            isA<MambaSuccessResult>(),
+            reason: direct is MambaFailureResult ? direct.message : null,
+          );
+          expect(
+            pack,
+            isA<MambaSuccessResult>(),
+            reason: pack is MambaFailureResult ? pack.message : null,
+          );
+          for (final output in [
+            (direct as MambaSuccessResult).output!,
+            (pack as MambaSuccessResult).output!,
+          ]) {
+            expect(output, contains('codex'));
+            expect(output, contains('copy'));
+            expect(output, contains('project-config'));
+          }
+        });
+
+        test('unattended plan reports explicit origins in JSON', () async {
+          final source = skill('origins');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--source-kind',
+            'resource',
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            ...context(),
+            '--dry-run',
+            '--format',
+            'json',
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          final data =
+              (jsonDecode((result as MambaSuccessResult).output!)
+                      as Map)['data']
+                  as Map;
+          expect(data['resolution'], {
+            'scope': {'value': 'project', 'origin': 'explicit-argument'},
+            'targets': {
+              'value': ['codex'],
+              'origin': 'explicit-argument',
+            },
+            'method': {'value': 'copy', 'origin': 'explicit-argument'},
+          });
+        });
+
+        test(
+          'ignores unsupported preferred targets instead of crashing',
+          () async {
+            final source = skill('unsupported-pref');
+            fs.file('${project.path}/agent-resources.toml').writeAsStringSync(
+              '''
+schema_version = 1
+[cli.install]
+targets = ["shared"]
+skill_method = "copy"
+''',
+            );
+            interaction.targetSelections.add([InstallationTarget.codex]);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect((result as MambaSuccessResult).output, contains('[codex]'));
+          },
+        );
+
+        test(
+          'save prompt failure does not misreport a successful installation',
+          () async {
+            final source = skill('prompt-failure');
+            interaction.approvals.add(true);
+            interaction.preferencePromptFails = true;
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              interaction.presentedPlans.last,
+              contains(
+                'Installation succeeded, but preferences were not saved',
+              ),
+            );
+          },
+        );
+
+        test(
+          'offers eligible preference saving only after interactive success',
+          () async {
+            final source = skill('save-source');
+            interaction.approvals.add(true);
+            interaction.preferenceSaves.add(true);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(interaction.preferenceOffers, [
+              contains('cli.install.targets=codex'),
+            ]);
+            final config = fs.file(
+              fs.path.join(project.path, 'agent-resources.toml'),
+            );
+            expect(config.readAsStringSync(), contains('targets = ["codex"]'));
+            expect(
+              config.readAsStringSync(),
+              contains('skill_method = "copy"'),
+            );
+          },
+        );
+
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {
           final collection = fs.directory(
             fs.path.join(sandbox.path, 'collection'),
@@ -1344,6 +1557,7 @@ path = "skills/other"
             reason: result is MambaFailureResult ? result.message : null,
           );
           final output = (result as MambaSuccessResult).output!;
+          expect(interaction.preferenceOffers, isEmpty);
           expect(output, contains('skill install: planned'));
           expect(output, contains('Scope: user'));
           expect(output, contains('Method: canonical'));
@@ -1421,6 +1635,7 @@ path = "skills/other"
               contains('cancelled'),
             );
             expect(project.listSync(recursive: true), isEmpty);
+            expect(interaction.preferenceOffers, isEmpty);
           },
         );
 

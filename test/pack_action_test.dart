@@ -119,6 +119,7 @@ track = { kind = "local" }
           );
           expect(offered, 1);
           expect((result as MambaSuccessResult).output, contains('reviewer'));
+          expect(result.output, contains('scopeOrigin=interactive-selection'));
           final missingCwd =
               await Executor('agent_resource', 'Test.', '1.0.0', [
                 command,

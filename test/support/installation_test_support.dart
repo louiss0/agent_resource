@@ -16,6 +16,9 @@ final class ScriptedInstallationInteraction implements InstallationInteraction {
   final profiles = <NativeAgentProfile?>[];
   final approvals = <bool>[];
   final userScopeFallbacks = <bool>[];
+  final preferenceSaves = <bool>[];
+  final preferenceOffers = <List<String>>[];
+  bool preferencePromptFails = false;
 
   @override
   Future<bool> offerUserScope() async => userScopeFallbacks.removeAt(0);
@@ -67,6 +70,16 @@ final class ScriptedInstallationInteraction implements InstallationInteraction {
   @override
   void presentPlan(String completePlanPreview) {
     presentedPlans.add(completePlanPreview);
+  }
+
+  @override
+  Future<bool> offerPreferenceSave(
+    List<String> preferences, {
+    required String scope,
+  }) async {
+    preferenceOffers.add(preferences);
+    if (preferencePromptFails) throw Exception('prompt unavailable');
+    return preferenceSaves.isNotEmpty && preferenceSaves.removeAt(0);
   }
 
   @override

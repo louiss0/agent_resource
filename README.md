@@ -259,10 +259,15 @@ discovered from `XDG_CONFIG_HOME` reports that variable as its source.
 only the reviewed safe preferences to the selected `--scope project|user`
 configuration. The eligible keys are `cli.install.targets`,
 `cli.install.skill_method`, and `cli.retention.snapshot_days`. Remembered
-targets may be `claude`, `codex`, `shared`, or `pi`: Skill-backed pack
-installations support the first three, while MCP also supports `pi`. Agent
-installations derive their target from the Agent's native profile. A target
-accepted here is not necessarily supported by every resource type. Applies use
+targets may be `claude`, `codex`, `shared`, `antigravity`, or `pi`. A target
+accepted here is not necessarily supported by every resource type; Agent
+installations retain their native profile and cannot convert it. Interactive
+Skill and Agent installations and pack installations resolve applicable
+preferences and report the selected scope, targets, method, and origins in the
+plan. An interactive installation may offer to save its eligible choices after
+successful publication; declining does not affect the installation. Dry runs,
+failed or cancelled installs, and unattended direct installs do not save
+preferences. Unattended direct installs still require explicit choices. Applies use
 focused table edits that preserve comments, indentation, and unrelated TOML
 sections; ambiguous inline or dotted layouts are refused. Publication uses
 lifecycle coordination, a private same-filesystem staging directory, backup
