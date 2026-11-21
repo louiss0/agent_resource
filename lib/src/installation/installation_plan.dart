@@ -221,6 +221,7 @@ final class InstallationPlan {
     required List<InstallationUnitPlan> units,
     required this.planId,
     this.diagnostics = const <Map<String, Object?>>[],
+    this.resolution = const <String, Object?>{},
   }) : units = List<InstallationUnitPlan>.unmodifiable(units);
 
   factory InstallationPlan.create({
@@ -229,6 +230,7 @@ final class InstallationPlan {
     required String scope,
     required List<InstallationUnitPlan> units,
     List<Map<String, Object?>> diagnostics = const <Map<String, Object?>>[],
+    Map<String, Object?> resolution = const <String, Object?>{},
   }) {
     final planId = sha256
         .convert(
@@ -250,6 +252,7 @@ final class InstallationPlan {
       units: units,
       planId: 'plan_v2_$planId',
       diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
+      resolution: Map<String, Object?>.unmodifiable(resolution),
     );
   }
 
@@ -259,6 +262,7 @@ final class InstallationPlan {
   final List<InstallationUnitPlan> units;
   final String planId;
   final List<Map<String, Object?>> diagnostics;
+  final Map<String, Object?> resolution;
 
   Map<String, Object?> envelope(InstallationOutcome outcome) =>
       <String, Object?>{
@@ -269,6 +273,7 @@ final class InstallationPlan {
           'planId': planId,
           'source': source.toJson(),
           'scope': scope,
+          if (resolution.isNotEmpty) 'resolution': resolution,
           'units': [for (final unit in units) unit.toJson()],
           'summary': summary,
         },
@@ -298,6 +303,9 @@ final class InstallationPlan {
       ..writeln('Plan: $planId')
       ..writeln('Source: ${source.resolvedLocator}')
       ..writeln('Scope: $scope');
+    for (final entry in resolution.entries) {
+      buffer.writeln('  ${entry.key}: ${entry.value}');
+    }
     if (source.requestedRef != null) {
       buffer.writeln('Requested ref: ${source.requestedRef}');
     }

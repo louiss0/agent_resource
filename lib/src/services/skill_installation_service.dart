@@ -168,8 +168,13 @@ interface class SkillInstallationService {
         );
       }
       final configuredTargets =
-          (targetSetting?.value as List<Object?>?)?.cast<String>() ??
-          const <String>[];
+          ((targetSetting?.value as List<Object?>?)?.cast<String>() ??
+                  const <String>[])
+              .where(
+                (target) => HarnessCatalog.instance.skillInstallationTargets
+                    .any((id) => id.wireName == target),
+              )
+              .toList();
       final targets = request.targets.isEmpty && configuredTargets.isNotEmpty
           ? [
               for (final target in configuredTargets)
@@ -255,20 +260,32 @@ interface class SkillInstallationService {
           source: candidates.provenance,
           scope: context.scope.name,
           units: units,
+          resolution: {
+            'scope': {
+              'value': context.scope.name,
+              'origin': request.scopeExplicit
+                  ? 'explicit-argument'
+                  : context.scope == LifecycleScope.user
+                  ? 'interactive-selection'
+                  : 'built-in-default',
+            },
+            'targets': {
+              'value': [for (final target in targets) target.name],
+              'origin': request.targets.isNotEmpty
+                  ? 'explicit-argument'
+                  : configuredTargets.isNotEmpty
+                  ? targetSetting!.origin.wireName
+                  : 'interactive-selection',
+            },
+            'method': {
+              'value': method.wireName,
+              'origin': request.method != null
+                  ? 'explicit-argument'
+                  : methodSetting?.origin.wireName ?? 'built-in-default',
+            },
+          },
           diagnostics: [
             ...migrationDiagnostics,
-            if (targetSetting != null && configuredTargets.isNotEmpty)
-              {
-                'code': 'target-origin',
-                'message':
-                    'Targets: ${targets.map((target) => target.name).join(', ')} [${targetSetting.origin.wireName}]',
-              },
-            if (methodSetting != null)
-              {
-                'code': 'method-origin',
-                'message':
-                    'Method: ${method.wireName} [${methodSetting.origin.wireName}]',
-              },
             if (candidates.provenance.directFile)
               const <String, Object?>{
                 'code': 'single-file-boundary',
@@ -305,6 +322,18 @@ interface class SkillInstallationService {
           approved: request.options.approved,
         );
         if (result is InstallationCompletedResult) {
+          if (interactive && result.outcome == InstallationOutcome.installed) {
+            await offerInstallationPreferenceSave(
+              request: request,
+              context: context,
+              fileSystem: _fileSystem,
+              interaction: _interaction,
+              preferences: [
+                'cli.install.targets=${targets.map((target) => target.name).join(',')}',
+                'cli.install.skill_method=${method.wireName}',
+              ],
+            );
+          }
           return InstallationCompletedResult(
             result.plan,
             result.outcome,

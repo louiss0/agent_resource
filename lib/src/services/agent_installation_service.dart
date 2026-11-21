@@ -96,6 +96,7 @@ interface class AgentInstallationService {
       request.options,
       fileSystem: _fileSystem,
     );
+    final targetExplicit = request.targets.isNotEmpty;
     final effective = interactive
         ? await effectiveInstallationConfiguration(
             request,
@@ -107,8 +108,14 @@ interface class AgentInstallationService {
       (setting) => setting.key == EligiblePreference.installTargets.wireName,
     );
     final configuredTargets =
-        (targetSetting?.value as List<Object?>?)?.cast<String>() ??
-        const <String>[];
+        ((targetSetting?.value as List<Object?>?)?.cast<String>() ??
+                const <String>[])
+            .where(
+              (target) => InstallationTarget.values.any(
+                (value) => value.name == target,
+              ),
+            )
+            .toList();
     if (request.targets.isEmpty && configuredTargets.isNotEmpty) {
       request = request.withTargets([
         for (final target in configuredTargets)
@@ -151,6 +158,15 @@ interface class AgentInstallationService {
       if (candidates == null) {
         return const InstallationCancelledResult('agent install');
       }
+      if (targetExplicit &&
+          candidates.sourceKind == AcquisitionSourceKind.resource &&
+          (request.targets.length != 1 ||
+              request.targets.single !=
+                  _target(candidates.candidates.single.profile!))) {
+        throw MambaException(
+          'A direct agent file requires one --target consistent with --profile.',
+        );
+      }
       final units = <InstallationUnitPlan>[];
       final errors = <String>[];
       var worstStatus = 1;
@@ -171,25 +187,6 @@ interface class AgentInstallationService {
           exitCode: worstStatus,
         );
       }
-      final plan = InstallationPlan.create(
-        command: 'agent install',
-        source: candidates.provenance,
-        scope: context.scope.name,
-        units: units,
-        diagnostics: [
-          if (targetSetting != null && configuredTargets.isNotEmpty)
-            {
-              'code': 'target-origin',
-              'message':
-                  'Targets: ${configuredTargets.join(', ')} [${targetSetting.origin.wireName}]',
-            },
-          if (candidates.provenance.directFile)
-            const <String, Object?>{
-              'code': 'single-file-boundary',
-              'message': 'Only the selected native definition was acquired; siblings were not read.',
-            },
-        ],
-      );
       final targetNames = units
           .expand((unit) => unit.entries)
           .map((entry) => entry.target)
@@ -198,6 +195,41 @@ interface class AgentInstallationService {
       final targets = InstallationTarget.values
           .where((target) => targetNames.contains(target.name))
           .toList();
+      final plan = InstallationPlan.create(
+        command: 'agent install',
+        source: candidates.provenance,
+        scope: context.scope.name,
+        units: units,
+        resolution: {
+          'scope': {
+            'value': context.scope.name,
+            'origin': request.scopeExplicit
+                ? 'explicit-argument'
+                : context.scope == LifecycleScope.user
+                ? 'interactive-selection'
+                : 'built-in-default',
+          },
+          'targets': {
+            'value': [for (final target in targets) target.name],
+            'origin': targetExplicit
+                ? 'explicit-argument'
+                : configuredTargets.isNotEmpty &&
+                      targets.every(
+                        (target) => configuredTargets.contains(target.name),
+                      )
+                ? targetSetting!.origin.wireName
+                : 'native-profile',
+          },
+          'method': {'value': 'copy', 'origin': 'native-profile'},
+        },
+        diagnostics: [
+          if (candidates.provenance.directFile)
+            const <String, Object?>{
+              'code': 'single-file-boundary',
+              'message': 'Only the selected native definition was acquired; siblings were not read.',
+            },
+        ],
+      );
       final explicitCommand = interactive
           ? installationExplicitCommand(
               request: request,
@@ -232,6 +264,19 @@ interface class AgentInstallationService {
         approved: request.options.approved,
       );
       if (result is InstallationCompletedResult) {
+        if (interactive &&
+            result.outcome == InstallationOutcome.installed &&
+            targets.isNotEmpty) {
+          await offerInstallationPreferenceSave(
+            request: request,
+            context: context,
+            fileSystem: _fileSystem,
+            interaction: _interaction,
+            preferences: [
+              'cli.install.targets=${targets.map((target) => target.name).join(',')}',
+            ],
+          );
+        }
         return InstallationCompletedResult(
           result.plan,
           result.outcome,

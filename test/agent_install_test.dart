@@ -168,6 +168,63 @@ targets = ["claude"]
           },
         );
 
+        test(
+          'interactive exact Agent rejects an incompatible explicit target',
+          () async {
+            final source = agent();
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              source.path,
+              '--profile',
+              'claude',
+              '--target',
+              'codex',
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>().having(
+                (r) => r.message,
+                'message',
+                contains('consistent with --profile'),
+              ),
+            );
+          },
+        );
+
+        test(
+          'interactive Agent install can save only its target preference',
+          () async {
+            final source = agent();
+            interaction.approvals.add(true);
+            interaction.preferenceSaves.add(true);
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              source.path,
+              '--profile',
+              'claude',
+              ...context(),
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(interaction.preferenceOffers, [
+              ['cli.install.targets=claude'],
+            ]);
+            expect(
+              fs
+                  .file('${project.path}/agent-resources.toml')
+                  .readAsStringSync(),
+              contains('targets = ["claude"]'),
+            );
+          },
+        );
+
         test('interactive direct file asks profile but not a redundant target question', () async {
           final source = agent();
           interaction.sources.add(source.path);

@@ -49,6 +49,11 @@ abstract interface class InstallationInteraction {
   void presentPlan(String completePlanPreview);
 
   Future<InteractionAnswer<bool>> approve(String completePlanPreview);
+
+  Future<bool> offerPreferenceSave(
+    List<String> preferences, {
+    required String scope,
+  });
 }
 
 final class InteractInstallationInteraction implements InstallationInteraction {
@@ -142,6 +147,14 @@ final class InteractInstallationInteraction implements InstallationInteraction {
           await const InstallationApprovalComponent().render(),
         );
       });
+
+  @override
+  Future<bool> offerPreferenceSave(
+    List<String> preferences, {
+    required String scope,
+  }) => InstallationApprovalComponent(
+    label: 'Save $scope installation preferences (${preferences.join(', ')})?',
+  ).render();
 
   Future<InteractionAnswer<T>> _guard<T>(
     Future<InteractionAnswer<T>> Function() body,

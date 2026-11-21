@@ -114,7 +114,9 @@ final class const PackResourcePlan({
   required final String name,
   required final String action,
   final String? method,
+  final String? methodOrigin,
   final List<String> targets = const <String>[],
+  final String? targetOrigin,
   final String? previousSnapshot,
   final String? snapshot,
   final String? localEdit,
@@ -127,7 +129,9 @@ final class const PackResourcePlan({
     'name': name,
     'action': action,
     if (method != null) 'method': method,
+    if (methodOrigin != null) 'methodOrigin': methodOrigin,
     'targets': targets,
+    if (targetOrigin != null) 'targetOrigin': targetOrigin,
     if (previousSnapshot != null) 'previousSnapshot': previousSnapshot,
     if (snapshot != null) 'snapshot': snapshot,
     if (localEdit != null) 'localEdit': localEdit,
@@ -142,6 +146,8 @@ final class const PackResourcePlan({
           '${method == null ? '' : ' method=$method'}'
           '${targets.isEmpty ? '' : ' targets=${targets.join(',')}'}',
     ];
+    if (methodOrigin != null) lines.add('  method origin: $methodOrigin');
+    if (targetOrigin != null) lines.add('  target origin: $targetOrigin');
     if (previousSnapshot != null || snapshot != null) {
       lines.add(
         '  snapshot: ${previousSnapshot ?? '-'} -> ${snapshot ?? 'pending'}',
@@ -297,6 +303,11 @@ final class const PackOperationResult({
     final lines = <String>['$operation: $outcome'];
     if (plan != null) {
       lines.add(plan!.renderText());
+      for (final warning in warnings) {
+        if (!plan!.warnings.any((existing) => existing.id == warning.id)) {
+          lines.add('warning[${warning.id}]: ${warning.message}');
+        }
+      }
       if (resources.isNotEmpty) lines.add('outcomes:');
       for (final resource in resources) {
         final snapshot = resource.snapshot == null

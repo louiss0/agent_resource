@@ -1381,6 +1381,106 @@ track = { kind = "local" }
           }
         });
 
+        test('unattended plan reports explicit origins in JSON', () async {
+          final source = skill('origins');
+          final result = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--source-kind',
+            'resource',
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            ...context(),
+            '--dry-run',
+            '--format',
+            'json',
+          ]);
+          expect(
+            result,
+            isA<MambaSuccessResult>(),
+            reason: result is MambaFailureResult ? result.message : null,
+          );
+          final data =
+              (jsonDecode((result as MambaSuccessResult).output!)
+                      as Map)['data']
+                  as Map;
+          expect(data['resolution'], {
+            'scope': {'value': 'project', 'origin': 'explicit-argument'},
+            'targets': {
+              'value': ['codex'],
+              'origin': 'explicit-argument',
+            },
+            'method': {'value': 'copy', 'origin': 'explicit-argument'},
+          });
+        });
+
+        test(
+          'ignores unsupported preferred targets instead of crashing',
+          () async {
+            final source = skill('unsupported-pref');
+            fs.file('${project.path}/agent-resources.toml').writeAsStringSync(
+              '''
+schema_version = 1
+[cli.install]
+targets = ["shared"]
+skill_method = "copy"
+''',
+            );
+            interaction.targetSelections.add([InstallationTarget.codex]);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect((result as MambaSuccessResult).output, contains('[codex]'));
+          },
+        );
+
+        test(
+          'offers eligible preference saving only after interactive success',
+          () async {
+            final source = skill('save-source');
+            interaction.approvals.add(true);
+            interaction.preferenceSaves.add(true);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              ...context(),
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(interaction.preferenceOffers, [
+              contains('cli.install.targets=codex'),
+            ]);
+            final config = fs.file(
+              fs.path.join(project.path, 'agent-resources.toml'),
+            );
+            expect(config.readAsStringSync(), contains('targets = ["codex"]'));
+            expect(
+              config.readAsStringSync(),
+              contains('skill_method = "copy"'),
+            );
+          },
+        );
+
         test('interactive collection dry-run uses typed prompts and disclosed defaults', () async {
           final collection = fs.directory(
             fs.path.join(sandbox.path, 'collection'),
@@ -1427,6 +1527,7 @@ path = "skills/other"
             reason: result is MambaFailureResult ? result.message : null,
           );
           final output = (result as MambaSuccessResult).output!;
+          expect(interaction.preferenceOffers, isEmpty);
           expect(output, contains('skill install: planned'));
           expect(output, contains('Scope: user'));
           expect(output, contains('Method: canonical'));
@@ -1504,6 +1605,7 @@ path = "skills/other"
               contains('cancelled'),
             );
             expect(project.listSync(recursive: true), isEmpty);
+            expect(interaction.preferenceOffers, isEmpty);
           },
         );
 

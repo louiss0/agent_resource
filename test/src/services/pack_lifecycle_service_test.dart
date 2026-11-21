@@ -146,6 +146,74 @@ track = { kind = "local" }
     }
 
     test(
+      'interactive Agent pack refuses an incompatible preferred target',
+      () async {
+        await expectLater(
+          PackLifecycleService(fileSystem: fs).execute(
+            PackLifecycleRequest(
+              operation: PackOperation.install,
+              resourceType: PackResourceType.agent,
+              pack: 'local/demo',
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+              interactive: true,
+              dryRun: true,
+            ),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (e) => e.message,
+              'message',
+              contains('No Agent resources match'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'successful interactive pack install offers to save eligible preferences',
+      () async {
+        final offers = <String>[];
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            confirmation: (label) async {
+              offers.add(label);
+              return true;
+            },
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            only: const ['reviewer'],
+            target: 'claude',
+            method: 'copy',
+            interactive: true,
+            planReview: (_) async => true,
+          ),
+        );
+        expect(result.outcome, 'completed');
+        expect(offers.where((offer) => offer.contains('Save')).length, 1);
+        expect(
+          fs.file('${project.path}/agent-resources.toml').readAsStringSync(),
+          contains('targets = ["claude"]'),
+        );
+      },
+    );
+
+    test(
       'validates consumer configuration without reading the source',
       () async {
         final result = await PackLifecycleService(fileSystem: fs).execute(
@@ -301,13 +369,22 @@ track = { kind = "local" }
     });
 
     test('mixed interactive approval publishes both types', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final confirmations = <String>[];
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: PackPrompts(
           confirmation: (label) async {
             confirmations.add(label);
-            return true;
+            return !label.startsWith('Save ');
           },
         ),
       );
@@ -324,7 +401,7 @@ track = { kind = "local" }
 
       expect(result.operation, 'pack.install');
       expect(result.resources, hasLength(2));
-      expect(confirmations, hasLength(1));
+      expect(confirmations, hasLength(2));
       expect(
         fs
             .file(
@@ -350,6 +427,15 @@ track = { kind = "local" }
     });
 
     test('mixed interactive cancellation publishes no type or state', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: const PackPrompts(),
@@ -390,6 +476,15 @@ track = { kind = "local" }
     });
 
     test('mixed interactive prompt failure releases every review', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: PackPrompts(

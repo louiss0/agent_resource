@@ -95,6 +95,43 @@ Future<ConfigurationWorkflowResult> effectiveInstallationConfiguration(
       ),
     );
 
+Future<void> offerInstallationPreferenceSave({
+  required InstallationWorkflowRequest request,
+  required LifecycleContext context,
+  required fslib.FileSystem fileSystem,
+  required InstallationInteraction interaction,
+  required List<String> preferences,
+}) async {
+  if (!await interaction.offerPreferenceSave(
+    preferences,
+    scope: context.scope.name,
+  )) {
+    return;
+  }
+  try {
+    await ConfigurationWorkflowService(
+      fileSystem: fileSystem,
+      environment: request.options.environment,
+    ).execute(
+      ConfigurationWorkflowRequest(
+        operation: ConfigurationWorkflowOperation.prefer,
+        scope: context.scope == LifecycleScope.project
+            ? PackConfigurationScope.project
+            : PackConfigurationScope.user,
+        cwd: context.cwd,
+        projectRoot: context.projectRoot,
+        home: context.home,
+        preferences: preferences,
+        apply: true,
+      ),
+    );
+  } on Exception catch (error) {
+    interaction.presentPlan(
+      'Installation succeeded, but preferences were not saved: $error',
+    );
+  }
+}
+
 /// Offers user scope only when removing the invalid project root resolves the
 /// context and the operator has not explicitly selected a scope.
 Future<InstallationWorkflowRequest> resolveInstallationScope(
