@@ -1176,6 +1176,25 @@ interface class SkillLifecycleService implements LifecycleResource {
             exitCode: 4,
           );
         }
+        final entry = exposure.baseline.entries.single;
+        final parent = state.io.fs.path.dirname(exposure.path);
+        if (entry.target == null ||
+            entry.originalParent == null ||
+            !state.io.fs.path.equals(entry.originalParent!, parent) ||
+            entry.nativeKind != exposure.nativeKind ||
+            !state.io.fs.path.equals(
+              state.io.fs.path.normalize(
+                state.io.fs.path.isAbsolute(entry.target!)
+                    ? entry.target!
+                    : state.io.fs.path.join(parent, entry.target!),
+              ),
+              record.location,
+            )) {
+          throw MambaException(
+            'Stored canonical exposure does not match current native authority.',
+            exitCode: 4,
+          );
+        }
         paths.add(exposure.path);
       }
     }

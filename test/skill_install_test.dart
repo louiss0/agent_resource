@@ -1922,6 +1922,109 @@ path = "skills/other"
           );
         });
 
+        test('canonical inventory rejects invalid sibling authority', () async {
+          useLocalFileSystem();
+          final source = skill('sibling-authority');
+          fs
+              .file(fs.path.join(source.path, 'SKILL.md'))
+              .writeAsStringSync(
+                '---\nname: review\ndescription: Reviews.\ndisable-model-invocation: true\n---\nBody.\n',
+              );
+          final roots = context(scope: 'user');
+          final installed = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            '--source-kind',
+            'resource',
+            '--target',
+            'claude',
+            '--target',
+            'codex',
+            '--method',
+            'canonical',
+            ...roots,
+            '--yes',
+          ]);
+          expect(
+            installed,
+            isA<MambaSuccessResult>(),
+            reason: installed is MambaFailureResult ? installed.message : null,
+          );
+          Future<dynamic> inventory() => executor().fake().execute([
+            'prompt',
+            'list',
+            ...roots,
+            '--format',
+            'json',
+          ]);
+          final valid = await inventory();
+          expect(
+            valid,
+            isA<MambaSuccessResult>(),
+            reason: valid is MambaFailureResult ? valid.message : null,
+          );
+          final ledger = fs.file(
+            fs.path.join(sandbox.path, 'state', 'installations.json'),
+          );
+          final document =
+              jsonDecode(ledger.readAsStringSync()) as Map<String, dynamic>;
+          final record = (document['installations'] as List).single as Map;
+          final siblings = record['exposures'] as List;
+          final sibling = jsonDecode(jsonEncode(siblings.single)) as Map;
+          sibling['target'] = 'antigravity';
+          sibling['path'] = fs.path.join(
+            home.path,
+            '.gemini',
+            'config',
+            'skills',
+            'review',
+          );
+          final baseline = (sibling['baseline'] as List).single as Map;
+          siblings.add(sibling);
+          baseline['originalParent'] = fs.path.dirname(
+            sibling['path'] as String,
+          );
+          final validSibling = jsonEncode(document);
+          ledger.writeAsStringSync(validSibling);
+          final withSibling = await inventory();
+          expect(
+            withSibling,
+            isA<MambaSuccessResult>(),
+            reason: withSibling is MambaFailureResult
+                ? withSibling.message
+                : null,
+          );
+          for (final field in ['originalParent', 'target', 'nativeKind']) {
+            final altered = jsonDecode(validSibling) as Map<String, dynamic>;
+            final alteredRecord =
+                (altered['installations'] as List).single as Map;
+            final alteredSibling =
+                (alteredRecord['exposures'] as List).last as Map;
+            final alteredBaseline =
+                (alteredSibling['baseline'] as List).single as Map;
+            alteredBaseline[field] = switch (field) {
+              'originalParent' => project.path,
+              'target' => source.path,
+              _ =>
+                alteredSibling['nativeKind'] == 'symlink'
+                    ? 'junction'
+                    : 'symlink',
+            };
+            ledger.writeAsStringSync(jsonEncode(altered));
+            final rejected = await inventory();
+            expect(
+              rejected,
+              isA<MambaFailureResult>().having(
+                (r) => r.exitCode,
+                'exit code',
+                4,
+              ),
+              reason: field,
+            );
+          }
+        });
+
         test('general batch preflight conflicts use status one', () async {
           final collection = fs.directory(
             fs.path.join(sandbox.path, 'conflicts'),
