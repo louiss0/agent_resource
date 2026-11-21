@@ -4,6 +4,7 @@ import 'dart:io' show FileSystemEntityType, FileSystemException;
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:file/file.dart' as fslib;
 import 'package:mamba/mamba.dart' show MambaException;
+import 'package:path/path.dart' as p;
 
 import 'lifecycle_state_service.dart'
     show
@@ -147,7 +148,7 @@ interface class ConfigurationPublicationService {
               exitCode: 6,
             );
           }
-          if (decoded['target'] != target) {
+          if (!_samePath(decoded['target'], target)) {
             if (root == localRoot) {
               throw MambaException(
                 'Configuration evidence target is invalid: ${entry.path}.',
@@ -204,7 +205,7 @@ interface class ConfigurationPublicationService {
         final evidencePath = transactions.single['evidencePath']! as String;
         final decoded = _readTransaction(evidencePath);
         if (decoded['transactionId'] != transactionId ||
-            decoded['target'] != target ||
+            !_samePath(decoded['target'], target) ||
             decoded['operation'] != 'config-prefer-apply' ||
             decoded['schemaVersion'] != 1 ||
             decoded['expectedDigest'] is! String ||
@@ -234,7 +235,7 @@ interface class ConfigurationPublicationService {
             _io.fs.path.dirname(target),
             '.agent-resource-prefer-$transactionId.quarantine',
           );
-          if (decoded['quarantinePath'] != quarantine ||
+          if (!_samePath(decoded['quarantinePath'], quarantine) ||
               candidate is! String ||
               !RegExp(r'^[0-9a-f]{64}$').hasMatch(candidate) ||
               _io.type(target, followLinks: false) !=
@@ -253,7 +254,7 @@ interface class ConfigurationPublicationService {
               'configuration-backups',
               '$transactionId.bak',
             );
-            if (backup != expectedBackup ||
+            if (!_samePath(backup, expectedBackup) ||
                 _io.type(expectedBackup, followLinks: false) !=
                     FileSystemEntityType.file ||
                 _digest(_readBounded(expectedBackup)) != expected) {
@@ -312,7 +313,7 @@ interface class ConfigurationPublicationService {
           '.agent-resource-prefer-$transactionId.quarantine',
         );
         final failedNew = '$quarantine.failed-new';
-        if (decoded['quarantinePath'] != quarantine) {
+        if (!_samePath(decoded['quarantinePath'], quarantine)) {
           throw MambaException(
             'Configuration quarantine authority is invalid.',
             exitCode: 6,
@@ -665,7 +666,9 @@ interface class ConfigurationPublicationService {
   String _targetEvidenceRoot(String target) => _io.fs.path.join(
     _io.fs.path.dirname(target),
     '.agent-resource-configuration',
-    _digest(target),
+    _digest(
+      _io.fs.path.style == p.Style.windows ? target.toLowerCase() : target,
+    ),
   );
 
   /// Refuses overlapping lifecycle writes while target-local evidence remains.
@@ -919,7 +922,7 @@ interface class ConfigurationPublicationService {
       path.dirname(target),
       '.agent-resource-prefer-$id.stage',
     );
-    if (recorded != expected) {
+    if (!_samePath(recorded, expected)) {
       throw MambaException(
         'Configuration staging authority is invalid.',
         exitCode: 6,
@@ -940,7 +943,7 @@ interface class ConfigurationPublicationService {
     if (entries.isNotEmpty) {
       final file = entries.single.path;
       final digest = transaction['candidateDigest'];
-      if (file != path.join(expected, 'config.toml') ||
+      if (!path.equals(file, path.join(expected, 'config.toml')) ||
           _io.type(file, followLinks: false) != FileSystemEntityType.file ||
           digest is! String ||
           _digest(_readBounded(file)) != digest) {
@@ -975,6 +978,9 @@ interface class ConfigurationPublicationService {
       throw MambaException('Configuration document is not UTF-8.', exitCode: 2);
     }
   }
+
+  bool _samePath(Object? value, String expected) =>
+      value is String && _io.fs.path.equals(value, expected);
 
   String _digest(String source) =>
       sha256.convert(utf8.encode(source)).toString();

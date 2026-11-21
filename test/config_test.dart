@@ -1784,6 +1784,61 @@ void main() {
           );
         });
 
+        test(
+          'blocks alternate Windows casing of a reserved configuration target',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.windows);
+            fs.directory(r'C:\projectA').createSync(recursive: true);
+            fs.directory(r'C:\projectB').createSync(recursive: true);
+            fs.directory(r'C:\user').createSync(recursive: true);
+            const target = r'C:\user\config.toml';
+            fs.file(target).writeAsStringSync('schema_version = 1\n');
+            final workflow = ConfigurationWorkflowService(
+              fileSystem: fs,
+              environment: const {'HOME': r'C:\user'},
+              publication: ConfigurationPublicationService(
+                fileSystem: fs,
+                io: _InterruptTargetIO(fs: fs, target: target),
+              ),
+            );
+            final executor = Executor('agent_resource', 'test', '1.0.0', [
+              ConfigCommand(workflow: workflow, fileSystem: fs),
+            ]);
+            List<String> args(String project, String user) => [
+              'config',
+              'prefer',
+              '--scope',
+              'user',
+              '--user-config',
+              user,
+              '--project-config',
+              r'C:\projectA\config.toml',
+              '--cwd',
+              '$project\\',
+              '--project-root',
+              '$project\\',
+              '--set',
+              'cli.retention.snapshot_days=14',
+              '--apply',
+            ];
+            await expectLater(
+              executor.fake().execute(args(r'C:\projectA', target)),
+              throwsA(isA<StateError>()),
+            );
+            final result = await executor.fake().execute(
+              args(r'C:\projectB', r'C:\user\CONFIG.toml'),
+            );
+            expect(
+              result,
+              isA<MambaFailureResult>().having(
+                (r) => r.message,
+                'message',
+                contains('recovery'),
+              ),
+            );
+          },
+        );
+
         test('can retry after a pre-publication rename failure', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
           _writeConfig(fs, '/user/config.toml', 'schema_version = 1\n');
