@@ -1062,9 +1062,23 @@ interface class SkillLifecycleService implements LifecycleResource {
             installationRoute: newRoute,
           );
           if (!context.dryRun) {
+            final routeJson = jsonEncode(route.toJson());
+            final oldGroup =
+                [
+                  for (final other in state.records(context))
+                    if (other.lifecycle == 'live' &&
+                        other.name == record.name &&
+                        other.installationRoute != null &&
+                        jsonEncode(other.installationRoute!.toJson()) ==
+                            routeJson)
+                      other,
+                ]..sort(
+                  (left, right) =>
+                      left.installationId.compareTo(right.installationId),
+                );
             await RouteMigrationService(
               state: state,
-            ).migrate(context, expectedOldRecords: [record], desired: desired);
+            ).migrate(context, expectedOldRecords: oldGroup, desired: desired);
           }
           return LifecycleResult(
             command: 'skill migrate',

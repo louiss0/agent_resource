@@ -226,10 +226,14 @@ final class RouteMigrationService {
         kinds[entry.path] = kind;
         newRoots[entry.path] = nativeRoot;
       }
+      final sortedOldRecords = [...expectedOldRecords]
+        ..sort(
+          (left, right) => left.installationId.compareTo(right.installationId),
+        );
       final reusedIds = <String>{};
       String idFor(InstallationEntryPlan entry) {
         InstallationRecord? fallback;
-        for (final record in expectedOldRecords) {
+        for (final record in sortedOldRecords) {
           if (reusedIds.contains(record.installationId)) continue;
           fallback ??= record;
           final consumers = {

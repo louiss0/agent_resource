@@ -348,6 +348,105 @@ description: Writes docs.
       );
     });
 
+    test('migrates a multi-target Pack Skill group across roots', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          useDefaultTarget: false,
+        ),
+      );
+      final context = LifecycleContext.resolve(
+        LifecycleOptions(
+          processWorkingDirectory: project.path,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        ),
+        fileSystem: fs,
+      );
+      final state = LifecycleStateService(io: LifecycleIO(fs: fs));
+      final initial =
+          state
+              .records(context)
+              .where((record) => record.name == 'reviewer')
+              .toList()
+            ..sort(
+              (left, right) =>
+                  left.installationId.compareTo(right.installationId),
+            );
+      expect(
+        initial,
+        hasLength(2),
+        reason: 'a multi-target pack install must record one ledger record per target',
+      );
+      final oldIds = [for (final record in initial) record.installationId];
+
+      final preview = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          useDefaultTarget: false,
+          dryRun: true,
+        ),
+      );
+      expect(preview.dryRun, isTrue);
+      final applied = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          useDefaultTarget: false,
+          reviewedPlan: preview.plan!.planId,
+        ),
+      );
+      expect(applied.outcome, 'completed');
+      final migrated = state
+          .records(context)
+          .where((record) => record.name == 'reviewer')
+          .toList();
+      expect(migrated, hasLength(1));
+      expect(migrated.single.kind, ArtifactKind.skillCopy);
+      expect(migrated.single.installationId, isIn(oldIds));
+      expect(
+        migrated.single.installationRoute?.method,
+        InstallationMethod.copy,
+      );
+      expect(
+        migrated.single.location,
+        fs.path.join(project.path, '.claude', 'skills', 'reviewer'),
+      );
+      expect(
+        fs
+            .file(fs.path.join(migrated.single.location, 'SKILL.md'))
+            .existsSync(),
+        isTrue,
+      );
+      // Both old artifacts were retired by the single group transaction.
+      expect(
+        fs.typeSync(
+          fs.path.join(project.path, '.agents', 'skills', 'reviewer'),
+          followLinks: false,
+        ),
+        FileSystemEntityType.notFound,
+      );
+    });
+
     test('refuses a Pack Skill migration that changes nothing', () async {
       final service = PackLifecycleService(fileSystem: fs);
       await service.execute(

@@ -430,6 +430,160 @@ void main() {
         });
 
         test(
+          'migrates a multi-target copy group to canonical and back by id',
+          () async {
+            useLocalFileSystem();
+            final source = skill('migration-group');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final options = LifecycleOptions(
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+              stateDir: fs.path.join(sandbox.path, 'state'),
+            );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+            final initial = lifecycle.state.records(resolved);
+            expect(
+              initial.where((record) => record.name == 'review'),
+              hasLength(2),
+              reason: 'a multi-target copy install must record one ledger record per target',
+            );
+            final oldId =
+                initial
+                    .where((record) => record.name == 'review')
+                    .map((record) => record.installationId)
+                    .toList()
+                  ..sort();
+            final migratedId = oldId.first;
+
+            final args = [
+              'skill',
+              'migrate',
+              migratedId,
+              ...context(),
+              '--method',
+              'canonical',
+              '--format',
+              'json',
+            ];
+            final preview = await executor().fake().execute([
+              ...args,
+              '--dry-run',
+            ]);
+            expect(preview, isA<MambaSuccessResult>());
+            final planId =
+                ((jsonDecode((preview as MambaSuccessResult).output!)
+                            as Map)['data']
+                        as Map)['planId']
+                    as String;
+            final migrated = await executor().fake().execute([
+              ...args,
+              '--yes',
+              '--reviewed-plan',
+              planId,
+            ]);
+            expect(migrated, isA<MambaSuccessResult>());
+            final canonical = lifecycle.state
+                .records(resolved)
+                .where((record) => record.name == 'review')
+                .toList();
+            expect(canonical, hasLength(1));
+            expect(canonical.single.kind, ArtifactKind.skillCanonical);
+            expect(canonical.single.installationId, migratedId);
+            expect([...canonical.single.knownConsumers]..sort(), [
+              'claude',
+              'codex',
+            ]);
+            expect(
+              fs
+                  .file(
+                    fs.path.join(
+                      project.path,
+                      '.agents',
+                      'skills',
+                      'review',
+                      'SKILL.md',
+                    ),
+                  )
+                  .existsSync(),
+              isTrue,
+            );
+            // The shared route group was retired as one transaction; the
+            // surviving id keeps `skill update` resolving the installation.
+            final update = await executor().fake().execute([
+              'skill',
+              'update',
+              migratedId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(update, isA<MambaSuccessResult>());
+
+            final reverseArgs = [
+              'skill',
+              'migrate',
+              migratedId,
+              ...context(),
+              '--method',
+              'copy',
+              '--format',
+              'json',
+            ];
+            final reversePreview = await executor().fake().execute([
+              ...reverseArgs,
+              '--dry-run',
+            ]);
+            expect(reversePreview, isA<MambaSuccessResult>());
+            final reverseId =
+                ((jsonDecode((reversePreview as MambaSuccessResult).output!)
+                            as Map)['data']
+                        as Map)['planId']
+                    as String;
+            final reverse = await executor().fake().execute([
+              ...reverseArgs,
+              '--yes',
+              '--reviewed-plan',
+              reverseId,
+            ]);
+            expect(reverse, isA<MambaSuccessResult>());
+            final restored = lifecycle.state
+                .records(resolved)
+                .where((record) => record.name == 'review')
+                .toList();
+            expect(restored, hasLength(2));
+            expect(restored.map((record) => record.kind).toSet(), {
+              ArtifactKind.skillCopy,
+            });
+            expect(
+              restored.any((record) => record.installationId == migratedId),
+              isTrue,
+            );
+            expect(
+              lifecycle.state.recordById(resolved, migratedId).installationId,
+              migratedId,
+            );
+          },
+        );
+
+        test(
           'previews and confirms a direct copy to source-link migration',
           () async {
             useLocalFileSystem();
