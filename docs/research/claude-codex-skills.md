@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Claude Code and Codex skill integration: primary-source findings
 
 Research for [Verify Claude Code and Codex skill integration](https://github.com/louiss0/agent_resource/issues/3).

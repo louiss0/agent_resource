@@ -10,14 +10,22 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
+import '../conversion/route_journal_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
+import '../conversion/installation_path_diff.dart';
+import '../conversion/route_recovery_paths.dart';
 import '../harness/harness_user_roots.dart';
 import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
+import '../installation/installation_route.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
+import 'configuration_publication_service.dart';
+import 'route_recovery_service.dart';
+import 'skill_lifecycle_service.dart';
 
 part 'lifecycle_canonical.dart';
+part 'route_migration_service.dart';
 
 const managementSchemaVersion = 1;
 
@@ -179,15 +187,19 @@ final class LifecycleOptions {
 
   LifecycleOptions copyWith({
     LifecycleScope? scope,
+    String? processWorkingDirectory,
+    String? cwd,
+    bool clearProjectRoot = false,
     String? geminiDir,
     bool? dryRun,
     bool? approved,
   }) => LifecycleOptions(
-    processWorkingDirectory: processWorkingDirectory,
+    processWorkingDirectory:
+        processWorkingDirectory ?? this.processWorkingDirectory,
     environment: environment,
     scope: scope ?? this.scope,
-    cwd: cwd,
-    projectRoot: projectRoot,
+    cwd: cwd ?? this.cwd,
+    projectRoot: clearProjectRoot ? null : projectRoot,
     home: home,
     claudeConfigDir: claudeConfigDir,
     codexHome: codexHome,
@@ -198,6 +210,76 @@ final class LifecycleOptions {
     dryRun: dryRun ?? this.dryRun,
     approved: approved ?? this.approved,
   );
+}
+
+/// Offers a user-scope context when an implicit project context is invalid.
+Future<LifecycleOptions> resolveInteractiveUserScope({
+  required LifecycleOptions options,
+  required fslib.FileSystem fileSystem,
+  required bool interactive,
+  required bool scopeExplicit,
+  required Future<bool> Function() offerUserScope,
+}) async {
+  if (!interactive || scopeExplicit) {
+    return options;
+  }
+  try {
+    LifecycleContext.resolve(options, fileSystem: fileSystem);
+    return options;
+  } on MambaException catch (error) {
+    var fallback = options.copyWith(
+      scope: LifecycleScope.user,
+      clearProjectRoot: true,
+    );
+    try {
+      LifecycleContext.resolve(fallback, fileSystem: fileSystem).requireHome();
+    } on MambaException {
+      final home =
+          options.home ??
+          options.environment['HOME'] ??
+          options.environment['USERPROFILE'];
+      final otherPaths = [
+        options.claudeConfigDir,
+        options.codexHome,
+        options.piAgentDir,
+        options.geminiDir,
+        options.stateDir,
+        ...options.readRoots,
+      ].whereType<String>();
+      if (home == null ||
+          !fileSystem.path.isAbsolute(home) ||
+          fileSystem.typeSync(home) != FileSystemEntityType.directory ||
+          otherPaths.any((path) => !fileSystem.path.isAbsolute(path))) {
+        throw MambaException(
+          'Cannot resolve project or user context. Supply an existing absolute --home '
+          'and absolute user paths, or a valid --cwd and --project-root. ${error.message}',
+          exitCode: 4,
+        );
+      }
+      fallback = options.copyWith(
+        scope: LifecycleScope.user,
+        clearProjectRoot: true,
+        processWorkingDirectory: home,
+        cwd: home,
+      );
+      try {
+        LifecycleContext.resolve(
+          fallback,
+          fileSystem: fileSystem,
+        ).requireHome();
+      } on MambaException {
+        throw MambaException(
+          'Cannot resolve project or user context. Supply an existing absolute --home '
+          'and valid absolute user paths. ${error.message}',
+          exitCode: 4,
+        );
+      }
+    }
+    if (!await offerUserScope()) {
+      throw MambaException('Scope selection cancelled.', exitCode: 7);
+    }
+    return fallback;
+  }
 }
 
 final class LifecycleContext implements HarnessUserRoots {
@@ -661,6 +743,48 @@ final class ArtifactBaseline {
   ];
 }
 
+/// One derived Prompt template preserved alongside a managed backup. The
+/// artifact bytes live inside the backup directory so a later restore can
+/// republish the template at its recorded native path.
+final class BackupDerivedPrompt {
+  const BackupDerivedPrompt({
+    required this.path,
+    required this.baseline,
+    required this.artifactPath,
+  });
+
+  factory BackupDerivedPrompt.fromJson(
+    Object? value,
+    String backupDirectory,
+    p.Context path,
+  ) {
+    final map = _object(value, 'backup derived prompt');
+    final artifact = _absolutePath(_string(map, 'artifactPath'));
+    final basename = path.basename(artifact);
+    if (!path.equals(path.dirname(artifact), backupDirectory) ||
+        !RegExp(r'^prompt-\d+\.md$').hasMatch(basename)) {
+      throw const FormatException(
+        'Backup derived prompt artifact is not manager-owned.',
+      );
+    }
+    return BackupDerivedPrompt(
+      path: _absolutePath(_string(map, 'path')),
+      baseline: ArtifactBaseline.fromJson(map['baseline']),
+      artifactPath: artifact,
+    );
+  }
+
+  final String path;
+  final ArtifactBaseline baseline;
+  final String artifactPath;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'path': path,
+    'baseline': baseline.toJson(),
+    'artifactPath': artifactPath,
+  };
+}
+
 final class BackupRecord {
   const new({
     required this.backupId,
@@ -674,6 +798,7 @@ final class BackupRecord {
     required this.artifactPath,
     required this.retention,
     this.canonicalRecord,
+    this.derivedPrompts = const <BackupDerivedPrompt>[],
   });
 
   factory BackupRecord.fromJson(Object? value, String state) {
@@ -735,6 +860,15 @@ final class BackupRecord {
       canonicalRecord: kind == ArtifactKind.skillCanonical
           ? InstallationRecord.fromJson(map['canonicalRecord'])
           : null,
+      derivedPrompts: map['derivedPrompts'] == null
+          ? const <BackupDerivedPrompt>[]
+          : [
+              for (final value in _list(
+                map['derivedPrompts'],
+                'backup derived prompts',
+              ))
+                BackupDerivedPrompt.fromJson(value, expectedDirectory, path),
+            ],
     );
   }
 
@@ -749,6 +883,7 @@ final class BackupRecord {
   final String artifactPath;
   final String retention;
   final InstallationRecord? canonicalRecord;
+  final List<BackupDerivedPrompt> derivedPrompts;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'schemaVersion': kind == ArtifactKind.skillCanonical ? 2 : 1,
@@ -764,6 +899,8 @@ final class BackupRecord {
     'artifactPath': artifactPath,
     'retention': retention,
     if (canonicalRecord != null) 'canonicalRecord': canonicalRecord!.toJson(),
+    if (derivedPrompts.isNotEmpty)
+      'derivedPrompts': [for (final prompt in derivedPrompts) prompt.toJson()],
   };
 
   BackupRecord copyWith({String? retention}) => BackupRecord(
@@ -778,6 +915,7 @@ final class BackupRecord {
     artifactPath: artifactPath,
     retention: retention ?? this.retention,
     canonicalRecord: canonicalRecord,
+    derivedPrompts: derivedPrompts,
   );
 }
 
@@ -816,6 +954,30 @@ final class ExposureRecord {
   };
 }
 
+/// One derived Prompt file rewritten inside a parent replacement.
+typedef DerivedPromptWrite = ({String path, String content, String nativeRoot});
+
+/// A derived native Prompt template published alongside a managed Skill.
+final class DerivedPromptRecord {
+  const DerivedPromptRecord({required this.path, required this.baseline});
+
+  factory DerivedPromptRecord.fromJson(Object? value) {
+    final map = _object(value, 'derived prompt');
+    return DerivedPromptRecord(
+      path: _absolutePath(_string(map, 'path')),
+      baseline: ArtifactBaseline.fromJson(map['baseline']),
+    );
+  }
+
+  final String path;
+  final ArtifactBaseline baseline;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'path': path,
+    'baseline': baseline.toJson(),
+  };
+}
+
 final class InstallationRecord {
   const new({
     required this.installationId,
@@ -835,6 +997,8 @@ final class InstallationRecord {
     required this.backupIds,
     required this.transactionId,
     this.exposures = const <ExposureRecord>[],
+    this.derivedPrompts = const <DerivedPromptRecord>[],
+    this.installationRoute,
   });
 
   factory InstallationRecord.fromJson(Object? value) {
@@ -864,6 +1028,20 @@ final class InstallationRecord {
     if (!path.isWithin(nativeRoot, location)) {
       throw const FormatException('Installation location escapes native root.');
     }
+    final route = map.containsKey('installationRoute')
+        ? InstallationRoute.fromJson(map['installationRoute'])
+        : null;
+    if (route != null &&
+        (route.scope.name != scope ||
+            switch (route.method) {
+              InstallationMethod.canonical => kind != 'skill-canonical',
+              InstallationMethod.copy => kind != 'skill-copy',
+              InstallationMethod.sourceLink => kind != 'skill-link',
+            })) {
+      throw const FormatException(
+        'Installation route does not match its record.',
+      );
+    }
     return InstallationRecord(
       installationId: _id(_string(map, 'installationId'), 'ins'),
       kind: ArtifactKind.values.firstWhere((value) => value.wireName == kind),
@@ -886,11 +1064,21 @@ final class InstallationRecord {
         for (final id in _stringList(map['backupIds'])) _id(id, 'bak'),
       ],
       transactionId: _nullableId(map['transactionId'], 'trx'),
+      installationRoute: route,
       exposures: map['exposures'] == null
           ? const <ExposureRecord>[]
           : [
               for (final exposure in _list(map['exposures'], 'exposures'))
                 ExposureRecord.fromJson(exposure),
+            ],
+      derivedPrompts: map['derivedPrompts'] == null
+          ? const <DerivedPromptRecord>[]
+          : [
+              for (final prompt in _list(
+                map['derivedPrompts'],
+                'derivedPrompts',
+              ))
+                DerivedPromptRecord.fromJson(prompt),
             ],
     );
   }
@@ -912,6 +1100,8 @@ final class InstallationRecord {
   final List<String> backupIds;
   final String? transactionId;
   final List<ExposureRecord> exposures;
+  final List<DerivedPromptRecord> derivedPrompts;
+  final InstallationRoute? installationRoute;
 
   InstallationRecord copyWith({
     ArtifactKind? kind,
@@ -921,10 +1111,13 @@ final class InstallationRecord {
     List<String>? backupIds,
     String? transactionId,
     List<ExposureRecord>? exposures,
+    List<DerivedPromptRecord>? derivedPrompts,
     List<String>? knownConsumers,
     List<String>? validatedProfiles,
     Map<String, Object?>? origin,
+    InstallationRoute? installationRoute,
     bool clearTransaction = false,
+    bool clearInstallationRoute = false,
   }) => InstallationRecord(
     installationId: installationId,
     kind: kind ?? this.kind,
@@ -945,6 +1138,10 @@ final class InstallationRecord {
         ? null
         : transactionId ?? this.transactionId,
     exposures: exposures ?? this.exposures,
+    derivedPrompts: derivedPrompts ?? this.derivedPrompts,
+    installationRoute: clearInstallationRoute
+        ? null
+        : installationRoute ?? this.installationRoute,
   );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -964,10 +1161,14 @@ final class InstallationRecord {
     'lifecycle': lifecycle,
     'backupIds': backupIds,
     'transactionId': transactionId,
+    if (installationRoute != null)
+      'installationRoute': installationRoute!.toJson(),
     if (kind == ArtifactKind.skillCanonical) ...<String, Object?>{
       'recordSchemaVersion': 2,
       'exposures': [for (final exposure in exposures) exposure.toJson()],
     },
+    if (derivedPrompts.isNotEmpty)
+      'derivedPrompts': [for (final prompt in derivedPrompts) prompt.toJson()],
   };
 }
 
@@ -1306,6 +1507,7 @@ interface class LifecycleStateService {
     Set<String> installationIds = const {},
     Set<String> packKeys = const {},
     Set<String> excludedAuthoringEvidencePaths = const {},
+    Set<String> excludedConfigurationEvidencePaths = const {},
     required Future<T> Function() body,
   }) => _serialized(context, context.stateRoot(), () {
     checkPendingConversions(
@@ -1314,6 +1516,7 @@ interface class LifecycleStateService {
       installationIds: installationIds,
       packKeys: packKeys,
       excludedAuthoringEvidencePaths: excludedAuthoringEvidencePaths,
+      excludedConfigurationEvidencePaths: excludedConfigurationEvidencePaths,
     );
     return body();
   }, coordinated: true);
@@ -1370,6 +1573,7 @@ interface class LifecycleStateService {
     required String location,
     required String nativeRoot,
     required String nativeDestination,
+    InstallationRoute? installationRoute,
   }) async {
     final prepared = await _prepareInstall(
       resource,
@@ -1468,6 +1672,7 @@ interface class LifecycleStateService {
           baseline: baseline,
           lifecycle: 'live',
           origin: const <String, Object?>{'status': 'unknown'},
+          installationRoute: installationRoute,
           backupIds: const <String>[],
           transactionId: null,
         );
@@ -1741,7 +1946,14 @@ interface class LifecycleStateService {
                   kind == ArtifactKind.skillLink
               ? canonicalEntry!.path
               : unit.sourcePath;
-          if (unit.method == InstallationMethod.canonical &&
+          if (kind == ArtifactKind.promptTemplate) {
+            final content = entry.content;
+            if (content == null) {
+              throw StateError('A template entry requires rendered content.');
+            }
+            io.createDirectory(io.fs.path.dirname(stage));
+            io.fs.file(stage).writeAsStringSync(content);
+          } else if (unit.method == InstallationMethod.canonical &&
               kind == ArtifactKind.skillLink) {
             io.createDirectory(io.fs.path.dirname(stage));
             io.createLink(stage, linkSource);
@@ -1782,9 +1994,24 @@ interface class LifecycleStateService {
           canonicalId = existingCanonical?.installationId ?? _newId('ins');
           installationIds.add(canonicalId);
         }
+        final derivedPrompts = <DerivedPromptRecord>[];
         for (var index = 0; index < unit.entries.length; index++) {
           final entry = unit.entries[index];
           if (entry.kind == InstallationEntryKind.consumer) continue;
+          if (entry.kind == InstallationEntryKind.template) {
+            final baseline = entry.action == InstallationEntryAction.unchanged
+                ? [
+                    for (final existing in existingByPath.values)
+                      for (final prompt in existing.derivedPrompts)
+                        if (io.fs.path.equals(prompt.path, entry.path))
+                          prompt.baseline,
+                  ].single
+                : baselines[index]!;
+            derivedPrompts.add(
+              DerivedPromptRecord(path: entry.path, baseline: baseline),
+            );
+            continue;
+          }
           if (unit.method == InstallationMethod.canonical &&
               entry.kind == InstallationEntryKind.content) {
             continue;
@@ -1822,6 +2049,7 @@ interface class LifecycleStateService {
               baseline: baseline,
               lifecycle: 'live',
               origin: unit.origin,
+              installationRoute: unit.installationRoute,
               backupIds: existing?.backupIds ?? const <String>[],
               transactionId: null,
             ),
@@ -1853,7 +2081,8 @@ interface class LifecycleStateService {
           }
           final targets = <String>{
             ...?existingCanonical?.knownConsumers,
-            for (final entry in unit.entries) ?entry.target,
+            for (final entry in unit.entries)
+              if (entry.kind != InstallationEntryKind.template) ?entry.target,
           }.toList()..sort();
           newRecords.add(
             InstallationRecord(
@@ -1876,9 +2105,26 @@ interface class LifecycleStateService {
                   ? existingCanonical.origin
                   : unit.origin,
               backupIds: existingCanonical?.backupIds ?? const <String>[],
+              installationRoute: unit.installationRoute?.withTargets(
+                (<InstallationRouteTarget>{
+                  ...?existingCanonical?.installationRoute?.targets,
+                  for (final consumer
+                      in existingCanonical?.knownConsumers ?? const <String>[])
+                    InstallationRouteTarget.values.byName(consumer),
+                  ...?unit.installationRoute?.targets,
+                }.toList()..sort((a, b) => a.name.compareTo(b.name))),
+              ),
               transactionId: null,
               exposures: List<ExposureRecord>.unmodifiable(exposures),
             ),
+          );
+        }
+        if (derivedPrompts.isNotEmpty) {
+          if (newRecords.isEmpty) {
+            throw StateError('A derived Prompt requires a parent record.');
+          }
+          newRecords[0] = newRecords.first.copyWith(
+            derivedPrompts: derivedPrompts,
           );
         }
         _writeTransaction(transactionPath, <String, Object?>{
@@ -2199,10 +2445,20 @@ interface class LifecycleStateService {
     required String installationId,
     required String source,
     Map<String, Object?>? origin,
+    InstallationRoute? installationRoute,
     bool allowModified = false,
     Set<String> allowedPaths = const <String>{},
+    InstallationRecord? expectedRecord,
+    List<DerivedPromptWrite> derivedWrites = const <DerivedPromptWrite>[],
   }) async {
     var initial = recordById(context, installationId);
+    if (expectedRecord != null &&
+        jsonEncode(initial.toJson()) != jsonEncode(expectedRecord.toJson())) {
+      throw MambaException(
+        'The reviewed installation record changed before replacement.',
+        exitCode: 4,
+      );
+    }
     _requireReplacementResource(initial, resource, context);
     final recordedBaseline = initial.baseline;
     if (allowModified) {
@@ -2269,6 +2525,13 @@ interface class LifecycleStateService {
     final state = context.stateRoot();
     return _serialized(context, initial.location, () async {
       var record = recordById(context, installationId);
+      if (expectedRecord != null &&
+          jsonEncode(record.toJson()) != jsonEncode(expectedRecord.toJson())) {
+        throw MambaException(
+          'The reviewed installation record changed before replacement.',
+          exitCode: 4,
+        );
+      }
       if (record.baseline.digest != recordedBaseline.digest) {
         throw MambaException(
           'The managed baseline changed before replacement.',
@@ -2322,6 +2585,7 @@ interface class LifecycleStateService {
       var published = false;
       var committed = false;
       String? backupId;
+      final promptQuarantines = <({String live, String quarantine})>[];
       try {
         _prepareStaging(record.nativeRoot);
         final linkTarget = _copySource(
@@ -2386,11 +2650,73 @@ interface class LifecycleStateService {
         _advanceTransaction(transactionPath, 'published');
         _verifyBaseline(record.location, newBaseline, resource.kind);
         _verifyBaseline(quarantine, record.baseline, record.kind);
+        for (final write in derivedWrites) {
+          final recorded = [
+            for (final prompt in record.derivedPrompts)
+              if (io.fs.path.equals(prompt.path, write.path)) prompt,
+          ];
+          if (recorded.length != 1) {
+            throw StateError(
+              'A derived Prompt write requires a recorded path: ${write.path}',
+            );
+          }
+          final live =
+              io.fs.typeSync(write.path, followLinks: false) !=
+              FileSystemEntityType.notFound;
+          if (!allowModified && live) {
+            _verifyBaseline(
+              write.path,
+              recorded.single.baseline,
+              ArtifactKind.promptTemplate,
+            );
+          }
+          if (!live && recorded.isNotEmpty) {
+            throw MambaException(
+              'The derived Prompt is missing: ${write.path}',
+              exitCode: 4,
+            );
+          }
+          final promptQuarantine = _quarantinePath(
+            write.nativeRoot,
+            transactionId,
+            write.path,
+          );
+          final promptStage = _stagePath(
+            write.nativeRoot,
+            transactionId,
+            io.fs.path.basename(write.path),
+          );
+          _prepareStaging(write.nativeRoot);
+          io.createDirectory(io.fs.path.dirname(promptStage));
+          io.fs.file(promptStage).writeAsStringSync(write.content);
+          io.createDirectory(io.fs.path.dirname(promptQuarantine));
+          io.rename(write.path, promptQuarantine);
+          promptQuarantines.add((
+            live: write.path,
+            quarantine: promptQuarantine,
+          ));
+          io.rename(promptStage, write.path);
+        }
+        final derivedPrompts = <DerivedPromptRecord>[
+          for (final prompt in record.derivedPrompts)
+            if (derivedWrites.every(
+              (write) => !io.fs.path.equals(write.path, prompt.path),
+            ))
+              prompt,
+          for (final write in derivedWrites)
+            DerivedPromptRecord(
+              path: write.path,
+              baseline: _manifest(write.path, ArtifactKind.promptTemplate),
+            ),
+        ];
         final updated = record.copyWith(
+          derivedPrompts: derivedPrompts,
           kind: resource.kind,
           nativeForm: candidate.nativeForm,
           baseline: newBaseline,
           origin: origin,
+          installationRoute: installationRoute,
+          clearInstallationRoute: installationRoute == null,
           backupIds: [...record.backupIds, backup.backupId],
           clearTransaction: true,
         );
@@ -2400,6 +2726,9 @@ interface class LifecycleStateService {
         _verifyBaseline(quarantine, record.baseline, record.kind);
         _advanceTransaction(transactionPath, 'cleanupVerified');
         io.delete(quarantine);
+        for (final entry in promptQuarantines) {
+          io.delete(entry.quarantine);
+        }
         unpublished = false;
         _advanceTransaction(transactionPath, 'committed');
         _removeIfPresent(io.fs.path.dirname(stage));
@@ -2422,6 +2751,16 @@ interface class LifecycleStateService {
             'transaction $transactionId, evidence $transactionPath. $error',
             exitCode: 6,
           );
+        }
+        for (final entry in promptQuarantines) {
+          if (io.fs.typeSync(entry.live, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            io.delete(entry.live);
+          }
+          if (io.fs.typeSync(entry.quarantine, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            io.rename(entry.quarantine, entry.live);
+          }
         }
         if (unpublished || published) {
           if (_rollbackReplacement(
@@ -2459,15 +2798,36 @@ interface class LifecycleStateService {
     var initial = recordById(context, installationId);
     _requireResource(initial, resource, context, live: true);
     final recordedBaseline = initial.baseline;
+    InstallationRecord observedBaseline(InstallationRecord record) =>
+        record.copyWith(
+          baseline: _manifest(record.location, record.kind),
+          derivedPrompts: [
+            for (final prompt in record.derivedPrompts)
+              if (io.fs.typeSync(prompt.path, followLinks: false) !=
+                  FileSystemEntityType.notFound)
+                DerivedPromptRecord(
+                  path: prompt.path,
+                  baseline: _manifest(prompt.path, ArtifactKind.promptTemplate),
+                )
+              else
+                prompt,
+          ],
+        );
     if (allowModified) {
-      initial = initial.copyWith(
-        baseline: _manifest(initial.location, initial.kind),
-      );
+      initial = observedBaseline(initial);
     }
     void requireObserved(InstallationRecord record) {
       if (allowModified) {
-        if (_manifest(record.location, record.kind).digest !=
-            record.baseline.digest) {
+        final observed = observedBaseline(record);
+        if (observed.baseline.digest != record.baseline.digest ||
+            jsonEncode([
+                  for (final prompt in observed.derivedPrompts)
+                    prompt.baseline.toJson(),
+                ]) !=
+                jsonEncode([
+                  for (final prompt in record.derivedPrompts)
+                    prompt.baseline.toJson(),
+                ])) {
           throw MambaException(
             'The reviewed local edits changed before removal: ${record.location}',
             exitCode: 4,
@@ -2475,6 +2835,16 @@ interface class LifecycleStateService {
         }
       } else {
         _requireUnchanged(record);
+        for (final prompt in record.derivedPrompts) {
+          if (io.fs.typeSync(prompt.path, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            _verifyBaseline(
+              prompt.path,
+              prompt.baseline,
+              ArtifactKind.promptTemplate,
+            );
+          }
+        }
       }
     }
 
@@ -2510,9 +2880,7 @@ interface class LifecycleStateService {
         );
       }
       if (allowModified) {
-        record = record.copyWith(
-          baseline: _manifest(record.location, record.kind),
-        );
+        record = observedBaseline(record);
       }
       requireObserved(record);
       _blockPendingAcrossScopes(context, record.location);
@@ -2531,6 +2899,20 @@ interface class LifecycleStateService {
       var committed = false;
       String? backupId;
       try {
+        final livePrompts = [
+          for (final prompt in record.derivedPrompts)
+            if (io.fs.typeSync(prompt.path, followLinks: false) !=
+                FileSystemEntityType.notFound)
+              (
+                path: prompt.path,
+                baseline: prompt.baseline,
+                quarantinePath: _quarantinePath(
+                  io.fs.path.dirname(prompt.path),
+                  transactionId,
+                  prompt.path,
+                ),
+              ),
+        ];
         final backup = _createBackup(state, record, transactionId);
         backupId = backup.backupId;
         _writeTransaction(transactionPath, <String, Object?>{
@@ -2546,13 +2928,32 @@ interface class LifecycleStateService {
           'oldRecord': record.toJson(),
           'oldBaseline': record.baseline.toJson(),
           'quarantinePath': quarantine,
+          'derivedPrompts': [
+            for (final prompt in livePrompts)
+              <String, Object?>{
+                'path': prompt.path,
+                'baseline': prompt.baseline.toJson(),
+                'quarantinePath': prompt.quarantinePath,
+              },
+          ],
           'phase': 'prepared',
         });
         io.createDirectory(io.fs.path.dirname(quarantine));
         io.rename(record.location, quarantine);
+        for (final prompt in livePrompts) {
+          io.createDirectory(io.fs.path.dirname(prompt.quarantinePath));
+          io.rename(prompt.path, prompt.quarantinePath);
+        }
         unpublished = true;
         _advanceTransaction(transactionPath, 'quarantined');
         _verifyBaseline(quarantine, record.baseline, record.kind);
+        for (final prompt in livePrompts) {
+          _verifyBaseline(
+            prompt.quarantinePath,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+        }
         final removed = record.copyWith(
           lifecycle: 'removed',
           backupIds: [...record.backupIds, backup.backupId],
@@ -2562,8 +2963,18 @@ interface class LifecycleStateService {
         committed = true;
         _advanceTransaction(transactionPath, 'committedCleanupPending');
         _verifyBaseline(quarantine, record.baseline, record.kind);
+        for (final prompt in livePrompts) {
+          _verifyBaseline(
+            prompt.quarantinePath,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+        }
         _advanceTransaction(transactionPath, 'cleanupVerified');
         io.delete(quarantine);
+        for (final prompt in livePrompts) {
+          io.delete(prompt.quarantinePath);
+        }
         unpublished = false;
         _advanceTransaction(transactionPath, 'committed');
         return LifecycleResult(
@@ -2631,7 +3042,14 @@ interface class LifecycleStateService {
     if (transactionId == null) {
       final transactions =
           _readTransactions(state, kinds ?? <ArtifactKind>{resource.kind})
-              .where((transaction) => !_recoveryTerminal(transaction['phase']))
+              .where(
+                (transaction) => transaction['operation'] == 'cross-route'
+                    ? !const {
+                        'completed',
+                        'rolledBack',
+                      }.contains(transaction['phase'])
+                    : !_recoveryTerminal(transaction['phase']),
+              )
               .toList();
       return LifecycleResult(
         command: '${_resourceLabel(resource.kind)} recover',
@@ -2657,7 +3075,10 @@ interface class LifecycleStateService {
         },
       );
     }
-    if (_recoveryTerminal(transaction['phase'])) {
+    final routeJournal = transaction['operation'] == 'cross-route';
+    if (routeJournal
+        ? const {'completed', 'rolledBack'}.contains(transaction['phase'])
+        : _recoveryTerminal(transaction['phase'])) {
       throw MambaException(
         'Transaction $transactionId is already terminal; destructive recovery cannot be replayed.',
         exitCode: 4,
@@ -2670,6 +3091,36 @@ interface class LifecycleStateService {
       );
     }
     _validateRecoveryAuthority(resource, context, transaction);
+    if (routeJournal) {
+      if (context.dryRun) {
+        return LifecycleResult(
+          command: '${_resourceLabel(resource.kind)} recover',
+          outcome: 'planned',
+          data: <String, Object?>{
+            ..._transactionSummary(transaction),
+            'action': action,
+            'approvalRequiredForApply': true,
+          },
+        );
+      }
+      _requireApproval(context, 'recovery');
+      final recovered = await RouteRecoveryService(state: this).recover(
+        context,
+        transactionId,
+        action: RouteRecoveryAction.parse(action),
+      );
+      return LifecycleResult(
+        command: '${_resourceLabel(resource.kind)} recover',
+        outcome: 'recovered',
+        data: <String, Object?>{
+          ..._transactionSummary(transaction),
+          'action': action,
+          'stateEstablished': recovered['outcome'],
+          'retainedArtifacts': recovered['retained'],
+          'originalOperationSucceeded': recovered['outcome'] == 'completed',
+        },
+      );
+    }
     if (context.dryRun) {
       return LifecycleResult(
         command: '${_resourceLabel(resource.kind)} recover',
@@ -2746,7 +3197,9 @@ interface class LifecycleStateService {
         exitCode: 4,
       );
     }
-    final coordinated = transaction['schemaVersion'] == 2;
+    final coordinated =
+        transaction['schemaVersion'] == 2 ||
+        transaction['operation'] == 'cross-route';
     for (final record in records) {
       if (record.scope != context.scope ||
           (!coordinated &&
@@ -2848,6 +3301,9 @@ interface class LifecycleStateService {
           'Transaction identity or schema is invalid.',
         );
       }
+      if (transaction['operation'] == 'cross-route') {
+        return _validateRouteTransaction(transaction, expectedId);
+      }
       if (schemaVersion == 2) {
         return _validateCoordinatedTransaction(transaction, state, expectedId);
       }
@@ -2938,6 +3394,42 @@ interface class LifecycleStateService {
           );
         }
       }
+      final derivedEntries = transaction['derivedPrompts'];
+      if (derivedEntries != null) {
+        if (operation != 'remove' && operation != 'restore') {
+          throw const FormatException(
+            'Derived prompt evidence is unexpected for this operation.',
+          );
+        }
+        for (final value in _list(derivedEntries, 'derived prompts')) {
+          final entry = _object(value, 'derived prompt');
+          final promptPath = _absolutePath(_string(entry, 'path'));
+          ArtifactBaseline.fromJson(entry['baseline']);
+          final basename = io.fs.path.basename(promptPath);
+          final promptRoot = io.fs.path.dirname(promptPath);
+          if (operation == 'remove') {
+            if (entry['stagedPath'] != null ||
+                !io.fs.path.equals(
+                  _absolutePath(_string(entry, 'quarantinePath')),
+                  _quarantinePath(promptRoot, expectedId, promptPath),
+                )) {
+              throw const FormatException(
+                'Derived prompt quarantine path does not match its identity.',
+              );
+            }
+          } else {
+            if (entry['wasPresent'] is! bool ||
+                !io.fs.path.equals(
+                  _absolutePath(_string(entry, 'stagedPath')),
+                  _stagePath(promptRoot, expectedId, basename),
+                )) {
+              throw const FormatException(
+                'Derived prompt staging path does not match its identity.',
+              );
+            }
+          }
+        }
+      }
       for (final record in [oldRecord, newRecord]) {
         if (record == null) continue;
         if (!io.fs.path.equals(record.location, location) ||
@@ -2968,6 +3460,35 @@ interface class LifecycleStateService {
         throw const FormatException('New baseline evidence does not match.');
       }
       return transaction;
+    } on FormatException catch (error) {
+      throw MambaException(
+        'Unsafe or unsupported transaction $expectedId: ${error.message}',
+        exitCode: 4,
+      );
+    }
+  }
+
+  /// Validates strict cross-route journal evidence and derives the display
+  /// fields the shared recovery surface summarizes.
+  Map<String, Object?> _validateRouteTransaction(
+    Map<String, Object?> transaction,
+    String expectedId,
+  ) {
+    try {
+      final doc = RouteJournalEvidence.decode(
+        jsonEncode(transaction),
+        io.fs.path,
+      ).toJson();
+      final firstNew = InstallationRecord.fromJson(
+        (doc['newRecords'] as List).first,
+      );
+      final firstAction = (doc['actions'] as List).first as Map;
+      return <String, Object?>{
+        ...doc,
+        'artifactKind': firstNew.kind.wireName,
+        'location': firstAction['path'],
+        'installationId': firstNew.installationId,
+      };
     } on FormatException catch (error) {
       throw MambaException(
         'Unsafe or unsupported transaction $expectedId: ${error.message}',
@@ -3450,6 +3971,16 @@ interface class LifecycleStateService {
   List<String> _availableRecoveryActions(Map<String, Object?> transaction) {
     final phase = transaction['phase'];
     final operation = transaction['operation'];
+    if (operation == 'cross-route') {
+      return switch (phase) {
+        'prepared' ||
+        'applying' ||
+        'published' => const ['rollback', 'complete'],
+        'committed' => const ['complete'],
+        'rollingBack' => const ['rollback'],
+        _ => const <String>[],
+      };
+    }
     if (phase == 'committedCleanupPending' || phase == 'cleanupVerified') {
       return const ['complete'];
     }
@@ -3607,10 +4138,67 @@ interface class LifecycleStateService {
       } else {
         _requireAbsent(location);
       }
+      for (final prompt in _transactionPrompts(transaction)) {
+        final promptQuarantine = prompt.quarantinePath;
+        if (promptQuarantine != null) {
+          // Removal rollback restores each quarantined template alongside the
+          // parent artifact.
+          if (io.type(prompt.path, followLinks: false) ==
+                  FileSystemEntityType.notFound &&
+              io.type(promptQuarantine, followLinks: false) !=
+                  FileSystemEntityType.notFound) {
+            _verifyBaseline(
+              promptQuarantine,
+              prompt.baseline,
+              ArtifactKind.promptTemplate,
+            );
+            io.createDirectory(io.fs.path.dirname(prompt.path));
+            io.rename(promptQuarantine, prompt.path);
+          }
+        } else if (!prompt.wasPresent &&
+            io.type(prompt.path, followLinks: false) !=
+                FileSystemEntityType.notFound) {
+          // Restore rollback deletes only the templates the transaction
+          // published; a template already present stays owned.
+          _verifyBaseline(
+            prompt.path,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+          io.delete(prompt.path);
+        }
+      }
       _commitRecords(state, [old], const <String, Object?>{});
     }
     _advanceTransaction(path, 'rolledBack');
     return 'rolledBack';
+  }
+
+  /// Decodes the derived Prompt evidence of a schema-1 remove or restore
+  /// journal. Entries written by older journals are absent.
+  List<
+    ({
+      String path,
+      ArtifactBaseline baseline,
+      String? quarantinePath,
+      String? stagedPath,
+      bool wasPresent,
+    })
+  >
+  _transactionPrompts(Map<String, Object?> transaction) {
+    final entries = transaction['derivedPrompts'];
+    if (entries is! List) return const [];
+    return [
+      for (final value in entries)
+        if (value is Map)
+          (
+            path: value['path']! as String,
+            baseline: ArtifactBaseline.fromJson(value['baseline']),
+            quarantinePath: value['quarantinePath'] as String?,
+            stagedPath: value['stagedPath'] as String?,
+            wasPresent: value['wasPresent'] == true,
+          ),
+    ];
   }
 
   String _rollbackStoragePath(
@@ -3688,6 +4276,23 @@ interface class LifecycleStateService {
       }
       _requireAbsent(location);
       requireQuarantine(old.baseline, old.kind);
+      for (final prompt in _transactionPrompts(transaction)) {
+        final promptQuarantine = prompt.quarantinePath;
+        if (promptQuarantine == null ||
+            io.type(promptQuarantine, followLinks: false) ==
+                FileSystemEntityType.notFound) {
+          throw MambaException(
+            'Required pre-commit prompt quarantine is missing or ambiguous.',
+            exitCode: 6,
+          );
+        }
+        _verifyBaseline(
+          promptQuarantine,
+          prompt.baseline,
+          ArtifactKind.promptTemplate,
+        );
+        _requireAbsent(prompt.path);
+      }
     } else if (phase == 'quarantined' && operation == 'cleanup') {
       requireQuarantine(cleanupBackup!.baseline, cleanupBackup.kind);
       _requireAbsent(cleanupBackup.artifactPath);
@@ -3710,6 +4315,38 @@ interface class LifecycleStateService {
         io.rename(staged, location);
       }
       _verifyBaseline(location, baseline, kind);
+      if (operation == 'restore') {
+        for (final prompt in _transactionPrompts(transaction)) {
+          if (io.type(prompt.path, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            _verifyBaseline(
+              prompt.path,
+              prompt.baseline,
+              ArtifactKind.promptTemplate,
+            );
+            continue;
+          }
+          if (prompt.wasPresent) {
+            throw MambaException(
+              'A pre-existing derived Prompt disappeared during restore: '
+              '${prompt.path}',
+              exitCode: 6,
+            );
+          }
+          final staged = prompt.stagedPath;
+          if (staged == null ||
+              io.type(staged, followLinks: false) ==
+                  FileSystemEntityType.notFound) {
+            throw MambaException(
+              'Staged derived Prompt is missing for restore: ${prompt.path}',
+              exitCode: 6,
+            );
+          }
+          _verifyBaseline(staged, prompt.baseline, ArtifactKind.promptTemplate);
+          io.createDirectory(io.fs.path.dirname(prompt.path));
+          io.rename(staged, prompt.path);
+        }
+      }
       final expected = operation == 'install'
           ? InstallationRecord.fromJson(transaction['newRecord'])
           : old!.copyWith(
@@ -3745,6 +4382,27 @@ interface class LifecycleStateService {
         verifyRecord(expected);
       } else {
         _commitRecords(state, [expected], const <String, Object?>{});
+      }
+      for (final prompt in _transactionPrompts(transaction)) {
+        final promptQuarantine = prompt.quarantinePath;
+        if (promptQuarantine != null &&
+            io.type(promptQuarantine, followLinks: false) !=
+                FileSystemEntityType.notFound) {
+          _verifyBaseline(
+            promptQuarantine,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+          io.delete(promptQuarantine);
+        } else if (io.type(prompt.path, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+          _verifyBaseline(
+            prompt.path,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+          io.delete(prompt.path);
+        }
       }
     } else if (operation == 'cleanup' &&
         (phase == 'quarantined' || recordCommitted)) {
@@ -3935,6 +4593,43 @@ interface class LifecycleStateService {
           outgoing = _createBackup(state, record, transactionId);
           outgoingBackupId = outgoing.backupId;
         }
+        final restorePrompts = [
+          for (final prompt in currentBackup.derivedPrompts)
+            (
+              path: prompt.path,
+              baseline: prompt.baseline,
+              stagedPath: _stagePath(
+                io.fs.path.dirname(prompt.path),
+                transactionId,
+                io.fs.path.basename(prompt.path),
+              ),
+              wasPresent:
+                  io.fs.typeSync(prompt.path, followLinks: false) !=
+                  FileSystemEntityType.notFound,
+            ),
+        ];
+        for (final prompt in restorePrompts) {
+          if (prompt.wasPresent) {
+            _verifyBaseline(
+              prompt.path,
+              prompt.baseline,
+              ArtifactKind.promptTemplate,
+            );
+            continue;
+          }
+          io.createDirectory(io.fs.path.dirname(prompt.stagedPath));
+          final artifact = [
+            for (final entry in currentBackup.derivedPrompts)
+              if (io.fs.path.equals(entry.path, prompt.path))
+                entry.artifactPath,
+          ].single;
+          io.copyFile(artifact, prompt.stagedPath);
+          _verifyBaseline(
+            prompt.stagedPath,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+        }
         _writeTransaction(transactionPath, <String, Object?>{
           'schemaVersion': 1,
           'transactionId': transactionId,
@@ -3951,6 +4646,15 @@ interface class LifecycleStateService {
           'newBaseline': newBaseline.toJson(),
           'stagedPath': stage,
           'quarantinePath': quarantine,
+          'derivedPrompts': [
+            for (final prompt in restorePrompts)
+              <String, Object?>{
+                'path': prompt.path,
+                'baseline': prompt.baseline.toJson(),
+                'stagedPath': prompt.stagedPath,
+                'wasPresent': prompt.wasPresent,
+              },
+          ],
           'phase': 'prepared',
         });
         if (record.lifecycle == 'live') {
@@ -3966,9 +4670,22 @@ interface class LifecycleStateService {
         );
         io.createDirectory(record.nativeRoot);
         io.rename(stage, record.location);
+        for (final prompt in restorePrompts) {
+          if (!prompt.wasPresent) {
+            io.createDirectory(io.fs.path.dirname(prompt.path));
+            io.rename(prompt.stagedPath, prompt.path);
+          }
+        }
         published = true;
         _advanceTransaction(transactionPath, 'published');
         _verifyBaseline(record.location, newBaseline, resource.kind);
+        for (final prompt in restorePrompts) {
+          _verifyBaseline(
+            prompt.path,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+        }
         if (unpublished) {
           _verifyBaseline(quarantine, record.baseline, record.kind);
         }
@@ -4263,6 +4980,7 @@ interface class LifecycleStateService {
     required String installationId,
     required Map<String, Object?> expectedOrigin,
     required Map<String, Object?> origin,
+    InstallationRoute? installationRoute,
   }) async {
     final initial = recordById(context, installationId);
     if (jsonEncode(initial.origin) != jsonEncode(expectedOrigin)) {
@@ -4282,7 +5000,11 @@ interface class LifecycleStateService {
         );
       }
       _commitRecords(context.stateRoot(), [
-        current.copyWith(origin: origin),
+        current.copyWith(
+          origin: origin,
+          installationRoute: installationRoute,
+          clearInstallationRoute: installationRoute == null,
+        ),
       ], const <String, Object?>{});
     });
   }
@@ -4468,6 +5190,33 @@ interface class LifecycleStateService {
         exitCode: 4,
       );
     }
+    final derived = <BackupDerivedPrompt>[];
+    for (var index = 0; index < record.derivedPrompts.length; index++) {
+      final prompt = record.derivedPrompts[index];
+      if (io.type(prompt.path, followLinks: false) ==
+          FileSystemEntityType.notFound) {
+        continue;
+      }
+      final promptArtifact = io.fs.path.join(directory, 'prompt-$index.md');
+      io.copyFile(prompt.path, promptArtifact);
+      final promptActual = _manifest(
+        promptArtifact,
+        ArtifactKind.promptTemplate,
+      );
+      if (promptActual.digest != prompt.baseline.digest) {
+        throw MambaException(
+          'The independent backup did not match the owned baseline.',
+          exitCode: 4,
+        );
+      }
+      derived.add(
+        BackupDerivedPrompt(
+          path: prompt.path,
+          baseline: prompt.baseline,
+          artifactPath: promptArtifact,
+        ),
+      );
+    }
     final backup = BackupRecord(
       backupId: backupId,
       installationId: record.installationId,
@@ -4482,6 +5231,7 @@ interface class LifecycleStateService {
       canonicalRecord: record.kind == ArtifactKind.skillCanonical
           ? record
           : null,
+      derivedPrompts: derived,
     );
     _writeBackup(backup);
     return backup;
@@ -4708,6 +5458,18 @@ interface class LifecycleStateService {
           FileSystemEntityType.notFound) {
         return false;
       }
+      for (final prompt in _transactionPrompts(transaction)) {
+        if (!prompt.wasPresent &&
+            io.type(prompt.path, followLinks: false) !=
+                FileSystemEntityType.notFound) {
+          _verifyBaseline(
+            prompt.path,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+          io.delete(prompt.path);
+        }
+      }
       _advanceTransaction(transactionPath, 'failedRestored');
       return true;
     } on Exception {
@@ -4731,7 +5493,31 @@ interface class LifecycleStateService {
       );
       final baseline = ArtifactBaseline.fromJson(transaction['oldBaseline']);
       _verifyBaseline(quarantine, baseline, kind);
+      for (final prompt in _transactionPrompts(transaction)) {
+        final promptQuarantine = prompt.quarantinePath;
+        if (promptQuarantine != null &&
+            io.type(promptQuarantine, followLinks: false) !=
+                FileSystemEntityType.notFound &&
+            io.type(prompt.path, followLinks: false) ==
+                FileSystemEntityType.notFound) {
+          _verifyBaseline(
+            promptQuarantine,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+        }
+      }
       io.rename(quarantine, location);
+      for (final prompt in _transactionPrompts(transaction)) {
+        final promptQuarantine = prompt.quarantinePath;
+        if (promptQuarantine != null &&
+            io.type(promptQuarantine, followLinks: false) !=
+                FileSystemEntityType.notFound) {
+          _requireAbsent(prompt.path);
+          io.createDirectory(io.fs.path.dirname(prompt.path));
+          io.rename(promptQuarantine, prompt.path);
+        }
+      }
       _verifyBaseline(location, baseline, kind);
       _advanceTransaction(transactionPath, 'failedRestored');
       return true;
@@ -4746,7 +5532,15 @@ interface class LifecycleStateService {
     Set<String> validatedPaths = const {},
   }) {
     for (final state in _coordinationStates(context)) {
-      _blockPending(state, location, validatedPaths: validatedPaths);
+      _blockPending(
+        state,
+        location,
+        validatedPaths: validatedPaths,
+        expectedScope:
+            io.fs.path.equals(state, context.stateRoot(LifecycleScope.project))
+            ? 'project'
+            : 'user',
+      );
     }
   }
 
@@ -4779,6 +5573,8 @@ interface class LifecycleStateService {
     Set<String> packKeys = const {},
     Set<String> validatedRecoveryPaths = const {},
     Set<String> excludedAuthoringEvidencePaths = const {},
+    Set<String> excludedConfigurationEvidencePaths = const {},
+    Set<String> excludedRouteEvidencePaths = const {},
     ({
       ArtifactKind kind,
       String name,
@@ -4788,6 +5584,13 @@ interface class LifecycleStateService {
     uniqueness,
   }) {
     try {
+      ConfigurationPublicationService(
+        fileSystem: io.fs,
+        state: this,
+      ).checkReservations(
+        locations,
+        excluded: excludedConfigurationEvidencePaths,
+      );
       _blockPendingAuthoring(
         context,
         locations: locations,
@@ -4820,6 +5623,22 @@ interface class LifecycleStateService {
             touchedIds.add(record.installationId);
           }
         }
+      }
+      for (final state in _coordinationStates(context)) {
+        _blockPendingRoutes(
+          state,
+          locations: locations,
+          installationIds: touchedIds,
+          packKeys: packKeys,
+          excluded: excludedRouteEvidencePaths,
+          expectedScope:
+              io.fs.path.equals(
+                state,
+                context.stateRoot(LifecycleScope.project),
+              )
+              ? 'project'
+              : 'user',
+        );
       }
       bool conflicts(ConversionEvidence evidence) {
         final snapshot = evidence.observations['coordinatorSourceRecord'];
@@ -5120,11 +5939,92 @@ interface class LifecycleStateService {
     return states.toList();
   }
 
+  void _blockPendingRoutes(
+    String state, {
+    Iterable<String> locations = const [],
+    Set<String> installationIds = const {},
+    Set<String> packKeys = const {},
+    Set<String> excluded = const {},
+    String? expectedScope,
+  }) {
+    final root = io.fs.path.join(state, 'transactions');
+    _requireUnlinkedCoordinationPath(root);
+    final type = io.type(root, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return;
+    if (type != FileSystemEntityType.directory) {
+      throw MambaException(
+        'Transaction authority is not a directory.',
+        exitCode: 6,
+      );
+    }
+    for (final file in io.list(root)) {
+      if (io.fs.path.extension(file.path) != '.json') continue;
+      _requireUnlinkedCoordinationPath(file.path);
+      final raw = _readTransaction(file.path);
+      if (raw['operation'] != 'cross-route') continue;
+      try {
+        final bytes = io.read(file.path, maxManagementDocumentBytes);
+        final evidence = RouteJournalEvidence.decode(
+          utf8.decode(bytes),
+          io.fs.path,
+        ).toJson();
+        if (io.fs.path.basenameWithoutExtension(file.path) !=
+                evidence['transactionId'] ||
+            expectedScope != null && evidence['scope'] != expectedScope) {
+          throw const FormatException('Route journal authority mismatch.');
+        }
+        if (const {
+              RouteJournalPhase.completed,
+              RouteJournalPhase.rolledBack,
+            }.contains(RouteJournalPhase.parse(evidence['phase'])) ||
+            excluded.contains(file.path)) {
+          continue;
+        }
+        final records = [
+          for (final item in evidence['oldRecords'] as List)
+            InstallationRecord.fromJson(item),
+          for (final item in evidence['newRecords'] as List)
+            InstallationRecord.fromJson(item),
+        ];
+        if (records.any(
+          (record) =>
+              installationIds.contains(record.installationId) ||
+              packKeys.contains(record.installationRoute!.packKey) ||
+              locations.any(
+                (location) =>
+                    _pathsOverlap(location, record.location) ||
+                    record.exposures.any(
+                      (exposure) => _pathsOverlap(location, exposure.path),
+                    ),
+              ),
+        )) {
+          throw MambaException(
+            'Pending route transaction ${evidence['transactionId']} blocks this mutation.',
+            exitCode: 6,
+          );
+        }
+      } on MambaException {
+        rethrow;
+      } on Exception catch (error) {
+        throw MambaException(
+          'Invalid route transaction evidence ${file.path}: $error',
+          exitCode: 6,
+        );
+      }
+    }
+  }
+
   void _blockPending(
     String state,
     String location, {
     Set<String> validatedPaths = const {},
+    required String expectedScope,
   }) {
+    _blockPendingRoutes(
+      state,
+      locations: [location],
+      expectedScope: expectedScope,
+    );
     _blockPendingInverseRestores(
       <String>[state],
       location: location,
@@ -6127,6 +7027,7 @@ ArtifactKind _ownedArtifactKind(OwnedArtifactKind? kind) => switch (kind) {
   OwnedArtifactKind.skillLink => ArtifactKind.skillLink,
   OwnedArtifactKind.skillCanonical => ArtifactKind.skillCanonical,
   OwnedArtifactKind.agentFile => ArtifactKind.agentFile,
+  OwnedArtifactKind.promptTemplate => ArtifactKind.promptTemplate,
   null => throw StateError('A published entry requires an artifact kind.'),
 };
 

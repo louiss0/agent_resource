@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 ﻿# Codex context file conventions
 
 Research for [Establish Codex context file conventions](https://github.com/louiss0/agent_resource/issues/111). **Retrieved:** live web search during this research pass. **Scope:** Codex's own `AGENTS.md` discovery, precedence, root detection and byte budget; cross-ecosystem `AGENTS.md` website context is included only where it clarifies (or conflicts with) Codex behavior. No Codex process was run.

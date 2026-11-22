@@ -6,6 +6,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import 'lifecycle.dart' show LifecycleOutputFormat;
+import 'components/installation_approval.dart';
 import 'src/installation/installation_plan.dart';
 import 'src/pack/release_policy.dart';
 import 'src/services/lifecycle_state_service.dart';
@@ -20,6 +21,7 @@ List<Command> packLifecycleCommands(
   for (final operation in [
     PackOperation.install,
     PackOperation.update,
+    if (resourceType == PackResourceType.skill) PackOperation.migrate,
     PackOperation.remove,
     PackOperation.rollback,
     PackOperation.cleanup,
@@ -60,7 +62,13 @@ final class PackActionCommand extends Command {
     this._service, {
     bool canonical = false,
     this._fileSystem = const local.LocalFileSystem(),
-  }) : _canonical = canonical,
+    bool Function()? stdinIsTerminal,
+    bool Function()? stdoutIsTerminal,
+    Future<bool> Function()? offerUserScope,
+  }) : _offerUserScope = offerUserScope ?? _defaultOfferUserScope,
+       _stdinIsTerminal = stdinIsTerminal ?? (() => stdin.hasTerminal),
+       _stdoutIsTerminal = stdoutIsTerminal ?? (() => stdout.hasTerminal),
+       _canonical = canonical,
        super(
          mandatoryPositionals: [_PackContextOptions.pack],
          options: [
@@ -74,12 +82,18 @@ final class PackActionCommand extends Command {
            if (_operation != PackOperation.validate) ...[_target, _harness],
            switch (_operation) {
              PackOperation.rollback => _rollbackOnly,
+             PackOperation.migrate ||
              PackOperation.remove ||
              PackOperation.sourceAssociate => _requiredOnly,
              _ => _only,
            },
            if (canonical) _type,
            if (_operation != PackOperation.validate) _method,
+           if (_operation == PackOperation.migrate) _reviewedPlan,
+           if (_operation == PackOperation.install &&
+               (_resourceType == PackResourceType.skill ||
+                   _resourceType == PackResourceType.prompt))
+             _promptTargets,
            _release,
            if (_operation != PackOperation.validate) _bump,
            if (_operation != PackOperation.validate) ...[
@@ -103,6 +117,7 @@ final class PackActionCommand extends Command {
              _localEdits,
            ],
            _dryRun,
+           if (_operation == PackOperation.migrate) _dropPromptTargets,
            if (_operation != PackOperation.validate) _yes,
          ],
          conflicts: {
@@ -117,6 +132,14 @@ final class PackActionCommand extends Command {
        );
 
   final fslib.FileSystem _fileSystem;
+  final Future<bool> Function() _offerUserScope;
+  final bool Function() _stdinIsTerminal;
+  final bool Function() _stdoutIsTerminal;
+  static Future<bool> _defaultOfferUserScope() =>
+      const InstallationApprovalComponent(
+        label: 'Project context is unavailable. Use user scope instead?',
+      ).render();
+
   final bool _canonical;
   final PackResourceType _resourceType;
   final PackOperation _operation;
@@ -153,6 +176,10 @@ final class PackActionCommand extends Command {
   static final _method = ChoiceOption(
     'method',
     choices: InstallationMethod.values,
+  );
+  static final _reviewedPlan = StringOption(
+    'reviewed-plan',
+    description: 'The plan ID of a reviewed migration preview; required to apply without confirmation.',
   );
   static final _release = StringOption('release');
   static final _bump = ChoiceOption('bump', choices: ReleaseBump.values);
@@ -200,13 +227,21 @@ final class PackActionCommand extends Command {
     description: 'Include newly discovered resources.',
   );
   static const _localEdits = BooleanFlag('local-edits');
+  static const _dropPromptTargets = BooleanFlag('drop-prompt-targets');
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
+  static final _promptTargets = RepeatableStringOption(
+    'prompt-target',
+    description:
+        'Also publish a native Prompt template for eligible manual-only '
+        'Skills on this prompt-capable harness; repeat to select several.',
+  );
 
   @override
   String get name => switch (_operation) {
     PackOperation.install => 'install',
     PackOperation.update => 'update',
+    PackOperation.migrate => 'migrate',
     PackOperation.sourceAssociate => 'associate',
     PackOperation.sourceChange => 'change',
     PackOperation.remove => 'remove',
@@ -221,6 +256,8 @@ final class PackActionCommand extends Command {
     PackOperation.install =>
       'Install resources from an exact configured pack lock.',
     PackOperation.update => 'Review and apply source-aware pack updates.',
+    PackOperation.migrate =>
+      'Preview and apply an explicit Pack Skill route change.',
     PackOperation.sourceAssociate =>
       'Associate adopted resources with a configured source.',
     PackOperation.sourceChange => 'Review a pack source or track change.',
@@ -237,8 +274,39 @@ final class PackActionCommand extends Command {
     final format = valueOf(_format);
     final mutating = _operation != PackOperation.validate;
     final yes = mutating && valueOf(_yes);
+    final interactive =
+        _stdinIsTerminal() &&
+        _stdoutIsTerminal() &&
+        !yes &&
+        format == LifecycleOutputFormat.text;
+    final resolvedOptions = await resolveInteractiveUserScope(
+      fileSystem: _fileSystem,
+      interactive: interactive,
+      scopeExplicit: valueOf(_PackContextOptions.scope) != null,
+      offerUserScope: _offerUserScope,
+      options: LifecycleOptions(
+        processWorkingDirectory: _fileSystem.currentDirectory.path,
+        environment: Map<String, String>.unmodifiable(Platform.environment),
+        scope: valueOf(_PackContextOptions.scope) ?? LifecycleScope.project,
+        cwd: valueOf(_PackContextOptions.cwd),
+        projectRoot: valueOf(_PackContextOptions.projectRoot),
+        home: valueOf(_PackContextOptions.home),
+        geminiDir: valueOf(_PackContextOptions.geminiDir),
+        stateDir: valueOf(_PackContextOptions.state),
+      ),
+    );
+    final config = valueOf(_PackContextOptions.config);
+    if (resolvedOptions.cwd != valueOf(_PackContextOptions.cwd) &&
+        config != null &&
+        !_fileSystem.path.isAbsolute(config)) {
+      throw MambaException(
+        'A user-scope fallback with unavailable cwd requires an absolute --config path.',
+        exitCode: 4,
+      );
+    }
     final only = switch (_operation) {
       PackOperation.rollback => valueOf(_rollbackOnly),
+      PackOperation.migrate ||
       PackOperation.remove ||
       PackOperation.sourceAssociate => valueOf(_requiredOnly),
       _ => valueOf(_only) ?? const <String>[],
@@ -252,11 +320,16 @@ final class PackActionCommand extends Command {
             : [_resourceType],
         includeNew: mutating && valueOf(_includeNew),
         pack: valueOf(_PackContextOptions.pack),
-        processWorkingDirectory: _fileSystem.currentDirectory.path,
+        processWorkingDirectory: resolvedOptions.processWorkingDirectory,
         environment: Map<String, String>.unmodifiable(Platform.environment),
-        scope: valueOf(_PackContextOptions.scope),
-        cwd: valueOf(_PackContextOptions.cwd),
-        projectRoot: valueOf(_PackContextOptions.projectRoot),
+        scopeExplicit: valueOf(_PackContextOptions.scope) != null,
+        scope:
+            valueOf(_PackContextOptions.scope) ??
+            (resolvedOptions.scope == LifecycleScope.user
+                ? LifecycleScope.user
+                : null),
+        cwd: resolvedOptions.cwd,
+        projectRoot: resolvedOptions.projectRoot,
         home: valueOf(_PackContextOptions.home),
         geminiDir: valueOf(_PackContextOptions.geminiDir),
         stateDir: valueOf(_PackContextOptions.state),
@@ -264,6 +337,11 @@ final class PackActionCommand extends Command {
         target: mutating ? valueOf(_harness) ?? valueOf(_target) : null,
         only: only,
         method: mutating ? valueOf(_method)?.wireName : null,
+        reviewedPlan: _operation == PackOperation.migrate
+            ? valueOf(_reviewedPlan)
+            : null,
+        dropPromptTargets:
+            _operation == PackOperation.migrate && valueOf(_dropPromptTargets),
         release: valueOf(_release),
         bump: mutating ? valueOf(_bump)?.name : null,
         includePrerelease: valueOf(_includePrerelease),
@@ -291,9 +369,11 @@ final class PackActionCommand extends Command {
             : null,
         localEdits: mutating && valueOf(_localEdits),
         dryRun: valueOf(_dryRun),
+        promptTargets: _operation == PackOperation.install
+            ? valueOf(_promptTargets) ?? const <String>[]
+            : const <String>[],
         yes: yes,
-        interactive:
-            stdin.hasTerminal && !yes && format == LifecycleOutputFormat.text,
+        interactive: interactive,
       ),
     );
     return switch (format) {

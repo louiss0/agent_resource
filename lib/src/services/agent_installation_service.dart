@@ -8,6 +8,7 @@ import 'package:mamba/mamba.dart';
 
 import '../../components/acquisition_progress.dart';
 import '../agent_inspection.dart';
+import '../configuration/effective_configuration.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/installation_batch.dart';
 import '../installation/installation_interaction.dart';
@@ -81,6 +82,12 @@ interface class AgentInstallationService {
         );
       }
     }
+    request = await resolveInstallationScope(
+      request,
+      _interaction,
+      _fileSystem,
+      interactive: interactive,
+    );
     final source = await _source(request, interactive);
     if (source == null) {
       return const InstallationCancelledResult('agent install');
@@ -89,6 +96,32 @@ interface class AgentInstallationService {
       request.options,
       fileSystem: _fileSystem,
     );
+    final targetExplicit = request.targets.isNotEmpty;
+    final effective = interactive
+        ? await effectiveInstallationConfiguration(
+            request,
+            context,
+            _fileSystem,
+          )
+        : null;
+    final targetSetting = effective?.settings.singleWhere(
+      (setting) => setting.key == EligiblePreference.installTargets.wireName,
+    );
+    final configuredTargets =
+        ((targetSetting?.value as List<Object?>?)?.cast<String>() ??
+                const <String>[])
+            .where(
+              (target) => InstallationTarget.values.any(
+                (value) => value.name == target,
+              ),
+            )
+            .toList();
+    if (request.targets.isEmpty && configuredTargets.isNotEmpty) {
+      request = request.withTargets([
+        for (final target in configuredTargets)
+          InstallationTarget.values.byName(target),
+      ]);
+    }
     final workspace = interactive
         ? await _progress(
             'Acquiring Agent source',
@@ -125,6 +158,23 @@ interface class AgentInstallationService {
       if (candidates == null) {
         return const InstallationCancelledResult('agent install');
       }
+      if (targetExplicit &&
+          candidates.sourceKind == AcquisitionSourceKind.resource &&
+          (request.targets.length != 1 ||
+              request.targets.single !=
+                  _target(candidates.candidates.single.profile!))) {
+        throw MambaException(
+          'A direct agent file requires one --target consistent with --profile.',
+        );
+      }
+      if (!targetExplicit &&
+          configuredTargets.isNotEmpty &&
+          candidates.sourceKind == AcquisitionSourceKind.resource &&
+          !request.targets.contains(
+            _target(candidates.candidates.single.profile!),
+          )) {
+        throw MambaException('No Agent resources match the preferred targets.');
+      }
       final units = <InstallationUnitPlan>[];
       final errors = <String>[];
       var worstStatus = 1;
@@ -145,11 +195,41 @@ interface class AgentInstallationService {
           exitCode: worstStatus,
         );
       }
+      final targetNames = units
+          .expand((unit) => unit.entries)
+          .map((entry) => entry.target)
+          .whereType<String>()
+          .toSet();
+      final targets = InstallationTarget.values
+          .where((target) => targetNames.contains(target.name))
+          .toList();
       final plan = InstallationPlan.create(
         command: 'agent install',
         source: candidates.provenance,
         scope: context.scope.name,
         units: units,
+        resolution: {
+          'scope': {
+            'value': context.scope.name,
+            'origin': request.scopeExplicit
+                ? 'explicit-argument'
+                : context.scope == LifecycleScope.user
+                ? 'interactive-selection'
+                : 'built-in-default',
+          },
+          'targets': {
+            'value': [for (final target in targets) target.name],
+            'origin': targetExplicit
+                ? 'explicit-argument'
+                : configuredTargets.isNotEmpty &&
+                      targets.every(
+                        (target) => configuredTargets.contains(target.name),
+                      )
+                ? targetSetting!.origin.wireName
+                : 'native-profile',
+          },
+          'method': {'value': 'copy', 'origin': 'native-profile'},
+        },
         diagnostics: [
           if (candidates.provenance.directFile)
             const <String, Object?>{
@@ -158,10 +238,25 @@ interface class AgentInstallationService {
             },
         ],
       );
+      final explicitCommand = interactive
+          ? installationExplicitCommand(
+              request: request,
+              plan: plan,
+              candidates: candidates,
+              source: source,
+              context: context,
+              targets: targets,
+              resourceType: CatalogResourceType.agent,
+            )
+          : null;
       if (request.options.dryRun) {
-        return InstallationCompletedResult(plan, InstallationOutcome.planned);
+        return InstallationCompletedResult(
+          plan,
+          InstallationOutcome.planned,
+          explicitCommand: explicitCommand,
+        );
       }
-      return await _batch.execute(
+      final result = await _batch.execute(
         plan: plan,
         context: context,
         state: state,
@@ -176,6 +271,27 @@ interface class AgentInstallationService {
         interactive: interactive,
         approved: request.options.approved,
       );
+      if (result is InstallationCompletedResult) {
+        if (interactive &&
+            result.outcome == InstallationOutcome.installed &&
+            targets.isNotEmpty) {
+          await offerInstallationPreferenceSave(
+            request: request,
+            context: context,
+            fileSystem: _fileSystem,
+            interaction: _interaction,
+            preferences: [
+              'cli.install.targets=${targets.map((target) => target.name).join(',')}',
+            ],
+          );
+        }
+        return InstallationCompletedResult(
+          result.plan,
+          result.outcome,
+          explicitCommand: explicitCommand,
+        );
+      }
+      return result;
     } finally {
       await workspace.close();
     }

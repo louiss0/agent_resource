@@ -85,6 +85,7 @@ final class PackDiscoveryCandidate {
     this.globalCompatibility,
     this.placement = PromptPlacement.uninstalled,
     this.diagnostics = const <PromptDiagnostic>[],
+    this.admission,
   });
 
   /// The source-relative identity of the candidate.
@@ -117,6 +118,25 @@ final class PackDiscoveryCandidate {
   /// The candidate-level diagnostics.
   final List<PromptDiagnostic> diagnostics;
 
+  /// The source-only installation admission of a Skill candidate, reported
+  /// separately from its native views. Null for non-Skill kinds.
+  final Map<String, Object?>? admission;
+
+  /// Returns a copy carrying the installation [admission] report.
+  PackDiscoveryCandidate withAdmission(Map<String, Object?> admission) =>
+      PackDiscoveryCandidate(
+        id: id,
+        path: path,
+        kind: kind,
+        form: form,
+        profile: profile,
+        views: views,
+        globalCompatibility: globalCompatibility,
+        placement: placement,
+        diagnostics: diagnostics,
+        admission: admission,
+      );
+
   /// Whether the candidate belongs to the Prompt selection.
   ///
   /// A source is a Prompt candidate when a consumer view classifies it as a
@@ -141,6 +161,7 @@ final class PackDiscoveryCandidate {
     if (globalCompatibility != null)
       'globalCompatibility': globalCompatibility!.name,
     'placement': placement.name,
+    if (admission != null) 'installationAdmission': admission,
     'views': [for (final view in views) view.toJson()],
     'diagnostics': [
       for (final diagnostic in diagnostics)
@@ -169,6 +190,17 @@ final class PackDiscoveryCandidate {
     }
     head.write(' placement=${placement.name}');
     lines.add(head.toString());
+    if (admission != null) {
+      lines.add(
+        '  admission: ${admission!['eligible'] == true ? 'eligible' : 'ineligible'}',
+      );
+      for (final diagnostic
+          in (admission!['diagnostics'] as List? ?? const <Object?>[])) {
+        if (diagnostic is Map<String, Object?>) {
+          lines.add('  admission: ${diagnostic['message']}');
+        }
+      }
+    }
     for (final view in views) {
       if (!view.installationSupported &&
           view.classification == PromptClassification.prompt) {

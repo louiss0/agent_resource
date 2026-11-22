@@ -390,8 +390,6 @@ void main() {
             'npx',
             '--args',
             'serve',
-            '--env',
-            kvRef('API_KEY', 'BUILD_TOKEN'),
             '--format',
             'json',
             ...context(),
@@ -408,7 +406,6 @@ void main() {
           expect(entry, isNotNull);
           expect(entry!['command'], 'npx');
           expect(entry['args'], <Object?>['serve']);
-          expect((entry['env'] as Map)['API_KEY'], ref('BUILD_TOKEN'));
           final records = ledgerRecords();
           expect(records, hasLength(1));
           expect(records.single['harness'], 'antigravity');
@@ -420,7 +417,41 @@ void main() {
         });
       }
 
-      test('writes the native HTTP endpoint and header keys', () async {
+      test('refuses undocumented Antigravity credential substitutions before writing', () async {
+        final before = readText(projectPath);
+        for (final args in [
+          ['--command', 'node', '--env', kvRef('TOKEN', 'TOKEN')],
+          [
+            '--url',
+            'https://example.com/mcp',
+            '--header',
+            kvRef('Authorization', 'TOKEN'),
+          ],
+        ]) {
+          final result = await exec([
+            'mcp',
+            'register',
+            '--name',
+            'svc',
+            '--harness',
+            'antigravity',
+            '--scope',
+            'project',
+            ...args,
+            ...context(),
+          ]);
+          failure(
+            result,
+            exitCode: 2,
+            token: 'Unsupported credential reference',
+            commandPath: ['agent_resource', 'mcp', 'register'],
+          );
+          expect(readText(projectPath), before);
+          expect(ledgerRecords(), isEmpty);
+        }
+      });
+
+      test('writes the native HTTP endpoint key', () async {
         final result = await exec(<String>[
           'mcp',
           'register',
@@ -432,8 +463,6 @@ void main() {
           'project',
           '--url',
           'https://docs.example.test/mcp',
-          '--header',
-          kvRef('Authorization', 'DOCS_TOKEN'),
           '--format',
           'json',
           ...context(),
@@ -443,9 +472,7 @@ void main() {
         expect(entry, isNotNull);
         expect(entry!['serverUrl'], 'https://docs.example.test/mcp');
         expect(entry.containsKey('url'), isFalse);
-        expect(entry['headers'], <String, Object?>{
-          'Authorization': ref('DOCS_TOKEN'),
-        });
+        expect(entry.containsKey('headers'), isFalse);
       });
 
       test('replaces, adopts and unregisters managed entries without rewriting unrelated bytes', () async {

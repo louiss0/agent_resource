@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 ﻿# Native Pi context files: `AGENTS.md` and `CLAUDE.md`
 
 Research for [issue #112](https://github.com/louiss0/agent_resource/issues/112), â€œEstablish native Pi context file conventions.â€ Live web retrieval succeeded for the official Pi documentation and upstream source/issues cited below. The installed package inspected locally is `@earendil-works/pi-coding-agent` **1.5.2**; upstream links reference `main` as retrieved in this research session. **No `pi` process was started and no provider request was captured**, so this is documentation plus static source verification, not empirical runtime certification.

@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Claude Code MCP registration contracts
 
 Research for [issue #97](https://github.com/louiss0/agent_resource/issues/97), retrieved 2026-11-16. This is documentation evidence, not a tested runtime contract; the live first-party pages may change independently of Claude Code releases. No MCP servers, helpers, Claude commands, or credentials were executed or accessed. HTTP retrieval used official documentation only. Examples are illustrative, not instructions to connect a server.

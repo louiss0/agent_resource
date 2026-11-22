@@ -11,7 +11,10 @@ import 'package:path/path.dart' as p;
 /// fixture deterministic without changing what the test observes.
 Future<T> withSerializedProcessFixture<T>(Future<T> Function() body) async {
   final lock = File(
-    p.join(Directory.systemTemp.path, 'agent_resource_process_fixture.lock'),
+    p.join(
+      Directory.systemTemp.resolveSymbolicLinksSync(),
+      'agent_resource_process_fixture.lock',
+    ),
   );
   final deadline = DateTime.now().add(const Duration(minutes: 5));
   while (true) {

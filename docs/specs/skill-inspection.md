@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Read-only skill inspection
 
 > **Research-audit amendment — current command tree and scope.** This amendment supersedes the earlier root-level action-command hierarchy and stale direct invocation examples in this specification. Production exposes `skill` and `agent` groups under `agent_resource`. The `skill` group has `discover`, `inspect`, and `validate` children and no root-level aliases. Invoke this feature as `agent_resource skill inspect --skill ...`; root help lists both groups, while `agent_resource skill --help` lists the child commands. Existing tests stay in `test/` and assert the command path `agent_resource` → `skill` → `inspect`; process-isolation snapshots initialize all working, home, configuration, and temporary directories before comparison. Compare names, types, and bytes, not access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.

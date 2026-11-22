@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Checkpoints 5–6: Dart library recommendations
 
 Retrieved **2026-10-26 UTC**. Scope: true directory symlinks with entry-only ownership; selected-unit native JSON/TOML patches and private recovery. Supplements [filesystem safety](dart-filesystem-safety.md) and [parent configuration](agent-parent-configuration.md), not a replacement safety/authority specification. **Recommendation ≠ implemented or proven guarantee.** SDK observations below pin Dart 3.13.2 commit `60a57cd42d64dc03e9f07aa60a2e250755c1ef28`; package observations use published version archives. No web/search-enabling tool was exposed; primary sources were retrieved directly over HTTPS. No dependencies installed, application code changed, native mutation probes run, or real user configuration read.

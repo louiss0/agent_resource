@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:mamba/mamba.dart';
+import 'package:toml/toml.dart';
 
 import 'mcp_native.dart' show McpNativeFormat;
 
@@ -638,6 +639,18 @@ bool _isMcpServerDescendant(_TomlHeader header, String name) =>
     header.segments.first == 'mcp_servers' &&
     header.segments[1] == name;
 
+// Trivia immediately before the next header may document that table.
+int _preserveTrailingTomlTrivia(List<_TomlLine> lines, int start, int end) {
+  var result = end;
+  for (final line in lines.reversed) {
+    if (line.start < start || line.end > end) continue;
+    final trimmed = line.raw.trim();
+    if (trimmed.isNotEmpty && !trimmed.startsWith('#')) break;
+    result = line.start;
+  }
+  return result;
+}
+
 /// (regionStart, regionEnd, headerEnd, hasTable).
 ({int start, int end, int headerEnd, bool found}) _tomlTable(
   String source,
@@ -666,7 +679,11 @@ bool _isMcpServerDescendant(_TomlHeader header, String name) =>
     if (!lines[i].isHeader) continue;
     final header = _tomlHeader(lines[i].raw);
     if (header != null && _isMcpServerDescendant(header, name)) continue;
-    regionEnd = lines[i].start;
+    regionEnd = _preserveTrailingTomlTrivia(
+      lines,
+      lines[headerIndex].end,
+      lines[i].start,
+    );
     break;
   }
   return (
@@ -805,6 +822,28 @@ final class _TomlEntryEditor {
   String apply(String name, McpEntryMutation mutation) {
     _rejectAmbiguousToml(text);
     final newline = text.contains('\r\n') ? '\r\n' : '\n';
+    final result = _render(name, mutation, newline);
+    try {
+      final document = TomlDocument.parse(result).toMap();
+      final servers = document['mcp_servers'];
+      final entry = servers is Map ? servers[name] : null;
+      final desired = switch (mutation) {
+        McpInsertEntry() => mutation.fields,
+        McpPatchEntry() => mutation.proposed,
+        McpRemoveEntry() => null,
+      };
+      if (!_same(entry, desired)) {
+        throw _invalid('rendered TOML does not match the requested entry.');
+      }
+    } on MambaException {
+      rethrow;
+    } catch (_) {
+      throw _invalid('rendered TOML is invalid.');
+    }
+    return result;
+  }
+
+  String _render(String name, McpEntryMutation mutation, String newline) {
     switch (mutation) {
       case McpInsertEntry():
         return _insertTable(name, mutation.fields, newline);
@@ -844,10 +883,69 @@ final class _TomlEntryEditor {
     String newline,
   ) {
     final table = _tomlTable(text, name);
-    if (!table.found) {
-      return _insertTable(name, proposed, newline);
-    }
     var result = text;
+    // Descendant tables may be interleaved with unrelated tables. Remove only
+    // descendants of changed top-level fields, leaving other tables intact.
+    final changed = current.keys
+        .where(
+          (key) =>
+              !proposed.containsKey(key) || !_same(current[key], proposed[key]),
+        )
+        .toSet();
+    final descendants = <String>{};
+    final lines = _tomlLines(result);
+    final ranges = <({int start, int end})>[];
+    for (var i = 0; i < lines.length; i++) {
+      final header = _tomlHeader(lines[i].raw);
+      if (header == null ||
+          !_isMcpServerDescendant(header, name) ||
+          !changed.contains(header.segments[2])) {
+        continue;
+      }
+      descendants.add(header.segments[2]);
+      var end = result.length;
+      for (var j = i + 1; j < lines.length; j++) {
+        if (lines[j].isHeader) {
+          end = _preserveTrailingTomlTrivia(
+            lines,
+            lines[i].end,
+            lines[j].start,
+          );
+          break;
+        }
+      }
+      ranges.add((start: lines[i].start, end: end));
+    }
+    // Dotted keys in the server table also contribute nested fields.
+    for (final line in lines) {
+      if (line.start < table.headerEnd) continue;
+      if (line.start >= table.end || line.isHeader) break;
+      if (line.equalsIndex <= 0) continue;
+      final key = _tomlHeader(
+        '[${line.raw.substring(0, line.equalsIndex).trim()}]',
+      );
+      if (key == null ||
+          key.segments.length < 2 ||
+          !changed.contains(key.segments.first)) {
+        continue;
+      }
+      descendants.add(key.segments.first);
+      ranges.add((start: line.start, end: line.end));
+    }
+    ranges.sort((a, b) => b.start.compareTo(a.start));
+    for (final range in ranges) {
+      result = result.substring(0, range.start) + result.substring(range.end);
+    }
+    if (!table.found) {
+      // An implicit server table can be introduced solely by descendants.
+      // Unchanged descendants already express their field in the document.
+      final direct = <String, Object?>{
+        for (final entry in proposed.entries)
+          if (!current.containsKey(entry.key) || changed.contains(entry.key))
+            entry.key: entry.value,
+      };
+      return _TomlEntryEditor(result)._insertTable(name, direct, newline);
+    }
     for (final key in current.keys.toList()) {
       if (proposed.containsKey(key)) {
         continue;
@@ -863,7 +961,7 @@ final class _TomlEntryEditor {
     // New keys are inserted directly after the table header.
     final added = <MapEntry<String, Object?>>[];
     for (final entry in proposed.entries) {
-      if (!current.containsKey(entry.key)) {
+      if (!current.containsKey(entry.key) || descendants.contains(entry.key)) {
         added.add(entry);
       }
     }
@@ -882,7 +980,7 @@ final class _TomlEntryEditor {
           _same(current[entry.key], entry.value)) {
         continue;
       }
-      if (!current.containsKey(entry.key)) {
+      if (!current.containsKey(entry.key) || descendants.contains(entry.key)) {
         continue; // already inserted above
       }
       final range = _tomlKeyRange(result, name, entry.key);

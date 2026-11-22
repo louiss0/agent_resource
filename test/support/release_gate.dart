@@ -59,6 +59,7 @@ Future<void> main(List<String> args) async {
       );
       results.add(<String, Object?>{
         'scenario': scenario,
+        'verification': 'native',
         'arguments': arguments.map((value) {
           final sanitized = value.replaceAll(sandbox.path, '<sandbox>');
           return sensitiveCredential.isEmpty
@@ -918,7 +919,16 @@ Canonical body.
         'serverUrl': Platform.environment['GITHUB_SERVER_URL'],
       },
       'results': results,
-      'httpsGitQualification': httpsEvidence,
+      'httpsGitQualification': <String, Object?>{
+        ...httpsEvidence,
+        'verification': 'native',
+      },
+      'unverifiedLiveHarness': const <String>[
+        'skill invocation by the target harness',
+        'manual-only Prompt behavior',
+        'MCP server connectivity and credential authentication',
+        'Context consumption by the harness',
+      ],
       'observedStatuses': observed,
       'missingStatuses': missing,
       'deferredStatuses': deferred,

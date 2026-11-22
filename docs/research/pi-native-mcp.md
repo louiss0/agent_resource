@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Pi native MCP registration contracts
 
 Research for [issue 99](https://github.com/louiss0/agent_resource/issues/99). Retrieved 2026-11-16. This is documentation and static source evidence, not a runtime certification. Sources are pinned to upstream Pi commit `5a2febe5d7638ab05540b44a60518b41201be170`; installed versions may differ. No MCP servers were executed, credentials accessed, or configuration modified.

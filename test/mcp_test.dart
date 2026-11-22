@@ -809,6 +809,41 @@ void main() {
           expectStaticOnly(output);
         });
 
+        test(
+          'states the static verification boundary in text and JSON',
+          () async {
+            final envelope = successEnvelope(
+              await exec(validateArgs(<String>['--format', 'json'])),
+            );
+            final data = envelope['data'] as Map<String, dynamic>;
+            expect(data['verification'], 'static');
+            expect(data['claim'], contains('no runtime success is claimed'));
+            final diagnostics = envelope['diagnostics'] as List;
+            expect(
+              diagnostics.map((d) => (d as Map)['code']),
+              contains('STATIC_CONFIGURATION_ONLY'),
+            );
+            final report = data['report'] as Map<String, dynamic>;
+            expect(report['verification'], 'static');
+
+            final text = (await exec(
+              validateArgs(<String>[]),
+            ) as MambaSuccessResult).output!;
+            expect(text, contains('verification: static'));
+            expect(text, contains('no runtime success is claimed'));
+            expectNoSecrets(text);
+            expectStaticOnly(text);
+
+            writeInvalidEntry();
+            final invalid = validationReport(
+              await exec(validateArgs(<String>['--format', 'json'])),
+              code: 'MCP_TRANSPORT_CONFLICT',
+            );
+            expect(invalid['verification'], 'static');
+            expect(invalid['claim'], contains('not runtime-verified'));
+          },
+        );
+
         test('renders deterministic redacted text', () async {
           final first = (await exec(
             validateArgs(<String>[]),

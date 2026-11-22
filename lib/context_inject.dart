@@ -1,4 +1,4 @@
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, stdout;
 
 import 'package:mamba/mamba.dart';
 
@@ -16,10 +16,10 @@ final _harnessOption = RepeatableChoiceOption<ContextHarness>(
   'harness',
   ContextHarness.values,
 );
-final _scopeOption = ChoiceOption.withDefault(
+final _scopeOption = ChoiceOption(
   'scope',
   choices: ContextScope.values,
-  defaultValue: ContextScope.project,
+  description: 'Injection scope; project is the interactive default.',
 );
 final _folderOption = StringOption('folder');
 final _variantOption = StringOption('variant');
@@ -46,6 +46,8 @@ final class ContextInjectCommand extends Command {
     Future<List<ContextHarness>?> Function()? selectHarnesses,
     ContextTemplateSelection? selectTemplate,
     Future<bool> Function()? confirm,
+    Future<bool> Function()? offerUserScope,
+    void Function(String)? presentPlan,
     bool Function()? hasTerminal,
     InstallationApprovalComponent? approval,
   }) : _approval =
@@ -56,6 +58,8 @@ final class ContextInjectCommand extends Command {
                  '(Ctrl+C to cancel)',
            ),
        _explicitConfirm = confirm,
+       _offerUserScope = offerUserScope ?? _defaultOfferUserScope,
+       _presentPlan = presentPlan ?? stdout.writeln,
        _selectHarnesses = selectHarnesses ?? _defaultHarnessSelector,
        _selectTemplate = selectTemplate ?? selectStoredContextTemplate,
        _hasTerminal =
@@ -107,6 +111,8 @@ final class ContextInjectCommand extends Command {
   final ContextTemplateSelection _selectTemplate;
   final InstallationApprovalComponent _approval;
   final Future<bool> Function()? _explicitConfirm;
+  final Future<bool> Function() _offerUserScope;
+  final void Function(String) _presentPlan;
   final bool Function() _hasTerminal;
 
   @override
@@ -120,14 +126,53 @@ final class ContextInjectCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final format = valueOf(contextFormatOption);
     requireContextInteractiveFormat(valueOf(_interactiveFlag), format);
-    final options = _options(valueOf);
+    final terminal = _hasTerminal();
+    if (valueOf(_interactiveFlag) && !terminal) {
+      throw _refusal(
+        'INTERACTIVE_TERMINAL_REFUSED',
+        'No usable input and output terminal for interactive injection.',
+      );
+    }
+    var options = _options(valueOf);
     final interactive =
         !valueOf(_unattendedFlag) &&
         format == ContextOutputFormat.text &&
-        (valueOf(_interactiveFlag) || _hasTerminal());
+        terminal;
+    if (!interactive &&
+        valueOf(_applyFlag) &&
+        !valueOf(_dryRunFlag) &&
+        valueOf(_scopeOption) == null) {
+      throw _refusal(
+        'MISSING_SCOPE',
+        'Unattended publication requires explicit --scope project|user.',
+      );
+    }
+    var fallbackToUser = false;
+    if (interactive &&
+        valueOf(_scopeOption) == null &&
+        options.projectRoot != null) {
+      try {
+        LifecycleContext.resolve(options, fileSystem: _injection.fileSystem);
+      } on MambaException catch (error, stack) {
+        final fallback = options.copyWith(
+          scope: LifecycleScope.user,
+          clearProjectRoot: true,
+        );
+        try {
+          LifecycleContext.resolve(fallback, fileSystem: _injection.fileSystem);
+        } on MambaException {
+          Error.throwWithStackTrace(error, stack);
+        }
+        if (!await _offerUserScope()) throw _cancelled();
+        options = fallback;
+        fallbackToUser = true;
+      }
+    }
     final name = await _resolveName(valueOf, options, interactive);
     final harnesses = await _resolveHarnesses(valueOf, interactive);
-    final scope = valueOf(_scopeOption);
+    final scope =
+        valueOf(_scopeOption) ??
+        (fallbackToUser ? ContextScope.user : ContextScope.project);
     final folder = valueOf(_folderOption);
     if (folder != null && scope == ContextScope.user) {
       throw _refusal(
@@ -166,7 +211,50 @@ final class ContextInjectCommand extends Command {
       data: reported.toData(),
       diagnostics: _injection.diagnostics(plan),
     );
-    return renderContextResult(result, format);
+    final rendered = renderContextResult(result, format);
+    if (!interactive) return rendered;
+    final tokens = <String>[
+      'context',
+      'inject',
+      name,
+      for (final harness in harnesses) ...['--harness', harness.name],
+      '--scope',
+      scope.name,
+      '--variant',
+      variant.wireName,
+      if (folder != null) ...['--folder', folder],
+      if (valueOf(_replaceFlag)) '--replace',
+      if (valueOf(_showInstructionsFlag)) '--show-instructions',
+      if (valueOf(_dryRunFlag)) '--dry-run',
+      if (publish) ...['--apply', '--yes'],
+      '--unattended',
+      if (options.cwd != null) ...['--cwd', options.cwd!],
+      if (options.projectRoot != null) ...[
+        '--project-root',
+        options.projectRoot!,
+      ],
+      if (options.home != null) ...['--home', options.home!],
+      if (options.claudeConfigDir != null) ...[
+        '--claude-config-dir',
+        options.claudeConfigDir!,
+      ],
+      if (options.codexHome != null) ...['--codex-home', options.codexHome!],
+      if (options.piAgentDir != null) ...[
+        '--pi-agent-dir',
+        options.piAgentDir!,
+      ],
+      if (options.geminiDir != null) ...['--gemini-dir', options.geminiDir!],
+      if (options.stateDir != null) ...['--state-dir', options.stateDir!],
+    ];
+    return '$rendered\nExplicit command (${Platform.isWindows ? 'PowerShell' : 'POSIX shell'}): '
+        'agent_resource ${tokens.map(_quoteCommandArgument).join(' ')}';
+  }
+
+  String _quoteCommandArgument(String value) {
+    if (RegExp(r'^[A-Za-z0-9_./:-]+$').hasMatch(value)) return value;
+    return Platform.isWindows
+        ? "'${value.replaceAll("'", "''")}'"
+        : "'${value.replaceAll("'", "'\\''")}'";
   }
 
   Future<ContextInjectionPlan> _publish(
@@ -183,6 +271,14 @@ final class ContextInjectCommand extends Command {
           'Supply --yes to apply a plan in unattended mode.',
         );
       }
+      _presentPlan(
+        LifecycleResult(
+          command: 'context inject',
+          outcome: 'planned',
+          data: plan.toData(),
+          diagnostics: _injection.diagnostics(plan),
+        ).renderText(),
+      );
       if (!await _confirm()) {
         throw _cancelled();
       }
@@ -268,6 +364,11 @@ final class ContextInjectCommand extends Command {
       for (final index in choice) ContextHarness.values[index],
     ];
   }
+
+  static Future<bool> _defaultOfferUserScope() =>
+      const InstallationApprovalComponent(
+        label: 'Project context is unavailable. Use user scope instead?',
+      ).render();
 
   Future<bool> _confirm() => _explicitConfirm?.call() ?? _approval.render();
 

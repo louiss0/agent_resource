@@ -5,6 +5,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'src/resource_lifecycle_boundaries.dart';
+
 import 'conversion.dart';
 import 'lifecycle.dart' show LifecycleOutputFormat;
 import 'prompt_create_command.dart';
@@ -39,8 +41,9 @@ final class PromptCommand extends GroupCommand {
          PromptListCommand(
            read ?? PromptReadService(fileSystem: fileSystem),
            fileSystem: fileSystem,
+           guided: guided,
          ),
-       ]);
+       ], longDescription: renderBoundaryHelp(BoundaryResource.prompt));
 
   @override
   String get name => 'prompt';
@@ -189,7 +192,9 @@ final class PromptListCommand extends Command {
   PromptListCommand(
     this._read, {
     this._fileSystem = const local.LocalFileSystem(),
-  }) : super(
+    GuidedAuthoringService? guided,
+  }) : _guided = guided ?? GuidedAuthoringService(fileSystem: _fileSystem),
+       super(
          options: [
            _scope,
            _target,
@@ -213,12 +218,9 @@ final class PromptListCommand extends Command {
 
   final fslib.FileSystem _fileSystem;
   final PromptReadService _read;
+  final GuidedAuthoringService _guided;
 
-  static final _scope = ChoiceOption.withDefault(
-    'scope',
-    choices: LifecycleScope.values,
-    defaultValue: LifecycleScope.user,
-  );
+  static final _scope = ChoiceOption('scope', choices: LifecycleScope.values);
   static final _target = _promptTarget;
   static final _format = _promptFormat;
   static final _cwd = FolderPathOption('cwd');
@@ -239,11 +241,20 @@ final class PromptListCommand extends Command {
   Future<String> run(ValueOf valueOf, List<String> args) async {
     final target = valueOf(_target) as PromptConsumer?;
     _requirePromptTarget(target);
-    final inventory = await _read.list(
-      LifecycleOptions(
+    final options = await resolveInteractiveUserScope(
+      fileSystem: _fileSystem,
+      interactive:
+          valueOf(_format) == LifecycleOutputFormat.text && _guided.hasTerminal,
+      scopeExplicit: valueOf(_scope) != null,
+      offerUserScope: () async =>
+          (await _guided.valueQuestion?.call(
+            'Project context is unavailable. Type user to inventory user scope:',
+          ))?.trim() ==
+          'user',
+      options: LifecycleOptions(
         processWorkingDirectory: _fileSystem.currentDirectory.path,
         environment: Platform.environment,
-        scope: valueOf(_scope),
+        scope: valueOf(_scope) ?? LifecycleScope.project,
         cwd: valueOf(_cwd),
         projectRoot: valueOf(_projectRoot),
         home: valueOf(_home),
@@ -252,8 +263,8 @@ final class PromptListCommand extends Command {
         codexHome: valueOf(_codexHome),
         piAgentDir: valueOf(_piAgentDir),
       ),
-      consumer: target,
     );
+    final inventory = await _read.list(options, consumer: target);
     return switch (valueOf(_format)) {
       LifecycleOutputFormat.json => jsonEncode(inventory.toJson()),
       LifecycleOutputFormat.text => inventory.renderText(),

@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 ## Problem Statement
 
 A developer maintaining a local Skill must currently reinstall a copied installation to expose source changes to a consuming harness. A linked installation should let the developer work on one source tree without granting Agent Resource ownership of that source. The dangerous failure is treating a directory link like a copied directory: removing, replacing, backing up, restoring, or cleaning an installation must never recursively change its user-owned target.

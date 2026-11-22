@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Conversion evidence and identity transitions
 
 This spec documents the implemented evidence slice of the Prompt conversion

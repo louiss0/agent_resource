@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Codex MCP registration contracts
 
 Research for [issue 98](https://github.com/louiss0/agent_resource/issues/98). Sources are OpenAI's current documentation, consulted 2026-07-17; this is documentation research, not a runtime compatibility test. Codex and its documentation can change independently of installed versions. This concerns Codex as an MCP client, not its separate MCP server mode.

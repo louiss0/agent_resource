@@ -35,7 +35,7 @@ final class McpMutationInputs {
   );
   final _env = RepeatableStringOption(
     'env',
-    description: 'A stdio env KEY=reference (VAR-in-braces or !command).',
+    description: 'A stdio env KEY=reference (harness restrictions apply).',
   );
   final _url = StringOption(
     'url',
@@ -44,7 +44,7 @@ final class McpMutationInputs {
   );
   final _header = RepeatableStringOption(
     'header',
-    description: 'An HTTP header KEY=reference (VAR-in-braces or !command).',
+    description: 'An HTTP header KEY=reference (harness restrictions apply).',
   );
   final _type = StringOption(
     'type',
@@ -227,10 +227,10 @@ final class McpReplaceCommand extends McpMutationCommand {
         service,
         McpMutationOperation.replace,
         McpMutationInputs(),
-        'Edit one managed MCP registration with the same interactive review '
-        'and approval. The selected named entry is patched field by field; '
-        'existing literal credentials are retained in place and never '
-        'displayed or copied. Externally changed state requires reviewed '
+        'Replace one managed MCP registration with a complete desired entry. '
+        'Supply exactly one transport and every field to retain; omitted fields '
+        'are removed, including existing credentials. Review shows the redacted '
+        'old and proposed entries before approval. Externally changed state requires reviewed '
         '--allow-drift resolution with a --plan-id. The resulting entry is '
         'validated statically before any write.',
       );

@@ -116,6 +116,187 @@ void main() {
           expect(project.listSync(recursive: true), isEmpty);
         });
 
+        test(
+          'interactive collection applies project target preference',
+          () async {
+            final collection = fs.directory('/sandbox/collection')
+              ..createSync();
+            fs
+                .file('${collection.path}/agent-resources.toml')
+                .writeAsStringSync('''
+schema_version = 1
+[[agents]]
+id = "claude-reviewer"
+path = "claude.md"
+profile = "claude"
+[[agents]]
+id = "codex-reviewer"
+path = "codex.md"
+profile = "codex"
+''');
+            for (final name in ['claude', 'codex']) {
+              fs
+                  .file('${collection.path}/$name.md')
+                  .writeAsStringSync(
+                    '---\nname: reviewer\ndescription: Reviews.\n---\nBody.\n',
+                  );
+            }
+            fs.file('${project.path}/agent-resources.toml').writeAsStringSync(
+              '''
+schema_version = 1
+[cli.install]
+targets = ["claude"]
+''',
+            );
+            interaction.resourceSelections.add(['claude-reviewer']);
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              collection.path,
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final output = (result as MambaSuccessResult).output!;
+            expect(output, contains('Profile: claude'));
+            expect(output, contains('project-config'));
+            expect(output, isNot(contains('codex-reviewer')));
+          },
+        );
+
+        test(
+          'interactive exact Agent rejects a conflicting target preference',
+          () async {
+            final source = agent();
+            fs
+                .file('${project.path}/agent-resources.toml')
+                .writeAsStringSync(
+                  'schema_version = 1\n[cli.install]\ntargets = ["codex"]\n',
+                );
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              source.path,
+              '--profile',
+              'claude',
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>().having(
+                (r) => r.message,
+                'message',
+                contains('No Agent resources match the preferred targets'),
+              ),
+            );
+            expect(
+              fs.directory('${project.path}/.claude').existsSync(),
+              isFalse,
+            );
+          },
+        );
+
+        for (final scenario in [
+          (
+            targets: '"codex", "claude"',
+            explicit: false,
+            origin: 'project-config',
+          ),
+          (targets: '"codex"', explicit: true, origin: 'explicit-argument'),
+        ]) {
+          test(
+            'interactive exact Agent accepts matching or explicit target $scenario',
+            () async {
+              final source = agent();
+              fs
+                  .file('${project.path}/agent-resources.toml')
+                  .writeAsStringSync(
+                    'schema_version = 1\n[cli.install]\ntargets = [${scenario.targets}]\n',
+                  );
+              final result = await executor().fake().execute([
+                'agent',
+                'install',
+                source.path,
+                '--profile',
+                'claude',
+                if (scenario.explicit) ...['--target', 'claude'],
+                ...context(),
+                '--dry-run',
+              ]);
+              expect(
+                result,
+                isA<MambaSuccessResult>(),
+                reason: result is MambaFailureResult ? result.message : null,
+              );
+              final output = (result as MambaSuccessResult).output!;
+              expect(output, contains('Profile: claude'));
+              expect(output, contains(scenario.origin));
+            },
+          );
+        }
+
+        test(
+          'interactive exact Agent rejects an incompatible explicit target',
+          () async {
+            final source = agent();
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              source.path,
+              '--profile',
+              'claude',
+              '--target',
+              'codex',
+              ...context(),
+              '--dry-run',
+            ]);
+            expect(
+              result,
+              isA<MambaFailureResult>().having(
+                (r) => r.message,
+                'message',
+                contains('consistent with --profile'),
+              ),
+            );
+          },
+        );
+
+        test(
+          'interactive Agent install can save only its target preference',
+          () async {
+            final source = agent();
+            interaction.approvals.add(true);
+            interaction.preferenceSaves.add(true);
+            final result = await executor().fake().execute([
+              'agent',
+              'install',
+              source.path,
+              '--profile',
+              'claude',
+              ...context(),
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(interaction.preferenceOffers, [
+              ['cli.install.targets=claude'],
+            ]);
+            expect(
+              fs
+                  .file('${project.path}/agent-resources.toml')
+                  .readAsStringSync(),
+              contains('targets = ["claude"]'),
+            );
+          },
+        );
+
         test('interactive direct file asks profile but not a redundant target question', () async {
           final source = agent();
           interaction.sources.add(source.path);
@@ -138,6 +319,46 @@ void main() {
           );
           expect(
             (result as MambaSuccessResult).output,
+            contains('Profile: claude'),
+          );
+          final output = result.output!;
+          expect(output, contains('Explicit command'));
+          expect(output, contains('--profile claude'));
+          expect(output, contains('--target claude'));
+          expect(output, contains('--source-kind resource'));
+          final command = output.split('\n').last.split('): ').last;
+          final shell = await Process.run(
+            Platform.isWindows ? 'powershell.exe' : 'sh',
+            Platform.isWindows
+                ? [
+                    '-NoProfile',
+                    '-Command',
+                    'function agent_resource { \$args | ConvertTo-Json -Compress }; $command',
+                  ]
+                : [
+                    '-c',
+                    'agent_resource() { printf "%s\\n" "\$@"; }; $command',
+                  ],
+          );
+          expect(shell.exitCode, 0, reason: '${shell.stderr}');
+          final args = Platform.isWindows
+              ? (jsonDecode(shell.stdout as String) as List).cast<String>()
+              : (shell.stdout as String).trimRight().split('\n');
+          final replay = await createExecutor(
+            fileSystem: fs,
+            agentInstallation: AgentInstallationService(
+              fileSystem: fs,
+              interaction: ScriptedInstallationInteraction(interactive: false),
+              progress: noInstallationProgress,
+            ),
+          ).fake().execute(args);
+          expect(
+            replay,
+            isA<MambaSuccessResult>(),
+            reason: replay is MambaFailureResult ? replay.message : null,
+          );
+          expect(
+            (replay as MambaSuccessResult).output,
             contains('Profile: claude'),
           );
           expect(interaction.targetSelections, isEmpty);

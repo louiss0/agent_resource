@@ -9,6 +9,7 @@ import 'components/installation_approval.dart';
 
 import 'src/agent_inspection.dart';
 import 'src/services/agent_lifecycle_service.dart';
+import 'src/services/configuration_publication_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/bound_role_service.dart';
 import 'src/services/parent_config_service.dart';
@@ -227,6 +228,7 @@ final class LifecycleActionCommand extends Command {
              _skillHarnesses,
            if (_operation == _Operation.recover) _recoveryAction,
            if (_operation == _Operation.recover) _recoveryPlan,
+           if (_operation == _Operation.recover) _configurationTarget,
            if (_resource == _Resource.agent &&
                (_operation == _Operation.adopt ||
                    _operation == _Operation.replace ||
@@ -364,6 +366,10 @@ final class LifecycleActionCommand extends Command {
     choices: RecoveryAction.values,
     description:
         'Persisted recovery transition; requires transaction ID and approval.',
+  );
+  static final _configurationTarget = StringOption(
+    'configuration-target',
+    description: 'Inspect evidence for this explicit configuration path.',
   );
   static final _recoveryPlan = StringOption(
     'plan-id',
@@ -526,6 +532,27 @@ final class LifecycleActionCommand extends Command {
     ValueOf valueOf,
     LifecycleOptions options,
   ) async {
+    if (_operation == _Operation.recover) {
+      final target = valueOf(_configurationTarget);
+      if (target != null) {
+        final state = _agent?.state ?? _skill!.state;
+        final context = LifecycleContext.resolve(
+          options,
+          fileSystem: state.io.fs,
+        );
+        return ConfigurationPublicationService(
+          fileSystem: state.io.fs,
+          state: state,
+        ).inspectRecovery(
+          context: context,
+          targetPath: target,
+          command: '${_resource.name} recover',
+          transactionId: valueOf(_transactionId),
+          action: valueOf(_recoveryAction)?.name,
+          planId: valueOf(_recoveryPlan),
+        );
+      }
+    }
     if (_resource == _Resource.skill) {
       final service = _skill!;
       switch (_operation) {

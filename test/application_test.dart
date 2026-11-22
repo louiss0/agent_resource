@@ -121,6 +121,34 @@ void main() {
       }
     });
 
+    test('root help gives task-oriented first-success guidance', () async {
+      final result = _expectSuccess(
+        await createExecutor().fake().execute(['--help']),
+        isNotEmpty,
+      );
+      final output = result.output!;
+
+      expect(output, contains('Common first tasks:'));
+      const tasks = <String, String>{
+        'Install a Skill':
+            'agent-resource skill install <source> --target claude',
+        'Install a Pack': 'agent-resource pack install <pack>',
+        'Add an MCP registration': 'agent-resource mcp register --name <svc> --harness claude --scope project',
+        'Inject a Context template': 'agent-resource context inject <name>',
+        'Show effective preferences': 'agent-resource config effective',
+        'Update a managed Skill':
+            'agent-resource skill update <installation-id>',
+        'Migrate a Skill route':
+            'agent-resource skill migrate <installation-id> --method canonical',
+        'Inspect recovery actions': 'agent-resource skill recover',
+      };
+      for (final entry in tasks.entries) {
+        expect(output, contains(entry.key), reason: entry.key);
+        expect(output, contains(entry.value), reason: entry.key);
+      }
+      expect(output, contains('agent-resource support'));
+    });
+
     group('skill', () {
       for (final arguments in [
         const <String>[],

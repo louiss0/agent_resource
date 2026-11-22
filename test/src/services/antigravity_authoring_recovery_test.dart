@@ -85,6 +85,8 @@ void main() {
       final interrupted = await executor.execute(<String>[
         'agent',
         'create',
+        '--scope',
+        'project',
         '--profile',
         'antigravity',
         '--name',

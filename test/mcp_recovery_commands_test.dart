@@ -299,7 +299,7 @@ void main() {
           );
           expect(native, contains('# keep this comment'));
           expect(native, contains('other = "unchanged"'));
-          expect(native, contains('env = { TOKEN = "$hiddenValue" }'));
+          expect(native, isNot(contains(hiddenValue)));
 
           final backups = stateFiles(mcpBackupDirectoryName);
           expect(backups, hasLength(1));
@@ -418,7 +418,7 @@ void main() {
             native,
             contains('command = "github-mcp-old" # inline comment'),
           );
-          expect(native, contains('env = { TOKEN = "$hiddenValue" }'));
+          expect(native, contains('env = { "TOKEN" = "$hiddenValue" }'));
           expect(native, contains('# keep this comment'));
           expect(native, contains('other = "unchanged"'));
           expect(native, contains('# later unrelated edit'));
@@ -610,7 +610,7 @@ void main() {
               native,
               contains('command = "github-mcp-old" # inline comment'),
             );
-            expect(native, contains('env = { TOKEN = "$hiddenValue" }'));
+            expect(native, contains('env = { "TOKEN" = "$hiddenValue" }'));
             expect(native, contains('# keep this comment'));
             expect(native, contains('other = "unchanged"'));
             expect(

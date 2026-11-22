@@ -10,6 +10,13 @@ import 'package:mamba/mamba.dart';
 interface class NativeLinkService {
   const new();
 
+  /// Whether an existing Windows entry carries any reparse tag.
+  bool isWindowsReparsePoint(String path) {
+    if (!Platform.isWindows) return false;
+    final attributes = _win32.getFileAttributes(path);
+    return attributes != 0xFFFFFFFF && attributes & 0x400 != 0;
+  }
+
   String inspectKind(String path) {
     if (FileSystemEntity.typeSync(path, followLinks: false) !=
         FileSystemEntityType.link) {

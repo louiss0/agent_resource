@@ -5,6 +5,7 @@ import 'package:mamba/mamba.dart';
 
 import '../harness/harness_id.dart';
 import '../services/acquisition_service.dart';
+import 'installation_route.dart';
 
 enum InstallationResourceType { skill, agent }
 
@@ -43,9 +44,15 @@ enum InstallationUnitStatus {
   final String wireName;
 }
 
-enum InstallationEntryKind { content, copy, link, consumer }
+enum InstallationEntryKind { content, copy, link, consumer, template }
 
-enum OwnedArtifactKind { skillCopy, skillLink, skillCanonical, agentFile }
+enum OwnedArtifactKind {
+  skillCopy,
+  skillLink,
+  skillCanonical,
+  agentFile,
+  promptTemplate,
+}
 
 enum InstallationEntryAction {
   createContent('create-content'),
@@ -91,6 +98,7 @@ final class InstallationEntryPlan {
     this.nativeDestination,
     this.artifactKind,
     this.observedDigest,
+    this.content,
   });
 
   final String path;
@@ -103,6 +111,10 @@ final class InstallationEntryPlan {
   final String? nativeDestination;
   final OwnedArtifactKind? artifactKind;
   final String? observedDigest;
+
+  /// Rendered native content for template entries; copy/link entries leave
+  /// this null and publish from the unit source.
+  final String? content;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'path': path,
@@ -132,6 +144,7 @@ final class InstallationEntryPlan {
     nativeDestination: nativeDestination,
     artifactKind: artifactKind,
     observedDigest: observedDigest ?? this.observedDigest,
+    content: content,
   );
 }
 
@@ -148,6 +161,8 @@ final class InstallationUnitPlan {
     required this.sourcePath,
     required this.sourceDigest,
     required this.origin,
+    this.installationRoute,
+    this.admission,
   }) : entries = List<InstallationEntryPlan>.unmodifiable(entries);
 
   final InstallationResourceType resourceType;
@@ -161,6 +176,11 @@ final class InstallationUnitPlan {
   final String sourcePath;
   final String sourceDigest;
   final Map<String, Object?> origin;
+  final InstallationRoute? installationRoute;
+
+  /// The source-only installation admission of the unit, reported
+  /// separately from its planned entries.
+  final Map<String, Object?>? admission;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'resourceType': resourceType.name,
@@ -170,6 +190,7 @@ final class InstallationUnitPlan {
     'method': method.wireName,
     'status': status.wireName,
     'installationIds': installationIds,
+    if (admission != null) 'installationAdmission': admission,
     'entries': [for (final entry in entries) entry.toJson()],
   };
 
@@ -182,6 +203,8 @@ final class InstallationUnitPlan {
     'entries': [for (final entry in entries) entry.identityJson()],
     'sourceDigest': sourceDigest,
     'origin': origin,
+    if (installationRoute != null)
+      'installationRoute': installationRoute!.toJson(),
   };
 
   InstallationUnitPlan copyWith({
@@ -202,6 +225,7 @@ final class InstallationUnitPlan {
     sourcePath: sourcePath,
     sourceDigest: sourceDigest,
     origin: origin,
+    installationRoute: installationRoute,
   );
 }
 
@@ -215,6 +239,7 @@ final class InstallationPlan {
     required List<InstallationUnitPlan> units,
     required this.planId,
     this.diagnostics = const <Map<String, Object?>>[],
+    this.resolution = const <String, Object?>{},
   }) : units = List<InstallationUnitPlan>.unmodifiable(units);
 
   factory InstallationPlan.create({
@@ -223,6 +248,7 @@ final class InstallationPlan {
     required String scope,
     required List<InstallationUnitPlan> units,
     List<Map<String, Object?>> diagnostics = const <Map<String, Object?>>[],
+    Map<String, Object?> resolution = const <String, Object?>{},
   }) {
     final planId = sha256
         .convert(
@@ -244,6 +270,7 @@ final class InstallationPlan {
       units: units,
       planId: 'plan_v2_$planId',
       diagnostics: List<Map<String, Object?>>.unmodifiable(diagnostics),
+      resolution: Map<String, Object?>.unmodifiable(resolution),
     );
   }
 
@@ -253,6 +280,7 @@ final class InstallationPlan {
   final List<InstallationUnitPlan> units;
   final String planId;
   final List<Map<String, Object?>> diagnostics;
+  final Map<String, Object?> resolution;
 
   Map<String, Object?> envelope(InstallationOutcome outcome) =>
       <String, Object?>{
@@ -263,6 +291,7 @@ final class InstallationPlan {
           'planId': planId,
           'source': source.toJson(),
           'scope': scope,
+          if (resolution.isNotEmpty) 'resolution': resolution,
           'units': [for (final unit in units) unit.toJson()],
           'summary': summary,
         },
@@ -292,6 +321,9 @@ final class InstallationPlan {
       ..writeln('Plan: $planId')
       ..writeln('Source: ${source.resolvedLocator}')
       ..writeln('Scope: $scope');
+    for (final entry in resolution.entries) {
+      buffer.writeln('  ${entry.key}: ${entry.value}');
+    }
     if (source.requestedRef != null) {
       buffer.writeln('Requested ref: ${source.requestedRef}');
     }
@@ -309,6 +341,11 @@ final class InstallationPlan {
         ..writeln('  Native name: ${unit.nativeName}')
         ..writeln('  Method: ${unit.method.wireName}');
       if (unit.profile != null) buffer.writeln('  Profile: ${unit.profile}');
+      if (unit.admission != null) {
+        buffer.writeln(
+          '  Admission: ${unit.admission!['eligible'] == true ? 'eligible' : 'ineligible'}',
+        );
+      }
       for (final id in unit.installationIds) {
         buffer.writeln('  Installation: $id');
       }

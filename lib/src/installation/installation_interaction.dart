@@ -30,6 +30,8 @@ final class InteractionAnswer<T> {
 abstract interface class InstallationInteraction {
   bool get isInteractive;
 
+  Future<bool> offerUserScope();
+
   Future<InteractionAnswer<String>> requestSource();
 
   Future<InteractionAnswer<List<CatalogOffering>>> selectResources(
@@ -47,6 +49,18 @@ abstract interface class InstallationInteraction {
   void presentPlan(String completePlanPreview);
 
   Future<InteractionAnswer<bool>> approve(String completePlanPreview);
+
+  Future<bool> offerPreferenceSave(
+    List<String> preferences, {
+    required String scope,
+  });
+
+  /// One offer to also publish derived native Prompt templates; returns the
+  /// prompt-capable harnesses selected by the user (empty when declined).
+  Future<List<String>> offerDerivedPrompts(
+    List<String> eligibleSkills,
+    List<String> harnesses,
+  );
 }
 
 final class InteractInstallationInteraction implements InstallationInteraction {
@@ -57,6 +71,11 @@ final class InteractInstallationInteraction implements InstallationInteraction {
 
   @override
   bool get isInteractive => _terminal();
+
+  @override
+  Future<bool> offerUserScope() => const InstallationApprovalComponent(
+    label: 'Project context is unavailable. Use user scope instead?',
+  ).render();
 
   @override
   Future<InteractionAnswer<String>> requestSource() => _guard(() async {
@@ -135,6 +154,36 @@ final class InteractInstallationInteraction implements InstallationInteraction {
           await const InstallationApprovalComponent().render(),
         );
       });
+
+  @override
+  Future<bool> offerPreferenceSave(
+    List<String> preferences, {
+    required String scope,
+  }) => InstallationApprovalComponent(
+    label: 'Save $scope installation preferences (${preferences.join(', ')})?',
+  ).render();
+
+  @override
+  Future<List<String>> offerDerivedPrompts(
+    List<String> eligibleSkills,
+    List<String> harnesses,
+  ) async {
+    if (harnesses.length == 1) {
+      final approved = await InstallationApprovalComponent(
+        label:
+            'Publish ${harnesses.single} Prompt templates for: ${eligibleSkills.join(', ')}?',
+      ).render();
+      return approved ? harnesses : const <String>[];
+    }
+    final selected = await ResourceSelectorComponent(
+      label:
+          'Publish Prompt templates for: ${eligibleSkills.join(', ')} (Ctrl+C to skip)',
+      options: harnesses,
+    ).render();
+    return selected == null
+        ? const <String>[]
+        : [for (final index in selected) harnesses[index]];
+  }
 
   Future<InteractionAnswer<T>> _guard<T>(
     Future<InteractionAnswer<T>> Function() body,

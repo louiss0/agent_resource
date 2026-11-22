@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 ﻿# Claude Code context file conventions
 
 Research for [issue #110](https://github.com/louiss0/agent_resource/issues/110), â€œEstablish Claude Code context file conventions.â€ **Retrieved** during this research pass; the first-party docs map reports a last update of `2026-11-18 14:57:55 UTC` [MAP]. No Claude Code process, CLI command, hook, or network-connected tool was executed. This is a documentation baseline, not a tested runtime contract. The public web search did not expose the issue body, so this note addresses the title and the requested questions.

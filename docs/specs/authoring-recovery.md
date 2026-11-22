@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Authoring interruption recovery and guarded evidence cleanup
 
 This spec records the implemented recovery slice of the authoring feature set.

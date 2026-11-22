@@ -6,13 +6,15 @@ import 'package:file/local.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 void main() {
   group('editor program resolution', () {
     late Directory directory;
 
     setUp(() {
-      directory = Directory.systemTemp.createTempSync(
-        'agent resource resolver ',
+      directory = Directory(
+        createTrustedTempPathSync('agent resource resolver '),
       );
     });
 
@@ -178,8 +180,8 @@ void main() {
     });
 
     test('the arguments of a program keep their boundaries', () async {
-      final directory = await Directory.systemTemp.createTemp(
-        'agent resource transport ',
+      final directory = Directory(
+        await createTrustedTempPath('agent resource transport '),
       );
       addTearDown(() => directory.deleteSync(recursive: true));
       final script = File(p.join(directory.path, 'helper.dart'));

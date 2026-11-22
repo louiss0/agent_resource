@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform, Process;
 
 import 'package:agent_resource/agent_resource.dart';
 import 'package:agent_resource/components/installation_approval.dart';
@@ -893,6 +894,8 @@ void main() {
           }) async => successJson(
             await exec(<String>[
               ...extra,
+              '--scope',
+              'project',
               '--apply',
               '--plan-id',
               planId,
@@ -913,6 +916,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--yes',
                 '--dry-run',
@@ -1070,6 +1075,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 'pln_0000000000000000000000000000000000000000000000000000000000000000',
@@ -1099,6 +1106,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 planId,
@@ -1133,6 +1142,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 planId,
@@ -1164,6 +1175,8 @@ void main() {
                 'styles',
                 '--harness',
                 'claude',
+                '--scope',
+                'project',
                 '--apply',
                 '--plan-id',
                 planId,
@@ -1507,6 +1520,145 @@ void main() {
             },
           );
 
+          test('refuses destination changes made during approval', () async {
+            writeTemplate('styles', 'rules\n');
+            final target = fs.file('/sandbox/project/CLAUDE.md')
+              ..writeAsStringSync('before\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              hasTerminal: () => true,
+              confirm: () async {
+                target.writeAsStringSync('changed by another writer\n');
+                return true;
+              },
+            );
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--apply',
+              '--interactive',
+            ]);
+            expectFailure(result, 'CONTEXT_PLAN_DRIFT');
+            expect(target.readAsStringSync(), 'changed by another writer\n');
+          });
+
+          test('prints a quoted explicit command without template content', () async {
+            writeTemplate('styles', 'PRIVATE_CREDENTIAL_CONTENT\n');
+            fs.directory("/sandbox/project/it's here").createSync();
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              selectHarnesses: () async => [ContextHarness.pi],
+              selectTemplate: (_) async => 'styles',
+              hasTerminal: () => true,
+            );
+            final result = await execWith(injected, [
+              '--interactive',
+              '--folder',
+              "it's here",
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final output = (result as MambaSuccessResult).output!;
+            expect(output, contains('Explicit command ('));
+            expect(output, contains('--scope project'));
+            expect(output, contains('--harness pi'));
+            expect(
+              output,
+              contains(
+                Platform.isWindows
+                    ? "--folder 'it''s here'"
+                    : "--folder 'it'\\''s here'",
+              ),
+            );
+            expect(output, isNot(contains('PRIVATE_CREDENTIAL_CONTENT')));
+            final commandLine = output.split('\n').last.split('): ').last;
+            final shell = await Process.run(
+              Platform.isWindows ? 'powershell.exe' : 'sh',
+              Platform.isWindows
+                  ? [
+                      '-NoProfile',
+                      '-Command',
+                      'function agent_resource { \$args | ConvertTo-Json -Compress }; $commandLine',
+                    ]
+                  : [
+                      '-c',
+                      'agent_resource() { printf "%s\\n" "\$@"; }; $commandLine',
+                    ],
+            );
+            expect(shell.exitCode, 0, reason: '${shell.stderr}');
+            final List<String> arguments;
+            if (Platform.isWindows) {
+              arguments = (jsonDecode(shell.stdout as String) as List)
+                  .cast<String>();
+            } else {
+              arguments = (shell.stdout as String).trimRight().split('\n');
+            }
+            expect(arguments, containsAllInOrder(['--folder', "it's here"]));
+            final replay = await createExecutor(
+              fileSystem: fs,
+              contextInject: injected,
+            ).fake().execute(arguments);
+            expect(
+              replay,
+              isA<MambaSuccessResult>(),
+              reason: replay is MambaFailureResult ? replay.message : null,
+            );
+            expect(
+              (replay as MambaSuccessResult).output,
+              contains("/sandbox/project/it's here/AGENTS.md"),
+            );
+          });
+
+          test('offers user scope for an unusable project root', () async {
+            writeTemplate('styles', 'rules\n');
+            var asked = false;
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              hasTerminal: () => true,
+              offerUserScope: () async {
+                asked = true;
+                return true;
+              },
+            );
+            final result =
+                await createExecutor(
+                  fileSystem: fs,
+                  contextInject: injected,
+                ).fake().execute([
+                  'context',
+                  'inject',
+                  'styles',
+                  '--harness',
+                  'claude',
+                  '--cwd',
+                  '/sandbox/project/',
+                  '--project-root',
+                  '/missing/',
+                  '--home',
+                  '/sandbox/home/',
+                  '--state-dir',
+                  '/sandbox/state/',
+                  '--interactive',
+                ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(asked, isTrue);
+            expect(
+              (result as MambaSuccessResult).output,
+              contains('scope: user'),
+            );
+          });
+
           test('refuses a cancelled harness selection', () async {
             writeTemplate('styles', 'rules\n');
             final injected = ContextInjectCommand(
@@ -1616,6 +1768,94 @@ void main() {
                     ),
               );
               expect(prompts, hasLength(1));
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test(
+            'refuses explicit interaction without a usable terminal',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              var asked = false;
+              final injected = ContextInjectCommand(
+                injection,
+                templates,
+                confirm: () async {
+                  asked = true;
+                  return true;
+                },
+                hasTerminal: () => false,
+              );
+              final result = await execWith(injected, const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--interactive',
+              ]);
+              expect(result, isA<MambaFailureResult>());
+              expect(
+                (result as MambaFailureResult).message,
+                contains('TERMINAL'),
+              );
+              expect(asked, isFalse);
+              expect(
+                fs.file('/sandbox/project/CLAUDE.md').existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test('requires explicit scope for unattended publication', () async {
+            writeTemplate('styles', 'rules\n');
+            final injected = ContextInjectCommand(
+              injection,
+              templates,
+              hasTerminal: () => false,
+            );
+            final result = await execWith(injected, const <String>[
+              'styles',
+              '--harness',
+              'claude',
+              '--apply',
+              '--yes',
+              '--unattended',
+            ]);
+            expect(result, isA<MambaFailureResult>());
+            expect((result as MambaFailureResult).message, contains('--scope'));
+            expect(fs.file('/sandbox/project/CLAUDE.md').existsSync(), isFalse);
+          });
+
+          test(
+            'shows the destination and plan before asking for approval',
+            () async {
+              writeTemplate('styles', 'rules\n');
+              final events = <String>[];
+              final injected = ContextInjectCommand(
+                injection,
+                templates,
+                presentPlan: (plan) => events.add(plan),
+                confirm: () async {
+                  events.add('confirm');
+                  return false;
+                },
+                hasTerminal: () => true,
+              );
+              final result = await execWith(injected, const <String>[
+                'styles',
+                '--harness',
+                'claude',
+                '--apply',
+                '--interactive',
+              ]);
+              expect(result, isA<MambaFailureResult>());
+              expect(events, hasLength(2));
+              expect(events.first, contains('/sandbox/project/CLAUDE.md'));
+              expect(events.first, contains('planId'));
+              expect(events.last, 'confirm');
               expect(
                 fs.file('/sandbox/project/CLAUDE.md').existsSync(),
                 isFalse,

@@ -5,6 +5,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'src/resource_lifecycle_boundaries.dart';
+
 import 'mcp_convert.dart';
 import 'mcp_lifecycle_commands.dart';
 import 'mcp_recovery_commands.dart';
@@ -37,6 +39,7 @@ final class McpCommand extends GroupCommand {
            conversion,
            fileSystem,
          ),
+         longDescription: renderBoundaryHelp(BoundaryResource.mcp),
        );
 
   static List<Command> _children(
@@ -348,9 +351,23 @@ final class McpValidateCommand extends Command {
         'scope': scope.wireName,
         'name': name,
         'valid': report.valid,
+        'verification': 'static',
+        'claim':
+            'static schema/reference correctness only; no server was '
+            'launched, connected to, or authenticated, and no runtime '
+            'success is claimed',
         'report': report.toJson(),
       },
-      diagnostics: const <Map<String, Object?>>[],
+      diagnostics: const <Map<String, Object?>>[
+        <String, Object?>{
+          'code': 'STATIC_CONFIGURATION_ONLY',
+          'severity': 'info',
+          'message':
+              'Native configuration was read only; no server was launched, '
+              'connected to, or authenticated, and no runtime success is '
+              'claimed.',
+        },
+      ],
     );
     return renderMcpEnvelope(envelope, format);
   }

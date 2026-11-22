@@ -31,6 +31,8 @@ void main() {
     });
 
     List<String> contextArguments() => [
+      '--scope',
+      'project',
       '--cwd',
       '${project.path}${fs.path.separator}',
       '--project-root',

@@ -131,6 +131,7 @@ final class InstallationBatch {
           scope: plan.scope,
           units: units,
           diagnostics: plan.diagnostics,
+          resolution: plan.resolution,
         );
         final status = recoveryRequired
             ? 6
@@ -156,6 +157,7 @@ final class InstallationBatch {
         scope: plan.scope,
         units: units,
         diagnostics: plan.diagnostics,
+        resolution: plan.resolution,
       );
       final unchanged = units.every(
         (unit) => unit.status == InstallationUnitStatus.unchanged,

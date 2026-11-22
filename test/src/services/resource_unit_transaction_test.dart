@@ -52,6 +52,47 @@ final class _SkillUnitResource implements LifecycleResource {
   void validateAuthority(InstallationRecord record, LifecycleContext context) {}
 }
 
+final class _RacingSkillResource implements LifecycleResource {
+  _RacingSkillResource(this.onInspect);
+  final Future<void> Function() onInspect;
+  @override
+  ArtifactKind get kind => ArtifactKind.skillCanonical;
+  @override
+  Future<LifecycleCandidate> inspect(
+    String path,
+    LifecycleContext context, {
+    String? expectedName,
+    bool restoringBaseline = false,
+  }) async {
+    await onInspect();
+    return const _SkillUnitResource().inspect(
+      path,
+      context,
+      expectedName: expectedName,
+      restoringBaseline: restoringBaseline,
+    );
+  }
+
+  @override
+  Future<void> checkUnique(
+    LifecycleContext context,
+    String name, {
+    required String nativeDestination,
+    String? excludeInstallationId,
+    String? excludePath,
+    Set<String> allowedPaths = const {},
+  }) => const _SkillUnitResource().checkUnique(
+    context,
+    name,
+    nativeDestination: nativeDestination,
+    excludeInstallationId: excludeInstallationId,
+    excludePath: excludePath,
+    allowedPaths: allowedPaths,
+  );
+  @override
+  void validateAuthority(InstallationRecord record, LifecycleContext context) {}
+}
+
 final class _StopBeforeSecondPublication extends LifecycleIO {
   var _publications = 0;
 
@@ -303,6 +344,49 @@ void main() {
         );
       },
     );
+
+    test('refuses canonical replacement when reviewed ownership changes during preflight', () async {
+      final state = LifecycleStateService();
+      final planned = validUnit();
+      await state.installResourceUnit(
+        resource: const _SkillUnitResource(),
+        context: context,
+        unit: planned,
+      );
+      final before = state.records(context).single;
+      final approved = LifecycleContext.resolve(
+        context.options.copyWith(approved: true),
+      );
+      var changed = false;
+      final resource = _RacingSkillResource(() async {
+        if (changed) return;
+        changed = true;
+        await state.updateOrigin(
+          context: approved,
+          installationId: before.installationId,
+          expectedOrigin: before.origin,
+          origin: {...before.origin, 'reviewer': 'other'},
+        );
+      });
+      await expectLater(
+        state.replaceCanonical(
+          resource: resource,
+          context: approved,
+          installationId: before.installationId,
+          source: source.path,
+          origin: before.origin,
+          expectedRecord: before,
+        ),
+        throwsA(
+          isA<MambaException>().having((error) => error.exitCode, 'status', 4),
+        ),
+      );
+      expect(state.records(context).single.origin['reviewer'], 'other');
+      expect(
+        File(p.join(before.location, 'SKILL.md')).readAsStringSync(),
+        contains('Body.'),
+      );
+    });
 
     test('canonical replacement, removal, backup restore, and list preserve consumers', () async {
       final state = LifecycleStateService();

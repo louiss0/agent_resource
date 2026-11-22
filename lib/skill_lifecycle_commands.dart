@@ -9,9 +9,11 @@ import 'components/installation_approval.dart';
 import 'installation_command_support.dart';
 import 'lifecycle.dart'
     show LifecycleConfirmation, LifecycleOutputFormat, RecoveryAction;
+import 'src/harness/harness_catalog.dart';
 import 'src/installation/installation_plan.dart';
 import 'src/installation/installation_request.dart';
 import 'src/services/acquisition_service.dart';
+import 'src/services/configuration_publication_service.dart';
 import 'src/services/lifecycle_state_service.dart';
 import 'src/services/skill_installation_service.dart';
 import 'src/services/skill_lifecycle_service.dart';
@@ -104,6 +106,7 @@ final class SkillInstallCommand extends Command {
           _destination,
           _harness,
           _mode,
+          _promptTargets,
         ],
         flags: const [_allResources, _dryRun, _yes, _interactive],
         conflicts: const {
@@ -136,10 +139,9 @@ final class SkillInstallCommand extends Command {
   );
   static final _targets = RepeatableChoiceOption(
     'target',
-    const [
-      InstallationTarget.claude,
-      InstallationTarget.codex,
-      InstallationTarget.antigravity,
+    [
+      for (final id in HarnessCatalog.instance.skillInstallationTargets)
+        InstallationTarget.values.byName(id.wireName),
     ],
     unique: true,
     description: 'Consuming harness; repeat to select several.',
@@ -185,6 +187,12 @@ final class SkillInstallCommand extends Command {
   );
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
+  static final _promptTargets = RepeatableStringOption(
+    'prompt-target',
+    description:
+        'Also publish a native Prompt template for eligible manual-only Skills '
+        'on this prompt-capable harness; repeat to select several.',
+  );
 
   static final _destination = StringOption('destination', hidden: true);
   static final _harness = StringOption('harness', hidden: true);
@@ -209,7 +217,7 @@ final class SkillInstallCommand extends Command {
           processWorkingDirectory:
               _installation.state.io.fs.currentDirectory.path,
           environment: Map<String, String>.unmodifiable(Platform.environment),
-          scope: valueOf(_scope) ?? LifecycleScope.user,
+          scope: valueOf(_scope) ?? LifecycleScope.project,
           cwd: valueOf(_cwd),
           projectRoot: valueOf(_projectRoot),
           home: valueOf(_home),
@@ -230,6 +238,7 @@ final class SkillInstallCommand extends Command {
         ref: valueOf(_ref),
         subpath: valueOf(_subpath),
         scopeExplicit: valueOf(_scope) != null,
+        promptTargets: valueOf(_promptTargets) ?? const <String>[],
       ),
       interactive:
           format == LifecycleOutputFormat.text &&
@@ -543,6 +552,10 @@ final class SkillRecoverCommand extends Command {
   final LifecycleConfirmation _confirmation;
 
   static final _id = NormalPositional.optional('transaction-id');
+  static final _configurationTarget = StringOption(
+    'configuration-target',
+    description: 'Inspect evidence for this explicit configuration path.',
+  );
   static final _action = ChoiceOption('action', choices: RecoveryAction.values);
   static final _plan = StringOption(
     'plan-id',
@@ -574,6 +587,7 @@ final class SkillRecoverCommand extends Command {
         options: [
           _action,
           _plan,
+          _configurationTarget,
           _scope,
           _format,
           _cwd,
@@ -614,6 +628,31 @@ final class SkillRecoverCommand extends Command {
       planned,
       approved,
     );
+    final configurationTarget = valueOf(_configurationTarget);
+    if (configurationTarget != null) {
+      final publication = ConfigurationPublicationService(
+        fileSystem: _service.state.io.fs,
+        state: _service.state,
+      );
+      Future<LifecycleResult> invoke(bool planned, bool approved) =>
+          publication.inspectRecovery(
+            context: LifecycleContext.resolve(
+              options(planned, approved),
+              fileSystem: _service.state.io.fs,
+            ),
+            targetPath: configurationTarget,
+            command: 'skill recover',
+            transactionId: valueOf(_id),
+            action: action,
+            planId: valueOf(_plan),
+          );
+      final approved = action == null
+          ? yes
+          : await _confirmDestruction(interactive, dryRun, yes, () async {
+              await invoke(true, false);
+            }, _confirmation);
+      return _render(await invoke(dryRun, approved), format);
+    }
     final approved = action == null
         ? yes
         : await _confirmDestruction(

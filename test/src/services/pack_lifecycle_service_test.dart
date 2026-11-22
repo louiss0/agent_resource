@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/pack/github_release_resolver.dart';
 import 'package:agent_resource/src/pack/pack_configuration.dart';
 import 'package:agent_resource/src/pack/pack_models.dart';
@@ -91,9 +92,12 @@ track = { kind = "local" }
       String? snapshot,
       String? method,
       String? target,
+      String? reviewedPlan,
       bool localEdits = false,
       bool yes = true,
       bool interactive = false,
+      List<String> promptTargets = const <String>[],
+      bool dropPromptTargets = false,
       bool noSave = false,
       bool useDefaultTarget = true,
       bool skipNew = false,
@@ -123,6 +127,7 @@ track = { kind = "local" }
                 type == PackResourceType.skill
             ? method ?? 'copy'
             : null,
+        reviewedPlan: reviewedPlan,
         target:
             !selectedTypes.contains(PackResourceType.agent) &&
                 type == PackResourceType.skill &&
@@ -142,8 +147,914 @@ track = { kind = "local" }
         dryRun: dryRun,
         yes: yes,
         interactive: interactive,
+        promptTargets: promptTargets,
+        dropPromptTargets: dropPromptTargets,
       );
     }
+
+    group('derived prompts', () {
+      PackLifecycleRequest derivedRequest({
+        List<String> promptTargets = const <String>[],
+        bool yes = true,
+        bool interactive = false,
+      }) => PackLifecycleRequest(
+        operation: PackOperation.install,
+        resourceType: PackResourceType.skill,
+        pack: 'local/demo',
+        processWorkingDirectory: sandbox.path,
+        environment: {
+          'HOME': home.path,
+          'USERPROFILE': home.path,
+          'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
+          'LOCALAPPDATA': fs.path.join(home.path, 'AppData', 'Local'),
+        },
+        scope: LifecycleScope.project,
+        cwd: project.path,
+        projectRoot: project.path,
+        home: home.path,
+        method: 'copy',
+        target: 'codex',
+        dryRun: false,
+        yes: yes,
+        interactive: interactive,
+        promptTargets: promptTargets,
+      );
+
+      void makeManualOnly(String name) {
+        fs
+            .file(fs.path.join(source.path, 'skills', name, 'SKILL.md'))
+            .writeAsStringSync('''---
+name: $name
+description: Reviews code.
+disable-model-invocation: true
+---
+Manual body.
+''');
+      }
+
+      String promptPath(String name) =>
+          fs.path.join(project.path, '.pi', 'prompts', '$name.md');
+
+      test('--prompt-target publishes the pi template', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        final result = await service.execute(
+          derivedRequest(promptTargets: const ['pi']),
+        );
+        expect(result.outcome, isNot('failed'));
+        final prompt = fs.file(promptPath('reviewer'));
+        expect(prompt.existsSync(), isTrue);
+        expect(prompt.readAsStringSync(), endsWith('Manual body.\n'));
+      });
+
+      test('--prompt-target fails an ineligible Skill before writes', () async {
+        makeManualOnly('reviewer');
+        fs
+            .directory(
+              fs.path.join(source.path, 'skills', 'reviewer', 'references'),
+            )
+            .createSync();
+        await expectLater(
+          PackLifecycleService(fileSystem: fs)
+              .execute(derivedRequest(promptTargets: const ['pi'])),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('ineligible'),
+            ),
+          ),
+        );
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.codex',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isFalse,
+        );
+      });
+
+      test('interactive asks once and publishes on approval', () async {
+        makeManualOnly('reviewer');
+        final confirmations = <String>[];
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            confirmation: (label) async {
+              confirmations.add(label);
+              return true;
+            },
+          ),
+        );
+        final result = await service.execute(
+          derivedRequest(yes: false, interactive: true),
+        );
+        expect(result.outcome, isNot('failed'));
+        final derived = confirmations
+            .where((label) => label.contains('Prompt templates'))
+            .toList();
+        expect(derived, hasLength(1));
+        expect(derived.single, contains('reviewer'));
+        expect(derived.single, contains('pi'));
+        expect(fs.file(promptPath('reviewer')).existsSync(), isTrue);
+      });
+
+      test('interactive does not ask without a manual-only Skill', () async {
+        final confirmations = <String>[];
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            confirmation: (label) async {
+              confirmations.add(label);
+              return true;
+            },
+          ),
+        );
+        await service.execute(derivedRequest(yes: false, interactive: true));
+        expect(
+          confirmations.where((label) => label.contains('Prompt templates')),
+          isEmpty,
+        );
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+      });
+
+      test('migrate --drop-prompt-targets removes the template', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(derivedRequest(promptTargets: const ['pi']));
+        expect(fs.file(promptPath('reviewer')).existsSync(), isTrue);
+        final preview = await service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            dropPromptTargets: true,
+            dryRun: true,
+          ),
+        );
+        expect(preview.plan!.planId, isNotNull);
+        final applied = await service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            dropPromptTargets: true,
+            reviewedPlan: preview.plan!.planId,
+          ),
+        );
+        expect(applied.outcome, 'completed');
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        final context = LifecycleContext.resolve(
+          LifecycleOptions(
+            processWorkingDirectory: project.path,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          ),
+          fileSystem: fs,
+        );
+        final migrated = LifecycleStateService(io: LifecycleIO(fs: fs))
+            .records(context)
+            .single;
+        expect(migrated.derivedPrompts, isEmpty);
+        expect(migrated.installationRoute!.promptTargets, isEmpty);
+      });
+
+      test('--prompt-target fails before writes when no selected Skill is '
+          'manual-only', () async {
+        await expectLater(
+          PackLifecycleService(fileSystem: fs)
+              .execute(derivedRequest(promptTargets: const ['pi'])),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(contains('has no effect'), contains('manual-only')),
+            ),
+          ),
+        );
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isFalse,
+        );
+      });
+
+      test('--prompt-target reports non-manual-only Skills and still installs '
+          'them without derivatives', () async {
+        makeManualOnly('reviewer');
+        final added = fs.directory(
+          fs.path.join(source.path, 'skills', 'writer'),
+        )..createSync(recursive: true);
+        fs.file(fs.path.join(added.path, 'SKILL.md')).writeAsStringSync('''---
+name: writer
+description: Writes docs.
+---
+# Writer
+''');
+        final catalog = fs.file(
+          fs.path.join(source.path, 'agent-resources.toml'),
+        );
+        catalog.writeAsStringSync(
+          '${catalog.readAsStringSync()}\n'
+          '[[catalog.skills]]\npath = "skills/writer"\n',
+        );
+        final result = await PackLifecycleService(fileSystem: fs)
+            .execute(derivedRequest(promptTargets: const ['pi']));
+        expect(result.outcome, 'completed');
+        bool reports(PackWarning warning) =>
+            warning.id == 'derived-prompt-not-manual-only' &&
+            warning.message.contains('writer') &&
+            warning.message.contains('not manual-only');
+        expect(result.warnings.any(reports), isTrue);
+        expect(result.plan!.warnings.any(reports), isTrue);
+        expect(
+          jsonEncode(result.envelope()),
+          contains('derived-prompt-not-manual-only'),
+        );
+        expect(result.plan!.renderText(), contains('not manual-only'));
+        expect(fs.file(promptPath('reviewer')).existsSync(), isTrue);
+        expect(fs.file(promptPath('writer')).existsSync(), isFalse);
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'writer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isTrue,
+        );
+      });
+
+      test('update fails before writes when a recorded prompt target becomes '
+          'ineligible', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(derivedRequest(promptTargets: const ['pi']));
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+description: Reviews code.
+---
+Manual body.
+''');
+        await expectLater(
+          service.execute(
+            request(PackOperation.update, PackResourceType.skill),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(
+                contains('reviewer'),
+                contains('can no longer publish a derived Prompt'),
+                contains('migrate --drop-prompt-targets'),
+              ),
+            ),
+          ),
+        );
+        expect(
+          fs.file(promptPath('reviewer')).readAsStringSync(),
+          endsWith('Manual body.\n'),
+        );
+      });
+
+      test('migrate fails before writes when a recorded prompt target becomes '
+          'ineligible', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(derivedRequest(promptTargets: const ['pi']));
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+description: Reviews code.
+---
+Manual body.
+''');
+        await expectLater(
+          service.execute(
+            request(
+              PackOperation.migrate,
+              PackResourceType.skill,
+              only: ['reviewer'],
+              method: 'copy',
+              target: 'claude',
+              dryRun: true,
+            ),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(
+                contains('reviewer'),
+                contains('can no longer publish a derived Prompt'),
+                contains('migrate --drop-prompt-targets'),
+              ),
+            ),
+          ),
+        );
+        expect(
+          fs.file(promptPath('reviewer')).readAsStringSync(),
+          endsWith('Manual body.\n'),
+        );
+      });
+    });
+
+    test('migrates a managed Pack Skill across native roots', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final context = LifecycleContext.resolve(
+        LifecycleOptions(
+          processWorkingDirectory: project.path,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        ),
+        fileSystem: fs,
+      );
+      final state = LifecycleStateService(io: LifecycleIO(fs: fs));
+      final before = state.records(context).single;
+      final oldPath = before.location;
+      final preview = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          dryRun: true,
+        ),
+      );
+      expect(preview.dryRun, isTrue);
+      expect(preview.plan!.operation, 'skills.migrate');
+      expect(preview.plan!.resources.single.action, 'migrate');
+      expect(fs.directory(before.location).existsSync(), isTrue);
+
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            reviewedPlan: 'stale-plan',
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+
+      final applied = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          reviewedPlan: preview.plan!.planId,
+        ),
+      );
+      expect(applied.outcome, 'completed');
+      final migrated = state.records(context).single;
+      expect(migrated.installationRoute?.method, InstallationMethod.copy);
+      expect(migrated.installationRoute?.targets.map((t) => t.name).toList(), [
+        'claude',
+      ]);
+      expect(
+        migrated.location,
+        fs.path.join(project.path, '.claude', 'skills', 'reviewer'),
+      );
+      expect(
+        fs.file(fs.path.join(migrated.location, 'SKILL.md')).readAsStringSync(),
+        contains('name: reviewer'),
+      );
+      expect(
+        fs.file(fs.path.join(migrated.location, 'SKILL.md')).readAsStringSync(),
+        contains('Reviews code.'),
+      );
+      expect(
+        fs.typeSync(oldPath, followLinks: false),
+        FileSystemEntityType.notFound,
+      );
+      // The verified old artifact was quarantined during publication, then
+      // removed by cleanup once its recorded baseline re-verified.
+      final quarantine = fs.directory(
+        fs.path.join(project.path, '.agents', '.agent-resource', 'quarantine'),
+      );
+      expect(
+        !quarantine.existsSync() ||
+            quarantine.listSync(recursive: true).isEmpty,
+        isTrue,
+      );
+    });
+
+    test('upstream removals require explicit removal approval', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      // Remove the skill from the upstream catalog.
+      final catalog = fs.file(
+        fs.path.join(source.path, 'agent-resources.toml'),
+      );
+      catalog.writeAsStringSync(
+        catalog.readAsStringSync().replaceFirst(
+          '\n[[catalog.skills]]\npath = "skills/reviewer"',
+          '',
+        ),
+      );
+      await expectLater(
+        service.execute(request(PackOperation.update, PackResourceType.skill)),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('removal approval'),
+          ),
+        ),
+      );
+      // The managed artifact is preserved until explicitly approved.
+      expect(
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
+            .existsSync(),
+        isTrue,
+      );
+    });
+
+    test('new upstream resources remain opt-in', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final added = fs.directory(fs.path.join(source.path, 'skills', 'writer'))
+        ..createSync(recursive: true);
+      fs.file(fs.path.join(added.path, 'SKILL.md')).writeAsStringSync('''---
+name: writer
+description: Writes docs.
+---
+# Writer
+''');
+      final catalog = fs.file(
+        fs.path.join(source.path, 'agent-resources.toml'),
+      );
+      catalog.writeAsStringSync(
+        '${catalog.readAsStringSync()}\n'
+        '[[catalog.skills]]\npath = "skills/writer"\n',
+      );
+      await service.execute(
+        request(PackOperation.update, PackResourceType.skill),
+      );
+      // Without opt-in the new upstream resource is not published.
+      expect(
+        fs
+            .directory(
+              fs.path.join(project.path, '.agents', 'skills', 'writer'),
+            )
+            .existsSync(),
+        isFalse,
+      );
+      // Explicit selection via --only opts the new resource in.
+      await service.execute(
+        request(
+          PackOperation.update,
+          PackResourceType.skill,
+          only: const ['writer'],
+        ),
+      );
+      expect(
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'writer',
+                'SKILL.md',
+              ),
+            )
+            .existsSync(),
+        isTrue,
+      );
+    });
+
+    test('migrates a multi-target Pack Skill group across roots', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(
+          PackOperation.install,
+          PackResourceType.skill,
+          useDefaultTarget: false,
+        ),
+      );
+      final context = LifecycleContext.resolve(
+        LifecycleOptions(
+          processWorkingDirectory: project.path,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        ),
+        fileSystem: fs,
+      );
+      final state = LifecycleStateService(io: LifecycleIO(fs: fs));
+      final initial =
+          state
+              .records(context)
+              .where((record) => record.name == 'reviewer')
+              .toList()
+            ..sort(
+              (left, right) =>
+                  left.installationId.compareTo(right.installationId),
+            );
+      expect(
+        initial,
+        hasLength(2),
+        reason: 'a multi-target pack install must record one ledger record per target',
+      );
+      final oldIds = [for (final record in initial) record.installationId];
+
+      final preview = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          useDefaultTarget: false,
+          dryRun: true,
+        ),
+      );
+      expect(preview.dryRun, isTrue);
+      final applied = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          useDefaultTarget: false,
+          reviewedPlan: preview.plan!.planId,
+        ),
+      );
+      expect(applied.outcome, 'completed');
+      final migrated = state
+          .records(context)
+          .where((record) => record.name == 'reviewer')
+          .toList();
+      expect(migrated, hasLength(1));
+      expect(migrated.single.kind, ArtifactKind.skillCopy);
+      expect(migrated.single.installationId, isIn(oldIds));
+      expect(
+        migrated.single.installationRoute?.method,
+        InstallationMethod.copy,
+      );
+      expect(
+        migrated.single.location,
+        fs.path.join(project.path, '.claude', 'skills', 'reviewer'),
+      );
+      expect(
+        fs
+            .file(fs.path.join(migrated.single.location, 'SKILL.md'))
+            .existsSync(),
+        isTrue,
+      );
+      // Both old artifacts were retired by the single group transaction.
+      expect(
+        fs.typeSync(
+          fs.path.join(project.path, '.agents', 'skills', 'reviewer'),
+          followLinks: false,
+        ),
+        FileSystemEntityType.notFound,
+      );
+    });
+
+    test('refuses a Pack Skill migration that changes nothing', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'codex',
+            dryRun: true,
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+    });
+
+    test('interactive Skill pack ignores shared preferred target like direct install', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["shared"]',
+        ),
+      );
+      final service = PackLifecycleService.withDependencies(
+        fileSystem: fs,
+        prompts: PackPrompts(choice: (_, _) async => 'codex'),
+      );
+      final result = await service.execute(
+        PackLifecycleRequest(
+          operation: PackOperation.install,
+          resourceType: PackResourceType.skill,
+          pack: 'local/demo',
+          processWorkingDirectory: project.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+          interactive: true,
+          dryRun: true,
+        ),
+      );
+      expect(result.plan!.resources.single.targets, ['codex']);
+      expect(
+        result.plan!.resources.single.targetOrigin,
+        'interactive-selection',
+      );
+    });
+
+    test(
+      'interactive Skill pack retains supported targets alongside shared',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst(
+            'targets = ["codex"]',
+            'targets = ["shared", "codex"]',
+          ),
+        );
+        final result = await PackLifecycleService(fileSystem: fs).execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(result.plan!.resources.single.targetOrigin, 'project-config');
+      },
+    );
+
+    test(
+      'interactive Skill pack ignores ineligible preferred targets',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst(
+            'targets = ["codex"]',
+            'targets = ["pi"]',
+          ),
+        );
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(choice: (_, _) async => 'codex'),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(
+          result.plan!.resources.single.targetOrigin,
+          'interactive-selection',
+        );
+      },
+    );
+
+    test(
+      'interactive Skill pack uses a single detected target default',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst('targets = ["codex"]\n', ''),
+        );
+        fs
+            .directory('${project.path}/.claude/skills')
+            .createSync(recursive: true);
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            choice: (_, _) async =>
+                throw StateError('unexpected target prompt'),
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.targets, ['claude']);
+        expect(result.plan!.resources.single.targetOrigin, 'detection');
+      },
+    );
+
+    test(
+      'interactive Skill pack shares the canonical method default',
+      () async {
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config.readAsStringSync().replaceFirst('skill_method = "copy"\n', ''),
+        );
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            choice: (_, _) async =>
+                throw StateError('unexpected method prompt'),
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            target: 'codex',
+            interactive: true,
+            dryRun: true,
+          ),
+        );
+        expect(result.plan!.resources.single.method, 'canonical');
+        expect(result.plan!.resources.single.methodOrigin, 'built-in-default');
+      },
+    );
+
+    test(
+      'interactive Agent pack refuses an incompatible preferred target',
+      () async {
+        await expectLater(
+          PackLifecycleService(fileSystem: fs).execute(
+            PackLifecycleRequest(
+              operation: PackOperation.install,
+              resourceType: PackResourceType.agent,
+              pack: 'local/demo',
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+              interactive: true,
+              dryRun: true,
+            ),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (e) => e.message,
+              'message',
+              contains('No Agent resources match'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'successful interactive pack install offers to save eligible preferences',
+      () async {
+        final offers = <String>[];
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            confirmation: (label) async {
+              offers.add(label);
+              return true;
+            },
+          ),
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.install,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            only: const ['reviewer'],
+            target: 'claude',
+            method: 'copy',
+            interactive: true,
+            planReview: (_) async => true,
+          ),
+        );
+        expect(result.outcome, 'completed');
+        expect(offers.where((offer) => offer.contains('Save')).length, 1);
+        expect(
+          fs.file('${project.path}/agent-resources.toml').readAsStringSync(),
+          contains('targets = ["claude"]'),
+        );
+      },
+    );
 
     test(
       'validates consumer configuration without reading the source',
@@ -195,6 +1106,271 @@ track = { kind = "local" }
       );
 
       expect(result.outcome, 'valid');
+    });
+
+    test(
+      'validate separates native validity from installation eligibility',
+      () async {
+        final service = PackLifecycleService(fileSystem: fs);
+
+        // A natively invalid Skill reports its native diagnostics.
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+---
+# Reviewer
+''');
+        await expectLater(
+          service.execute(
+            request(PackOperation.validate, PackResourceType.skill),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(contains('native:'), isNot(contains('eligibility:'))),
+            ),
+          ),
+        );
+
+        // A natively valid Skill with an inadmissible source tree reports
+        // installation eligibility, not a native failure.
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+description: Reviews code.
+---
+# Reviewer
+''');
+        fs
+            .file(
+              fs.path.join(source.path, 'skills', 'reviewer', 'metadata.json'),
+            )
+            .writeAsStringSync('{}');
+        await expectLater(
+          service.execute(
+            request(PackOperation.validate, PackResourceType.skill),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('eligibility: SKILL_SOURCE_REJECTED'),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('records a pack Skill route and managed migration outputs', () async {
+      fs
+          .file(fs.path.join(source.path, 'skills', 'reviewer', 'guide.md'))
+          .writeAsStringSync('Guide');
+      final result = await PackLifecycleService(fileSystem: fs)
+          .execute(request(PackOperation.install, PackResourceType.skill));
+      expect(result.resources.single.disposition.wireName, 'installed');
+      final context = LifecycleContext.resolve(
+        LifecycleOptions(
+          processWorkingDirectory: sandbox.path,
+          scope: LifecycleScope.project,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        ),
+        fileSystem: fs,
+      );
+      final record = LifecycleStateService(io: LifecycleIO(fs: fs))
+          .records(context)
+          .single;
+      final route = record.toJson()['installationRoute'] as Map;
+      expect(route['sourceKind'], 'collection');
+      expect(route['sourceRelativePath'], 'skills/reviewer');
+      expect(route['targets'], ['codex']);
+      expect(route['method'], 'copy');
+      expect(route['packKey'], 'local/demo');
+      expect(
+        route['derivedArtifacts'],
+        contains(
+          predicate(
+            (item) =>
+                item is Map && item['outputPath'] == 'references/guide.md',
+          ),
+        ),
+      );
+      fs
+          .file(fs.path.join(source.path, 'skills', 'reviewer', 'guide.md'))
+          .writeAsStringSync('Updated guide');
+      await PackLifecycleService(fileSystem: fs)
+          .execute(request(PackOperation.update, PackResourceType.skill));
+      final updated = LifecycleStateService(io: LifecycleIO(fs: fs))
+          .records(context)
+          .single;
+      expect(updated.installationRoute, isNotNull);
+      expect(
+        updated.installationRoute!.derivedArtifacts.single.outputPath,
+        'references/guide.md',
+      );
+    });
+
+    test(
+      'update refuses a Skill moved to a different upstream route',
+      () async {
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(
+          request(PackOperation.install, PackResourceType.skill),
+        );
+        final ledger = fs.file(
+          fs.path.join(project.path, '.agent-resource', 'installations.json'),
+        );
+        final before = ledger.readAsStringSync();
+        final installed = fs.file(
+          fs.path.join(
+            project.path,
+            '.agents',
+            'skills',
+            'reviewer',
+            'SKILL.md',
+          ),
+        );
+        final installedBefore = installed.readAsStringSync();
+        final original = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        );
+        fs.file(fs.path.join(source.path, 'skills', 'moved', 'SKILL.md'))
+          ..createSync(recursive: true)
+          ..writeAsStringSync(
+            original.readAsStringSync().replaceFirst('# Reviewer', '# Changed'),
+          );
+        fs
+            .file(fs.path.join(source.path, 'agent-resources.toml'))
+            .writeAsStringSync('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/moved"
+''');
+        await expectLater(
+          service.execute(
+            request(PackOperation.update, PackResourceType.skill),
+          ),
+          throwsA(isA<MambaException>()),
+        );
+        expect(ledger.readAsStringSync(), before);
+        expect(installed.readAsStringSync(), installedBefore);
+      },
+    );
+
+    test(
+      'update replays the recorded Skill route after preferences change',
+      () async {
+        final skillFile = fs.file(
+          fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'),
+        );
+        skillFile.writeAsStringSync(
+          '---\nname: reviewer\ndescription: Reviews code.\ndisable-model-invocation: true\n---\nSee references/guide.md\n',
+        );
+        fs.file(
+            fs.path.join(
+              source.path,
+              'skills',
+              'reviewer',
+              'references',
+              'guide.md',
+            ),
+          )
+          ..createSync(recursive: true)
+          ..writeAsStringSync('Guide');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(
+          request(PackOperation.install, PackResourceType.skill),
+        );
+        final config = fs.file(
+          fs.path.join(project.path, 'agent-resources.toml'),
+        );
+        config.writeAsStringSync(
+          config
+              .readAsStringSync()
+              .replaceFirst('targets = ["codex"]', 'targets = ["claude"]')
+              .replaceFirst(
+                'skill_method = "copy"',
+                'skill_method = "canonical"',
+              ),
+        );
+        skillFile.writeAsStringSync(
+          '---\nname: reviewer\ndescription: Reviews code.\ndisable-model-invocation: true\n---\n# Updated\nSee references/guide.md\n',
+        );
+        final result = await service.execute(
+          PackLifecycleRequest(
+            operation: PackOperation.update,
+            resourceType: PackResourceType.skill,
+            pack: 'local/demo',
+            processWorkingDirectory: sandbox.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            yes: true,
+          ),
+        );
+        expect(result.resources.single.disposition.wireName, 'updated');
+        expect(result.plan!.resources.single.targets, ['codex']);
+        expect(result.plan!.resources.single.method, 'copy');
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .readAsStringSync(),
+          contains('# Updated'),
+        );
+        expect(
+          fs
+              .directory(
+                fs.path.join(project.path, '.claude', 'skills', 'reviewer'),
+              )
+              .existsSync(),
+          isFalse,
+        );
+      },
+    );
+
+    test('update refuses a legacy Skill without recorded route', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final ledger = fs.file(
+        fs.path.join(project.path, '.agent-resource', 'installations.json'),
+      );
+      final document =
+          jsonDecode(ledger.readAsStringSync()) as Map<String, dynamic>;
+      final installation =
+          (document['installations'] as List).single as Map<String, dynamic>;
+      installation.remove('installationRoute');
+      ledger.writeAsStringSync(jsonEncode(document));
+      final before = ledger.readAsStringSync();
+      final installed = fs.file(
+        fs.path.join(project.path, '.agents', 'skills', 'reviewer', 'SKILL.md'),
+      );
+      final installedBefore = installed.readAsStringSync();
+      fs
+          .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+          .writeAsStringSync(
+            installedBefore.replaceFirst('# Reviewer', '# Changed'),
+          );
+      await expectLater(
+        service.execute(request(PackOperation.update, PackResourceType.skill)),
+        throwsA(isA<MambaException>()),
+      );
+      expect(ledger.readAsStringSync(), before);
+      expect(installed.readAsStringSync(), installedBefore);
     });
 
     test('installs a native Skill and Agent with source evidence', () async {
@@ -251,13 +1427,22 @@ track = { kind = "local" }
     });
 
     test('mixed interactive approval publishes both types', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final confirmations = <String>[];
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: PackPrompts(
           confirmation: (label) async {
             confirmations.add(label);
-            return true;
+            return !label.startsWith('Save ');
           },
         ),
       );
@@ -274,7 +1459,7 @@ track = { kind = "local" }
 
       expect(result.operation, 'pack.install');
       expect(result.resources, hasLength(2));
-      expect(confirmations, hasLength(1));
+      expect(confirmations, hasLength(2));
       expect(
         fs
             .file(
@@ -300,6 +1485,15 @@ track = { kind = "local" }
     });
 
     test('mixed interactive cancellation publishes no type or state', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: const PackPrompts(),
@@ -340,6 +1534,15 @@ track = { kind = "local" }
     });
 
     test('mixed interactive prompt failure releases every review', () async {
+      final config = fs.file(
+        fs.path.join(project.path, 'agent-resources.toml'),
+      );
+      config.writeAsStringSync(
+        config.readAsStringSync().replaceFirst(
+          'targets = ["codex"]',
+          'targets = ["codex", "claude"]',
+        ),
+      );
       final service = PackLifecycleService.withDependencies(
         fileSystem: fs,
         prompts: PackPrompts(
@@ -408,6 +1611,15 @@ track = { kind = "local" }
         expect(replay.outcome, 'no-op');
         expect(replay.resources.single.disposition.wireName, 'unchanged');
         expect(replay.source['exactLockReplay'], isTrue);
+        expect(
+          replay.plan!.resources.single.targetOrigin,
+          'installation-record',
+        );
+        expect(
+          replay.plan!.resources.single.methodOrigin,
+          'installation-record',
+        );
+        expect(replay.plan!.context['scopeOrigin'], 'explicit-argument');
       },
     );
 

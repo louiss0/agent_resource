@@ -1,18 +1,45 @@
 part of 'lifecycle_state_service.dart';
 
 extension CanonicalLifecycleOperations on LifecycleStateService {
+  /// Describes an exposure before publication without creating it.
+  ExposureRecord plannedCanonicalExposure({
+    required String path,
+    required String target,
+    required String canonicalPath,
+  }) {
+    final nativeKind = Platform.isWindows
+        ? 'windows-directory-symlink'
+        : 'posix-directory-symlink';
+    return ExposureRecord(
+      path: path,
+      target: target,
+      nativeKind: nativeKind,
+      baseline: _linkBaselineFor(path, canonicalPath, nativeKind),
+    );
+  }
+
   Future<LifecycleResult> replaceCanonical({
     required LifecycleResource resource,
     required LifecycleContext context,
     required String installationId,
     required String source,
     required Map<String, Object?> origin,
+    InstallationRoute? installationRoute,
     List<ExposureRecord>? exposures,
     List<String>? knownConsumers,
     List<String>? validatedProfiles,
     bool allowModified = false,
+    InstallationRecord? expectedRecord,
+    List<DerivedPromptWrite> derivedWrites = const <DerivedPromptWrite>[],
   }) async {
     var initial = recordById(context, installationId);
+    if (expectedRecord != null &&
+        jsonEncode(initial.toJson()) != jsonEncode(expectedRecord.toJson())) {
+      throw MambaException(
+        'The reviewed installation record changed before replacement.',
+        exitCode: 4,
+      );
+    }
     _requireResource(initial, resource, context, live: true);
     if (allowModified) {
       initial = initial.copyWith(
@@ -29,9 +56,27 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     final desired = initial.copyWith(
       baseline: baseline,
       origin: origin,
+      installationRoute: installationRoute,
+      clearInstallationRoute: installationRoute == null,
       exposures: exposures,
       knownConsumers: knownConsumers,
       validatedProfiles: validatedProfiles,
+    );
+    resource.validateAuthority(desired, context);
+    for (final exposure in desired.exposures) {
+      if (!initial.exposures.any(
+        (old) => io.fs.path.equals(old.path, exposure.path),
+      )) {
+        _requireAbsent(exposure.path);
+      }
+    }
+    checkPendingConversions(
+      context,
+      locations: [
+        initial.location,
+        for (final exposure in initial.exposures) exposure.path,
+        for (final exposure in desired.exposures) exposure.path,
+      ],
     );
     await resource.checkUnique(
       context,
@@ -52,6 +97,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       desired: desired,
       source: source,
       allowModified: allowModified,
+      derivedWrites: derivedWrites,
     );
   }
 
@@ -198,6 +244,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     String? source,
     String? backupId,
     bool allowModified = false,
+    List<DerivedPromptWrite> derivedWrites = const <DerivedPromptWrite>[],
   }) async {
     final changes = _canonicalChanges(initial, desired);
     if (context.dryRun) {
@@ -248,6 +295,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         locations: [
           current.location,
           for (final exposure in current.exposures) exposure.path,
+          for (final exposure in desired.exposures) exposure.path,
         ],
       );
       final transactionId = LifecycleStateService._newId('trx');
@@ -260,9 +308,70 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       if (current.lifecycle == 'live') {
         outgoing = _createBackup(state, current, transactionId);
       }
+      final stagedPrompts =
+          <
+            ({String live, String stage, String quarantine, String nativeRoot})
+          >[];
+      final nextDerived = <DerivedPromptRecord>[
+        for (final prompt in current.derivedPrompts)
+          if (derivedWrites.every(
+            (write) => !io.fs.path.equals(write.path, prompt.path),
+          ))
+            prompt,
+      ];
+      for (final write in derivedWrites) {
+        final recorded = [
+          for (final prompt in current.derivedPrompts)
+            if (io.fs.path.equals(prompt.path, write.path)) prompt,
+        ];
+        if (recorded.length != 1) {
+          throw StateError(
+            'A derived Prompt write requires a recorded path: ${write.path}',
+          );
+        }
+        if (io.fs.typeSync(write.path, followLinks: false) ==
+            FileSystemEntityType.notFound) {
+          throw MambaException(
+            'The derived Prompt is missing: ${write.path}',
+            exitCode: 4,
+          );
+        }
+        if (!allowModified) {
+          _verifyBaseline(
+            write.path,
+            recorded.single.baseline,
+            ArtifactKind.promptTemplate,
+          );
+        }
+        final stage = _stagePath(
+          write.nativeRoot,
+          transactionId,
+          io.fs.path.basename(write.path),
+        );
+        _prepareStaging(write.nativeRoot);
+        io.createDirectory(io.fs.path.dirname(stage));
+        io.fs.file(stage).writeAsStringSync(write.content);
+        stagedPrompts.add((
+          live: write.path,
+          stage: stage,
+          quarantine: _quarantinePath(
+            write.nativeRoot,
+            transactionId,
+            write.path,
+          ),
+          nativeRoot: write.nativeRoot,
+        ));
+        nextDerived.add(
+          DerivedPromptRecord(
+            path: write.path,
+            baseline: _manifest(stage, ArtifactKind.promptTemplate),
+          ),
+        );
+      }
       final committedDesired = desired.copyWith(
         backupIds: <String>{...desired.backupIds, ?outgoing?.backupId}.toList(),
         clearTransaction: true,
+        derivedPrompts: nextDerived,
       );
       final preparedChanges = changes
           .map((change) => change.withTransaction(transactionId))
@@ -271,6 +380,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       var intentWritten = false;
       var commitAttempted = false;
       var committed = false;
+      final promptQuarantines = <({String live, String quarantine})>[];
       try {
         for (final change in preparedChanges) {
           if (change.publishNew) {
@@ -339,11 +449,23 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
           final change = preparedChanges[index];
           _applyCanonicalChange(change, completed, transactionPath, index);
         }
+        for (final staged in stagedPrompts) {
+          io.createDirectory(io.fs.path.dirname(staged.quarantine));
+          io.rename(staged.live, staged.quarantine);
+          promptQuarantines.add((
+            live: staged.live,
+            quarantine: staged.quarantine,
+          ));
+          io.rename(staged.stage, staged.live);
+        }
         _verifyCanonicalState(committedDesired);
         commitAttempted = true;
         _commitRecords(state, [committedDesired], const <String, Object?>{});
         committed = true;
         _advanceTransaction(transactionPath, 'committedCleanupPending');
+        for (final entry in promptQuarantines) {
+          io.delete(entry.quarantine);
+        }
         for (final change in preparedChanges) {
           if (change.removeOld &&
               io.type(change.quarantinePath!, followLinks: false) !=
@@ -392,6 +514,16 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
             'pending; transaction $transactionId, evidence $transactionPath. $error',
             exitCode: 6,
           );
+        }
+        for (final entry in promptQuarantines) {
+          if (io.fs.typeSync(entry.live, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            io.delete(entry.live);
+          }
+          if (io.fs.typeSync(entry.quarantine, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            io.rename(entry.quarantine, entry.live);
+          }
         }
         final restored = _rollbackCanonicalActions(
           preparedChanges,

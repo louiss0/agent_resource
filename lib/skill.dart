@@ -5,6 +5,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'src/resource_lifecycle_boundaries.dart';
+
 import 'src/skill_files.dart';
 import 'src/services/guided_authoring_service.dart';
 import 'src/services/prompt_read_service.dart';
@@ -17,6 +19,8 @@ import 'skill_create_command.dart';
 import 'skill_edit_command.dart';
 import 'skill_clone_command.dart';
 import 'skill_lifecycle_commands.dart';
+import 'skill_update_command.dart';
+import 'skill_migrate_command.dart';
 
 typedef InspectOperation = String Function(String skill);
 
@@ -39,6 +43,7 @@ final class SkillCommand extends GroupCommand {
            guided,
            fileSystem,
          ),
+         longDescription: renderBoundaryHelp(BoundaryResource.skill),
        );
 
   static List<Command> _children(
@@ -61,7 +66,7 @@ final class SkillCommand extends GroupCommand {
       SkillCloneCommand(
         guided: guided ?? GuidedAuthoringService(fileSystem: fileSystem),
       ),
-      SkillListCommand(service),
+      SkillListCommand(service, guided: guided),
       InspectCommand(
         inspect,
         read: reader,
@@ -78,6 +83,8 @@ final class SkillCommand extends GroupCommand {
       ),
       SkillAdoptCommand(service),
       SkillReplaceCommand(service),
+      SkillUpdateCommand(service),
+      SkillMigrateCommand(service),
       SkillRemoveCommand(service),
       SkillBackupCommand(service),
       SkillRecoverCommand(service),
@@ -91,10 +98,14 @@ final class SkillCommand extends GroupCommand {
   String get shortDescription => 'Manage skills.';
 }
 
-final class SkillListCommand(final SkillLifecycleService _lifecycle)
-    extends Command {
+final class SkillListCommand(
+  final SkillLifecycleService _lifecycle, {
+  GuidedAuthoringService? guided,
+}) extends Command {
   this
-    : super(
+    : _guided =
+          guided ?? GuidedAuthoringService(fileSystem: _lifecycle.state.io.fs),
+      super(
         options: [
           _scope,
           _destination,
@@ -111,7 +122,7 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
         flags: [_verify],
         longDescription:
             'Read-only management-aware Skill inventory. Scope defaults to '
-            'user. Project inventory includes the bounded cwd-to-project-root '
+            'project. Project inventory includes the bounded cwd-to-project-root '
             'ancestor chain. Destination filters presentation only. Managed '
             'occurrences, tracked-missing records, unmanaged candidates, and '
             'ownership-unverified states remain distinct. --verify performs a '
@@ -119,11 +130,9 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
             'notVerified. No management artifacts are created.',
       );
 
-  static final _scope = ChoiceOption.withDefault(
-    'scope',
-    choices: LifecycleScope.values,
-    defaultValue: LifecycleScope.user,
-  );
+  final GuidedAuthoringService _guided;
+
+  static final _scope = ChoiceOption('scope', choices: LifecycleScope.values);
   static final _destination = ChoiceOption(
     'destination',
     choices: SkillDestination.values,
@@ -151,11 +160,20 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
 
   @override
   Future<String> run(ValueOf valueOf, List<String> args) async {
-    final result = await _lifecycle.list(
-      LifecycleOptions(
+    final options = await resolveInteractiveUserScope(
+      fileSystem: _lifecycle.state.io.fs,
+      interactive:
+          valueOf(_format) == LifecycleOutputFormat.text && _guided.hasTerminal,
+      scopeExplicit: valueOf(_scope) != null,
+      offerUserScope: () async =>
+          (await _guided.valueQuestion?.call(
+            'Project context is unavailable. Type user to inventory user scope:',
+          ))?.trim() ==
+          'user',
+      options: LifecycleOptions(
         processWorkingDirectory: _lifecycle.state.io.fs.currentDirectory.path,
         environment: Platform.environment,
-        scope: valueOf(_scope),
+        scope: valueOf(_scope) ?? LifecycleScope.project,
         cwd: valueOf(_cwd),
         projectRoot: valueOf(_projectRoot),
         home: valueOf(_home),
@@ -165,6 +183,9 @@ final class SkillListCommand(final SkillLifecycleService _lifecycle)
         stateDir: valueOf(_stateDir),
         readRoots: valueOf(_readRoots) ?? const <String>[],
       ),
+    );
+    final result = await _lifecycle.list(
+      options,
       destination: valueOf(_destination),
       verify: valueOf(_verify),
     );
@@ -191,6 +212,8 @@ final class InspectCommand extends Command {
          flags: [_content],
          longDescription:
              'Inspect SKILL.md native views without instruction content by default. '
+             'Native validity is reported separately from source-only '
+             'installation admission and its per-method diagnostics. '
              '--content returns the verbatim marker (up to 1,048,576 bytes); '
              'it is not validation and cannot be combined with --target.',
        );
@@ -238,6 +261,9 @@ final class InspectCommand extends Command {
         if (views.views[target] != null) views.views[target]!.toJson(),
       ];
     }
+    report['installationAdmission'] = await _lifecycle.installationAdmission(
+      skill,
+    );
     return jsonEncode(report);
   }
 }
@@ -308,7 +334,9 @@ final class ValidateCommand extends Command {
          longDescription:
              'Validate SKILL.md per native consumer using native Skill or Prompt rules. '
              'Without --target each view is reported separately. '
-             'Invalid or unclassified views fail with status 2.',
+             'Source-only installation admission is reported separately; '
+             'destination and ownership checks still apply. '
+             'Invalid or unclassified native views fail with status 2.',
        );
   final PromptReadService _read;
   final SkillLifecycleService _lifecycle;
@@ -333,6 +361,9 @@ final class ValidateCommand extends Command {
     final target = valueOf(_target);
     if (target == PromptConsumer.antigravity) {
       final report = await _lifecycle.antigravityView(skill);
+      report['installationAdmission'] = await _lifecycle.installationAdmission(
+        skill,
+      );
       final view = (report['views'] as List).single as Map<String, Object?>;
       if (view['valid'] == true) return jsonEncode(report);
       throw MambaException(jsonEncode(report), exitCode: 2);
@@ -356,7 +387,11 @@ final class ValidateCommand extends Command {
       }
       rendered.add(item);
     }
-    final output = jsonEncode({...views.toJson(), 'views': rendered});
+    final output = jsonEncode({
+      ...views.toJson(),
+      'views': rendered,
+      'installationAdmission': await _lifecycle.installationAdmission(skill),
+    });
     if (failed) throw MambaException(output, exitCode: 2);
     return output;
   }
