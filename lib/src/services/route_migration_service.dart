@@ -168,7 +168,8 @@ final class RouteMigrationService {
         state._requireSafePath(
           entry.path,
           nativeRoot,
-          allowFinalLink: kind == ArtifactKind.skillLink,
+          allowFinalLink:
+              kind == ArtifactKind.skillLink || action.single.oldKind != null,
         );
         state._requireSourceDistinct(
           desired.sourcePath,
@@ -225,6 +226,31 @@ final class RouteMigrationService {
         kinds[entry.path] = kind;
         newRoots[entry.path] = nativeRoot;
       }
+      final reusedIds = <String>{};
+      String idFor(InstallationEntryPlan entry) {
+        InstallationRecord? fallback;
+        for (final record in expectedOldRecords) {
+          if (reusedIds.contains(record.installationId)) continue;
+          fallback ??= record;
+          final consumers = {
+            record.nativeDestination,
+            ...record.validatedProfiles,
+            ...record.knownConsumers,
+          };
+          if (entry.kind == InstallationEntryKind.content &&
+                  record.kind == ArtifactKind.skillCanonical ||
+              consumers.contains(entry.target)) {
+            reusedIds.add(record.installationId);
+            return record.installationId;
+          }
+        }
+        if (fallback != null) {
+          reusedIds.add(fallback.installationId);
+          return fallback.installationId;
+        }
+        return LifecycleStateService._newId('ins');
+      }
+
       final newRecords = <InstallationRecord>[];
       if (canonicalEntry != null) {
         final targets = <String>{
@@ -232,7 +258,7 @@ final class RouteMigrationService {
         }.toList()..sort();
         newRecords.add(
           InstallationRecord(
-            installationId: LifecycleStateService._newId('ins'),
+            installationId: idFor(canonicalEntry),
             kind: ArtifactKind.skillCanonical,
             scope: context.scope,
             nativeDestination: 'canonical',
@@ -266,7 +292,7 @@ final class RouteMigrationService {
         for (final entry in publishEntries) {
           newRecords.add(
             InstallationRecord(
-              installationId: LifecycleStateService._newId('ins'),
+              installationId: idFor(entry),
               kind: kinds[entry.path]!,
               scope: context.scope,
               nativeDestination: entry.nativeDestination ?? 'shared',

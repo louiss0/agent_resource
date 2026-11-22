@@ -26,7 +26,11 @@ void main() {
         File(p.join(source, 'SKILL.md')).writeAsStringSync(
           '---\nname: review\ndescription: Reviews.\n---\nBody.\n',
         );
-        LifecycleOptions options({bool dryRun = false}) => LifecycleOptions(
+        LifecycleOptions options({
+          bool dryRun = false,
+          bool approved = false,
+        }) => LifecycleOptions(
+          approved: approved,
           processWorkingDirectory: project,
           cwd: project,
           projectRoot: project,
@@ -78,7 +82,10 @@ void main() {
         );
 
         final migrated = await lifecycle.migrate(
-          LifecycleIdInput(options: options(), id: record.installationId),
+          LifecycleIdInput(
+            options: options(approved: true),
+            id: record.installationId,
+          ),
           method: InstallationMethod.canonical,
           reviewedPlan: planId,
         );

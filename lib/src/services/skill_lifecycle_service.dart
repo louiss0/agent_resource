@@ -958,6 +958,12 @@ interface class SkillLifecycleService implements LifecycleResource {
             exitCode: 4,
           );
         }
+        if (migrationMethod != null && !context.dryRun && !context.approved) {
+          throw MambaException(
+            'The migration requires destructive approval with --yes or explicit interactive confirmation.',
+            exitCode: 4,
+          );
+        }
         if (migrationMethod != null && !canonicalTargets) {
           final userScope = context.scope == LifecycleScope.user;
           final linkKind = Platform.isWindows
