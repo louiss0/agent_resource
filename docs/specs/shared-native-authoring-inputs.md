@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Shared native authoring inputs and read-only plans
 
 This spec documents the implemented internal authoring slice: the shared named

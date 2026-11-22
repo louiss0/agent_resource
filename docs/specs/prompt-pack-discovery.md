@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Harness-relative pack discovery and validation
 
 This spec records the implemented harness-relative pack discovery and the

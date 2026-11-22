@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Safe editor interaction
 
 Delivery: [#84](https://github.com/louiss0/agent_resource/issues/84).

@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Common Pi Agent definitions across two subagent providers
 
 Research for [Verify common Pi Agent profile across subagent providers](https://github.com/louiss0/agent_resource/issues/21). Retrieved **2026-10-23 UTC**. This is source/document evidence, not runtime certification or a chosen execution engine.

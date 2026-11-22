@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Interactive resource installation refactor
 
 **Status: approved.** The human approved this implementation route, operational budgets, scheduling, status mapping and success-envelope proposals. This is a planning artifact, not authorization to implement or claim shipped behavior.

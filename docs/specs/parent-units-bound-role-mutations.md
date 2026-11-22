@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 ## Problem Statement
 
 An Agent definition cannot express every prerequisite of a working native Agent. Permissions, sandbox settings, provider/model defaults, MCP registration, and Codex role registration may belong to shared parent configuration rather than the definition itself. Developers need deliberate control over those changes without allowing an Agent operation to silently reconfigure a parent, claim an entire account/configuration document, expose credentials, or erase unrelated settings during recovery.
