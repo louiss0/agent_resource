@@ -369,7 +369,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     StagedSkill? staged;
     try {
       staged = await SkillRootMarkdownMigration(fileSystem: state.io.fs)
-          .stage(path);
+          .stage(path, directoryName: state.io.fs.path.basename(path));
       state.validateSkillTree(staged.path);
       final name = readDeclaredSkillName(staged.path, fs: state.io.fs);
       final report = validateSkill(
@@ -887,7 +887,7 @@ interface class SkillLifecycleService implements LifecycleResource {
         }
       }
       final staged = await SkillRootMarkdownMigration(fileSystem: fs)
-          .stage(path);
+          .stage(path, directoryName: fs.path.basename(path));
       try {
         if (method == InstallationMethod.sourceLink &&
             (!workspace.provenance.durableLocalDirectory || staged.migrated)) {
@@ -1056,40 +1056,40 @@ interface class SkillLifecycleService implements LifecycleResource {
               );
             }
           }
-          if (route.derivedPrompts &&
-              record.derivedPrompts.isNotEmpty &&
-              requestedTargets.any(
-                (target) => isPromptCapableTarget(target.name),
-              )) {
-            final capable = requestedTargets
-                .firstWhere((target) => isPromptCapableTarget(target.name))
-                .name;
+          for (final harness in route.derivedPromptTargets) {
+            final promptRoot = derivedPromptRoot(context, harness);
+            final promptPath = state.io.fs.path.join(
+              promptRoot,
+              '${record.name}.md',
+            );
             String? content;
             try {
               final inspection = await PromptInspectionService(fs: state.io.fs)
                   .inspect(staged.path, form: PromptForm.skill);
-              final assessment = assessDerivedPrompt(
+              content = assessDerivedPrompts(
                 skillDirectory: staged.path,
                 inspection: inspection,
-                consumers: [PromptConsumer.values.byName(capable)],
-                matrix: NativeFieldMatrix.forKind(
-                  AuthoringKind.prompt,
-                  AuthoringProfile.values.byName(capable),
-                ),
-              );
-              content = assessment.content;
+                harnesses: [harness],
+                fileSystem: state.io.fs,
+              )[harness]?.content;
             } on Object {
               content = null;
             }
+            content ??= <String>[
+              for (final prompt in record.derivedPrompts)
+                if (state.io.fs.path.equals(prompt.path, promptPath) &&
+                    state.io.fs.typeSync(prompt.path, followLinks: false) !=
+                        FileSystemEntityType.notFound)
+                  state.io.fs.file(prompt.path).readAsStringSync(),
+            ].firstOrNull;
             if (content != null) {
-              final promptRoot = derivedPromptRoot(context, capable);
               entries.add(
                 InstallationEntryPlan(
-                  path: state.io.fs.path.join(promptRoot, '${record.name}.md'),
+                  path: promptPath,
                   kind: InstallationEntryKind.template,
                   action: InstallationEntryAction.createContent,
                   nativeRoot: promptRoot,
-                  nativeDestination: capable,
+                  nativeDestination: harness,
                   artifactKind: OwnedArtifactKind.promptTemplate,
                   content: content,
                 ),
@@ -1208,34 +1208,30 @@ interface class SkillLifecycleService implements LifecycleResource {
           }
         }
         final derivedWrites = <DerivedPromptWrite>[];
-        if (route.derivedPrompts && record.derivedPrompts.isNotEmpty) {
-          final capable = <String>[
-            for (final target in requestedTargets)
-              if (isPromptCapableTarget(target.name)) target.name,
-          ];
-          if (capable.isNotEmpty) {
-            final inspection = await PromptInspectionService(fs: state.io.fs)
-                .inspect(staged.path, form: PromptForm.skill);
-            final assessment = assessDerivedPrompt(
-              skillDirectory: staged.path,
-              inspection: inspection,
-              consumers: [
-                for (final target in capable)
-                  PromptConsumer.values.byName(target),
-              ],
-              matrix: NativeFieldMatrix.forKind(
-                AuthoringKind.prompt,
-                AuthoringProfile.values.byName(capable.first),
-              ),
-            );
-            if (assessment.content != null) {
-              for (final prompt in record.derivedPrompts) {
-                derivedWrites.add((
-                  path: prompt.path,
-                  content: assessment.content!,
-                  nativeRoot: state.io.fs.path.dirname(prompt.path),
-                ));
-              }
+        if (route.derivedPromptTargets.isNotEmpty) {
+          final inspection = await PromptInspectionService(fs: state.io.fs)
+              .inspect(staged.path, form: PromptForm.skill);
+          final perHarness = assessDerivedPrompts(
+            skillDirectory: staged.path,
+            inspection: inspection,
+            harnesses: route.derivedPromptTargets,
+            fileSystem: state.io.fs,
+          );
+          for (final prompt in record.derivedPrompts) {
+            final content = <String>[
+              for (final entry in perHarness.entries)
+                if (state.io.fs.path.equals(
+                  derivedPromptRoot(context, entry.key),
+                  state.io.fs.path.dirname(prompt.path),
+                ))
+                  ?entry.value.content,
+            ].firstOrNull;
+            if (content != null) {
+              derivedWrites.add((
+                path: prompt.path,
+                content: content,
+                nativeRoot: state.io.fs.path.dirname(prompt.path),
+              ));
             }
           }
         }
@@ -1255,6 +1251,7 @@ interface class SkillLifecycleService implements LifecycleResource {
                 knownConsumers: canonicalTargets
                     ? [for (final target in requestedTargets) target.name]
                     : null,
+                derivedWrites: derivedWrites,
               )
             : await state.replace(
                 resource: resource,

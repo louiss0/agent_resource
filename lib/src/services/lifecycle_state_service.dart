@@ -2025,7 +2025,8 @@ interface class LifecycleStateService {
           }
           final targets = <String>{
             ...?existingCanonical?.knownConsumers,
-            for (final entry in unit.entries) ?entry.target,
+            for (final entry in unit.entries)
+              if (entry.kind != InstallationEntryKind.template) ?entry.target,
           }.toList()..sort();
           newRecords.add(
             InstallationRecord(

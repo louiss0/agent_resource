@@ -19,8 +19,11 @@ final class InstallationRoute {
     required List<ManagedDerivedArtifact> derivedArtifacts,
     this.entryId,
     this.packKey,
-    this.derivedPrompts = false,
+    List<String> derivedPromptTargets = const <String>[],
   }) : targets = List.unmodifiable(targets),
+       derivedPromptTargets = List.unmodifiable(
+         derivedPromptTargets.toSet().toList()..sort(),
+       ),
        derivedArtifacts = List.unmodifiable(derivedArtifacts) {
     _relative(sourceRelativePath, allowRoot: true);
     if (scope == LifecycleScope.all ||
@@ -74,7 +77,16 @@ final class InstallationRoute {
       entryId: entry as String?,
       packKey: pack as String?,
       scope: named(LifecycleScope.values, (v) => v.name, value['scope']),
-      derivedPrompts: value['derivedPrompts'] == true,
+      derivedPromptTargets: value['derivedPromptTargets'] is List
+          ? [
+              for (final item in value['derivedPromptTargets'] as List)
+                item is String
+                    ? item
+                    : (throw const FormatException(
+                        'Invalid installation route.',
+                      )),
+            ]
+          : const <String>[],
       targets: [
         for (final item in value['targets'] as List)
           named(InstallationRouteTarget.values, (v) => v.name, item),
@@ -101,8 +113,9 @@ final class InstallationRoute {
   final InstallationMethod method;
   final List<ManagedDerivedArtifact> derivedArtifacts;
 
-  /// Whether a derived Prompt template is published alongside the Skill.
-  final bool derivedPrompts;
+  /// The prompt-capable harnesses publishing a derived Prompt template
+  /// alongside the Skill; empty means none.
+  final List<String> derivedPromptTargets;
 
   InstallationRoute withTargets(List<InstallationRouteTarget> targets) =>
       InstallationRoute(
@@ -115,7 +128,7 @@ final class InstallationRoute {
         targets: targets,
         method: method,
         derivedArtifacts: derivedArtifacts,
-        derivedPrompts: derivedPrompts,
+        derivedPromptTargets: derivedPromptTargets,
       );
 
   Map<String, Object?> toJson() => {
@@ -134,7 +147,8 @@ final class InstallationRoute {
     'derivedArtifacts': [
       for (final artifact in derivedArtifacts) artifact.toJson(),
     ],
-    if (derivedPrompts) 'derivedPrompts': true,
+    if (derivedPromptTargets.isNotEmpty)
+      'derivedPromptTargets': derivedPromptTargets,
   };
 }
 

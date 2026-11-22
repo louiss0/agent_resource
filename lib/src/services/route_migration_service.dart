@@ -288,7 +288,8 @@ final class RouteMigrationService {
       ];
       if (canonicalEntry != null) {
         final targets = <String>{
-          for (final entry in desired.entries) ?entry.target,
+          for (final entry in desired.entries)
+            if (entry.kind != InstallationEntryKind.template) ?entry.target,
         }.toList()..sort();
         newRecords.add(
           InstallationRecord(

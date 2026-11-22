@@ -3086,6 +3086,670 @@ path = "invalid"
             expect(project.listSync(recursive: true), isEmpty);
           },
         );
+        group('derived prompts', () {
+          Directory manualSkill(
+            String name, {
+            String? nativeName,
+            String body = 'Body.\n',
+            List<String> frontmatter = const <String>[],
+          }) {
+            nativeName ??= name;
+            final directory = fs.directory(fs.path.join(sandbox.path, name))
+              ..createSync(recursive: true);
+            fs
+                .file(fs.path.join(directory.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: $nativeName\ndescription: Reviews.\n'
+                  'disable-model-invocation: true\n'
+                  '${frontmatter.join('\n')}'
+                  '${frontmatter.isEmpty ? '' : '\n'}---\n$body',
+                );
+            return directory;
+          }
+
+          String promptPath(String name) =>
+              fs.path.join(project.path, '.pi', 'prompts', '$name.md');
+
+          test('publishes a derived prompt template with the skill', () async {
+            final source = manualSkill('manual-source');
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--derived-prompts',
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final prompt = fs.file(promptPath('manual-source'));
+            expect(prompt.existsSync(), isTrue);
+            expect(prompt.readAsStringSync(), endsWith('Body.\n'));
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(
+              LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                stateDir: fs.path.join(sandbox.path, 'state'),
+              ),
+              fileSystem: fs,
+            );
+            final record = lifecycle.state.records(resolved).single;
+            expect(record.installationRoute!.derivedPromptTargets, ['pi']);
+            expect(record.derivedPrompts.single.path, prompt.path);
+          });
+
+          test('creates nothing without the flag', () async {
+            final source = manualSkill('no-flag-source');
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(fs.file(promptPath('no-flag-source')).existsSync(), isFalse);
+          });
+
+          test('derives independently of the requested Skill target', () async {
+            final source = manualSkill('codex-target-source');
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              '--derived-prompts',
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              fs.file(promptPath('codex-target-source')).existsSync(),
+              isTrue,
+            );
+          });
+
+          test(
+            'fails an ineligible manual-only Skill with zero writes',
+            () async {
+              final source = manualSkill('ineligible-source');
+              fs
+                  .directory(fs.path.join(source.path, 'references'))
+                  .createSync();
+              fs
+                  .file(fs.path.join(source.path, 'references', 'notes.txt'))
+                  .writeAsStringSync('notes');
+              final result = await executor().fake().execute([
+                'skill',
+                'install',
+                source.path,
+                ...context(),
+                '--source-kind',
+                'resource',
+                '--target',
+                'claude',
+                '--method',
+                'copy',
+                '--derived-prompts',
+                '--yes',
+              ]);
+              expect(result, isA<MambaFailureResult>());
+              expect(
+                fs.file(promptPath('ineligible-source')).existsSync(),
+                isFalse,
+              );
+              expect(
+                fs
+                    .directory(fs.path.join(project.path, '.claude', 'skills'))
+                    .existsSync(),
+                isFalse,
+              );
+              expect(
+                fs
+                    .file(
+                      fs.path.join(sandbox.path, 'state', 'installations.json'),
+                    )
+                    .existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test(
+            'reports unsupported metadata and keeps the body byte-identical',
+            () async {
+              const body = 'Line one.\nLine two.\n';
+              final source = manualSkill(
+                'metadata-source',
+                body: body,
+                frontmatter: const <String>['license: MIT'],
+              );
+              final result = await executor().fake().execute([
+                'skill',
+                'install',
+                source.path,
+                ...context(),
+                '--source-kind',
+                'resource',
+                '--target',
+                'claude',
+                '--method',
+                'copy',
+                '--derived-prompts',
+                '--yes',
+                '--format',
+                'json',
+              ]);
+              expect(
+                result,
+                isA<MambaSuccessResult>(),
+                reason: result is MambaFailureResult ? result.message : null,
+              );
+              final rendered = fs
+                  .file(promptPath('metadata-source'))
+                  .readAsStringSync();
+              expect(rendered, endsWith(body));
+              expect(rendered, contains('description'));
+              expect(rendered, isNot(contains('license')));
+              expect(rendered, isNot(contains('MIT')));
+              final output = (result as MambaSuccessResult).output ?? '';
+              expect(output, contains('license'));
+            },
+          );
+
+          test('interactive asks once for several eligible Skills', () async {
+            final collection = fs.directory(
+              fs.path.join(sandbox.path, 'collection'),
+            )..createSync(recursive: true);
+            for (final id in ['first', 'second']) {
+              final dir = fs.directory(
+                fs.path.join(collection.path, 'skills', id),
+              )..createSync(recursive: true);
+              fs
+                  .file(fs.path.join(dir.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: $id\ndescription: $id.\n'
+                    'disable-model-invocation: true\n---\n$id body.\n',
+                  );
+            }
+            fs
+                .file(fs.path.join(collection.path, 'agent-resources.toml'))
+                .writeAsStringSync('''
+schema_version = 1
+[[skills]]
+id = "first"
+path = "skills/first"
+[[skills]]
+id = "second"
+path = "skills/second"
+''');
+            interaction.resourceSelections.add(['first', 'second']);
+            interaction.targetSelections.add([InstallationTarget.claude]);
+            interaction.derivedPromptAnswers.add(true);
+            interaction.approvals.add(true);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              collection.path,
+              ...context(),
+              '--source-kind',
+              'collection',
+              '--method',
+              'copy',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(interaction.derivedPromptOffers, hasLength(1));
+            final offered = interaction.derivedPromptOffers.single.join(', ');
+            expect(offered, contains('first'));
+            expect(offered, contains('second'));
+            expect(offered, contains('pi'));
+            expect(fs.file(promptPath('first')).existsSync(), isTrue);
+            expect(fs.file(promptPath('second')).existsSync(), isTrue);
+          });
+
+          test('does not ask without a manual-only Skill', () async {
+            final source = skill('plain-source', nativeName: 'plain-source');
+            interaction.targetSelections.add([InstallationTarget.claude]);
+            interaction.approvals.add(true);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--method',
+              'copy',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(interaction.derivedPromptOffers, isEmpty);
+          });
+
+          test('does not ask in user scope', () async {
+            final source = manualSkill('user-scope-source');
+            interaction.targetSelections.add([InstallationTarget.claude]);
+            interaction.approvals.add(true);
+            final result = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(scope: 'user'),
+              '--source-kind',
+              'resource',
+              '--method',
+              'copy',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(interaction.derivedPromptOffers, isEmpty);
+          });
+
+          test('update regenerates the template atomically', () async {
+            final source = manualSkill('update-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--derived-prompts',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(
+              LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                stateDir: fs.path.join(sandbox.path, 'state'),
+              ),
+              fileSystem: fs,
+            );
+            final record = lifecycle.state.records(resolved).single;
+            fs
+                .file(fs.path.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: update-source\ndescription: Reviews.\n'
+                  'disable-model-invocation: true\n---\nUpdated body.\n',
+                );
+            final result = await executor().fake().execute([
+              'skill',
+              'update',
+              record.installationId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(
+              fs.file(promptPath('update-source')).readAsStringSync(),
+              endsWith('Updated body.\n'),
+            );
+          });
+
+          test('remove removes the template with the skill', () async {
+            final source = manualSkill('remove-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--derived-prompts',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            LifecycleContext resolved() => LifecycleContext.resolve(
+              LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                stateDir: fs.path.join(sandbox.path, 'state'),
+              ),
+              fileSystem: fs,
+            );
+            final record = lifecycle.state.records(resolved()).single;
+            final result = await executor().fake().execute([
+              'skill',
+              'remove',
+              record.installationId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            expect(fs.file(promptPath('remove-source')).existsSync(), isFalse);
+          });
+
+          test(
+            'canonical update regenerates the template atomically',
+            () async {
+              useLocalFileSystem();
+              final source = manualSkill('canonical-update-source');
+              final install = await executor().fake().execute([
+                'skill',
+                'install',
+                source.path,
+                ...context(),
+                '--source-kind',
+                'resource',
+                '--target',
+                'claude',
+                '--method',
+                'canonical',
+                '--derived-prompts',
+                '--yes',
+              ]);
+              expect(
+                install,
+                isA<MambaSuccessResult>(),
+                reason: install is MambaFailureResult ? install.message : null,
+              );
+              expect(
+                fs.file(promptPath('canonical-update-source')).existsSync(),
+                isTrue,
+              );
+              final lifecycle = SkillLifecycleService(fileSystem: fs);
+              final resolved = LifecycleContext.resolve(
+                LifecycleOptions(
+                  processWorkingDirectory: project.path,
+                  scope: LifecycleScope.project,
+                  cwd: project.path,
+                  projectRoot: project.path,
+                  home: home.path,
+                  stateDir: fs.path.join(sandbox.path, 'state'),
+                ),
+                fileSystem: fs,
+              );
+              final record = lifecycle.state.records(resolved).single;
+              fs
+                  .file(fs.path.join(source.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: canonical-update-source\n'
+                    'description: Reviews.\n'
+                    'disable-model-invocation: true\n'
+                    '---\nCanonical body.\n',
+                  );
+              final result = await executor().fake().execute([
+                'skill',
+                'update',
+                record.installationId,
+                ...context(),
+                '--yes',
+              ]);
+              expect(
+                result,
+                isA<MambaSuccessResult>(),
+                reason: result is MambaFailureResult ? result.message : null,
+              );
+              expect(
+                fs
+                    .file(promptPath('canonical-update-source'))
+                    .readAsStringSync(),
+                endsWith('Canonical body.\n'),
+              );
+              final updated = lifecycle.state.records(resolved).single;
+              expect(updated.derivedPrompts, hasLength(1));
+            },
+          );
+
+          test('a locally edited template fails the update', () async {
+            final source = manualSkill('local-edit-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--derived-prompts',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            LifecycleContext resolved() => LifecycleContext.resolve(
+              LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                stateDir: fs.path.join(sandbox.path, 'state'),
+              ),
+              fileSystem: fs,
+            );
+            final record = lifecycle.state.records(resolved()).single;
+            fs
+                .file(promptPath('local-edit-source'))
+                .writeAsStringSync('Local edit.\n');
+            fs
+                .file(fs.path.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: local-edit-source\ndescription: Reviews.\n'
+                  'disable-model-invocation: true\n---\nNew body.\n',
+                );
+            final result = await executor().fake().execute([
+              'skill',
+              'update',
+              record.installationId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(result, isA<MambaFailureResult>());
+            // The local template edit is preserved, not silently replaced.
+            expect(
+              fs.file(promptPath('local-edit-source')).readAsStringSync(),
+              'Local edit.\n',
+            );
+          });
+
+          test(
+            'copy to canonical migration keeps the template attached',
+            () async {
+              useLocalFileSystem();
+              final source = manualSkill('migrate-keep-source');
+              final install = await executor().fake().execute([
+                'skill',
+                'install',
+                source.path,
+                ...context(),
+                '--source-kind',
+                'resource',
+                '--target',
+                'claude',
+                '--method',
+                'copy',
+                '--derived-prompts',
+                '--yes',
+              ]);
+              expect(install, isA<MambaSuccessResult>());
+              final lifecycle = SkillLifecycleService(fileSystem: fs);
+              LifecycleContext resolved() => LifecycleContext.resolve(
+                LifecycleOptions(
+                  processWorkingDirectory: project.path,
+                  scope: LifecycleScope.project,
+                  cwd: project.path,
+                  projectRoot: project.path,
+                  home: home.path,
+                  stateDir: fs.path.join(sandbox.path, 'state'),
+                ),
+                fileSystem: fs,
+              );
+              final record = lifecycle.state.records(resolved()).single;
+              final args = [
+                'skill',
+                'migrate',
+                record.installationId,
+                ...context(),
+                '--method',
+                'canonical',
+                '--format',
+                'json',
+              ];
+              final preview = await executor().fake().execute([
+                ...args,
+                '--dry-run',
+              ]);
+              expect(
+                preview,
+                isA<MambaSuccessResult>(),
+                reason: preview is MambaFailureResult ? preview.message : null,
+              );
+              final planId =
+                  ((jsonDecode((preview as MambaSuccessResult).output!)
+                              as Map)['data']
+                          as Map)['planId']
+                      as String;
+              final migrated = await executor().fake().execute([
+                ...args,
+                '--yes',
+                '--reviewed-plan',
+                planId,
+              ]);
+              expect(
+                migrated,
+                isA<MambaSuccessResult>(),
+                reason: migrated is MambaFailureResult
+                    ? migrated.message
+                    : null,
+              );
+              final migratedRecord = lifecycle.state
+                  .records(resolved())
+                  .singleWhere((r) => r.name == 'migrate-keep-source');
+              expect(
+                migratedRecord.derivedPrompts.single.path,
+                promptPath('migrate-keep-source'),
+              );
+              expect(
+                fs.file(promptPath('migrate-keep-source')).existsSync(),
+                isTrue,
+              );
+            },
+          );
+
+          test('legacy records without derived fields decode', () async {
+            final source = manualSkill('legacy-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--derived-prompts',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(
+              LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                stateDir: fs.path.join(sandbox.path, 'state'),
+              ),
+              fileSystem: fs,
+            );
+            final ledgerFile = fs.file(
+              fs.path.join(
+                project.path,
+                '.agent-resource',
+                'installations.json',
+              ),
+            );
+            final ledger = jsonDecode(ledgerFile.readAsStringSync()) as Map;
+            final records = ledger['installations'] as List;
+            for (final record in records) {
+              (record as Map).remove('derivedPrompts');
+              (record['installationRoute'] as Map?)?.remove(
+                'derivedPromptTargets',
+              );
+            }
+            ledgerFile.writeAsStringSync(jsonEncode(ledger));
+            final loaded = lifecycle.state.records(resolved);
+            expect(loaded, hasLength(1));
+            expect(loaded.single.derivedPrompts, isEmpty);
+            expect(
+              loaded.single.installationRoute!.derivedPromptTargets,
+              isEmpty,
+            );
+          });
+        });
       });
     });
   });

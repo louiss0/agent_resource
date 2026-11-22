@@ -13,7 +13,6 @@ import '../agent_inspection.dart';
 import '../configuration/effective_configuration.dart';
 import 'prompt_inspection_service.dart';
 import 'configuration_workflow_service.dart';
-import '../authoring/native_field_matrix.dart';
 import '../conversion/derived_prompt.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/installation_plan.dart';
@@ -2141,38 +2140,86 @@ interface class PackLifecycleService {
         warnings: warnings,
         policy: _policyChange(request, pack),
       );
-      final derivedAssessments = <String, DerivedPromptAssessment>{};
-      if (request.derivedPrompts &&
-          (request.resourceType == PackResourceType.skill ||
-              request.resourceType == PackResourceType.prompt)) {
+      final derivedAssessments =
+          <String, Map<String, DerivedPromptAssessment>>{};
+      final derivedType =
+          request.resourceType == PackResourceType.skill ||
+          request.resourceType == PackResourceType.prompt;
+      final derivedHarnesses = derivedType
+          ? promptCapableHarnesses()
+          : <String>[];
+      if (request.derivedPrompts && derivedType && derivedHarnesses.isEmpty) {
+        throw MambaException(
+          '--derived-prompts requires a prompt-capable harness in the '
+          'catalog; none publishes a native Prompt template.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      final offersDerived =
+          derivedType &&
+          derivedHarnesses.isNotEmpty &&
+          (request.derivedPrompts ||
+              (request.interactive &&
+                  !request.yes &&
+                  context.scope == LifecycleScope.project));
+      if (offersDerived) {
+        final perCandidate =
+            <_PackCandidate, Map<String, DerivedPromptAssessment>>{};
+        final eligible = <String>[];
+        final ineligible = <String>[];
         for (final candidate in selected) {
           if (actions[candidate.name] != 'install') continue;
-          final capable = <String>[
-            for (final target
-                in installTargets[candidate.name] ?? const <String>[])
-              if (isPromptCapableTarget(target)) target,
-          ];
-          if (capable.isEmpty) {
-            throw MambaException(
-              '--derived-prompts requires a prompt-capable installation '
-              'target for ${candidate.name}; none of the selected targets '
-              'publishes a native Prompt template.',
-              exitCode: PackProcessStatus.invalidInput.code,
-            );
-          }
-          final assessment = await _assessDerivedPrompt(
+          final perHarness = await _assessDerivedPrompts(
             candidate.path,
-            capable,
+            derivedHarnesses,
           );
-          if (assessment.manualOnly && !assessment.eligible) {
-            throw MambaException(
-              '${candidate.name} is ineligible for a derived Prompt: '
-              '${assessment.reasons.join('; ')}',
-              exitCode: PackProcessStatus.invalidInput.code,
+          perCandidate[candidate] = perHarness;
+          if (perHarness.values.any((a) => a.eligible)) {
+            eligible.add(candidate.name);
+          }
+          for (final assessment in perHarness.values) {
+            if (assessment.manualOnly && !assessment.eligible) {
+              ineligible.add(
+                '${candidate.name} for ${assessment.harness} '
+                '(${assessment.reasons.join('; ')})',
+              );
+            }
+          }
+        }
+        var derive = request.derivedPrompts;
+        if (!derive) {
+          for (final line in ineligible) {
+            stdout.writeln('Ineligible for a derived Prompt: $line');
+          }
+          if (eligible.isNotEmpty) {
+            derive = await _promptYesNo(
+              'Publish native Prompt templates for: '
+              '${eligible.join(', ')} -> ${derivedHarnesses.join(', ')}?',
             );
           }
-          if (assessment.eligible) {
-            derivedAssessments[candidate.name] = assessment;
+        }
+        if (derive) {
+          for (final candidate in perCandidate.keys) {
+            final perHarness = perCandidate[candidate]!;
+            final usable = <String, DerivedPromptAssessment>{};
+            for (final assessment in perHarness.values) {
+              if (!assessment.manualOnly) continue;
+              if (!assessment.eligible) {
+                if (request.derivedPrompts) {
+                  throw MambaException(
+                    '${candidate.name} is ineligible for a derived Prompt on '
+                    '${assessment.harness}: '
+                    '${assessment.reasons.join('; ')}',
+                    exitCode: PackProcessStatus.invalidInput.code,
+                  );
+                }
+                continue;
+              }
+              usable[assessment.harness] = assessment;
+            }
+            if (usable.isNotEmpty) {
+              derivedAssessments[candidate.name] = usable;
+            }
           }
         }
       }
@@ -2511,23 +2558,17 @@ interface class PackLifecycleService {
     DownloadPackSource download => download.url,
   };
 
-  Future<DerivedPromptAssessment> _assessDerivedPrompt(
+  Future<Map<String, DerivedPromptAssessment>> _assessDerivedPrompts(
     String skillDirectory,
-    List<String> capableTargets,
+    List<String> harnesses,
   ) async {
     final inspection = await PromptInspectionService(fs: _fileSystem)
         .inspect(skillDirectory, form: PromptForm.skill);
-    return assessDerivedPrompt(
+    return assessDerivedPrompts(
       skillDirectory: skillDirectory,
       inspection: inspection,
-      consumers: [
-        for (final target in capableTargets)
-          PromptConsumer.values.byName(target),
-      ],
-      matrix: NativeFieldMatrix.forKind(
-        AuthoringKind.prompt,
-        AuthoringProfile.values.byName(capableTargets.first),
-      ),
+      harnesses: harnesses,
+      fileSystem: _fileSystem,
     );
   }
 
@@ -2539,22 +2580,21 @@ interface class PackLifecycleService {
     PackConfiguration configuration, {
     required List<String> targets,
     required SkillInstallMethod? method,
-    DerivedPromptAssessment? derived,
+    Map<String, DerivedPromptAssessment>? derived,
   }) async {
     if (request.dryRun) return 'installed';
-    final capable = <String>[
-      for (final target in targets)
-        if (isPromptCapableTarget(target)) target,
-    ];
     final unit = _installationUnit(
       context,
       candidate,
       method,
       targets,
       request.resourceType,
-      derivedContent: derived?.content,
-      promptTarget: derived?.content == null ? null : capable.firstOrNull,
-      derivedPrompts: derived?.content != null,
+      derivedContents: {
+        for (final entry
+            in derived?.entries ??
+                const <MapEntry<String, DerivedPromptAssessment>>[])
+          if (entry.value.content != null) entry.key: entry.value.content!,
+      },
     );
     final resource = _resourceFor(candidate, method, unit);
     final outcome = await _lifecycleState.installResourceUnit(
@@ -3269,25 +3309,23 @@ interface class PackLifecycleService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
-      final migrateCapable = <String>[
-        for (final target in targets)
-          if (isPromptCapableTarget(target)) target,
-      ];
-      final migrateAssessment =
-          oldRoute.derivedPrompts && migrateCapable.isNotEmpty
-          ? await _assessDerivedPrompt(candidate.path, migrateCapable)
-          : null;
+      final migratePerHarness = oldRoute.derivedPromptTargets.isNotEmpty
+          ? await _assessDerivedPrompts(
+              candidate.path,
+              oldRoute.derivedPromptTargets,
+            )
+          : <String, DerivedPromptAssessment>{};
       final desired = _installationUnit(
         context,
         candidate,
         method,
         targets,
         PackResourceType.skill,
-        derivedContent: migrateAssessment?.content,
-        promptTarget: migrateAssessment?.content == null
-            ? null
-            : migrateCapable.first,
-        derivedPrompts: oldRoute.derivedPrompts,
+        derivedContents: {
+          for (final entry in migratePerHarness.entries)
+            if (entry.value.content != null) entry.key: entry.value.content!,
+        },
+        derivedPromptTargets: oldRoute.derivedPromptTargets,
       );
       const review = PackSkillMigrationReview();
       final plan = review.preview(
@@ -3484,7 +3522,8 @@ interface class PackLifecycleService {
       method,
       targets,
       PackResourceType.skill,
-      derivedPrompts: record.installationRoute?.derivedPrompts ?? false,
+      derivedPromptTargets:
+          record.installationRoute?.derivedPromptTargets ?? const <String>[],
     ).installationRoute;
   }
 
@@ -3495,6 +3534,33 @@ interface class PackLifecycleService {
     InstallationRecord record,
     _PackCandidate candidate,
   ) async {
+    final derivedWrites = <DerivedPromptWrite>[];
+    final oldRoute = record.installationRoute;
+    if (oldRoute != null &&
+        oldRoute.derivedPromptTargets.isNotEmpty &&
+        record.derivedPrompts.isNotEmpty) {
+      final perHarness = await _assessDerivedPrompts(
+        candidate.path,
+        oldRoute.derivedPromptTargets,
+      );
+      for (final prompt in record.derivedPrompts) {
+        final content = <String>[
+          for (final entry in perHarness.entries)
+            if (_fileSystem.path.equals(
+              derivedPromptRoot(context, entry.key),
+              _fileSystem.path.dirname(prompt.path),
+            ))
+              ?entry.value.content,
+        ].firstOrNull;
+        if (content != null) {
+          derivedWrites.add((
+            path: prompt.path,
+            content: content,
+            nativeRoot: _fileSystem.path.dirname(prompt.path),
+          ));
+        }
+      }
+    }
     if (record.kind == ArtifactKind.skillCanonical) {
       await _lifecycleState.replaceCanonical(
         resource: resource,
@@ -3508,33 +3574,9 @@ interface class PackLifecycleService {
         validatedProfiles: candidate.historicalInstallation?.validatedProfiles,
         allowModified:
             _lifecycleState.verify(record) != ModificationStatus.unchanged,
+        derivedWrites: derivedWrites,
       );
     } else {
-      final derivedWrites = <DerivedPromptWrite>[];
-      final oldRoute = record.installationRoute;
-      if (oldRoute != null &&
-          oldRoute.derivedPrompts &&
-          record.derivedPrompts.isNotEmpty) {
-        final capable = <String>[
-          for (final target in oldRoute.targets)
-            if (isPromptCapableTarget(target.name)) target.name,
-        ];
-        if (capable.isNotEmpty) {
-          final assessment = await _assessDerivedPrompt(
-            candidate.path,
-            capable,
-          );
-          if (assessment.content != null) {
-            for (final prompt in record.derivedPrompts) {
-              derivedWrites.add((
-                path: prompt.path,
-                content: assessment.content!,
-                nativeRoot: _fileSystem.path.dirname(prompt.path),
-              ));
-            }
-          }
-        }
-      }
       await _lifecycleState.replace(
         resource: resource,
         context: context,
@@ -3566,9 +3608,8 @@ interface class PackLifecycleService {
     SkillInstallMethod? method,
     List<String> targets,
     PackResourceType type, {
-    String? derivedContent,
-    String? promptTarget,
-    bool derivedPrompts = false,
+    Map<String, String> derivedContents = const <String, String>{},
+    List<String> derivedPromptTargets = const <String>[],
   }) {
     if (type == PackResourceType.agent) {
       final harness = _harness(candidate.profile!);
@@ -3691,17 +3732,17 @@ interface class PackLifecycleService {
         );
       }
     }
-    if (derivedContent != null && promptTarget != null) {
-      final promptRoot = derivedPromptRoot(context, promptTarget);
+    for (final derived in derivedContents.entries) {
+      final promptRoot = derivedPromptRoot(context, derived.key);
       entries.add(
         InstallationEntryPlan(
           path: _fileSystem.path.join(promptRoot, '${candidate.name}.md'),
           kind: InstallationEntryKind.template,
           action: InstallationEntryAction.createContent,
           nativeRoot: promptRoot,
-          nativeDestination: promptTarget,
+          nativeDestination: derived.key,
           artifactKind: OwnedArtifactKind.promptTemplate,
-          content: derivedContent,
+          content: derived.value,
         ),
       );
     }
@@ -3741,9 +3782,9 @@ interface class PackLifecycleService {
                 SkillInstallMethod.sourceLink => InstallationMethod.sourceLink,
               },
               derivedArtifacts: candidate.derivedArtifacts,
-              derivedPrompts:
-                  derivedPrompts ||
-                  (derivedContent != null && promptTarget != null),
+              derivedPromptTargets: derivedContents.isNotEmpty
+                  ? derivedContents.keys.toList()
+                  : derivedPromptTargets,
             ),
     );
   }
@@ -3757,7 +3798,10 @@ interface class PackLifecycleService {
       return _agents.installationResource(_harness(candidate.profile!));
     }
     return _skills.installationResource(
-      targets: [for (final entry in unit.entries) ?entry.target],
+      targets: [
+        for (final entry in unit.entries)
+          if (entry.kind != InstallationEntryKind.template) ?entry.target,
+      ],
       kind: switch (method!) {
         SkillInstallMethod.canonical => ArtifactKind.skillCanonical,
         SkillInstallMethod.copy => ArtifactKind.skillCopy,

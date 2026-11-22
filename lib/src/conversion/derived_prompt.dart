@@ -51,7 +51,7 @@ final class DerivedPromptEligibility {
   static List<String> ineligibility({
     required String skillDirectory,
     required String instructions,
-    required PromptView view,
+    required bool activeTemplate,
     fs.FileSystem? fs,
   }) {
     final reasons = <String>[
@@ -59,8 +59,7 @@ final class DerivedPromptEligibility {
         'carries an entry a Prompt cannot carry: $entry',
       if (PromptResourcePathScanner.scan(instructions).isNotEmpty)
         'references a bundled resource path',
-      if (view.argumentExpressions.isNotEmpty || view.dynamicShell)
-        'uses active template arguments or dynamic shell',
+      if (activeTemplate) 'uses active template arguments or dynamic shell',
     ];
     return reasons;
   }
@@ -109,43 +108,51 @@ String _yamlValue(Object? value, NativeFieldSpec? spec) {
   return jsonEncode(value);
 }
 
-/// Whether a requested installation target can host a derived Prompt
-/// template, derived from the catalog rather than a hardcoded harness.
-bool isPromptCapableTarget(String target) {
-  for (final id in HarnessId.values) {
-    if (id.wireName != target) continue;
-    final facet = HarnessCatalog.instance.facet(id, HarnessFacet.prompt);
-    return facet is PromptHarnessSpec &&
-        facet.skillConversionForm == PromptConversionForm.template;
-  }
-  return false;
-}
-
-/// The native Prompt template root for the scope of [context].
+/// The catalog harnesses that publish derived native Prompt templates.
 ///
-/// Every prompt-capable target currently resolves to the same catalog facet;
-/// the target parameter keeps the resolution honest if a second
-/// template-form harness appears.
-String derivedPromptRoot(LifecycleContext context, String target) {
-  if (!isPromptCapableTarget(target)) {
-    throw ArgumentError.value(target, 'target', 'Not prompt capable');
+/// Derived from the catalog's Prompt facets, never hardcoded to one harness.
+List<String> promptCapableHarnesses() => [
+  for (final entry in promptHarnessFacets.entries)
+    if (entry.value.skillConversionForm == PromptConversionForm.template)
+      entry.key.wireName,
+]..sort();
+
+/// Whether a harness can host a derived Prompt template.
+bool isPromptCapableTarget(String harness) =>
+    promptCapableHarnesses().contains(harness);
+
+/// The native Prompt template root of [harness] for the scope of [context].
+String derivedPromptRoot(LifecycleContext context, String harness) {
+  if (!isPromptCapableTarget(harness)) {
+    throw ArgumentError.value(harness, 'harness', 'Not prompt capable');
   }
-  final paths = const local.LocalFileSystem().path;
-  return context.scope == LifecycleScope.project
-      ? paths.join(context.projectRoot, '.pi', 'prompts')
-      : paths.join(context.piAgentRoot(), 'prompts');
+  final id = HarnessId.values.singleWhere((value) => value.wireName == harness);
+  final spec = HarnessCatalog.instance.requireFacet(id, HarnessFacet.prompt);
+  if (spec is PromptHarnessSpec) {
+    final paths = context.fs.path;
+    if (id == HarnessId.pi) {
+      return context.scope == LifecycleScope.project
+          ? paths.join(context.projectRoot, '.pi', 'prompts')
+          : paths.join(context.piAgentRoot(), 'prompts');
+    }
+  }
+  throw ArgumentError.value(harness, 'harness', 'No template root');
 }
 
-/// The derived-Prompt assessment of one staged Skill source.
+/// The derived-Prompt assessment of one staged Skill source for one harness.
 final class DerivedPromptAssessment {
   const DerivedPromptAssessment({
+    required this.harness,
     required this.manualOnly,
     required this.reasons,
     this.content,
     this.unsupportedFields = const <String>[],
   });
 
-  /// Whether the Skill is a valid manual-only Prompt for the target view.
+  /// The prompt-capable harness this assessment belongs to.
+  final String harness;
+
+  /// Whether the Skill is a valid manual-only Prompt for the harness view.
   final bool manualOnly;
 
   /// Human-readable ineligibility reasons; empty means eligible.
@@ -154,45 +161,23 @@ final class DerivedPromptAssessment {
   /// Rendered template markdown; present when the Skill is eligible.
   final String? content;
 
-  /// Source fields the target profile cannot translate.
+  /// Source fields the harness profile cannot translate.
   final List<String> unsupportedFields;
 
   bool get eligible => manualOnly && reasons.isEmpty && content != null;
 }
 
-/// Assesses [skillDirectory] for derived Prompt template publication.
+/// Assesses [skillDirectory] for derived Prompt template publication in each
+/// of [harnesses], keyed by harness wire name.
 ///
 /// [inspection] is the `PromptForm.skill` inspection of the same directory.
-/// The manual-only view is evaluated for every prompt-capable consumer.
-DerivedPromptAssessment assessDerivedPrompt({
+Map<String, DerivedPromptAssessment> assessDerivedPrompts({
   required String skillDirectory,
   required PromptInspection inspection,
-  required List<PromptConsumer> consumers,
-  required NativeFieldMatrix matrix,
+  required List<String> harnesses,
   fs.FileSystem? fileSystem,
 }) {
   final fileSystem2 = fileSystem ?? const local.LocalFileSystem();
-  var manualOnly = consumers.isNotEmpty;
-  final diagnostics = <String>[];
-  var argsActive = false;
-  for (final consumer in consumers) {
-    final view = inspection.views[consumer];
-    if (view == null ||
-        view.classification != PromptClassification.prompt ||
-        !view.valid) {
-      manualOnly = false;
-      if (view != null) {
-        diagnostics.addAll([
-          for (final diagnostic in view.diagnostics) diagnostic.message,
-        ]);
-      }
-    } else {
-      argsActive =
-          argsActive ||
-          view.argumentExpressions.isNotEmpty ||
-          view.dynamicShell;
-    }
-  }
   final marker = fileSystem2.path.join(skillDirectory, 'SKILL.md');
   var body = '';
   try {
@@ -212,40 +197,56 @@ DerivedPromptAssessment assessDerivedPrompt({
   } on fs.FileSystemException {
     body = '';
   }
-  final reasons = <String>[
-    if (!manualOnly) 'is not a valid manual-only Prompt for the target harness',
-    ...DerivedPromptEligibility.ineligibility(
-      skillDirectory: skillDirectory,
-      instructions: body,
-      view: (
-        consumer: consumers.firstOrNull ?? PromptConsumer.pi,
-        classification: PromptClassification.prompt,
-        valid: true,
-        argumentExpressions: argsActive
-            ? const <String>['*']
-            : const <String>[],
-        dynamicShell: false,
-        argumentsAppended: false,
-        diagnostics: const <PromptDiagnostic>[],
+  final shape = DerivedPromptEligibility.ineligibility(
+    skillDirectory: skillDirectory,
+    instructions: body,
+    activeTemplate: false,
+    fs: fileSystem2,
+  );
+  final result = <String, DerivedPromptAssessment>{};
+  for (final harness in harnesses) {
+    final consumer = PromptConsumer.values.byName(harness);
+    final view = inspection.views[consumer];
+    final manualOnly =
+        view != null &&
+        view.classification == PromptClassification.prompt &&
+        view.diagnostics.every(
+          (diagnostic) => diagnostic.code == 'EXTRA_ENTRY',
+        );
+    final reasons = <String>[
+      if (!manualOnly)
+        'is not a valid manual-only Prompt for the $harness target',
+      ...shape,
+      if (view != null &&
+          (view.argumentExpressions.isNotEmpty || view.dynamicShell))
+        'uses active template arguments or dynamic shell',
+    ];
+    if (reasons.isNotEmpty) {
+      result[harness] = DerivedPromptAssessment(
+        harness: harness,
+        manualOnly: manualOnly,
+        reasons: reasons,
+      );
+      continue;
+    }
+    final fields = <String, Object?>{...inspection.fields}..remove('name');
+    final unsupported = <String>[];
+    final content = renderNativeMarkdown(
+      fields: fields,
+      body: body,
+      matrix: NativeFieldMatrix.forKind(
+        AuthoringKind.prompt,
+        AuthoringProfile.values.byName(harness),
       ),
-      fs: fileSystem2,
-    ),
-  ];
-  if (reasons.isNotEmpty) {
-    return DerivedPromptAssessment(manualOnly: manualOnly, reasons: reasons);
+      unsupported: unsupported,
+    );
+    result[harness] = DerivedPromptAssessment(
+      harness: harness,
+      manualOnly: true,
+      reasons: const <String>[],
+      content: content,
+      unsupportedFields: unsupported,
+    );
   }
-  final fields = <String, Object?>{...inspection.fields}..remove('name');
-  final unsupported = <String>[];
-  final content = renderNativeMarkdown(
-    fields: fields,
-    body: body,
-    matrix: matrix,
-    unsupported: unsupported,
-  );
-  return DerivedPromptAssessment(
-    manualOnly: true,
-    reasons: const <String>[],
-    content: content,
-    unsupportedFields: unsupported,
-  );
+  return result;
 }

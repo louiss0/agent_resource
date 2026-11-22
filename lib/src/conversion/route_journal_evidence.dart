@@ -165,6 +165,9 @@ final class RouteJournalEvidence {
         for (final exposure in record.exposures) {
           add(exposure.path, 'skillLink');
         }
+        for (final prompt in record.derivedPrompts) {
+          add(prompt.path, 'promptTemplate');
+        }
       }
       final first = InstallationRecord.fromJson(value.first);
       if (first.kind.name == 'skillCanonical' && value.length != 1) fail();
