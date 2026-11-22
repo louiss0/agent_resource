@@ -1081,7 +1081,7 @@ interface class AuthoringPlanService {
         'Managed publication is not supported for ${inputs.kind.name} '
             'resources in the ${inputs.profile.name} profile; author-only '
             'output remains available.'
-            '${inputs.kind == AuthoringKind.prompt ? ' ${lifecycleBoundary(BoundaryResource.prompt, LifecycleBoundaryOperation.install).deferredReason}' : ''}',
+            '${inputs.kind == AuthoringKind.prompt ? ' $promptDirectInstallBoundary' : ''}',
       );
       return AuthoringOwnership.authorOnly;
     }

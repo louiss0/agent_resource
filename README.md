@@ -111,7 +111,7 @@ prompt:
   create: supported (prompt create)
   inspect: supported (prompt inspect)
   validate: supported (prompt validate)
-  install: deferred — There is no direct prompt install; Pack installs publish Prompts under Skill ownership records and derived native templates are managed through the parent Skill.
+  install: supported (pack install)
   adopt: deferred — Pack-installed Prompts live under Skill ownership records; manage them through the Skill selectors of the pack.
   update: deferred — Pack-installed Prompts live under Skill ownership records; manage them through the Skill selectors of the pack.
   migrate: deferred — Pack-installed Prompts live under Skill ownership records; manage them through the Skill selectors of the pack.
@@ -121,6 +121,7 @@ prompt:
   recover: supported (prompt conversion recover)
   edit: deferred — There is no direct prompt edit; author a replacement with prompt create or edit the parent Skill.
   sync: deferred — Pack-installed Prompts live under Skill ownership records; manage them through the Skill selectors of the pack.
+  note: Skill-backed Prompts publish through `pack install --type prompt` and derived Pi templates through `skill install`/`pack install --prompt-target`; only a direct `prompt install` is deferred. Both routes record Skill ownership.
 agent:
   create: supported (agent create)
   inspect: supported (agent inspect)

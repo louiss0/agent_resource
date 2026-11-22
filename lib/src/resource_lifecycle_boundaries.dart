@@ -52,6 +52,7 @@ final class LifecycleBoundary {
     required this.resource,
     required this.operation,
     required this.status,
+    this.commandGroup,
     this.commandPath = const <String>[],
     this.deferredReason,
   });
@@ -64,6 +65,11 @@ final class LifecycleBoundary {
 
   /// Whether the operation is supported or deferred.
   final LifecycleBoundaryStatus status;
+
+  /// The registered top-level group that owns [commandPath] when it
+  /// differs from [resource], e.g. a Prompt route honoured by
+  /// `pack install`.
+  final String? commandGroup;
 
   /// The command path inside the resource group honouring the operation,
   /// e.g. `['backup']` or `['conversion', 'recover']`. Empty for deferred
@@ -187,11 +193,9 @@ const List<LifecycleBoundary> lifecycleBoundaries = <LifecycleBoundary>[
   LifecycleBoundary(
     resource: BoundaryResource.prompt,
     operation: LifecycleBoundaryOperation.install,
-    status: LifecycleBoundaryStatus.deferred,
-    deferredReason:
-        'There is no direct prompt install; Pack installs publish Prompts '
-        'under Skill ownership records and derived native templates are '
-        'managed through the parent Skill.',
+    status: LifecycleBoundaryStatus.supported,
+    commandGroup: 'pack',
+    commandPath: <String>['install'],
   ),
   LifecycleBoundary(
     resource: BoundaryResource.prompt,
@@ -510,6 +514,12 @@ const List<LifecycleBoundary> lifecycleBoundaries = <LifecycleBoundary>[
   ),
 ];
 
+/// The disclosed reason a direct `prompt install` is deferred.
+const String promptDirectInstallBoundary =
+    'Only a direct `prompt install` is deferred; Skill-backed Prompts '
+    'publish through `pack install --type prompt` and derived templates '
+    'through `skill install`/`pack install --prompt-target`.';
+
 /// Per-resource notes that qualify the operation matrix.
 const Map<BoundaryResource, List<String>> lifecycleBoundaryNotes =
     <BoundaryResource, List<String>>{
@@ -517,6 +527,12 @@ const Map<BoundaryResource, List<String>> lifecycleBoundaryNotes =
         'Native validity and installation eligibility are reported '
             'separately; a natively valid Skill can still be ineligible for '
             'a selected target or method.',
+      ],
+      BoundaryResource.prompt: <String>[
+        'Skill-backed Prompts publish through `pack install --type prompt` '
+            'and derived Pi templates through `skill install`/`pack install '
+            '--prompt-target`; only a direct `prompt install` is deferred. '
+            'Both routes record Skill ownership.',
       ],
       BoundaryResource.mcp: <String>[
         'MCP inspection and validation are static checks; they make no '
@@ -580,7 +596,7 @@ String renderSupportMatrixText() {
       if (boundary.status == LifecycleBoundaryStatus.supported) {
         lines.add(
           '  ${operation.wireName}: supported '
-          '(${resource.wireName} ${boundary.commandPath.join(' ')})',
+          '(${boundary.commandGroup ?? resource.wireName} ${boundary.commandPath.join(' ')})',
         );
       } else {
         lines.add(
@@ -611,7 +627,7 @@ Map<String, Object?> supportMatrixJson() => <String, Object?>{
                 'status': boundary.status.name,
                 if (boundary.status == LifecycleBoundaryStatus.supported)
                   'command': <String>[
-                    resource.wireName,
+                    boundary.commandGroup ?? resource.wireName,
                     ...boundary.commandPath,
                   ].join(' ')
                 else
