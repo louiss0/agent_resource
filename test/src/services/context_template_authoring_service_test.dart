@@ -2,6 +2,7 @@ import 'package:agent_resource/src/context/context_authoring_plan.dart';
 import 'package:agent_resource/src/services/context_template_authoring_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:file/memory.dart';
+import 'package:mamba/mamba.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -42,13 +43,14 @@ void main() {
       bool empty = false,
       String? planId,
       bool apply = false,
+      bool interactive = false,
     }) => ContextAuthoringRequest(
       command: create ? 'context create' : 'context edit',
       create: create,
       positionalName: name,
       optionName: null,
-      interactive: false,
-      unattended: true,
+      interactive: interactive,
+      unattended: !interactive,
       empty: empty,
       bodyFile: null,
       bodyStdin: false,
@@ -57,7 +59,7 @@ void main() {
       editorChoice: null,
       planId: planId,
       apply: apply,
-      yes: true,
+      yes: !interactive,
       dryRun: false,
       showInstructions: false,
       options: options,
@@ -105,5 +107,91 @@ void main() {
       );
       expect(raced.data['planId'], isNot(first.data['planId']));
     });
+
+    test('refuses an edit when the template changes during approval', () async {
+      final template = fs.file('/sandbox/state/context-templates/alpha.md')
+        ..parent.createSync(recursive: true)
+        ..writeAsStringSync('before\n');
+      final externalBytes = 'raced\r\n'.codeUnits;
+      final interactiveService = ContextTemplateAuthoringService(
+        fileSystem: fs,
+        terminal: () => true,
+        confirm: (_) async {
+          template.writeAsBytesSync(externalBytes);
+          return true;
+        },
+      );
+
+      await expectLater(
+        interactiveService.run(
+          request(
+            create: false,
+            bodyText: 'after\n',
+            apply: true,
+            interactive: true,
+          ),
+        ),
+        throwsA(
+          isA<MambaException>()
+              .having((error) => error.exitCode, 'exit code', 4)
+              .having(
+                (error) => error.message,
+                'message',
+                startsWith('TARGET_DRIFT:'),
+              ),
+        ),
+      );
+      expect(template.readAsBytesSync(), externalBytes);
+      expect(
+        fs.directory('/sandbox/state/authoring-recovery').existsSync(),
+        isFalse,
+      );
+      expect(
+        fs.directory('/sandbox/state/authoring-receipts').existsSync(),
+        isFalse,
+      );
+    });
+
+    test(
+      'refuses a create when the template appears during approval',
+      () async {
+        final template = fs.file('/sandbox/state/context-templates/alpha.md')
+          ..parent.createSync(recursive: true);
+        final externalBytes = 'created elsewhere\r\n'.codeUnits;
+        final interactiveService = ContextTemplateAuthoringService(
+          fileSystem: fs,
+          terminal: () => true,
+          confirm: (_) async {
+            template.writeAsBytesSync(externalBytes);
+            return true;
+          },
+        );
+
+        await expectLater(
+          interactiveService.run(
+            request(
+              create: true,
+              bodyText: 'candidate\n',
+              apply: true,
+              interactive: true,
+            ),
+          ),
+          throwsA(
+            isA<MambaException>()
+                .having((error) => error.exitCode, 'exit code', 4)
+                .having(
+                  (error) => error.message,
+                  'message',
+                  startsWith('TARGET_OCCUPIED:'),
+                ),
+          ),
+        );
+        expect(template.readAsBytesSync(), externalBytes);
+        expect(
+          fs.directory('/sandbox/state/authoring-receipts').existsSync(),
+          isFalse,
+        );
+      },
+    );
   });
 }
