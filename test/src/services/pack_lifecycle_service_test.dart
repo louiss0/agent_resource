@@ -250,6 +250,104 @@ track = { kind = "local" }
       );
     });
 
+    test('upstream removals require explicit removal approval', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      // Remove the skill from the upstream catalog.
+      final catalog = fs.file(
+        fs.path.join(source.path, 'agent-resources.toml'),
+      );
+      catalog.writeAsStringSync(
+        catalog.readAsStringSync().replaceFirst(
+          '\n[[catalog.skills]]\npath = "skills/reviewer"',
+          '',
+        ),
+      );
+      await expectLater(
+        service.execute(request(PackOperation.update, PackResourceType.skill)),
+        throwsA(
+          isA<MambaException>().having(
+            (error) => error.message,
+            'message',
+            contains('removal approval'),
+          ),
+        ),
+      );
+      // The managed artifact is preserved until explicitly approved.
+      expect(
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'reviewer',
+                'SKILL.md',
+              ),
+            )
+            .existsSync(),
+        isTrue,
+      );
+    });
+
+    test('new upstream resources remain opt-in', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final added = fs.directory(fs.path.join(source.path, 'skills', 'writer'))
+        ..createSync(recursive: true);
+      fs.file(fs.path.join(added.path, 'SKILL.md')).writeAsStringSync('''---
+name: writer
+description: Writes docs.
+---
+# Writer
+''');
+      final catalog = fs.file(
+        fs.path.join(source.path, 'agent-resources.toml'),
+      );
+      catalog.writeAsStringSync(
+        '${catalog.readAsStringSync()}\n'
+        '[[catalog.skills]]\npath = "skills/writer"\n',
+      );
+      await service.execute(
+        request(PackOperation.update, PackResourceType.skill),
+      );
+      // Without opt-in the new upstream resource is not published.
+      expect(
+        fs
+            .directory(
+              fs.path.join(project.path, '.agents', 'skills', 'writer'),
+            )
+            .existsSync(),
+        isFalse,
+      );
+      // Explicit selection via --only opts the new resource in.
+      await service.execute(
+        request(
+          PackOperation.update,
+          PackResourceType.skill,
+          only: const ['writer'],
+        ),
+      );
+      expect(
+        fs
+            .file(
+              fs.path.join(
+                project.path,
+                '.agents',
+                'skills',
+                'writer',
+                'SKILL.md',
+              ),
+            )
+            .existsSync(),
+        isTrue,
+      );
+    });
+
     test('refuses a Pack Skill migration that changes nothing', () async {
       final service = PackLifecycleService(fileSystem: fs);
       await service.execute(
