@@ -88,6 +88,30 @@ Executor createExecutor({
     'agent_resource',
     'Manage resources consumed by AI coding harnesses.',
     applicationVersion,
+    longDescription: '''
+Manage resources consumed by AI coding harnesses.
+
+Common first tasks:
+  Install a Skill:
+    agent-resource skill install <source> --target claude
+  Install a Pack:
+    agent-resource pack install <pack>
+  Add an MCP registration:
+    agent-resource mcp register --name <svc> --harness claude --scope project
+  Inject a Context template:
+    agent-resource context inject <name>
+  Show effective preferences:
+    agent-resource config effective
+  Update a managed Skill:
+    agent-resource skill update <installation-id>
+  Migrate a Skill route:
+    agent-resource skill migrate <installation-id> --method canonical
+  Inspect recovery actions:
+    agent-resource skill recover
+
+Run `agent-resource support` for the supported and deferred lifecycle
+operations of every resource, or `agent-resource <group> --help` for the
+registered surface of one group.''',
     [
       PromptCommand(
         conversionRecovery ??

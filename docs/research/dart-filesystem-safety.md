@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Dart filesystem safety: links, replacement, removal and ledger updates
 
 Research for [issue #12](https://github.com/louiss0/agent_resource/issues/12), informing (not deciding) [safety issue #6](https://github.com/louiss0/agent_resource/issues/6).

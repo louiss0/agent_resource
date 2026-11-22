@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Explicit Codex bound-role authoring
 
 This slice prepares the explicit Codex bound-role authoring path that the

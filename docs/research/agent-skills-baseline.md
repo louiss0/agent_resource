@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Agent Skills compliance baseline — primary-source research
 
 Research for [ticket 2: Establish the Agent Skills compliance baseline](https://github.com/louiss0/agent_resource/issues/2).

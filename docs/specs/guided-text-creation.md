@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Guided text creation for Skills, Agents, and Prompts
 
 This document describes the delivered public creation contract of Skills,

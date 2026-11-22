@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Native Agent parent configuration contracts
 
 Research resolution for [issue #19](https://github.com/louiss0/agent_resource/issues/19). Retrieved **2026-10-23 UTC**. Scope: local Claude Code and Codex parent permissions/sandbox/approval, model/provider/defaults, and MCP registration. Supplements the [native Agent research at its immutable commit](https://github.com/louiss0/agent_resource/blob/686ed76939871fdf814ec00aac4de4ea05efd14c/docs/research/claude-codex-agents.md), rather than repeating Agent schemas.

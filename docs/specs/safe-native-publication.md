@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Safe author-only and managed native publication
 
 This spec records the implemented internal publication slice of the authoring

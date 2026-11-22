@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Skill validation: agentskills-core-strict-ascii-v1
 
 > **Strict-profile amendment — current conversation.** This decision supersedes the earlier unknown-field advisory policy and the old `agentskills-core-ascii-v1` identity. Production validation now uses `agentskills-core-strict-ascii-v1`: unknown top-level string keys are blocking **product** errors, not universal upstream errors. The pinned baseline, six core fields plus the recognized `disable-model-invocation` harness extension, ASCII product restriction, scalar counting, stable diagnostic codes/order, read budgets, inert parsing, and exit/report contracts remain in force. The extension is product policy, not part of the pinned core specification; accepting it does not convert a Skill into a Prompt or add Prompt lifecycle behavior. Historical references below to advisory unknown fields are superseded by this amendment.

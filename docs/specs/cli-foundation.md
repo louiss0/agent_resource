@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Agent Resource CLI foundation
 
 > **Research-audit amendment — historical milestone and current command tree.** The original foundation intentionally specified an empty root command list; that milestone history remains intact, but its root-level hierarchy is superseded by later implemented features. Current production exposes `skill` and `agent` groups under `agent_resource`. The `skill` group has `discover`, `inspect`, and `validate` children with no root-level aliases; the Agent checkpoints add their own native children. Root help lists both groups; `agent_resource skill --help` lists the Skill child commands. Existing foundation tests remain under `test/` and current process assertions initialize all working, home, configuration, and temporary directories before snapshots. Compare names, types, and bytes rather than access timestamps: read-only behavior does not claim that SDK/filesystem reads cause no physical access-time updates.

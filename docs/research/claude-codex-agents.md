@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 # Native Claude Code and Codex Agent definition contracts
 
 Research for [Verify Claude Code and Codex native Agent contracts](https://github.com/louiss0/agent_resource/issues/13), under [Chart Agent Resource: first-release Skills and native Agents](https://github.com/louiss0/agent_resource/issues/1).

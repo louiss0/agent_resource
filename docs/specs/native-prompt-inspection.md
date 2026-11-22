@@ -1,3 +1,7 @@
+> **Historical design record** — this document may not describe
+> current behavior. See [README.md](../README.md) and
+> [docs/guides/](guides/) for current guidance.
+
 ﻿# Native Prompt inspection and validation
 
 Canonical policy: [mixed-harness discovery and validity reporting](https://github.com/louiss0/agent_resource/issues/77) and [Pi skill-backed Prompt installation compatibility](https://github.com/louiss0/agent_resource/issues/79), indexed by [the feature map](https://github.com/louiss0/agent_resource/issues/57).
