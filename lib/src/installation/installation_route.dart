@@ -19,6 +19,7 @@ final class InstallationRoute {
     required List<ManagedDerivedArtifact> derivedArtifacts,
     this.entryId,
     this.packKey,
+    this.derivedPrompts = false,
   }) : targets = List.unmodifiable(targets),
        derivedArtifacts = List.unmodifiable(derivedArtifacts) {
     _relative(sourceRelativePath, allowRoot: true);
@@ -73,6 +74,7 @@ final class InstallationRoute {
       entryId: entry as String?,
       packKey: pack as String?,
       scope: named(LifecycleScope.values, (v) => v.name, value['scope']),
+      derivedPrompts: value['derivedPrompts'] == true,
       targets: [
         for (final item in value['targets'] as List)
           named(InstallationRouteTarget.values, (v) => v.name, item),
@@ -99,6 +101,9 @@ final class InstallationRoute {
   final InstallationMethod method;
   final List<ManagedDerivedArtifact> derivedArtifacts;
 
+  /// Whether a derived Prompt template is published alongside the Skill.
+  final bool derivedPrompts;
+
   InstallationRoute withTargets(List<InstallationRouteTarget> targets) =>
       InstallationRoute(
         source: source,
@@ -110,6 +115,7 @@ final class InstallationRoute {
         targets: targets,
         method: method,
         derivedArtifacts: derivedArtifacts,
+        derivedPrompts: derivedPrompts,
       );
 
   Map<String, Object?> toJson() => {
@@ -128,6 +134,7 @@ final class InstallationRoute {
     'derivedArtifacts': [
       for (final artifact in derivedArtifacts) artifact.toJson(),
     ],
+    if (derivedPrompts) 'derivedPrompts': true,
   };
 }
 

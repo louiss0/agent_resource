@@ -44,9 +44,15 @@ enum InstallationUnitStatus {
   final String wireName;
 }
 
-enum InstallationEntryKind { content, copy, link, consumer }
+enum InstallationEntryKind { content, copy, link, consumer, template }
 
-enum OwnedArtifactKind { skillCopy, skillLink, skillCanonical, agentFile }
+enum OwnedArtifactKind {
+  skillCopy,
+  skillLink,
+  skillCanonical,
+  agentFile,
+  promptTemplate,
+}
 
 enum InstallationEntryAction {
   createContent('create-content'),
@@ -92,6 +98,7 @@ final class InstallationEntryPlan {
     this.nativeDestination,
     this.artifactKind,
     this.observedDigest,
+    this.content,
   });
 
   final String path;
@@ -104,6 +111,10 @@ final class InstallationEntryPlan {
   final String? nativeDestination;
   final OwnedArtifactKind? artifactKind;
   final String? observedDigest;
+
+  /// Rendered native content for template entries; copy/link entries leave
+  /// this null and publish from the unit source.
+  final String? content;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'path': path,
@@ -133,6 +144,7 @@ final class InstallationEntryPlan {
     nativeDestination: nativeDestination,
     artifactKind: artifactKind,
     observedDigest: observedDigest ?? this.observedDigest,
+    content: content,
   );
 }
 

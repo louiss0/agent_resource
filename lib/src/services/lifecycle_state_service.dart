@@ -898,6 +898,27 @@ final class ExposureRecord {
   };
 }
 
+/// A derived native Prompt template published alongside a managed Skill.
+final class DerivedPromptRecord {
+  const DerivedPromptRecord({required this.path, required this.baseline});
+
+  factory DerivedPromptRecord.fromJson(Object? value) {
+    final map = _object(value, 'derived prompt');
+    return DerivedPromptRecord(
+      path: _absolutePath(_string(map, 'path')),
+      baseline: ArtifactBaseline.fromJson(map['baseline']),
+    );
+  }
+
+  final String path;
+  final ArtifactBaseline baseline;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'path': path,
+    'baseline': baseline.toJson(),
+  };
+}
+
 final class InstallationRecord {
   const new({
     required this.installationId,
@@ -917,6 +938,7 @@ final class InstallationRecord {
     required this.backupIds,
     required this.transactionId,
     this.exposures = const <ExposureRecord>[],
+    this.derivedPrompts = const <DerivedPromptRecord>[],
     this.installationRoute,
   });
 
@@ -990,6 +1012,15 @@ final class InstallationRecord {
               for (final exposure in _list(map['exposures'], 'exposures'))
                 ExposureRecord.fromJson(exposure),
             ],
+      derivedPrompts: map['derivedPrompts'] == null
+          ? const <DerivedPromptRecord>[]
+          : [
+              for (final prompt in _list(
+                map['derivedPrompts'],
+                'derivedPrompts',
+              ))
+                DerivedPromptRecord.fromJson(prompt),
+            ],
     );
   }
 
@@ -1010,6 +1041,7 @@ final class InstallationRecord {
   final List<String> backupIds;
   final String? transactionId;
   final List<ExposureRecord> exposures;
+  final List<DerivedPromptRecord> derivedPrompts;
   final InstallationRoute? installationRoute;
 
   InstallationRecord copyWith({
@@ -1020,6 +1052,7 @@ final class InstallationRecord {
     List<String>? backupIds,
     String? transactionId,
     List<ExposureRecord>? exposures,
+    List<DerivedPromptRecord>? derivedPrompts,
     List<String>? knownConsumers,
     List<String>? validatedProfiles,
     Map<String, Object?>? origin,
@@ -1046,6 +1079,7 @@ final class InstallationRecord {
         ? null
         : transactionId ?? this.transactionId,
     exposures: exposures ?? this.exposures,
+    derivedPrompts: derivedPrompts ?? this.derivedPrompts,
     installationRoute: clearInstallationRoute
         ? null
         : installationRoute ?? this.installationRoute,
@@ -1074,6 +1108,8 @@ final class InstallationRecord {
       'recordSchemaVersion': 2,
       'exposures': [for (final exposure in exposures) exposure.toJson()],
     },
+    if (derivedPrompts.isNotEmpty)
+      'derivedPrompts': [for (final prompt in derivedPrompts) prompt.toJson()],
   };
 }
 
@@ -1851,7 +1887,14 @@ interface class LifecycleStateService {
                   kind == ArtifactKind.skillLink
               ? canonicalEntry!.path
               : unit.sourcePath;
-          if (unit.method == InstallationMethod.canonical &&
+          if (kind == ArtifactKind.promptTemplate) {
+            final content = entry.content;
+            if (content == null) {
+              throw StateError('A template entry requires rendered content.');
+            }
+            io.createDirectory(io.fs.path.dirname(stage));
+            io.fs.file(stage).writeAsStringSync(content);
+          } else if (unit.method == InstallationMethod.canonical &&
               kind == ArtifactKind.skillLink) {
             io.createDirectory(io.fs.path.dirname(stage));
             io.createLink(stage, linkSource);
@@ -1892,9 +1935,24 @@ interface class LifecycleStateService {
           canonicalId = existingCanonical?.installationId ?? _newId('ins');
           installationIds.add(canonicalId);
         }
+        final derivedPrompts = <DerivedPromptRecord>[];
         for (var index = 0; index < unit.entries.length; index++) {
           final entry = unit.entries[index];
           if (entry.kind == InstallationEntryKind.consumer) continue;
+          if (entry.kind == InstallationEntryKind.template) {
+            final baseline = entry.action == InstallationEntryAction.unchanged
+                ? [
+                    for (final existing in existingByPath.values)
+                      for (final prompt in existing.derivedPrompts)
+                        if (io.fs.path.equals(prompt.path, entry.path))
+                          prompt.baseline,
+                  ].single
+                : baselines[index]!;
+            derivedPrompts.add(
+              DerivedPromptRecord(path: entry.path, baseline: baseline),
+            );
+            continue;
+          }
           if (unit.method == InstallationMethod.canonical &&
               entry.kind == InstallationEntryKind.content) {
             continue;
@@ -1999,6 +2057,14 @@ interface class LifecycleStateService {
               transactionId: null,
               exposures: List<ExposureRecord>.unmodifiable(exposures),
             ),
+          );
+        }
+        if (derivedPrompts.isNotEmpty) {
+          if (newRecords.isEmpty) {
+            throw StateError('A derived Prompt requires a parent record.');
+          }
+          newRecords[0] = newRecords.first.copyWith(
+            derivedPrompts: derivedPrompts,
           );
         }
         _writeTransaction(transactionPath, <String, Object?>{
@@ -6462,6 +6528,7 @@ ArtifactKind _ownedArtifactKind(OwnedArtifactKind? kind) => switch (kind) {
   OwnedArtifactKind.skillLink => ArtifactKind.skillLink,
   OwnedArtifactKind.skillCanonical => ArtifactKind.skillCanonical,
   OwnedArtifactKind.agentFile => ArtifactKind.agentFile,
+  OwnedArtifactKind.promptTemplate => ArtifactKind.promptTemplate,
   null => throw StateError('A published entry requires an artifact kind.'),
 };
 
