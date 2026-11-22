@@ -41,6 +41,7 @@ import '../pack/pack_mcp_admission.dart';
 import '../pack/pack_mcp_declaration.dart'
     show mcpPackCollisionReviewRequired, mcpPackTargetUnsupported;
 import '../pack/pack_models.dart';
+import '../pack/pack_skill_migration_review.dart';
 import '../pack/pack_state.dart';
 import '../pack/release_policy.dart' as release_policy;
 import '../pack/skill_admission.dart';
@@ -71,6 +72,7 @@ const List<PackResourceType> packDefaultResourceTypes = <PackResourceType>[
 enum PackOperation {
   install,
   update,
+  migrate,
   sourceAssociate,
   sourceChange,
   remove,
@@ -107,6 +109,7 @@ final class const PackLifecycleRequest({
   final String? target,
   final List<String> only = const <String>[],
   final String? method,
+  final String? reviewedPlan,
   final String? release,
   final String? bump,
   final bool includePrerelease = false,
@@ -387,6 +390,12 @@ interface class PackLifecycleService {
       );
       return await switch (request.operation) {
         PackOperation.install || PackOperation.update => _installOrUpdate(
+          request,
+          context,
+          configuration,
+          pack,
+        ),
+        PackOperation.migrate => _migrate(
           request,
           context,
           configuration,
@@ -1696,6 +1705,17 @@ interface class PackLifecycleService {
       request,
       _packRecords(context, pack.key, request.resourceType),
     ).where((record) => record.lifecycle == 'live').toList();
+    if (request.operation == PackOperation.update &&
+        _isSkillFamily(request.resourceType)) {
+      for (final record in existing) {
+        if (record.installationRoute == null) {
+          throw MambaException(
+            'Cannot update ${record.name}: its legacy installation has no recorded route to verify. Review its source and installation before changing it.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+      }
+    }
     if (request.operation == PackOperation.install) {
       final replay = _exactLockReplay(
         request,
@@ -1834,7 +1854,13 @@ interface class PackLifecycleService {
           );
         }
       }
-      await _requirePromptViews(request, selected, pack, configuration);
+      await _requirePromptViews(
+        request,
+        selected,
+        pack,
+        configuration,
+        existing,
+      );
       _preflightRecords(request, selected, existing);
       final results = <PackResourceResult>[];
       final failures = <String>[];
@@ -2318,6 +2344,16 @@ interface class PackLifecycleService {
       }
       if (records.isEmpty) continue;
       final record = records.single;
+      final route = record.installationRoute;
+      if (request.operation == PackOperation.update &&
+          candidate.type == PackResourceType.skill &&
+          route != null &&
+          route.sourceRelativePath != candidate.relativePath) {
+        throw MambaException(
+          'The upstream path for ${record.name} changed; refusing to replace its recorded source without explicit review.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
       final modification = _lifecycleState.verify(record);
       if (request.operation == PackOperation.install &&
           ((record.kind != ArtifactKind.skillLink &&
@@ -3072,6 +3108,161 @@ interface class PackLifecycleService {
         plan: plan,
       );
     });
+  }
+
+  /// Reviews and applies one explicitly selected Pack Skill route change
+  /// through the journaled cross-route transaction. The preview binds the
+  /// complete managed group and destination; a non-interactive apply must
+  /// replay its plan ID.
+  Future<PackOperationResult> _migrate(
+    PackLifecycleRequest request,
+    LifecycleContext context,
+    PackConfiguration configuration,
+    PackDefinition pack,
+  ) async {
+    final name = request.only.single;
+    final allRecords = _packRecords(context, pack.key, request.resourceType);
+    final selected =
+        allRecords
+            .where(
+              (record) => record.lifecycle == 'live' && record.name == name,
+            )
+            .toList()
+          ..sort(
+            (left, right) =>
+                left.installationId.compareTo(right.installationId),
+          );
+    if (selected.isEmpty || selected.any((r) => r.installationRoute == null)) {
+      throw MambaException(
+        'migrate requires a managed Pack Skill with a recorded route: $name.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final method = SkillInstallMethod.values
+        .where((value) => value.name == _methodName(request.method!))
+        .firstOrNull;
+    if (method == null) {
+      throw MambaException(
+        'migrate supports the canonical, copy, and source-link methods.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    if (request.target != null &&
+        InstallationRouteTarget.values
+            .where((value) => value.name == request.target)
+            .isEmpty) {
+      throw MambaException(
+        'migrate requires a harness target, not ${request.target}.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    final acquired = await _acquire(
+      pack,
+      configuration,
+      request: request,
+      existing: selected,
+    );
+    final workspace = acquired.workspace;
+    try {
+      final catalog = _readSourceCatalog(workspace);
+      final candidates = await _candidates(
+        request,
+        context,
+        workspace,
+        catalog,
+        pack,
+        acquired.release,
+      );
+      final candidate = candidates
+          .where(
+            (entry) =>
+                entry.name == name && entry.type == PackResourceType.skill,
+          )
+          .firstOrNull;
+      if (candidate == null) {
+        throw MambaException(
+          'The configured pack source no longer offers $name.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      final oldRoute = selected.first.installationRoute!;
+      final targets =
+          (request.target == null
+                ? [for (final target in oldRoute.targets) target.name]
+                : [request.target!])
+            ..sort();
+      if (method.name == _methodName(_recordMethod(selected.first.kind)) &&
+          jsonEncode(targets) ==
+              jsonEncode(
+                [for (final target in oldRoute.targets) target.name]..sort(),
+              )) {
+        throw MambaException(
+          'The requested migration does not change the installation route.',
+          exitCode: PackProcessStatus.invalidInput.code,
+        );
+      }
+      final desired = _installationUnit(
+        context,
+        candidate,
+        method,
+        targets,
+        PackResourceType.skill,
+      );
+      const review = PackSkillMigrationReview();
+      final plan = review.preview(
+        packKey: pack.key,
+        name: name,
+        records: allRecords,
+        desired: desired,
+      );
+      final results = [
+        _result(
+          request,
+          name,
+          'updated',
+          changedPaths: [
+            for (final resource in plan.resources) ...resource.changedPaths,
+          ],
+        ),
+      ];
+      if (request.dryRun) {
+        return PackOperationResult(
+          operation: '${request.resourceType.name}s.migrate',
+          outcome: 'preview',
+          context: plan.context,
+          source: plan.source,
+          resources: results,
+          dryRun: true,
+          plan: plan,
+        );
+      }
+      if (request.interactive && !request.yes) {
+        await _confirmPlan(request, plan);
+      } else {
+        review.requireReviewed(plan, request.reviewedPlan);
+      }
+      await RouteMigrationService(state: _lifecycleState)
+          .migrate(context, expectedOldRecords: selected, desired: desired);
+      _persistPackOperation(
+        context: context,
+        plan: plan,
+        results: results,
+        outcome: 'completed',
+        packKey: pack.key,
+        type: request.resourceType,
+        noSave: request.noSave,
+      );
+      return PackOperationResult(
+        operation: '${request.resourceType.name}s.migrate',
+        outcome: 'completed',
+        context: plan.context,
+        source: plan.source,
+        resources: results,
+        plan: plan,
+      );
+    } finally {
+      await workspace.close();
+    }
   }
 
   Future<PackOperationResult> _remove(
@@ -4287,53 +4478,52 @@ interface class PackLifecycleService {
     List<_PackCandidate> selected,
     PackDefinition pack,
     PackConfiguration configuration,
+    List<InstallationRecord> existing,
   ) async {
     if (selected.isEmpty) return;
     final skillCandidates = selected
         .where((candidate) => _isSkillFamily(candidate.type))
         .toList();
     if (skillCandidates.isEmpty) return;
-    // The targets are resolved without an interactive choice: the selection
-    // is checked before the installation asks for a target.
-    final requestedTargets = _requestedTargets(request, pack, configuration);
-    if (request.promptSelection) {
-      _promptService.requireSupportedTargets(requestedTargets);
-    }
-    if (request.promptSelection && requestedTargets.isEmpty) {
-      throw MambaException(
-        'The prompt selection requires an explicit claude or codex '
-        '--target/configuration choice; the selection is refused before any '
-        'installation effect.',
-        exitCode: PackProcessStatus.invalidInput.code,
-      );
-    }
-    // Without a configured target the interactive installation asks for one
-    // later. The Prompt gates are checked for every supported harness.
-    final targets = requestedTargets.isEmpty
-        ? const <String>['claude', 'codex']
-        : requestedTargets;
-    final views = <PackPromptCandidate>[];
     for (final candidate in skillCandidates) {
-      views.add(
-        await _promptService.inspect(
-          candidate.originalPath ?? candidate.path,
-          candidate.path,
-          name: candidate.name,
-        ),
+      final records = existing.where((record) => record.name == candidate.name);
+      final route =
+          request.operation == PackOperation.update && records.length == 1
+          ? records.single.installationRoute
+          : null;
+      final requestedTargets = route == null
+          ? _requestedTargets(request, pack, configuration)
+          : route.targets.map((target) => target.name).toList();
+      if (request.promptSelection) {
+        _promptService.requireSupportedTargets(requestedTargets);
+        if (requestedTargets.isEmpty) {
+          throw MambaException(
+            'The prompt selection requires an explicit claude or codex '
+            '--target/configuration choice; the selection is refused before any '
+            'installation effect.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
+      }
+      final targets = requestedTargets.isEmpty
+          ? const <String>['claude', 'codex']
+          : requestedTargets;
+      final view = await _promptService.inspect(
+        candidate.originalPath ?? candidate.path,
+        candidate.path,
+        name: candidate.name,
       );
-    }
-    if (request.promptSelection) {
-      _promptService.requireSupportedSelection(
-        selected: views,
-        targets: targets,
-      );
-      return;
-    }
-    for (final view in views) {
-      _promptService.requireNoInvalidPromptFallback(
-        candidate: view,
-        targets: targets,
-      );
+      if (request.promptSelection) {
+        _promptService.requireSupportedSelection(
+          selected: [view],
+          targets: targets,
+        );
+      } else {
+        _promptService.requireNoInvalidPromptFallback(
+          candidate: view,
+          targets: targets,
+        );
+      }
     }
   }
 
@@ -5569,6 +5759,15 @@ interface class PackLifecycleService {
         (request.only.length != 1 || request.snapshot == null)) {
       throw MambaException(
         'rollback requires exactly one --only name and --snapshot ref.',
+        exitCode: PackProcessStatus.invalidInput.code,
+      );
+    }
+    if (request.operation == PackOperation.migrate &&
+        (request.only.length != 1 ||
+            request.method == null ||
+            request.resourceType != PackResourceType.skill)) {
+      throw MambaException(
+        'migrate requires exactly one --only Skill name and an explicit --method.',
         exitCode: PackProcessStatus.invalidInput.code,
       );
     }

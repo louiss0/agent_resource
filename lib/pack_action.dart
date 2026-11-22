@@ -21,6 +21,7 @@ List<Command> packLifecycleCommands(
   for (final operation in [
     PackOperation.install,
     PackOperation.update,
+    if (resourceType == PackResourceType.skill) PackOperation.migrate,
     PackOperation.remove,
     PackOperation.rollback,
     PackOperation.cleanup,
@@ -81,12 +82,14 @@ final class PackActionCommand extends Command {
            if (_operation != PackOperation.validate) ...[_target, _harness],
            switch (_operation) {
              PackOperation.rollback => _rollbackOnly,
+             PackOperation.migrate ||
              PackOperation.remove ||
              PackOperation.sourceAssociate => _requiredOnly,
              _ => _only,
            },
            if (canonical) _type,
            if (_operation != PackOperation.validate) _method,
+           if (_operation == PackOperation.migrate) _reviewedPlan,
            _release,
            if (_operation != PackOperation.validate) _bump,
            if (_operation != PackOperation.validate) ...[
@@ -169,6 +172,10 @@ final class PackActionCommand extends Command {
     'method',
     choices: InstallationMethod.values,
   );
+  static final _reviewedPlan = StringOption(
+    'reviewed-plan',
+    description: 'The plan ID of a reviewed migration preview; required to apply without confirmation.',
+  );
   static final _release = StringOption('release');
   static final _bump = ChoiceOption('bump', choices: ReleaseBump.values);
   static final _keepLocal = RepeatableStringOption(
@@ -222,6 +229,7 @@ final class PackActionCommand extends Command {
   String get name => switch (_operation) {
     PackOperation.install => 'install',
     PackOperation.update => 'update',
+    PackOperation.migrate => 'migrate',
     PackOperation.sourceAssociate => 'associate',
     PackOperation.sourceChange => 'change',
     PackOperation.remove => 'remove',
@@ -236,6 +244,8 @@ final class PackActionCommand extends Command {
     PackOperation.install =>
       'Install resources from an exact configured pack lock.',
     PackOperation.update => 'Review and apply source-aware pack updates.',
+    PackOperation.migrate =>
+      'Preview and apply an explicit Pack Skill route change.',
     PackOperation.sourceAssociate =>
       'Associate adopted resources with a configured source.',
     PackOperation.sourceChange => 'Review a pack source or track change.',
@@ -284,6 +294,7 @@ final class PackActionCommand extends Command {
     }
     final only = switch (_operation) {
       PackOperation.rollback => valueOf(_rollbackOnly),
+      PackOperation.migrate ||
       PackOperation.remove ||
       PackOperation.sourceAssociate => valueOf(_requiredOnly),
       _ => valueOf(_only) ?? const <String>[],
@@ -314,6 +325,9 @@ final class PackActionCommand extends Command {
         target: mutating ? valueOf(_harness) ?? valueOf(_target) : null,
         only: only,
         method: mutating ? valueOf(_method)?.wireName : null,
+        reviewedPlan: _operation == PackOperation.migrate
+            ? valueOf(_reviewedPlan)
+            : null,
         release: valueOf(_release),
         bump: mutating ? valueOf(_bump)?.name : null,
         includePrerelease: valueOf(_includePrerelease),

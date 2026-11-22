@@ -17,6 +17,8 @@ import 'skill_create_command.dart';
 import 'skill_edit_command.dart';
 import 'skill_clone_command.dart';
 import 'skill_lifecycle_commands.dart';
+import 'skill_update_command.dart';
+import 'skill_migrate_command.dart';
 
 typedef InspectOperation = String Function(String skill);
 
@@ -78,6 +80,8 @@ final class SkillCommand extends GroupCommand {
       ),
       SkillAdoptCommand(service),
       SkillReplaceCommand(service),
+      SkillUpdateCommand(service),
+      SkillMigrateCommand(service),
       SkillRemoveCommand(service),
       SkillBackupCommand(service),
       SkillRecoverCommand(service),

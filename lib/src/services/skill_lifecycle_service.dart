@@ -13,6 +13,7 @@ import '../harness/harness_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../installation/installation_plan.dart';
 import '../installation/installation_route.dart';
+import '../installation/resource_catalog.dart';
 import '../skill_files.dart';
 import '../skill_validation.dart';
 import 'acquisition_service.dart';
@@ -745,6 +746,469 @@ interface class SkillLifecycleService implements LifecycleResource {
       nativeRoot: root,
       nativeDestination: input.destination.name,
     );
+  }
+
+  /// Update a direct installation from its recorded acquisition and route.
+  Future<LifecycleResult> update(LifecycleIdInput input) => _replay(input);
+
+  /// Review and change the method of a direct copied or linked Skill.
+  Future<LifecycleResult> migrate(
+    LifecycleIdInput input, {
+    required InstallationMethod method,
+    List<InstallationTarget>? targets,
+    String? reviewedPlan,
+  }) => _replay(
+    input,
+    migrationMethod: method,
+    migrationTargets: targets,
+    reviewedPlan: reviewedPlan,
+  );
+
+  Future<LifecycleResult> _replay(
+    LifecycleIdInput input, {
+    InstallationMethod? migrationMethod,
+    List<InstallationTarget>? migrationTargets,
+    String? reviewedPlan,
+  }) async {
+    final context = LifecycleContext.resolve(
+      input.options,
+      fileSystem: state.io.fs,
+    );
+    _requireMutationScope(context);
+    final record = state.recordById(context, input.id);
+    final route = record.installationRoute;
+    if (!skillKinds.contains(record.kind) ||
+        route == null ||
+        route.packKey != null ||
+        route.scope != context.scope) {
+      throw MambaException(
+        'A direct Skill update requires a recorded direct installation route in this scope.',
+        exitCode: 4,
+      );
+    }
+    final expectedKind = switch (route.method) {
+      InstallationMethod.copy => ArtifactKind.skillCopy,
+      InstallationMethod.canonical => ArtifactKind.skillCanonical,
+      InstallationMethod.sourceLink => ArtifactKind.skillLink,
+    };
+    if (record.kind != expectedKind) {
+      throw MambaException(
+        'The recorded Skill method does not match its installation.',
+        exitCode: 4,
+      );
+    }
+    final requestedTargets =
+        migrationTargets == null || migrationTargets.isEmpty
+        ? route.targets
+        : ([
+            for (final target in migrationTargets)
+              InstallationRouteTarget.values.byName(target.name),
+          ]..sort((a, b) => a.name.compareTo(b.name)));
+    if (requestedTargets.toSet().length != requestedTargets.length) {
+      throw MambaException(
+        'Duplicate migration targets are not allowed.',
+        exitCode: 4,
+      );
+    }
+    for (final target in migrationTargets ?? const <InstallationTarget>[]) {
+      HarnessCatalog.instance.requireSkillInstallation(HarnessId.of(target));
+    }
+    final targetsChanged =
+        jsonEncode(requestedTargets.map((target) => target.name).toList()) !=
+        jsonEncode(route.targets.map((target) => target.name).toList());
+    final canonicalTargets =
+        migrationMethod == InstallationMethod.canonical &&
+        route.method == InstallationMethod.canonical &&
+        targetsChanged;
+    if (migrationMethod != null &&
+        !canonicalTargets &&
+        !targetsChanged &&
+        migrationMethod == route.method) {
+      throw MambaException(
+        'The requested migration does not change the installation route.',
+        exitCode: 4,
+      );
+    }
+    final method = migrationMethod ?? route.method;
+    final desiredKind = switch (method) {
+      InstallationMethod.copy => ArtifactKind.skillCopy,
+      InstallationMethod.canonical => ArtifactKind.skillCanonical,
+      InstallationMethod.sourceLink => ArtifactKind.skillLink,
+    };
+    final source = route.source;
+    final workspace = await AcquisitionService(fileSystem: state.io.fs).acquire(
+      AcquisitionRequest(
+        locator: source.kind == AcquisitionLocatorKind.local
+            ? source.resolvedLocator
+            : source.requestedLocator,
+        cwd: context.cwd,
+        resourceType: CatalogResourceType.skill,
+        sourceKind: route.sourceKind,
+        ref: source.requestedRef,
+        subpath: source.kind == AcquisitionLocatorKind.local
+            ? null
+            : source.subpath,
+      ),
+    );
+    try {
+      final fs = state.io.fs;
+      var path = workspace.selectedRoot;
+      if (route.sourceRelativePath != '.') {
+        for (final part in route.sourceRelativePath.split('/')) {
+          path = fs.path.join(path, part);
+          if (skillEntityType(path, followLinks: false, fs: fs) ==
+              FileSystemEntityType.link) {
+            throw MambaException(
+              'The recorded source path now contains a link.',
+              exitCode: 4,
+            );
+          }
+        }
+      }
+      for (final omitted in workspace.omittedLinkPaths) {
+        if (route.sourceRelativePath == '.' ||
+            omitted == route.sourceRelativePath ||
+            omitted.startsWith('${route.sourceRelativePath}/')) {
+          throw MambaException(
+            'The recorded Skill source contains an unsafe link.',
+            exitCode: 4,
+          );
+        }
+      }
+      final staged = await SkillRootMarkdownMigration(fileSystem: fs)
+          .stage(path);
+      try {
+        if (method == InstallationMethod.sourceLink &&
+            (!workspace.provenance.durableLocalDirectory || staged.migrated)) {
+          throw MambaException(
+            'source-link cannot migrate loose root files.',
+            exitCode: 4,
+          );
+        }
+        final acquired = workspace.provenance;
+        final replayedSource = AcquisitionProvenance(
+          kind: acquired.kind,
+          requestedLocator: source.requestedLocator,
+          resolvedLocator: acquired.resolvedLocator,
+          subpath: source.subpath,
+          temporary: acquired.temporary,
+          directFile: acquired.directFile,
+          durableLocalDirectory: acquired.durableLocalDirectory,
+          requestedRef: source.requestedRef,
+          resolvedCommit: acquired.resolvedCommit,
+          downloadDigest: acquired.downloadDigest,
+          configDigest: source.configDigest,
+        );
+        final newRoute = InstallationRoute(
+          source: replayedSource,
+          sourceKind: route.sourceKind,
+          sourceRelativePath: route.sourceRelativePath,
+          entryId: route.entryId,
+          scope: route.scope,
+          targets: requestedTargets,
+          method: method,
+          derivedArtifacts: [
+            for (final item in [...staged.movedMarkdown, ...staged.movedImages])
+              ManagedDerivedArtifact(
+                operation: DerivedArtifactOperation.moveRootFile,
+                sourcePath: item.split('/').last,
+                outputPath: item,
+              ),
+            if (staged.rewritten)
+              ManagedDerivedArtifact(
+                operation: DerivedArtifactOperation.rewriteMarker,
+                sourcePath: 'SKILL.md',
+                outputPath: 'SKILL.md',
+              ),
+          ],
+        );
+        final resource = installationResource(
+          targets: [for (final target in requestedTargets) target.name],
+          kind: desiredKind,
+        );
+        final digest = state.contentDigest(staged.path, ArtifactKind.skillCopy);
+        final origin = <String, Object?>{
+          ...record.origin,
+          'source': replayedSource.toJson(),
+          'contentDigest': digest,
+        };
+        final planId = migrationMethod == null
+            ? null
+            : sha256
+                  .convert(
+                    utf8.encode(
+                      jsonEncode({
+                        'record': record.toJson(),
+                        'destinationRoots': [
+                          for (final target in requestedTargets)
+                            canonicalExposureRoot(context, target.name),
+                        ],
+                        'from': route.toJson(),
+                        'to': newRoute.toJson(),
+                        'sourceDigest': digest,
+                      }),
+                    ),
+                  )
+                  .toString();
+        if (migrationMethod != null &&
+            !context.dryRun &&
+            reviewedPlan != planId) {
+          throw MambaException(
+            'Review a current migration preview and supply its plan ID with --reviewed-plan.',
+            exitCode: 4,
+          );
+        }
+        if (migrationMethod != null && !context.dryRun && !context.approved) {
+          throw MambaException(
+            'The migration requires destructive approval with --yes or explicit interactive confirmation.',
+            exitCode: 4,
+          );
+        }
+        if (migrationMethod != null && !canonicalTargets) {
+          final userScope = context.scope == LifecycleScope.user;
+          final linkKind = Platform.isWindows
+              ? 'windows-directory-symlink'
+              : 'posix-directory-symlink';
+          final entries = <InstallationEntryPlan>[];
+          if (method == InstallationMethod.canonical) {
+            final canonicalRoot = fs.path.normalize(context.sharedSkillsRoot());
+            final canonicalPath = fs.path.join(canonicalRoot, record.name);
+            entries.add(
+              InstallationEntryPlan(
+                path: canonicalPath,
+                kind: InstallationEntryKind.content,
+                action: InstallationEntryAction.createContent,
+                nativeRoot: canonicalRoot,
+                nativeDestination: 'canonical',
+                artifactKind: OwnedArtifactKind.skillCanonical,
+              ),
+            );
+            for (final target in requestedTargets) {
+              final exposureRoot = canonicalExposureRoot(context, target.name);
+              entries.add(
+                exposureRoot == null
+                    ? InstallationEntryPlan(
+                        path: canonicalPath,
+                        kind: InstallationEntryKind.consumer,
+                        action: InstallationEntryAction.recordConsumer,
+                        target: target.name,
+                      )
+                    : InstallationEntryPlan(
+                        path: fs.path.join(exposureRoot, record.name),
+                        kind: InstallationEntryKind.link,
+                        action: InstallationEntryAction.createLink,
+                        target: target.name,
+                        linkTarget: canonicalPath,
+                        nativeLinkKind: linkKind,
+                        nativeRoot: exposureRoot,
+                        nativeDestination: target.name,
+                        artifactKind: OwnedArtifactKind.skillLink,
+                      ),
+              );
+            }
+          } else {
+            for (final target in requestedTargets) {
+              final spec = HarnessCatalog.instance.requireSkillInstallation(
+                HarnessId.of(InstallationTarget.values.byName(target.name)),
+              );
+              final root = fs.path.normalize(switch (spec.installationRoot!) {
+                SkillInstallationRoot.shared => context.sharedSkillsRoot(),
+                SkillInstallationRoot.harness => spec.root(
+                  context,
+                  userScope: userScope,
+                ),
+              });
+              entries.add(
+                InstallationEntryPlan(
+                  path: fs.path.join(root, record.name),
+                  kind: method == InstallationMethod.copy
+                      ? InstallationEntryKind.copy
+                      : InstallationEntryKind.link,
+                  action: method == InstallationMethod.copy
+                      ? InstallationEntryAction.createCopy
+                      : InstallationEntryAction.createLink,
+                  target: target.name,
+                  linkTarget: method == InstallationMethod.sourceLink
+                      ? path
+                      : null,
+                  nativeLinkKind: method == InstallationMethod.sourceLink
+                      ? linkKind
+                      : null,
+                  nativeRoot: root,
+                  nativeDestination: userScope
+                      ? spec.userInstallationDestination!
+                      : spec.projectInstallationDestination!,
+                  artifactKind: method == InstallationMethod.copy
+                      ? OwnedArtifactKind.skillCopy
+                      : OwnedArtifactKind.skillLink,
+                ),
+              );
+            }
+          }
+          final desired = InstallationUnitPlan(
+            resourceType: InstallationResourceType.skill,
+            resourceId: record.name,
+            nativeName: record.name,
+            profile: null,
+            method: method,
+            status: InstallationUnitStatus.planned,
+            installationIds: const <String>[],
+            entries: entries,
+            sourcePath: method == InstallationMethod.sourceLink
+                ? path
+                : staged.path,
+            sourceDigest: digest,
+            origin: origin,
+            installationRoute: newRoute,
+          );
+          if (!context.dryRun) {
+            final routeJson = jsonEncode(route.toJson());
+            final oldGroup =
+                [
+                  for (final other in state.records(context))
+                    if (other.lifecycle == 'live' &&
+                        other.name == record.name &&
+                        other.installationRoute != null &&
+                        jsonEncode(other.installationRoute!.toJson()) ==
+                            routeJson)
+                      other,
+                ]..sort(
+                  (left, right) =>
+                      left.installationId.compareTo(right.installationId),
+                );
+            await RouteMigrationService(
+              state: state,
+            ).migrate(context, expectedOldRecords: oldGroup, desired: desired);
+          }
+          return LifecycleResult(
+            command: 'skill migrate',
+            outcome: context.dryRun ? 'planned' : 'migrated',
+            data: {
+              'fromMethod': route.method.wireName,
+              'toMethod': method.wireName,
+              'fromTargets': [for (final target in route.targets) target.name],
+              'toTargets': [for (final target in requestedTargets) target.name],
+              'planId': planId,
+              'route': newRoute.toJson(),
+            },
+          );
+        }
+        if (expectedKind == ArtifactKind.skillLink && migrationMethod == null) {
+          if (!workspace.provenance.durableLocalDirectory ||
+              state.verify(record) != ModificationStatus.unchanged) {
+            throw MambaException(
+              'The recorded source link is no longer unchanged or durable.',
+              exitCode: 4,
+            );
+          }
+          final target = fs.link(record.location).targetSync();
+          final resolvedTarget = fs.path.normalize(
+            fs.path.isAbsolute(target)
+                ? target
+                : fs.path.join(fs.path.dirname(record.location), target),
+          );
+          if (!fs.path.equals(resolvedTarget, fs.path.normalize(path))) {
+            throw MambaException(
+              'The recorded source link no longer points to its source.',
+              exitCode: 4,
+            );
+          }
+          await resource.inspect(path, context, expectedName: record.name);
+          await state.updateOrigin(
+            context: context,
+            installationId: input.id,
+            expectedOrigin: record.origin,
+            origin: origin,
+            installationRoute: newRoute,
+          );
+          return LifecycleResult(
+            command: 'skill update',
+            outcome: context.dryRun ? 'planned' : 'updated',
+            data: {
+              'installationId': input.id,
+              'location': record.location,
+              'route': newRoute.toJson(),
+            },
+          );
+        }
+        final exposures = canonicalTargets
+            ? [
+                for (final target in requestedTargets)
+                  if (canonicalExposureRoot(context, target.name)
+                      case final String root)
+                    state.plannedCanonicalExposure(
+                      path: fs.path.join(root, record.name),
+                      target: target.name,
+                      canonicalPath: record.location,
+                    ),
+              ]
+            : null;
+        if (canonicalTargets) {
+          for (final old in route.targets) {
+            if (!requestedTargets.contains(old) &&
+                (old == InstallationRouteTarget.codex ||
+                    old == InstallationRouteTarget.antigravity &&
+                        context.scope == LifecycleScope.project)) {
+              throw MambaException(
+                'Shared canonical content remains discoverable to ${old.name}; this target cannot be revoked by metadata.',
+                exitCode: 4,
+              );
+            }
+          }
+        }
+        final result = expectedKind == ArtifactKind.skillCanonical
+            ? await state.replaceCanonical(
+                resource: resource,
+                context: context,
+                installationId: input.id,
+                source: staged.path,
+                origin: origin,
+                installationRoute: newRoute,
+                expectedRecord: record,
+                exposures: exposures,
+                validatedProfiles: canonicalTargets
+                    ? [for (final target in requestedTargets) target.name]
+                    : null,
+                knownConsumers: canonicalTargets
+                    ? [for (final target in requestedTargets) target.name]
+                    : null,
+              )
+            : await state.replace(
+                resource: resource,
+                context: context,
+                installationId: input.id,
+                source: desiredKind == ArtifactKind.skillLink
+                    ? path
+                    : staged.path,
+                origin: origin,
+                installationRoute: newRoute,
+                expectedRecord: record,
+              );
+        return LifecycleResult(
+          command: migrationMethod == null ? 'skill update' : 'skill migrate',
+          outcome: context.dryRun
+              ? 'planned'
+              : migrationMethod == null
+              ? 'updated'
+              : 'migrated',
+          data: {
+            ...result.data,
+            if (migrationMethod != null) ...{
+              'fromMethod': route.method.wireName,
+              'toMethod': method.wireName,
+              'fromTargets': [for (final target in route.targets) target.name],
+              'toTargets': [for (final target in requestedTargets) target.name],
+              'planId': planId,
+            },
+            'route': newRoute.toJson(),
+          },
+        );
+      } finally {
+        await staged.close();
+      }
+    } finally {
+      await workspace.close();
+    }
   }
 
   Future<LifecycleResult> replace(

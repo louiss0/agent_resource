@@ -13,6 +13,7 @@ import 'package:agent_resource/src/installation/installation_request.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_installation_service.dart';
+import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
 import 'package:mamba/executor.dart';
 
 import 'package:test/test.dart';
@@ -105,6 +106,677 @@ void main() {
           '--state-dir',
           '${fs.path.join(sandbox.path, 'state')}${fs.path.separator}',
         ];
+
+        test(
+          'updates a direct copy from its recorded source and target',
+          () async {
+            final source = skill('recorded-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final options = LifecycleOptions(
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+              stateDir: fs.path.join(sandbox.path, 'state'),
+              approved: true,
+            );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+            final record = lifecycle.state.records(resolved).single;
+            fs
+                .file(fs.path.join(project.path, 'agent-resources.toml'))
+                .writeAsStringSync(
+                  'schema_version = 1\n[cli.install]\ntargets = ["claude"]\nskill_method = "canonical"\n',
+                );
+            fs
+                .file(fs.path.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nUpdated.\n',
+                );
+            final result = await executor().fake().execute([
+              'skill',
+              'update',
+              record.installationId,
+              ...context(),
+              '--yes',
+              '--format',
+              'json',
+            ]);
+            expect(result, isA<MambaSuccessResult>());
+            final data =
+                jsonDecode((result as MambaSuccessResult).output!) as Map;
+            expect(data['outcome'], 'updated');
+            expect(
+              fs
+                  .file(fs.path.join(record.location, 'SKILL.md'))
+                  .readAsStringSync(),
+              contains('Updated.'),
+            );
+            final updated = lifecycle.state.records(resolved).single;
+            expect(updated.installationRoute!.method, InstallationMethod.copy);
+            expect(
+              updated.installationRoute!.targets.map((target) => target.name),
+              ['codex'],
+            );
+            expect(
+              updated.installationRoute!.source.requestedLocator,
+              source.path,
+            );
+            expect(
+              fs
+                  .directory(
+                    fs.path.join(project.path, '.claude', 'skills', 'review'),
+                  )
+                  .existsSync(),
+              isFalse,
+            );
+          },
+        );
+
+        test(
+          'updates a direct canonical Skill without changing its route',
+          () async {
+            useLocalFileSystem();
+            final source = skill('canonical-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'canonical',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final options = LifecycleOptions(
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+            );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+            final record = lifecycle.state.records(resolved).single;
+            final oldExposure = record.exposures.single.path;
+            fs
+                .file(fs.path.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nCanonical update.\n',
+                );
+            final result = await executor().fake().execute([
+              'skill',
+              'update',
+              record.installationId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(result, isA<MambaSuccessResult>());
+            final updated = lifecycle.state.records(resolved).single;
+            expect(
+              updated.installationRoute!.method,
+              InstallationMethod.canonical,
+            );
+            expect(updated.exposures.single.path, oldExposure);
+            expect(
+              fs
+                  .file(fs.path.join(updated.location, 'SKILL.md'))
+                  .readAsStringSync(),
+              contains('Canonical update.'),
+            );
+          },
+        );
+
+        test('reviews a canonical target change before publishing', () async {
+          useLocalFileSystem();
+          final source = skill('canonical-target-source');
+          expect(
+            await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'canonical',
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          final options = LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          );
+          final lifecycle = SkillLifecycleService(fileSystem: fs);
+          final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+          final record = lifecycle.state.records(resolved).single;
+          final exposure = record.exposures.single.path;
+          final args = [
+            'skill',
+            'migrate',
+            record.installationId,
+            ...context(),
+            '--method',
+            'canonical',
+            '--target',
+            'codex',
+            '--format',
+            'json',
+          ];
+          final preview = await executor().fake().execute([
+            ...args,
+            '--dry-run',
+          ]);
+          expect(preview, isA<MambaSuccessResult>());
+          final plan =
+              jsonDecode((preview as MambaSuccessResult).output!) as Map;
+          final data = plan['data'] as Map;
+          expect(data['fromTargets'], ['claude']);
+          expect(data['toTargets'], ['codex']);
+          expect(
+            fs.typeSync(exposure, followLinks: false),
+            FileSystemEntityType.link,
+          );
+          final id = data['planId'] as String;
+          expect(
+            await executor().fake().execute([...args, '--reviewed-plan', id]),
+            isA<MambaFailureResult>(),
+          );
+          expect(
+            fs.typeSync(exposure, followLinks: false),
+            FileSystemEntityType.link,
+          );
+          expect(
+            await executor().fake().execute([
+              ...args,
+              '--reviewed-plan',
+              id,
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          expect(
+            fs.typeSync(exposure, followLinks: false),
+            FileSystemEntityType.notFound,
+          );
+          final updated = lifecycle.state.records(resolved).single;
+          expect(updated.installationRoute!.targets.map((item) => item.name), [
+            'codex',
+          ]);
+          expect(updated.exposures, isEmpty);
+          expect(updated.knownConsumers, ['codex']);
+        });
+
+        test('canonical target addition refuses occupied exposure and stale review', () async {
+          useLocalFileSystem();
+          final source = skill('canonical-add-target');
+          expect(
+            await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'codex',
+              '--method',
+              'canonical',
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          final options = LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          );
+          final lifecycle = SkillLifecycleService(fileSystem: fs);
+          final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+          final record = lifecycle.state.records(resolved).single;
+          final location = fs.path.join(
+            project.path,
+            '.claude',
+            'skills',
+            'review',
+          );
+          fs.directory(location).createSync(recursive: true);
+          final args = [
+            'skill',
+            'migrate',
+            record.installationId,
+            ...context(),
+            '--method',
+            'canonical',
+            '--target',
+            'claude',
+            '--target',
+            'codex',
+            '--format',
+            'json',
+          ];
+          expect(
+            await executor().fake().execute([...args, '--dry-run']),
+            isA<MambaFailureResult>(),
+          );
+          expect(fs.directory(location).existsSync(), isTrue);
+          fs.directory(location).deleteSync();
+          final preview = await executor().fake().execute([
+            ...args,
+            '--dry-run',
+          ]);
+          expect(preview, isA<MambaSuccessResult>());
+          final data =
+              (jsonDecode((preview as MambaSuccessResult).output!)
+                      as Map)['data']
+                  as Map;
+          final plan = data['planId'] as String;
+          fs.directory(location).createSync(recursive: true);
+          expect(
+            await executor().fake().execute([
+              ...args,
+              '--reviewed-plan',
+              plan,
+              '--yes',
+            ]),
+            isA<MambaFailureResult>(),
+          );
+          expect(fs.directory(location).existsSync(), isTrue);
+          fs.directory(location).deleteSync();
+          expect(
+            await executor().fake().execute([
+              ...args,
+              '--reviewed-plan',
+              plan,
+              '--yes',
+            ]),
+            isA<MambaSuccessResult>(),
+          );
+          final updated = lifecycle.state.records(resolved).single;
+          expect(
+            updated.installationRoute!.targets.map((target) => target.name),
+            ['claude', 'codex'],
+          );
+          expect(
+            fs.typeSync(location, followLinks: false),
+            FileSystemEntityType.link,
+          );
+        });
+
+        test(
+          'migrates a multi-target copy group to canonical and back by id',
+          () async {
+            useLocalFileSystem();
+            final source = skill('migration-group');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--target',
+              'codex',
+              '--method',
+              'copy',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final options = LifecycleOptions(
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+              stateDir: fs.path.join(sandbox.path, 'state'),
+            );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+            final initial = lifecycle.state.records(resolved);
+            expect(
+              initial.where((record) => record.name == 'review'),
+              hasLength(2),
+              reason: 'a multi-target copy install must record one ledger record per target',
+            );
+            final oldId =
+                initial
+                    .where((record) => record.name == 'review')
+                    .map((record) => record.installationId)
+                    .toList()
+                  ..sort();
+            final migratedId = oldId.first;
+
+            final args = [
+              'skill',
+              'migrate',
+              migratedId,
+              ...context(),
+              '--method',
+              'canonical',
+              '--format',
+              'json',
+            ];
+            final preview = await executor().fake().execute([
+              ...args,
+              '--dry-run',
+            ]);
+            expect(preview, isA<MambaSuccessResult>());
+            final planId =
+                ((jsonDecode((preview as MambaSuccessResult).output!)
+                            as Map)['data']
+                        as Map)['planId']
+                    as String;
+            final migrated = await executor().fake().execute([
+              ...args,
+              '--yes',
+              '--reviewed-plan',
+              planId,
+            ]);
+            expect(migrated, isA<MambaSuccessResult>());
+            final canonical = lifecycle.state
+                .records(resolved)
+                .where((record) => record.name == 'review')
+                .toList();
+            expect(canonical, hasLength(1));
+            expect(canonical.single.kind, ArtifactKind.skillCanonical);
+            expect(canonical.single.installationId, migratedId);
+            expect([...canonical.single.knownConsumers]..sort(), [
+              'claude',
+              'codex',
+            ]);
+            expect(
+              fs
+                  .file(
+                    fs.path.join(
+                      project.path,
+                      '.agents',
+                      'skills',
+                      'review',
+                      'SKILL.md',
+                    ),
+                  )
+                  .existsSync(),
+              isTrue,
+            );
+            // The shared route group was retired as one transaction; the
+            // surviving id keeps `skill update` resolving the installation.
+            final update = await executor().fake().execute([
+              'skill',
+              'update',
+              migratedId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(update, isA<MambaSuccessResult>());
+
+            final reverseArgs = [
+              'skill',
+              'migrate',
+              migratedId,
+              ...context(),
+              '--method',
+              'copy',
+              '--format',
+              'json',
+            ];
+            final reversePreview = await executor().fake().execute([
+              ...reverseArgs,
+              '--dry-run',
+            ]);
+            expect(reversePreview, isA<MambaSuccessResult>());
+            final reverseId =
+                ((jsonDecode((reversePreview as MambaSuccessResult).output!)
+                            as Map)['data']
+                        as Map)['planId']
+                    as String;
+            final reverse = await executor().fake().execute([
+              ...reverseArgs,
+              '--yes',
+              '--reviewed-plan',
+              reverseId,
+            ]);
+            expect(reverse, isA<MambaSuccessResult>());
+            final restored = lifecycle.state
+                .records(resolved)
+                .where((record) => record.name == 'review')
+                .toList();
+            expect(restored, hasLength(2));
+            expect(restored.map((record) => record.kind).toSet(), {
+              ArtifactKind.skillCopy,
+            });
+            expect(
+              restored.any((record) => record.installationId == migratedId),
+              isTrue,
+            );
+            expect(
+              lifecycle.state.recordById(resolved, migratedId).installationId,
+              migratedId,
+            );
+          },
+        );
+
+        test(
+          'previews and confirms a direct copy to source-link migration',
+          () async {
+            useLocalFileSystem();
+            final source = skill('migration-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final options = LifecycleOptions(
+              processWorkingDirectory: project.path,
+              scope: LifecycleScope.project,
+              cwd: project.path,
+              projectRoot: project.path,
+              home: home.path,
+              stateDir: fs.path.join(sandbox.path, 'state'),
+            );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+            final record = lifecycle.state.records(resolved).single;
+            final args = [
+              'skill',
+              'migrate',
+              record.installationId,
+              ...context(),
+              '--method',
+              'source-link',
+              '--format',
+              'json',
+            ];
+            final before = fs
+                .file(fs.path.join(resolved.stateRoot(), 'installations.json'))
+                .readAsStringSync();
+            final preview = await executor().fake().execute([
+              ...args,
+              '--dry-run',
+            ]);
+            expect(preview, isA<MambaSuccessResult>());
+            final plan =
+                jsonDecode((preview as MambaSuccessResult).output!) as Map;
+            expect(plan['outcome'], 'planned');
+            expect((plan['data'] as Map)['fromMethod'], 'copy');
+            expect((plan['data'] as Map)['toMethod'], 'source-link');
+            expect(
+              fs
+                  .file(
+                    fs.path.join(resolved.stateRoot(), 'installations.json'),
+                  )
+                  .readAsStringSync(),
+              before,
+            );
+            expect(
+              await executor().fake().execute(args),
+              isA<MambaFailureResult>(),
+            );
+            expect(
+              fs
+                  .file(
+                    fs.path.join(resolved.stateRoot(), 'installations.json'),
+                  )
+                  .readAsStringSync(),
+              before,
+            );
+            final planId = (plan['data'] as Map)['planId'] as String;
+            expect(
+              await executor().fake().execute([
+                ...args,
+                '--reviewed-plan',
+                planId,
+              ]),
+              isA<MambaFailureResult>(),
+            );
+            expect(
+              fs
+                  .file(
+                    fs.path.join(resolved.stateRoot(), 'installations.json'),
+                  )
+                  .readAsStringSync(),
+              before,
+            );
+            expect(
+              await executor().fake().execute([...args, '--yes']),
+              isA<MambaFailureResult>(),
+            );
+            final sourceFile = fs.file(fs.path.join(source.path, 'SKILL.md'));
+            final original = sourceFile.readAsStringSync();
+            sourceFile.writeAsStringSync('$original\nChanged after preview.\n');
+            expect(
+              await executor().fake().execute([
+                ...args,
+                '--yes',
+                '--reviewed-plan',
+                planId,
+              ]),
+              isA<MambaFailureResult>(),
+            );
+            expect(
+              fs
+                  .file(
+                    fs.path.join(resolved.stateRoot(), 'installations.json'),
+                  )
+                  .readAsStringSync(),
+              before,
+            );
+            sourceFile.writeAsStringSync(original);
+            final applied = await executor().fake().execute([
+              ...args,
+              '--yes',
+              '--reviewed-plan',
+              planId,
+            ]);
+            expect(applied, isA<MambaSuccessResult>());
+            expect(
+              fs.typeSync(record.location, followLinks: false),
+              FileSystemEntityType.link,
+            );
+            final updated = lifecycle.state.records(resolved).single;
+            expect(
+              updated.installationRoute!.method,
+              InstallationMethod.sourceLink,
+            );
+            expect(
+              updated.installationRoute!.targets.map((target) => target.name),
+              ['claude'],
+            );
+            fs
+                .file(fs.path.join(source.path, 'SKILL.md'))
+                .writeAsStringSync(
+                  '---\nname: review\ndescription: Reviews.\n---\nLinked update.\n',
+                );
+            final linkUpdate = await executor().fake().execute([
+              'skill',
+              'update',
+              record.installationId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(linkUpdate, isA<MambaSuccessResult>());
+            expect(
+              fs
+                  .file(fs.path.join(record.location, 'SKILL.md'))
+                  .readAsStringSync(),
+              contains('Linked update.'),
+            );
+            final reverseArgs = [
+              'skill',
+              'migrate',
+              record.installationId,
+              ...context(),
+              '--method',
+              'copy',
+              '--format',
+              'json',
+            ];
+            final reversePreview = await executor().fake().execute([
+              ...reverseArgs,
+              '--dry-run',
+            ]);
+            expect(reversePreview, isA<MambaSuccessResult>());
+            final reversePlan = jsonDecode(
+              (reversePreview as MambaSuccessResult).output!,
+            ) as Map;
+            final reverseId = (reversePlan['data'] as Map)['planId'] as String;
+            final reverse = await executor().fake().execute([
+              ...reverseArgs,
+              '--yes',
+              '--reviewed-plan',
+              reverseId,
+            ]);
+            expect(reverse, isA<MambaSuccessResult>());
+            expect(
+              fs.typeSync(record.location, followLinks: false),
+              FileSystemEntityType.directory,
+            );
+            expect(
+              lifecycle.state
+                  .records(resolved)
+                  .single
+                  .installationRoute!
+                  .method,
+              InstallationMethod.copy,
+            );
+          },
+        );
 
         test(
           'refuses an unsupported Skill target before acquisition',
