@@ -12,6 +12,9 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/memory.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
+
+import 'support/trusted_temp.dart';
+
 import 'package:toml/toml.dart' show TomlDocument;
 
 void main() {
@@ -1840,8 +1843,8 @@ void main() {
         );
 
         test('serializes shared target publications from separate processes', () async {
-          final root = io.Directory.systemTemp.createTempSync(
-            'config-coordination-',
+          final root = io.Directory(
+            createTrustedTempPathSync('config-coordination-'),
           );
           try {
             final projectA = io.Directory(
@@ -1919,8 +1922,8 @@ void main() {
         }, timeout: const Timeout(Duration(seconds: 90)));
 
         test('does not serialize unrelated publications from separate processes', () async {
-          final root = io.Directory.systemTemp.createTempSync(
-            'config-coordination-',
+          final root = io.Directory(
+            createTrustedTempPathSync('config-coordination-'),
           );
           io.Process? first;
           io.Process? second;

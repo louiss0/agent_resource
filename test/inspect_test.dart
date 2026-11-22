@@ -10,6 +10,8 @@ import 'package:mamba/executor.dart';
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
+import 'support/trusted_temp.dart';
+
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
 
@@ -32,8 +34,8 @@ Future<T> _withLocalDirectory<T>(
   Future<T> Function(f.Directory root) body,
 ) async {
   const fs = LocalFileSystem();
-  final root = await fs.systemTempDirectory.createTemp(
-    'agent-resource-inspect-',
+  final root = fs.directory(
+    await createTrustedTempPath('agent-resource-inspect-'),
   );
   try {
     return await runZoned(() => body(root), zoneValues: {#fs: fs});

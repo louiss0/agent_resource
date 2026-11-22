@@ -5,6 +5,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 bool _tryDirectoryLink(String path, String target) {
   try {
     Link(path).createSync(target);
@@ -17,7 +19,7 @@ bool _tryDirectoryLink(String path, String target) {
 void main() {
   group('NativeLinkService', () {
     test('refuses ordinary files, directories, and missing entries', () async {
-      final sandbox = await Directory.systemTemp.createTemp('native-link-');
+      final sandbox = Directory(await createTrustedTempPath('native-link-'));
       try {
         final service = const NativeLinkService();
         final directory = Directory(p.join(sandbox.path, 'ordinary'))
@@ -45,8 +47,8 @@ void main() {
     });
 
     test('inspects a supported directory link and target representation', () async {
-      final sandbox = await Directory.systemTemp.createTemp(
-        'native-link-real-',
+      final sandbox = Directory(
+        await createTrustedTempPath('native-link-real-'),
       );
       try {
         final target = Directory(p.join(sandbox.path, 'target'))..createSync();
@@ -75,8 +77,8 @@ void main() {
           markTestSkipped('Windows reparse behavior is Windows-only');
           return;
         }
-        final sandbox = await Directory.systemTemp.createTemp(
-          'native-link-dangling-',
+        final sandbox = Directory(
+          await createTrustedTempPath('native-link-dangling-'),
         );
         try {
           const service = NativeLinkService();

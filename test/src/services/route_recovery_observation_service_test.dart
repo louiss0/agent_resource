@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:agent_resource/src/conversion/path_action_diff.dart';
 import 'package:agent_resource/src/conversion/route_journal_evidence.dart';
 import 'package:agent_resource/src/conversion/route_recovery_paths.dart';
 import 'package:agent_resource/src/conversion/route_recovery_plan.dart';
@@ -9,13 +10,16 @@ import 'package:agent_resource/src/services/route_recovery_observation_service.d
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/journal_actions.dart';
+import '../../support/trusted_temp.dart';
+
 import '../conversion/route_journal_evidence_test.dart' as fixture;
 
 void main() {
   test('observes prepared artifacts and old ledger without writing', () {
-    final root = Directory.systemTemp.createTempSync('route-observe-');
+    final root = Directory(createTrustedTempPathSync('route-observe-'));
     addTearDown(() => root.deleteSync(recursive: true));
-    final nativeRoot = p.join(root.path.toLowerCase(), '.claude', 'skills');
+    final nativeRoot = p.join(root.path, '.claude', 'skills');
     final live = p.join(nativeRoot, 'skill');
     Directory(live).createSync(recursive: true);
     File(p.join(live, 'SKILL.md')).writeAsStringSync('old');
@@ -30,9 +34,11 @@ void main() {
       record['nativeRoot'] = nativeRoot;
       record['baseline'] = baseline.toJson();
     }
-    doc['actions'] = [
-      {'path': live, 'oldKind': 'skillCopy', 'newKind': 'skillCopy'},
-    ];
+    doc['actions'] = journalActions(
+      p.context,
+      oldPaths: [(path: live, kind: OldArtifactKind.skillCopy)],
+      newPaths: [(path: live, kind: NewArtifactKind.skillCopy)],
+    );
     final journal = RouteJournalEvidence.decode(jsonEncode(doc), p.context);
     final stage = RouteRecoveryPaths(p.context)
         .forLocation(nativeRoot, live, doc['transactionId'] as String)
@@ -122,7 +128,7 @@ void main() {
     expect(foreignKind.artifacts.single.staged, ArtifactObservation.unknown);
     expect(foreignKind.plan.decision, RecoveryDecision.refuse);
 
-    final alien = p.join(root.path.toLowerCase(), 'foreign', 'skill');
+    final alien = p.join(root.path, 'foreign', 'skill');
     for (final record in [
       ...doc['oldRecords'] as List,
       ...doc['newRecords'] as List,
@@ -130,9 +136,11 @@ void main() {
       record['location'] = alien;
       record['nativeRoot'] = p.dirname(alien);
     }
-    doc['actions'] = [
-      {'path': alien, 'oldKind': 'skillCopy', 'newKind': 'skillCopy'},
-    ];
+    doc['actions'] = journalActions(
+      p.context,
+      oldPaths: [(path: alien, kind: OldArtifactKind.skillCopy)],
+      newPaths: [(path: alien, kind: NewArtifactKind.skillCopy)],
+    );
     final foreign = service.inspect(
       RouteJournalEvidence.decode(jsonEncode(doc), p.context),
       context,

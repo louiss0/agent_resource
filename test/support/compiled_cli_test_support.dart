@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import 'process_test_support.dart';
+import 'trusted_temp.dart';
 
 /// Builds the current sources once per suite, outside individual test budgets.
 /// Each invocation still runs the real entrypoint in its own isolated process.
@@ -11,7 +12,7 @@ Future<String> compileTestCli({
   required String script,
   required String packageConfig,
 }) async {
-  final directory = await Directory.systemTemp.createTemp('cli-test-kernel-');
+  final directory = Directory(await createTrustedTempPath('cli-test-kernel-'));
   tearDownAll(() => directory.delete(recursive: true));
   try {
     final output = File.fromUri(directory.uri.resolve('agent_resource.dill'));

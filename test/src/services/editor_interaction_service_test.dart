@@ -10,6 +10,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 void main() {
   group('editor interaction', () {
     late MemoryFileSystem fs;
@@ -607,8 +609,8 @@ void main() {
 
       test('a batch launcher of the search path is not resolved', () async {
         final draftId = await prepareDraft();
-        final directory = Directory.systemTemp.createTempSync(
-          'agent resource editor ',
+        final directory = Directory(
+          createTrustedTempPathSync('agent resource editor '),
         );
         addTearDown(() => directory.deleteSync(recursive: true));
         File('${directory.path}/helper.cmd').writeAsStringSync('@echo off\n');
@@ -639,8 +641,8 @@ void main() {
         'path',
         () async {
           final draftId = await prepareDraft();
-          final directory = Directory.systemTemp.createTempSync(
-            'agent resource editor path ',
+          final directory = Directory(
+            createTrustedTempPathSync('agent resource editor path '),
           );
           addTearDown(() => directory.deleteSync(recursive: true));
           // A posix search path completes no executable extension, so only

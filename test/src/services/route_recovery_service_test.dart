@@ -1,20 +1,24 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:agent_resource/src/conversion/path_action_diff.dart';
 import 'package:agent_resource/src/conversion/route_recovery_paths.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/route_recovery_service.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/journal_actions.dart';
+import '../../support/trusted_temp.dart';
+
 import '../conversion/route_journal_evidence_test.dart' as fixture;
 
 void main() {
   for (final scenario in ['normal', 'interrupted', 'foreign', 'ambiguous']) {
     test('rollback evidence: $scenario', () async {
-      final root = Directory.systemTemp.createTempSync('route-rollback-');
+      final root = Directory(createTrustedTempPathSync('route-rollback-'));
       addTearDown(() => root.deleteSync(recursive: true));
-      final nativeRoot = p.join(root.path.toLowerCase(), '.claude', 'skills');
+      final nativeRoot = p.join(root.path, '.claude', 'skills');
       final live = p.join(nativeRoot, 'skill');
       Directory(live).createSync(recursive: true);
       File(p.join(live, 'SKILL.md')).writeAsStringSync('old');
@@ -39,9 +43,11 @@ void main() {
       }
       (doc['oldRecords'] as List).first['baseline'] = old.toJson();
       (doc['newRecords'] as List).first['baseline'] = next.toJson();
-      doc['actions'] = [
-        {'path': live, 'oldKind': 'skillCopy', 'newKind': 'skillCopy'},
-      ];
+      doc['actions'] = journalActions(
+        p.context,
+        oldPaths: [(path: live, kind: OldArtifactKind.skillCopy)],
+        newPaths: [(path: live, kind: NewArtifactKind.skillCopy)],
+      );
       doc['phase'] = 'published';
       doc['completedActions'] = ['0-remove', '0-publish'];
       final stateDir = p.join(root.path, '.agent-resource');
@@ -81,7 +87,11 @@ void main() {
         return;
       }
       if (scenario == 'interrupted') {
-        io.interruptAfterRename = live;
+        // Rollback renames the journal's recorded action path, which is the
+        // diff's normalized key — case-folded on Windows — rather than the
+        // reviewed record location.
+        io.interruptAfterRename =
+            (doc['actions'] as List).first['path'] as String;
         await expectLater(
           service.recover(context, id, action: 'rollback'),
           throwsStateError,
@@ -107,10 +117,10 @@ void main() {
   }
 
   test('rolls back a multi-action route across two native roots', () async {
-    final root = Directory.systemTemp.createTempSync('route-rollback-multi-');
+    final root = Directory(createTrustedTempPathSync('route-rollback-multi-'));
     addTearDown(() => root.deleteSync(recursive: true));
-    final claudeRoot = p.join(root.path.toLowerCase(), '.claude', 'skills');
-    final codexRoot = p.join(root.path.toLowerCase(), '.codex', 'skills');
+    final claudeRoot = p.join(root.path, '.claude', 'skills');
+    final codexRoot = p.join(root.path, '.codex', 'skills');
     final liveOld = p.join(claudeRoot, 'skill');
     final liveNew = p.join(codexRoot, 'skill');
     Directory(liveOld).createSync(recursive: true);
@@ -141,10 +151,11 @@ void main() {
     newRecord['validatedProfiles'] = ['codex'];
     newRecord['knownConsumers'] = ['codex'];
     (newRecord['installationRoute'] as Map)['targets'] = ['codex'];
-    doc['actions'] = [
-      {'path': liveOld, 'oldKind': 'skillCopy', 'newKind': null},
-      {'path': liveNew, 'oldKind': null, 'newKind': 'skillCopy'},
-    ];
+    doc['actions'] = journalActions(
+      p.context,
+      oldPaths: [(path: liveOld, kind: OldArtifactKind.skillCopy)],
+      newPaths: [(path: liveNew, kind: NewArtifactKind.skillCopy)],
+    );
     doc['phase'] = 'published';
     doc['completedActions'] = ['0-remove', '1-publish'];
     final stateDir = p.join(root.path, '.agent-resource');
@@ -191,9 +202,9 @@ void main() {
       })
     >
     committedJournal({bool tampered = false}) async {
-      final root = Directory.systemTemp.createTempSync('route-recover-');
+      final root = Directory(createTrustedTempPathSync('route-recover-'));
       addTearDown(() => root.deleteSync(recursive: true));
-      final nativeRoot = p.join(root.path.toLowerCase(), '.claude', 'skills');
+      final nativeRoot = p.join(root.path, '.claude', 'skills');
       final live = p.join(nativeRoot, 'skill');
       Directory(live).createSync(recursive: true);
       File(p.join(live, 'SKILL.md')).writeAsStringSync('old');
@@ -221,9 +232,11 @@ void main() {
       }
       (doc['oldRecords'] as List).first['baseline'] = old.toJson();
       (doc['newRecords'] as List).first['baseline'] = next.toJson();
-      doc['actions'] = [
-        {'path': live, 'oldKind': 'skillCopy', 'newKind': 'skillCopy'},
-      ];
+      doc['actions'] = journalActions(
+        p.context,
+        oldPaths: [(path: live, kind: OldArtifactKind.skillCopy)],
+        newPaths: [(path: live, kind: NewArtifactKind.skillCopy)],
+      );
       doc['phase'] = tampered ? 'completed' : 'published';
       doc['completedActions'] = ['0-remove', '0-publish'];
       final stateDir = p.join(root.path, '.agent-resource');

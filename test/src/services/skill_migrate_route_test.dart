@@ -7,6 +7,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 void main() {
   group('SkillLifecycleService route migration', () {
     SkillLifecycleService service() =>
@@ -15,7 +17,7 @@ void main() {
     test(
       'migrates a claude copy to canonical content with an exposure',
       () async {
-        final root = Directory.systemTemp.createTempSync('skill-migrate-');
+        final root = Directory(createTrustedTempPathSync('skill-migrate-'));
         addTearDown(() => root.deleteSync(recursive: true));
         final project = p.join(root.path, 'project');
         final home = p.join(root.path, 'home');
@@ -112,7 +114,7 @@ void main() {
     );
 
     test('refuses a stale reviewed plan without mutating', () async {
-      final root = Directory.systemTemp.createTempSync('skill-migrate-stale-');
+      final root = Directory(createTrustedTempPathSync('skill-migrate-stale-'));
       addTearDown(() => root.deleteSync(recursive: true));
       final project = p.join(root.path, 'project');
       final home = p.join(root.path, 'home');
@@ -156,7 +158,7 @@ void main() {
     });
 
     test('rejects an unchanged route as unsupported', () async {
-      final root = Directory.systemTemp.createTempSync('skill-migrate-noop-');
+      final root = Directory(createTrustedTempPathSync('skill-migrate-noop-'));
       addTearDown(() => root.deleteSync(recursive: true));
       final project = p.join(root.path, 'project');
       final home = p.join(root.path, 'home');

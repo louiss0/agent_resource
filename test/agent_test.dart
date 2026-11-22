@@ -11,6 +11,8 @@ import 'package:mamba/executor.dart';
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
+import 'support/trusted_temp.dart';
+
 import 'support/compiled_cli_test_support.dart';
 import 'support/process_test_support.dart';
 
@@ -215,8 +217,8 @@ Future<T> _withLocalSandbox<T>(
   Future<T> Function(f.Directory sandbox) body,
 ) async {
   const fs = LocalFileSystem();
-  final sandbox = await fs.systemTempDirectory.createTemp(
-    'agent-resource-agent-',
+  final sandbox = fs.directory(
+    await createTrustedTempPath('agent-resource-agent-'),
   );
   try {
     return await runZoned(() => body(sandbox), zoneValues: {#fs: fs});

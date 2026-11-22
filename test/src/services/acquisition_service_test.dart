@@ -11,6 +11,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 void main() {
   group('AcquisitionService memory filesystem', () {
     late MemoryFileSystem fileSystem;
@@ -182,7 +184,7 @@ void main() {
     late Directory sandbox;
 
     setUp(() async {
-      sandbox = await Directory.systemTemp.createTemp('acquisition-local-');
+      sandbox = Directory(await createTrustedTempPath('acquisition-local-'));
     });
 
     tearDown(() async {

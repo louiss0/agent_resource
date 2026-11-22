@@ -15,10 +15,12 @@ import 'package:file/local.dart';
 import 'package:mamba/executor.dart';
 import 'package:test/test.dart';
 
+import '../../support/trusted_temp.dart';
+
 void main() {
   test('refuses a Windows junction in a Context destination', () async {
     if (!Platform.isWindows) return;
-    final root = Directory.systemTemp.createTempSync('context-junction-');
+    final root = Directory(createTrustedTempPathSync('context-junction-'));
     try {
       final project = Directory('${root.path}\\project')..createSync();
       final home = Directory('${root.path}\\home')..createSync();
@@ -72,7 +74,7 @@ void main() {
   });
 
   test('replaces an existing target on the local filesystem', () {
-    final root = Directory.systemTemp.createTempSync('context-publication-');
+    final root = Directory(createTrustedTempPathSync('context-publication-'));
     try {
       final local = const LocalFileSystem();
       final project = local.directory(local.path.join(root.path, 'project'))

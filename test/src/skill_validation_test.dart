@@ -10,6 +10,8 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as path;
 import 'package:test/test.dart';
 
+import '../support/trusted_temp.dart';
+
 const _markerSizeLimit = 1048576;
 const _frontmatterSizeLimit = 65536;
 const _profile = 'agentskills-core-strict-ascii-v1';
@@ -73,8 +75,8 @@ Future<T> _withLocalParent<T>(
   Future<T> Function(f.Directory parent) body,
 ) async {
   const fs = LocalFileSystem();
-  final parent = await fs.systemTempDirectory.createTemp(
-    'agent-resource-validate-',
+  final parent = fs.directory(
+    await createTrustedTempPath('agent-resource-validate-'),
   );
   try {
     return await runZoned(() => body(parent), zoneValues: {#fs: fs});
