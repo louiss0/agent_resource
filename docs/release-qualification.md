@@ -49,7 +49,7 @@ any audit ID is missing here or any referenced test name disappears.
 
 | Finding | Ticket | Focused evidence (test file — test name) | Status |
 | --- | --- | --- | --- |
-| PA-1.1 | #134 | `test/resource_lifecycle_boundaries_test.dart` — `has no registered command`; `test/support_test.dart` — `prompt help explains the deferred install boundary` | intentional boundary |
+| PA-1.1 | #134 | `test/resource_lifecycle_boundaries_test.dart` — `has no registered command`; `test/support_test.dart` — `prompt help discloses the real install routes` | intentional boundary |
 | PA-1.2 | #134 | `test/pack_test.dart` — `installs both resource types through the real service`; `test/prompt_read_test.dart` — `Pi template validation is recognized but installation stays unsupported` | intentional boundary |
 | PA-1.3 | #130 | `test/skill_install_test.dart` — `publishes a derived prompt template with the skill`; `test/src/services/pack_lifecycle_service_test.dart` — `--prompt-target publishes the pi template` | resolved |
 | PA-1.4 | #134 | `test/prompt_create_command_test.dart` — `refuses a managed Prompt without falling back to author-only` | intentional boundary |
