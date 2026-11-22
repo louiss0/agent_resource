@@ -943,6 +943,18 @@ interface class SkillLifecycleService implements LifecycleResource {
           targets: [for (final target in requestedTargets) target.name],
           kind: desiredKind,
         );
+        // Copies and canonical installs publish the transformed snapshot;
+        // source links must validate the actual directory they expose.
+        final publicationSource = method == InstallationMethod.sourceLink
+            ? path
+            : staged.path;
+        if (migrationMethod != null && !canonicalTargets) {
+          await resource.inspect(
+            publicationSource,
+            context,
+            expectedName: record.name,
+          );
+        }
         final digest = state.contentDigest(staged.path, ArtifactKind.skillCopy);
         final origin = <String, Object?>{
           ...record.origin,
@@ -1109,9 +1121,7 @@ interface class SkillLifecycleService implements LifecycleResource {
             status: InstallationUnitStatus.planned,
             installationIds: const <String>[],
             entries: entries,
-            sourcePath: method == InstallationMethod.sourceLink
-                ? path
-                : staged.path,
+            sourcePath: publicationSource,
             sourceDigest: digest,
             origin: origin,
             installationRoute: newRoute,
@@ -1212,17 +1222,17 @@ interface class SkillLifecycleService implements LifecycleResource {
           }
         }
         final derivedWrites = <DerivedPromptWrite>[];
-        if (route.promptTargets.isNotEmpty) {
+        if (newRoute.promptTargets.isNotEmpty) {
           final inspection = await PromptInspectionService(fs: state.io.fs)
               .inspect(staged.path, form: PromptForm.skill);
           final perHarness = assessDerivedPrompts(
             skillDirectory: staged.path,
             inspection: inspection,
-            harnesses: route.promptTargets,
+            harnesses: newRoute.promptTargets,
             fileSystem: state.io.fs,
           );
           for (final prompt in record.derivedPrompts) {
-            final harness = route.promptTargets
+            final harness = newRoute.promptTargets
                 .where(
                   (candidate) => state.io.fs.path.equals(
                     derivedPromptRoot(context, candidate),
@@ -1266,6 +1276,7 @@ interface class SkillLifecycleService implements LifecycleResource {
                     ? [for (final target in requestedTargets) target.name]
                     : null,
                 derivedWrites: derivedWrites,
+                removeDerivedPrompts: canonicalTargets && dropPromptTargets,
               )
             : await state.replace(
                 resource: resource,

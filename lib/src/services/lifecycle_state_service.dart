@@ -10,6 +10,7 @@ import 'package:mamba/mamba.dart';
 import 'package:path/path.dart' as p;
 
 import '../conversion/conversion_evidence.dart';
+import '../conversion/derived_prompt.dart';
 import '../conversion/route_journal_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
 import '../conversion/installation_path_diff.dart';
@@ -3218,6 +3219,14 @@ interface class LifecycleStateService {
       }
       resource.validateAuthority(record, context);
     }
+    if (transaction['operation'] == 'canonical-replace') {
+      final old = InstallationRecord.fromJson(transaction['oldRecord']);
+      for (final change in _canonicalJournalChanges(transaction)) {
+        if (change.kind == ArtifactKind.promptTemplate) {
+          _requireCanonicalPromptAuthority(context, old.name, change);
+        }
+      }
+    }
   }
 
   Map<String, Object?> _transactionSummary(Map<String, Object?> transaction) =>
@@ -3612,9 +3621,12 @@ interface class LifecycleStateService {
           'Canonical transition records are missing.',
         );
       }
-      final changes = _list(transaction['changes'], 'canonical changes');
-      for (final value in changes) {
-        final change = _CanonicalChange.fromJson(value);
+      final changes = _canonicalJournalChanges(transaction);
+      final promptChanges = <_CanonicalChange>[];
+      for (final change in changes) {
+        if (change.kind == ArtifactKind.promptTemplate) {
+          promptChanges.add(change);
+        }
         if (!io.fs.path.isWithin(change.nativeRoot, change.location)) {
           throw const FormatException(
             'Canonical change escapes its native root.',
@@ -3625,6 +3637,21 @@ interface class LifecycleStateService {
             change.quarantinePath != expected.quarantinePath) {
           throw const FormatException('Canonical storage evidence is unsafe.');
         }
+      }
+      final old = InstallationRecord.fromJson(transaction['oldRecord']);
+      final desired = InstallationRecord.fromJson(transaction['newRecord']);
+      final expectedRemovals =
+          operation == 'canonical-replace' && desired.derivedPrompts.isEmpty
+          ? _canonicalPromptRemovals(old)
+          : const <_CanonicalChange>[];
+      if (jsonEncode([for (final change in promptChanges) change.toJson()]) !=
+          jsonEncode([
+            for (final change in expectedRemovals)
+              change.withTransaction(expectedId).toJson(),
+          ])) {
+        throw const FormatException(
+          'Canonical derived Prompt removals do not match the recorded baselines.',
+        );
       }
       for (final action in _stringList(transaction['completedActions'])) {
         final match = RegExp(r'^(\d+)-(remove|publish)$').firstMatch(action);
@@ -3778,6 +3805,11 @@ interface class LifecycleStateService {
     }
     final initial = InstallationRecord.fromJson(transaction['oldRecord']);
     _verifyCoordinatedRecordState(initial);
+    for (final change in changes) {
+      if (change.kind == ArtifactKind.promptTemplate) {
+        _verifyBaseline(change.location, change.oldBaseline!, change.kind);
+      }
+    }
     final current = _findRecord(state, installationId: initial.installationId);
     final restored = initial.copyWith(
       backupIds: <String>{
@@ -3801,11 +3833,25 @@ interface class LifecycleStateService {
     final path = io.fs.path.join(state, 'transactions', '$id.json');
     final changes = _canonicalJournalChanges(transaction);
     final completed = _stringList(transaction['completedActions']);
+    final desired = InstallationRecord.fromJson(transaction['newRecord']);
+    final cleanupPending = transaction['phase'] == 'committedCleanupPending';
+    if (cleanupPending &&
+        !_coordinatedRecordsMatch(state, const [], [
+          desired,
+        ], committed: true)) {
+      throw MambaException(
+        'The canonical ledger changed before cleanup recovery.',
+        exitCode: 6,
+      );
+    }
     for (var index = 0; index < changes.length; index++) {
       _applyCanonicalChange(changes[index], completed, path, index);
     }
-    final desired = InstallationRecord.fromJson(transaction['newRecord']);
     _verifyCoordinatedRecordState(desired);
+    _requireCanonicalPromptRemovalsApplied(
+      changes,
+      cleanupPending: cleanupPending,
+    );
     _commitCoordinatedRecords(state, transaction, [desired]);
     _writeTransaction(path, <String, Object?>{
       ..._readTransaction(path),
@@ -3813,6 +3859,11 @@ interface class LifecycleStateService {
     });
     for (final change in changes.where((change) => change.removeOld)) {
       final quarantine = change.quarantinePath!;
+      if (cleanupPending &&
+          io.type(quarantine, followLinks: false) ==
+              FileSystemEntityType.notFound) {
+        continue;
+      }
       _verifyBaseline(quarantine, change.oldBaseline!, change.kind);
       io.delete(quarantine);
     }
@@ -6038,8 +6089,22 @@ interface class LifecycleStateService {
         final phase = transaction['phase'];
         const terminal = ['committed', 'rolledBack', 'failedRestored'];
         if (terminal.contains(phase)) continue;
-        if (transaction['location'] is String &&
-            io.fs.path.equals(transaction['location']! as String, location)) {
+        final reservesPrompt =
+            transaction['operation'] == 'canonical-replace' &&
+            transaction['changes'] is List &&
+            (transaction['changes']! as List).any(
+              (change) =>
+                  change is Map &&
+                  change['artifactKind'] == 'prompt-template' &&
+                  change['location'] is String &&
+                  _pathsOverlap(change['location'] as String, location),
+            );
+        if (reservesPrompt ||
+            (transaction['location'] is String &&
+                io.fs.path.equals(
+                  transaction['location']! as String,
+                  location,
+                ))) {
           throw MambaException(
             'A pending transaction blocks this installation: ${transaction['transactionId']}',
             exitCode: 6,
@@ -7041,6 +7106,7 @@ ArtifactKind _artifactKindFromWire(String value) => switch (value) {
   'skill-link' => ArtifactKind.skillLink,
   'skill-canonical' => ArtifactKind.skillCanonical,
   'agent-file' => ArtifactKind.agentFile,
+  'prompt-template' => ArtifactKind.promptTemplate,
   _ => throw FormatException('Unsupported artifact kind: $value'),
 };
 

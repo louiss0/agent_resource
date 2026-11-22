@@ -31,6 +31,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     bool allowModified = false,
     InstallationRecord? expectedRecord,
     List<DerivedPromptWrite> derivedWrites = const <DerivedPromptWrite>[],
+    bool removeDerivedPrompts = false,
   }) async {
     var initial = recordById(context, installationId);
     if (expectedRecord != null &&
@@ -61,7 +62,11 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       exposures: exposures,
       knownConsumers: knownConsumers,
       validatedProfiles: validatedProfiles,
+      derivedPrompts: removeDerivedPrompts ? const [] : null,
     );
+    final promptRemovals = removeDerivedPrompts
+        ? _canonicalPromptRemovals(initial)
+        : const <_CanonicalChange>[];
     resource.validateAuthority(desired, context);
     for (final exposure in desired.exposures) {
       if (!initial.exposures.any(
@@ -76,6 +81,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         initial.location,
         for (final exposure in initial.exposures) exposure.path,
         for (final exposure in desired.exposures) exposure.path,
+        for (final removal in promptRemovals) removal.location,
       ],
     );
     await resource.checkUnique(
@@ -98,6 +104,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       source: source,
       allowModified: allowModified,
       derivedWrites: derivedWrites,
+      promptRemovals: promptRemovals,
     );
   }
 
@@ -198,6 +205,19 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       );
     }
     resource.validateAuthority(historical, context);
+    // Canonical restore does not publish backed-up Prompt templates. Do not
+    // restore an older route whose templates are no longer tracked.
+    if (historical.derivedPrompts.any(
+      (prompt) => !initial.derivedPrompts.any(
+        (current) => io.fs.path.equals(current.path, prompt.path),
+      ),
+    )) {
+      throw MambaException(
+        'This canonical backup would reintroduce dropped derived Prompts, '
+        'which canonical backup restore cannot republish.',
+        exitCode: 4,
+      );
+    }
     if (initial.lifecycle == 'live') {
       _requireCanonicalUnchanged(initial);
     } else {
@@ -245,8 +265,29 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
     String? backupId,
     bool allowModified = false,
     List<DerivedPromptWrite> derivedWrites = const <DerivedPromptWrite>[],
+    List<_CanonicalChange> promptRemovals = const <_CanonicalChange>[],
   }) async {
-    final changes = _canonicalChanges(initial, desired);
+    final changes = [..._canonicalChanges(initial, desired), ...promptRemovals];
+    void requireRemovablePrompts() {
+      for (final removal in promptRemovals) {
+        _requireCanonicalPromptAuthority(context, initial.name, removal);
+        if (io.type(removal.location, followLinks: false) !=
+                FileSystemEntityType.file ||
+            _manifest(removal.location, removal.kind).digest !=
+                removal.oldBaseline!.digest) {
+          throw MambaException(
+            'The derived Prompt is changed or missing: ${removal.location}',
+            exitCode: 4,
+          );
+        }
+      }
+    }
+
+    final promptPaths = [
+      for (final removal in promptRemovals) removal.location,
+    ];
+    checkPendingMutations(context, locations: promptPaths);
+    requireRemovablePrompts();
     if (context.dryRun) {
       return LifecycleResult(
         command:
@@ -287,15 +328,19 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
       } else {
         _requireCanonicalAbsent(current);
       }
-      _blockPendingAcrossScopes(context, current.location);
-      // A canonical transition publishes its content and its exposure links.
-      // A pending transaction reserves every published path.
+      checkPendingMutations(
+        context,
+        locations: [current.location, ...promptPaths],
+      );
+      requireRemovablePrompts();
+      // Reserve the content, exposure links and removed templates together.
       checkPendingConversions(
         context,
         locations: [
           current.location,
           for (final exposure in current.exposures) exposure.path,
           for (final exposure in desired.exposures) exposure.path,
+          ...promptPaths,
         ],
       );
       final transactionId = LifecycleStateService._newId('trx');
@@ -304,6 +349,14 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         'transactions',
         '$transactionId.json',
       );
+      final preparedChanges = changes
+          .map((change) => change.withTransaction(transactionId))
+          .toList();
+      for (final change in preparedChanges) {
+        if (change.kind == ArtifactKind.promptTemplate) {
+          _requireCanonicalPromptAuthority(context, current.name, change);
+        }
+      }
       BackupRecord? outgoing;
       if (current.lifecycle == 'live') {
         outgoing = _createBackup(state, current, transactionId);
@@ -314,9 +367,10 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
           >[];
       final nextDerived = <DerivedPromptRecord>[
         for (final prompt in current.derivedPrompts)
-          if (derivedWrites.every(
-            (write) => !io.fs.path.equals(write.path, prompt.path),
-          ))
+          if (promptRemovals.isEmpty &&
+              derivedWrites.every(
+                (write) => !io.fs.path.equals(write.path, prompt.path),
+              ))
             prompt,
       ];
       for (final write in derivedWrites) {
@@ -373,9 +427,6 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         clearTransaction: true,
         derivedPrompts: nextDerived,
       );
-      final preparedChanges = changes
-          .map((change) => change.withTransaction(transactionId))
-          .toList();
       final completed = <String>[];
       var intentWritten = false;
       var commitAttempted = false;
@@ -459,6 +510,7 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
           io.rename(staged.stage, staged.live);
         }
         _verifyCanonicalState(committedDesired);
+        _requireCanonicalPromptRemovalsApplied(preparedChanges);
         commitAttempted = true;
         _commitRecords(state, [committedDesired], const <String, Object?>{});
         committed = true;
@@ -554,6 +606,58 @@ extension CanonicalLifecycleOperations on LifecycleStateService {
         );
       }
     });
+  }
+
+  List<_CanonicalChange> _canonicalPromptRemovals(InstallationRecord record) =>
+      [
+        for (final prompt in record.derivedPrompts)
+          _CanonicalChange(
+            location: prompt.path,
+            nativeRoot: io.fs.path.dirname(prompt.path),
+            kind: ArtifactKind.promptTemplate,
+            removeOld: true,
+            publishNew: false,
+            oldBaseline: prompt.baseline,
+          ),
+      ];
+
+  void _requireCanonicalPromptAuthority(
+    LifecycleContext context,
+    String skillName,
+    _CanonicalChange change,
+  ) {
+    final paths = io.fs.path;
+    final authorized = promptCapableHarnesses().any((harness) {
+      final root = derivedPromptRoot(context, harness);
+      return paths.equals(root, change.nativeRoot) &&
+          paths.equals(paths.join(root, '$skillName.md'), change.location);
+    });
+    if (!authorized) {
+      throw MambaException(
+        'Stored derived Prompt location does not match current native authority.',
+        exitCode: 4,
+      );
+    }
+    _requireSafePath(change.location, change.nativeRoot);
+    if (change.quarantinePath case final String quarantine) {
+      _requireSafePath(quarantine, paths.dirname(change.nativeRoot));
+    }
+  }
+
+  void _requireCanonicalPromptRemovalsApplied(
+    List<_CanonicalChange> changes, {
+    bool cleanupPending = false,
+  }) {
+    for (final change in changes) {
+      if (change.kind != ArtifactKind.promptTemplate) continue;
+      _requireAbsent(change.location);
+      final quarantine = change.quarantinePath!;
+      if (!cleanupPending ||
+          io.type(quarantine, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+        _verifyBaseline(quarantine, change.oldBaseline!, change.kind);
+      }
+    }
   }
 
   void _applyCanonicalChange(
