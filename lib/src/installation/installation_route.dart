@@ -77,7 +77,9 @@ final class InstallationRoute {
       entryId: entry as String?,
       packKey: pack as String?,
       scope: named(LifecycleScope.values, (v) => v.name, value['scope']),
-      promptTargets: value['promptTargets'] is List
+      promptTargets: value['promptTargets'] == null
+          ? const <String>[]
+          : value['promptTargets'] is List
           ? [
               for (final item in value['promptTargets'] as List)
                 item is String
@@ -86,7 +88,7 @@ final class InstallationRoute {
                         'Invalid installation route.',
                       )),
             ]
-          : const <String>[],
+          : (throw const FormatException('Invalid installation route.')),
       targets: [
         for (final item in value['targets'] as List)
           named(InstallationRouteTarget.values, (v) => v.name, item),
