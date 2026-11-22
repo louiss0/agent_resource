@@ -1068,39 +1068,37 @@ interface class SkillLifecycleService implements LifecycleResource {
               promptRoot,
               '${record.name}.md',
             );
-            String? content;
+            DerivedPromptAssessment? assessment;
             try {
               final inspection = await PromptInspectionService(fs: state.io.fs)
                   .inspect(staged.path, form: PromptForm.skill);
-              content = assessDerivedPrompts(
+              assessment = assessDerivedPrompts(
                 skillDirectory: staged.path,
                 inspection: inspection,
                 harnesses: [harness],
                 fileSystem: state.io.fs,
-              )[harness]?.content;
+              )[harness];
             } on Object {
-              content = null;
+              assessment = null;
             }
-            content ??= <String>[
-              for (final prompt in record.derivedPrompts)
-                if (state.io.fs.path.equals(prompt.path, promptPath) &&
-                    state.io.fs.typeSync(prompt.path, followLinks: false) !=
-                        FileSystemEntityType.notFound)
-                  state.io.fs.file(prompt.path).readAsStringSync(),
-            ].firstOrNull;
-            if (content != null) {
-              entries.add(
-                InstallationEntryPlan(
-                  path: promptPath,
-                  kind: InstallationEntryKind.template,
-                  action: InstallationEntryAction.createContent,
-                  nativeRoot: promptRoot,
-                  nativeDestination: harness,
-                  artifactKind: OwnedArtifactKind.promptTemplate,
-                  content: content,
-                ),
+            final content = assessment?.content;
+            if (content == null) {
+              throw MambaException(
+                stalePromptTargetDiagnostic(record.name, harness, assessment),
+                exitCode: 4,
               );
             }
+            entries.add(
+              InstallationEntryPlan(
+                path: promptPath,
+                kind: InstallationEntryKind.template,
+                action: InstallationEntryAction.createContent,
+                nativeRoot: promptRoot,
+                nativeDestination: harness,
+                artifactKind: OwnedArtifactKind.promptTemplate,
+                content: content,
+              ),
+            );
           }
           final desired = InstallationUnitPlan(
             resourceType: InstallationResourceType.skill,
@@ -1224,21 +1222,31 @@ interface class SkillLifecycleService implements LifecycleResource {
             fileSystem: state.io.fs,
           );
           for (final prompt in record.derivedPrompts) {
-            final content = <String>[
-              for (final entry in perHarness.entries)
-                if (state.io.fs.path.equals(
-                  derivedPromptRoot(context, entry.key),
-                  state.io.fs.path.dirname(prompt.path),
-                ))
-                  ?entry.value.content,
-            ].firstOrNull;
-            if (content != null) {
-              derivedWrites.add((
-                path: prompt.path,
-                content: content,
-                nativeRoot: state.io.fs.path.dirname(prompt.path),
-              ));
+            final harness = route.promptTargets
+                .where(
+                  (candidate) => state.io.fs.path.equals(
+                    derivedPromptRoot(context, candidate),
+                    state.io.fs.path.dirname(prompt.path),
+                  ),
+                )
+                .firstOrNull;
+            final assessment = harness == null ? null : perHarness[harness];
+            final content = assessment?.content;
+            if (content == null) {
+              throw MambaException(
+                stalePromptTargetDiagnostic(
+                  record.name,
+                  harness ?? state.io.fs.path.dirname(prompt.path),
+                  assessment,
+                ),
+                exitCode: 4,
+              );
             }
+            derivedWrites.add((
+              path: prompt.path,
+              content: content,
+              nativeRoot: state.io.fs.path.dirname(prompt.path),
+            ));
           }
         }
         final result = expectedKind == ArtifactKind.skillCanonical

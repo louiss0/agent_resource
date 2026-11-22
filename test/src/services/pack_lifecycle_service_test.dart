@@ -331,6 +331,164 @@ Manual body.
         expect(migrated.derivedPrompts, isEmpty);
         expect(migrated.installationRoute!.promptTargets, isEmpty);
       });
+
+      test('--prompt-target fails before writes when no selected Skill is '
+          'manual-only', () async {
+        await expectLater(
+          PackLifecycleService(fileSystem: fs)
+              .execute(derivedRequest(promptTargets: const ['pi'])),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(contains('has no effect'), contains('manual-only')),
+            ),
+          ),
+        );
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isFalse,
+        );
+      });
+
+      test('--prompt-target reports non-manual-only Skills and still installs '
+          'them without derivatives', () async {
+        makeManualOnly('reviewer');
+        final added = fs.directory(
+          fs.path.join(source.path, 'skills', 'writer'),
+        )..createSync(recursive: true);
+        fs.file(fs.path.join(added.path, 'SKILL.md')).writeAsStringSync('''---
+name: writer
+description: Writes docs.
+---
+# Writer
+''');
+        final catalog = fs.file(
+          fs.path.join(source.path, 'agent-resources.toml'),
+        );
+        catalog.writeAsStringSync(
+          '${catalog.readAsStringSync()}\n'
+          '[[catalog.skills]]\npath = "skills/writer"\n',
+        );
+        final result = await PackLifecycleService(fileSystem: fs)
+            .execute(derivedRequest(promptTargets: const ['pi']));
+        expect(result.outcome, 'completed');
+        bool reports(PackWarning warning) =>
+            warning.id == 'derived-prompt-not-manual-only' &&
+            warning.message.contains('writer') &&
+            warning.message.contains('not manual-only');
+        expect(result.warnings.any(reports), isTrue);
+        expect(result.plan!.warnings.any(reports), isTrue);
+        expect(
+          jsonEncode(result.envelope()),
+          contains('derived-prompt-not-manual-only'),
+        );
+        expect(result.plan!.renderText(), contains('not manual-only'));
+        expect(fs.file(promptPath('reviewer')).existsSync(), isTrue);
+        expect(fs.file(promptPath('writer')).existsSync(), isFalse);
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.agents',
+                  'skills',
+                  'writer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isTrue,
+        );
+      });
+
+      test('update fails before writes when a recorded prompt target becomes '
+          'ineligible', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(derivedRequest(promptTargets: const ['pi']));
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+description: Reviews code.
+---
+Manual body.
+''');
+        await expectLater(
+          service.execute(
+            request(PackOperation.update, PackResourceType.skill),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(
+                contains('reviewer'),
+                contains('can no longer publish a derived Prompt'),
+                contains('migrate --drop-prompt-targets'),
+              ),
+            ),
+          ),
+        );
+        expect(
+          fs.file(promptPath('reviewer')).readAsStringSync(),
+          endsWith('Manual body.\n'),
+        );
+      });
+
+      test('migrate fails before writes when a recorded prompt target becomes '
+          'ineligible', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(derivedRequest(promptTargets: const ['pi']));
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+description: Reviews code.
+---
+Manual body.
+''');
+        await expectLater(
+          service.execute(
+            request(
+              PackOperation.migrate,
+              PackResourceType.skill,
+              only: ['reviewer'],
+              method: 'copy',
+              target: 'claude',
+              dryRun: true,
+            ),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(
+                contains('reviewer'),
+                contains('can no longer publish a derived Prompt'),
+                contains('migrate --drop-prompt-targets'),
+              ),
+            ),
+          ),
+        );
+        expect(
+          fs.file(promptPath('reviewer')).readAsStringSync(),
+          endsWith('Manual body.\n'),
+        );
+      });
     });
 
     test('migrates a managed Pack Skill across native roots', () async {

@@ -165,6 +165,24 @@ final class DerivedPromptAssessment {
   bool get eligible => manualOnly && reasons.isEmpty && content != null;
 }
 
+/// The diagnostic for a recorded Prompt target that can no longer publish a
+/// derived template for [skillName]: the reason plus the recorded escape
+/// hatch, `migrate --drop-prompt-targets`.
+String stalePromptTargetDiagnostic(
+  String skillName,
+  String harness,
+  DerivedPromptAssessment? assessment,
+) =>
+    '$skillName: the recorded Prompt target $harness can no longer publish '
+    'a derived Prompt: ${assessment == null
+        ? 'the source could not be assessed'
+        : !assessment.manualOnly
+        ? 'the source is not a manual-only Prompt'
+        : assessment.reasons.isEmpty
+        ? 'the source is ineligible'
+        : assessment.reasons.join('; ')}; '
+    'remove it with `migrate --drop-prompt-targets`.';
+
 /// Assesses [skillDirectory] for derived Prompt template publication in each
 /// of [harnesses], keyed by harness wire name.
 ///
