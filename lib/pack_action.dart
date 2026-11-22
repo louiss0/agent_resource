@@ -90,6 +90,10 @@ final class PackActionCommand extends Command {
            if (canonical) _type,
            if (_operation != PackOperation.validate) _method,
            if (_operation == PackOperation.migrate) _reviewedPlan,
+           if (_operation == PackOperation.install &&
+               (_resourceType == PackResourceType.skill ||
+                   _resourceType == PackResourceType.prompt))
+             _promptTargets,
            _release,
            if (_operation != PackOperation.validate) _bump,
            if (_operation != PackOperation.validate) ...[
@@ -113,6 +117,7 @@ final class PackActionCommand extends Command {
              _localEdits,
            ],
            _dryRun,
+           if (_operation == PackOperation.migrate) _dropPromptTargets,
            if (_operation != PackOperation.validate) _yes,
          ],
          conflicts: {
@@ -222,8 +227,15 @@ final class PackActionCommand extends Command {
     description: 'Include newly discovered resources.',
   );
   static const _localEdits = BooleanFlag('local-edits');
+  static const _dropPromptTargets = BooleanFlag('drop-prompt-targets');
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
+  static final _promptTargets = RepeatableStringOption(
+    'prompt-target',
+    description:
+        'Also publish a native Prompt template for eligible manual-only '
+        'Skills on this prompt-capable harness; repeat to select several.',
+  );
 
   @override
   String get name => switch (_operation) {
@@ -328,6 +340,8 @@ final class PackActionCommand extends Command {
         reviewedPlan: _operation == PackOperation.migrate
             ? valueOf(_reviewedPlan)
             : null,
+        dropPromptTargets:
+            _operation == PackOperation.migrate && valueOf(_dropPromptTargets),
         release: valueOf(_release),
         bump: mutating ? valueOf(_bump)?.name : null,
         includePrerelease: valueOf(_includePrerelease),
@@ -355,6 +369,9 @@ final class PackActionCommand extends Command {
             : null,
         localEdits: mutating && valueOf(_localEdits),
         dryRun: valueOf(_dryRun),
+        promptTargets: _operation == PackOperation.install
+            ? valueOf(_promptTargets) ?? const <String>[]
+            : const <String>[],
         yes: yes,
         interactive: interactive,
       ),

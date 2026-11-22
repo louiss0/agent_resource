@@ -12,12 +12,14 @@ import '../installation/installation_interaction.dart';
 import '../installation/installation_plan.dart';
 import '../installation/installation_request.dart';
 import '../installation/installation_route.dart';
+import '../conversion/derived_prompt.dart';
 import '../installation/resource_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../harness/harness_catalog.dart';
 import '../configuration/effective_configuration.dart';
 import 'acquisition_service.dart';
 import 'lifecycle_state_service.dart';
+import 'prompt_inspection_service.dart';
 import 'skill_lifecycle_service.dart';
 
 typedef InstallationProgress = Future<T> Function<T>(
@@ -34,12 +36,14 @@ interface class SkillInstallationService {
     InstallationInteraction? interaction,
     InstallationBatch? batch,
     InstallationProgress? progress,
+    PromptInspectionService? prompts,
   }) : _fileSystem = fileSystem,
        _acquisition = acquisition ?? AcquisitionService(fileSystem: fileSystem),
        _lifecycle = lifecycle ?? SkillLifecycleService(fileSystem: fileSystem),
        _interaction = interaction ?? InteractInstallationInteraction(),
        _batch = batch ?? InstallationBatch(),
-       _progress = progress ?? _defaultProgress;
+       _progress = progress ?? _defaultProgress,
+       _prompts = prompts ?? PromptInspectionService(fs: fileSystem);
 
   final fslib.FileSystem _fileSystem;
   final AcquisitionService _acquisition;
@@ -47,6 +51,7 @@ interface class SkillInstallationService {
   final InstallationInteraction _interaction;
   final InstallationBatch _batch;
   final InstallationProgress _progress;
+  final PromptInspectionService _prompts;
 
   LifecycleStateService get state => _lifecycle.state;
   bool get hasInteractiveTerminal => _interaction.isInteractive;
@@ -196,15 +201,19 @@ interface class SkillInstallationService {
       }
       final units = <InstallationUnitPlan>[];
       final stagedSkills = <StagedSkill>[];
+      final stagedPairs =
+          <({InstallationCandidate candidate, StagedSkill staged})>[];
       final migrationDiagnostics = <Map<String, Object?>>[];
       final errors = <String>[];
       var worstStatus = 1;
       try {
         for (final candidate in candidates.candidates) {
           try {
-            final staged = await SkillRootMarkdownMigration(
-              fileSystem: _fileSystem,
-            ).stage(candidate.path);
+            final staged =
+                await SkillRootMarkdownMigration(fileSystem: _fileSystem).stage(
+                  candidate.path,
+                  directoryName: _fileSystem.path.basename(candidate.path),
+                );
             stagedSkills.add(staged);
             if (staged.migrated) {
               if (method == InstallationMethod.sourceLink) {
@@ -233,23 +242,152 @@ interface class SkillInstallationService {
                 });
               }
             }
+            stagedPairs.add((candidate: candidate, staged: staged));
+          } on MambaException catch (error) {
+            worstStatus = error.exitCode > worstStatus
+                ? error.exitCode
+                : worstStatus;
+            errors.add('${candidate.id ?? candidate.path}: ${error.message}');
+          }
+        }
+        final promptCapable = promptCapableHarnesses();
+        for (final harness in request.promptTargets) {
+          if (!isPromptCapableTarget(harness)) {
+            throw MambaException(
+              '--prompt-target $harness is not prompt-capable; '
+              '${promptCapable.isEmpty ? 'no catalog harness' : 'only ${promptCapable.join(', ')}'} '
+              'publishes a native Prompt template.',
+              exitCode: 4,
+            );
+          }
+        }
+        final assessments =
+            <
+              ({InstallationCandidate candidate, StagedSkill staged}),
+              Map<String, DerivedPromptAssessment>
+            >{};
+        if (promptCapable.isNotEmpty) {
+          final failed =
+              <({InstallationCandidate candidate, StagedSkill staged})>[];
+          for (final pair in stagedPairs) {
+            try {
+              final inspection = await _prompts.inspect(
+                pair.staged.path,
+                form: PromptForm.skill,
+              );
+              assessments[pair] = assessDerivedPrompts(
+                skillDirectory: pair.staged.path,
+                inspection: inspection,
+                harnesses: promptCapable,
+                fileSystem: _fileSystem,
+              );
+            } on MambaException catch (error) {
+              worstStatus = error.exitCode > worstStatus
+                  ? error.exitCode
+                  : worstStatus;
+              errors.add(
+                '${pair.candidate.id ?? pair.candidate.path}: ${error.message}',
+              );
+              failed.add(pair);
+            }
+          }
+          stagedPairs.removeWhere(failed.contains);
+        }
+        var derive = List<String>.of(request.promptTargets);
+        if (derive.isEmpty &&
+            interactive &&
+            !request.options.approved &&
+            context.scope == LifecycleScope.project &&
+            promptCapable.isNotEmpty) {
+          final eligible = <String>[];
+          final ineligible = <String>[];
+          for (final MapEntry(key: pair, value: perHarness)
+              in assessments.entries) {
+            final name =
+                pair.candidate.id ??
+                _fileSystem.path.basename(pair.candidate.path);
+            if (perHarness.values.any((a) => a.eligible)) {
+              eligible.add(name);
+            }
+            for (final assessment in perHarness.values) {
+              if (assessment.manualOnly && !assessment.eligible) {
+                ineligible.add(
+                  '$name for ${assessment.harness} '
+                  '(${assessment.reasons.join('; ')})',
+                );
+              }
+            }
+          }
+          for (final entry in ineligible) {
+            stdout.writeln('Ineligible for a derived Prompt: $entry');
+          }
+          if (eligible.isNotEmpty) {
+            derive = await _interaction.offerDerivedPrompts(
+              eligible,
+              promptCapable,
+            );
+          }
+        }
+        for (final pair in stagedPairs) {
+          final perHarness = assessments[pair];
+          final name =
+              pair.candidate.id ??
+              _fileSystem.path.basename(pair.candidate.path);
+          if (derive.isNotEmpty && perHarness != null) {
+            for (final harness in derive) {
+              final assessment = perHarness[harness];
+              if (assessment != null &&
+                  assessment.manualOnly &&
+                  !assessment.eligible) {
+                errors.add(
+                  '$name: a selected manual-only Skill is ineligible for a '
+                  'derived Prompt in $harness: '
+                  '${assessment.reasons.join('; ')}',
+                );
+              }
+            }
+          }
+          final derived = <String, String>{
+            if (derive.isNotEmpty && perHarness != null)
+              for (final harness in derive)
+                if (perHarness[harness]?.content != null)
+                  harness: perHarness[harness]!.content!,
+          };
+          try {
             units.add(
               await _planUnit(
-                candidate,
-                staged,
+                pair.candidate,
+                pair.staged,
                 candidates.provenance,
                 candidates.sourceKind,
                 workspace.selectedRoot,
                 context,
                 method,
                 targets,
+                derived: derived,
               ),
             );
           } on MambaException catch (error) {
             worstStatus = error.exitCode > worstStatus
                 ? error.exitCode
                 : worstStatus;
-            errors.add('${candidate.id ?? candidate.path}: ${error.message}');
+            errors.add(
+              '${pair.candidate.id ?? pair.candidate.path}: ${error.message}',
+            );
+          }
+          if (derive.isNotEmpty && perHarness != null) {
+            for (final entry in perHarness.entries) {
+              if (!derive.contains(entry.key)) continue;
+              for (final field in entry.value.unsupportedFields) {
+                migrationDiagnostics.add({
+                  'code': 'derived-prompt-field-dropped',
+                  'message':
+                      'The derived Prompt for ${entry.key} could not '
+                      'translate the "$field" metadata; it is reported '
+                      'rather than silently discarded.',
+                });
+              }
+            }
           }
         }
         _checkBatchIndependence(units, errors);
@@ -401,8 +539,9 @@ interface class SkillInstallationService {
     String selectedRoot,
     LifecycleContext context,
     InstallationMethod method,
-    List<InstallationTarget> targets,
-  ) async {
+    List<InstallationTarget> targets, {
+    Map<String, String> derived = const <String, String>{},
+  }) async {
     final stagedPath = staged.path;
     final relative = provenance.directFile
         ? '.'
@@ -421,6 +560,7 @@ interface class SkillInstallationService {
           InstallationRouteTarget.values.byName(target.name),
       ]..sort((a, b) => a.name.compareTo(b.name))),
       method: method,
+      promptTargets: derived.keys.toList(),
       derivedArtifacts: [
         for (final path in [...staged.movedMarkdown, ...staged.movedImages])
           ManagedDerivedArtifact(
@@ -540,6 +680,22 @@ interface class SkillInstallationService {
         );
       }
     }
+    for (final entry
+        in derived.entries.toList()..sort((a, b) => a.key.compareTo(b.key))) {
+      final promptRoot = derivedPromptRoot(context, entry.key);
+      entries.add(
+        InstallationEntryPlan(
+          path: _fileSystem.path.join(promptRoot, '${inspected.name}.md'),
+          kind: InstallationEntryKind.template,
+          action: InstallationEntryAction.createContent,
+          target: entry.key,
+          nativeRoot: promptRoot,
+          nativeDestination: entry.key,
+          artifactKind: OwnedArtifactKind.promptTemplate,
+          content: entry.value,
+        ),
+      );
+    }
     final ids = _observeExisting(context, entries, method, origin, digest);
     await resource.checkUnique(
       context,
@@ -650,6 +806,7 @@ interface class SkillInstallationService {
           OwnedArtifactKind.skillLink => ArtifactKind.skillLink,
           OwnedArtifactKind.skillCanonical => ArtifactKind.skillCanonical,
           OwnedArtifactKind.agentFile => ArtifactKind.agentFile,
+          OwnedArtifactKind.promptTemplate => ArtifactKind.promptTemplate,
         };
         if (record.kind != expectedKind ||
             jsonEncode(record.origin) != jsonEncode(origin) ||
@@ -705,7 +862,8 @@ interface class SkillInstallationService {
 
   LifecycleResource _resource(InstallationUnitPlan unit) {
     final targets = <String>{
-      for (final entry in unit.entries) ?entry.target,
+      for (final entry in unit.entries)
+        if (entry.kind != InstallationEntryKind.template) ?entry.target,
     }.toList()..sort();
     return _lifecycle.installationResource(
       targets: targets,

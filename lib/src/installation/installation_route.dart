@@ -19,7 +19,11 @@ final class InstallationRoute {
     required List<ManagedDerivedArtifact> derivedArtifacts,
     this.entryId,
     this.packKey,
+    List<String> promptTargets = const <String>[],
   }) : targets = List.unmodifiable(targets),
+       promptTargets = List.unmodifiable(
+         promptTargets.toSet().toList()..sort(),
+       ),
        derivedArtifacts = List.unmodifiable(derivedArtifacts) {
     _relative(sourceRelativePath, allowRoot: true);
     if (scope == LifecycleScope.all ||
@@ -73,6 +77,18 @@ final class InstallationRoute {
       entryId: entry as String?,
       packKey: pack as String?,
       scope: named(LifecycleScope.values, (v) => v.name, value['scope']),
+      promptTargets: value['promptTargets'] == null
+          ? const <String>[]
+          : value['promptTargets'] is List
+          ? [
+              for (final item in value['promptTargets'] as List)
+                item is String
+                    ? item
+                    : (throw const FormatException(
+                        'Invalid installation route.',
+                      )),
+            ]
+          : (throw const FormatException('Invalid installation route.')),
       targets: [
         for (final item in value['targets'] as List)
           named(InstallationRouteTarget.values, (v) => v.name, item),
@@ -99,6 +115,10 @@ final class InstallationRoute {
   final InstallationMethod method;
   final List<ManagedDerivedArtifact> derivedArtifacts;
 
+  /// The prompt-capable harnesses publishing a derived Prompt template
+  /// alongside the Skill; empty means none.
+  final List<String> promptTargets;
+
   InstallationRoute withTargets(List<InstallationRouteTarget> targets) =>
       InstallationRoute(
         source: source,
@@ -110,6 +130,7 @@ final class InstallationRoute {
         targets: targets,
         method: method,
         derivedArtifacts: derivedArtifacts,
+        promptTargets: promptTargets,
       );
 
   Map<String, Object?> toJson() => {
@@ -128,6 +149,7 @@ final class InstallationRoute {
     'derivedArtifacts': [
       for (final artifact in derivedArtifacts) artifact.toJson(),
     ],
+    if (promptTargets.isNotEmpty) 'promptTargets': promptTargets,
   };
 }
 

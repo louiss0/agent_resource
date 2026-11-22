@@ -96,6 +96,8 @@ track = { kind = "local" }
       bool localEdits = false,
       bool yes = true,
       bool interactive = false,
+      List<String> promptTargets = const <String>[],
+      bool dropPromptTargets = false,
       bool noSave = false,
       bool useDefaultTarget = true,
       bool skipNew = false,
@@ -145,8 +147,191 @@ track = { kind = "local" }
         dryRun: dryRun,
         yes: yes,
         interactive: interactive,
+        promptTargets: promptTargets,
+        dropPromptTargets: dropPromptTargets,
       );
     }
+
+    group('derived prompts', () {
+      PackLifecycleRequest derivedRequest({
+        List<String> promptTargets = const <String>[],
+        bool yes = true,
+        bool interactive = false,
+      }) => PackLifecycleRequest(
+        operation: PackOperation.install,
+        resourceType: PackResourceType.skill,
+        pack: 'local/demo',
+        processWorkingDirectory: sandbox.path,
+        environment: {
+          'HOME': home.path,
+          'USERPROFILE': home.path,
+          'APPDATA': fs.path.join(home.path, 'AppData', 'Roaming'),
+          'LOCALAPPDATA': fs.path.join(home.path, 'AppData', 'Local'),
+        },
+        scope: LifecycleScope.project,
+        cwd: project.path,
+        projectRoot: project.path,
+        home: home.path,
+        method: 'copy',
+        target: 'codex',
+        dryRun: false,
+        yes: yes,
+        interactive: interactive,
+        promptTargets: promptTargets,
+      );
+
+      void makeManualOnly(String name) {
+        fs
+            .file(fs.path.join(source.path, 'skills', name, 'SKILL.md'))
+            .writeAsStringSync('''---
+name: $name
+description: Reviews code.
+disable-model-invocation: true
+---
+Manual body.
+''');
+      }
+
+      String promptPath(String name) =>
+          fs.path.join(project.path, '.pi', 'prompts', '$name.md');
+
+      test('--prompt-target publishes the pi template', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        final result = await service.execute(
+          derivedRequest(promptTargets: const ['pi']),
+        );
+        expect(result.outcome, isNot('failed'));
+        final prompt = fs.file(promptPath('reviewer'));
+        expect(prompt.existsSync(), isTrue);
+        expect(prompt.readAsStringSync(), endsWith('Manual body.\n'));
+      });
+
+      test('--prompt-target fails an ineligible Skill before writes', () async {
+        makeManualOnly('reviewer');
+        fs
+            .directory(
+              fs.path.join(source.path, 'skills', 'reviewer', 'references'),
+            )
+            .createSync();
+        await expectLater(
+          PackLifecycleService(fileSystem: fs)
+              .execute(derivedRequest(promptTargets: const ['pi'])),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('ineligible'),
+            ),
+          ),
+        );
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.codex',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isFalse,
+        );
+      });
+
+      test('interactive asks once and publishes on approval', () async {
+        makeManualOnly('reviewer');
+        final confirmations = <String>[];
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            confirmation: (label) async {
+              confirmations.add(label);
+              return true;
+            },
+          ),
+        );
+        final result = await service.execute(
+          derivedRequest(yes: false, interactive: true),
+        );
+        expect(result.outcome, isNot('failed'));
+        final derived = confirmations
+            .where((label) => label.contains('Prompt templates'))
+            .toList();
+        expect(derived, hasLength(1));
+        expect(derived.single, contains('reviewer'));
+        expect(derived.single, contains('pi'));
+        expect(fs.file(promptPath('reviewer')).existsSync(), isTrue);
+      });
+
+      test('interactive does not ask without a manual-only Skill', () async {
+        final confirmations = <String>[];
+        final service = PackLifecycleService.withDependencies(
+          fileSystem: fs,
+          prompts: PackPrompts(
+            confirmation: (label) async {
+              confirmations.add(label);
+              return true;
+            },
+          ),
+        );
+        await service.execute(derivedRequest(yes: false, interactive: true));
+        expect(
+          confirmations.where((label) => label.contains('Prompt templates')),
+          isEmpty,
+        );
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+      });
+
+      test('migrate --drop-prompt-targets removes the template', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(derivedRequest(promptTargets: const ['pi']));
+        expect(fs.file(promptPath('reviewer')).existsSync(), isTrue);
+        final preview = await service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            dropPromptTargets: true,
+            dryRun: true,
+          ),
+        );
+        expect(preview.plan!.planId, isNotNull);
+        final applied = await service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            dropPromptTargets: true,
+            reviewedPlan: preview.plan!.planId,
+          ),
+        );
+        expect(applied.outcome, 'completed');
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        final context = LifecycleContext.resolve(
+          LifecycleOptions(
+            processWorkingDirectory: project.path,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          ),
+          fileSystem: fs,
+        );
+        final migrated = LifecycleStateService(io: LifecycleIO(fs: fs))
+            .records(context)
+            .single;
+        expect(migrated.derivedPrompts, isEmpty);
+        expect(migrated.installationRoute!.promptTargets, isEmpty);
+      });
+    });
 
     test('migrates a managed Pack Skill across native roots', () async {
       final service = PackLifecycleService(fileSystem: fs);

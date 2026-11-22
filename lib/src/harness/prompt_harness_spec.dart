@@ -1,5 +1,6 @@
 import 'package:mamba/mamba.dart';
 
+import '../services/lifecycle_state_service.dart';
 import 'harness_catalog.dart';
 
 /// Native output supported when converting a Skill to a Prompt.
@@ -11,6 +12,10 @@ abstract interface class PromptHarnessSpec implements HarnessFacetSpec {
   String get nativeExplanation;
   PromptConversionForm get skillConversionForm;
   bool get supportsSkillBackedInstallation;
+
+  /// The native template root a template-conversion Prompt publishes to for
+  /// the scope of [context], or null when the harness has none.
+  String? templateRoot(LifecycleContext context);
 }
 
 /// A concrete Prompt facet with its own declarative refusal explanation.
@@ -20,7 +25,14 @@ final class PromptHarnessFacet implements PromptHarnessSpec {
     this.nativeExplanation,
     this.skillConversionForm, {
     this.supportsSkillBackedInstallation = false,
+    this.templateRootResolver,
   });
+
+  final String? Function(LifecycleContext context)? templateRootResolver;
+
+  @override
+  String? templateRoot(LifecycleContext context) =>
+      templateRootResolver?.call(context);
 
   @override
   final HarnessId harness;
@@ -37,6 +49,11 @@ final class PromptHarnessFacet implements PromptHarnessSpec {
   @override
   final bool supportsSkillBackedInstallation;
 }
+
+String? _piTemplateRoot(LifecycleContext context) =>
+    context.scope == LifecycleScope.project
+    ? context.fs.path.join(context.projectRoot, '.pi', 'prompts')
+    : context.fs.path.join(context.piAgentRoot(), 'prompts');
 
 /// The registered Prompt facets. Antigravity deliberately has none: version
 /// 2.12.0+ replaced workflows with ordinary Skills and exposes no native
@@ -58,6 +75,7 @@ const promptHarnessFacets = <HarnessId, PromptHarnessSpec>{
     HarnessId.pi,
     'Pi declares its native Prompt controls.',
     PromptConversionForm.template,
+    templateRootResolver: _piTemplateRoot,
   ),
 };
 

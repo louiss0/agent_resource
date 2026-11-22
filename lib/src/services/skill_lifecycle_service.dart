@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
 import '../authoring/native_field_matrix.dart';
+import '../conversion/derived_prompt.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../installation/installation_plan.dart';
@@ -20,6 +21,7 @@ import 'acquisition_service.dart';
 import 'conversion_coordinator_service.dart';
 import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
+import 'prompt_inspection_service.dart';
 import 'prompt_read_service.dart';
 
 enum SkillHarness implements HarnessWireNamed {
@@ -285,6 +287,15 @@ interface class SkillLifecycleService implements LifecycleResource {
             ],
             'runtimeActivation': 'notClaimed',
           },
+          if (record.derivedPrompts.isNotEmpty)
+            'derivedPrompts': [
+              for (final prompt in record.derivedPrompts)
+                <String, Object?>{
+                  'path': prompt.path,
+                  'artifactKind': 'prompt-template',
+                  'baselineDigest': prompt.baseline.digest,
+                },
+            ],
           'management': 'managed',
           'modification': !verify
               ? 'notVerified'
@@ -358,7 +369,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     StagedSkill? staged;
     try {
       staged = await SkillRootMarkdownMigration(fileSystem: state.io.fs)
-          .stage(path);
+          .stage(path, directoryName: state.io.fs.path.basename(path));
       state.validateSkillTree(staged.path);
       final name = readDeclaredSkillName(staged.path, fs: state.io.fs);
       final report = validateSkill(
@@ -757,11 +768,13 @@ interface class SkillLifecycleService implements LifecycleResource {
     required InstallationMethod method,
     List<InstallationTarget>? targets,
     String? reviewedPlan,
+    bool dropPromptTargets = false,
   }) => _replay(
     input,
     migrationMethod: method,
     migrationTargets: targets,
     reviewedPlan: reviewedPlan,
+    dropPromptTargets: dropPromptTargets,
   );
 
   Future<LifecycleResult> _replay(
@@ -769,6 +782,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     InstallationMethod? migrationMethod,
     List<InstallationTarget>? migrationTargets,
     String? reviewedPlan,
+    bool dropPromptTargets = false,
   }) async {
     final context = LifecycleContext.resolve(
       input.options,
@@ -876,7 +890,7 @@ interface class SkillLifecycleService implements LifecycleResource {
         }
       }
       final staged = await SkillRootMarkdownMigration(fileSystem: fs)
-          .stage(path);
+          .stage(path, directoryName: fs.path.basename(path));
       try {
         if (method == InstallationMethod.sourceLink &&
             (!workspace.provenance.durableLocalDirectory || staged.migrated)) {
@@ -921,6 +935,9 @@ interface class SkillLifecycleService implements LifecycleResource {
                 outputPath: 'SKILL.md',
               ),
           ],
+          promptTargets: dropPromptTargets
+              ? const <String>[]
+              : route.promptTargets,
         );
         final resource = installationResource(
           targets: [for (final target in requestedTargets) target.name],
@@ -1045,6 +1062,46 @@ interface class SkillLifecycleService implements LifecycleResource {
               );
             }
           }
+          for (final harness in newRoute.promptTargets) {
+            final promptRoot = derivedPromptRoot(context, harness);
+            final promptPath = state.io.fs.path.join(
+              promptRoot,
+              '${record.name}.md',
+            );
+            String? content;
+            try {
+              final inspection = await PromptInspectionService(fs: state.io.fs)
+                  .inspect(staged.path, form: PromptForm.skill);
+              content = assessDerivedPrompts(
+                skillDirectory: staged.path,
+                inspection: inspection,
+                harnesses: [harness],
+                fileSystem: state.io.fs,
+              )[harness]?.content;
+            } on Object {
+              content = null;
+            }
+            content ??= <String>[
+              for (final prompt in record.derivedPrompts)
+                if (state.io.fs.path.equals(prompt.path, promptPath) &&
+                    state.io.fs.typeSync(prompt.path, followLinks: false) !=
+                        FileSystemEntityType.notFound)
+                  state.io.fs.file(prompt.path).readAsStringSync(),
+            ].firstOrNull;
+            if (content != null) {
+              entries.add(
+                InstallationEntryPlan(
+                  path: promptPath,
+                  kind: InstallationEntryKind.template,
+                  action: InstallationEntryAction.createContent,
+                  nativeRoot: promptRoot,
+                  nativeDestination: harness,
+                  artifactKind: OwnedArtifactKind.promptTemplate,
+                  content: content,
+                ),
+              );
+            }
+          }
           final desired = InstallationUnitPlan(
             resourceType: InstallationResourceType.skill,
             resourceId: record.name,
@@ -1156,6 +1213,34 @@ interface class SkillLifecycleService implements LifecycleResource {
             }
           }
         }
+        final derivedWrites = <DerivedPromptWrite>[];
+        if (route.promptTargets.isNotEmpty) {
+          final inspection = await PromptInspectionService(fs: state.io.fs)
+              .inspect(staged.path, form: PromptForm.skill);
+          final perHarness = assessDerivedPrompts(
+            skillDirectory: staged.path,
+            inspection: inspection,
+            harnesses: route.promptTargets,
+            fileSystem: state.io.fs,
+          );
+          for (final prompt in record.derivedPrompts) {
+            final content = <String>[
+              for (final entry in perHarness.entries)
+                if (state.io.fs.path.equals(
+                  derivedPromptRoot(context, entry.key),
+                  state.io.fs.path.dirname(prompt.path),
+                ))
+                  ?entry.value.content,
+            ].firstOrNull;
+            if (content != null) {
+              derivedWrites.add((
+                path: prompt.path,
+                content: content,
+                nativeRoot: state.io.fs.path.dirname(prompt.path),
+              ));
+            }
+          }
+        }
         final result = expectedKind == ArtifactKind.skillCanonical
             ? await state.replaceCanonical(
                 resource: resource,
@@ -1172,6 +1257,7 @@ interface class SkillLifecycleService implements LifecycleResource {
                 knownConsumers: canonicalTargets
                     ? [for (final target in requestedTargets) target.name]
                     : null,
+                derivedWrites: derivedWrites,
               )
             : await state.replace(
                 resource: resource,
@@ -1183,6 +1269,7 @@ interface class SkillLifecycleService implements LifecycleResource {
                 origin: origin,
                 installationRoute: newRoute,
                 expectedRecord: record,
+                derivedWrites: derivedWrites,
                 allowedPaths: {
                   for (final sibling in state.records(context))
                     if (sibling.installationId != record.installationId &&

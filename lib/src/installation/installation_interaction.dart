@@ -54,6 +54,13 @@ abstract interface class InstallationInteraction {
     List<String> preferences, {
     required String scope,
   });
+
+  /// One offer to also publish derived native Prompt templates; returns the
+  /// prompt-capable harnesses selected by the user (empty when declined).
+  Future<List<String>> offerDerivedPrompts(
+    List<String> eligibleSkills,
+    List<String> harnesses,
+  );
 }
 
 final class InteractInstallationInteraction implements InstallationInteraction {
@@ -155,6 +162,28 @@ final class InteractInstallationInteraction implements InstallationInteraction {
   }) => InstallationApprovalComponent(
     label: 'Save $scope installation preferences (${preferences.join(', ')})?',
   ).render();
+
+  @override
+  Future<List<String>> offerDerivedPrompts(
+    List<String> eligibleSkills,
+    List<String> harnesses,
+  ) async {
+    if (harnesses.length == 1) {
+      final approved = await InstallationApprovalComponent(
+        label:
+            'Publish ${harnesses.single} Prompt templates for: ${eligibleSkills.join(', ')}?',
+      ).render();
+      return approved ? harnesses : const <String>[];
+    }
+    final selected = await ResourceSelectorComponent(
+      label:
+          'Publish Prompt templates for: ${eligibleSkills.join(', ')} (Ctrl+C to skip)',
+      options: harnesses,
+    ).render();
+    return selected == null
+        ? const <String>[]
+        : [for (final index in selected) harnesses[index]];
+  }
 
   Future<InteractionAnswer<T>> _guard<T>(
     Future<InteractionAnswer<T>> Function() body,
