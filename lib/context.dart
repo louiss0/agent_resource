@@ -2,6 +2,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'src/resource_lifecycle_boundaries.dart';
+
 import 'context_inject.dart';
 import 'context_read_commands.dart';
 import 'src/services/context_injection_service.dart';
@@ -35,6 +37,7 @@ final class ContextCommand extends GroupCommand {
            templateSelection,
            hasTerminal,
          ),
+         longDescription: renderBoundaryHelp(BoundaryResource.context),
        );
 
   static List<Command> _children(

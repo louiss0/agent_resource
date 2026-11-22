@@ -5,6 +5,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'src/resource_lifecycle_boundaries.dart';
+
 import 'src/skill_files.dart';
 import 'src/services/guided_authoring_service.dart';
 import 'src/services/prompt_read_service.dart';
@@ -41,6 +43,7 @@ final class SkillCommand extends GroupCommand {
            guided,
            fileSystem,
          ),
+         longDescription: renderBoundaryHelp(BoundaryResource.skill),
        );
 
   static List<Command> _children(
@@ -209,6 +212,8 @@ final class InspectCommand extends Command {
          flags: [_content],
          longDescription:
              'Inspect SKILL.md native views without instruction content by default. '
+             'Native validity is reported separately from source-only '
+             'installation admission and its per-method diagnostics. '
              '--content returns the verbatim marker (up to 1,048,576 bytes); '
              'it is not validation and cannot be combined with --target.',
        );
@@ -256,6 +261,9 @@ final class InspectCommand extends Command {
         if (views.views[target] != null) views.views[target]!.toJson(),
       ];
     }
+    report['installationAdmission'] = await _lifecycle.installationAdmission(
+      skill,
+    );
     return jsonEncode(report);
   }
 }

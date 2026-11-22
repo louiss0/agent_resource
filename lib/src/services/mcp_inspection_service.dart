@@ -148,6 +148,7 @@ interface class McpInspectionService {
     observed.sort(_compare);
     final data = <String, Object?>{
       'claim': 'configuration-only; runtime activation is not verified',
+      'verification': 'static',
       'digestDisclosed': request.discloseDigest,
       'count': observed.length,
       'registrations': <Object?>[
@@ -206,6 +207,7 @@ interface class McpInspectionService {
           outcome: 'inspected',
           data: <String, Object?>{
             'claim': 'configuration-only; runtime activation is not verified',
+            'verification': 'static',
             'registration': entry.toJson(discloseDigest: true),
           },
           diagnostics: _staticDiagnostics(),

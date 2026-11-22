@@ -162,6 +162,7 @@ final class InstallationUnitPlan {
     required this.sourceDigest,
     required this.origin,
     this.installationRoute,
+    this.admission,
   }) : entries = List<InstallationEntryPlan>.unmodifiable(entries);
 
   final InstallationResourceType resourceType;
@@ -177,6 +178,10 @@ final class InstallationUnitPlan {
   final Map<String, Object?> origin;
   final InstallationRoute? installationRoute;
 
+  /// The source-only installation admission of the unit, reported
+  /// separately from its planned entries.
+  final Map<String, Object?>? admission;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'resourceType': resourceType.name,
     'resourceId': resourceId,
@@ -185,6 +190,7 @@ final class InstallationUnitPlan {
     'method': method.wireName,
     'status': status.wireName,
     'installationIds': installationIds,
+    if (admission != null) 'installationAdmission': admission,
     'entries': [for (final entry in entries) entry.toJson()],
   };
 
@@ -335,6 +341,11 @@ final class InstallationPlan {
         ..writeln('  Native name: ${unit.nativeName}')
         ..writeln('  Method: ${unit.method.wireName}');
       if (unit.profile != null) buffer.writeln('  Profile: ${unit.profile}');
+      if (unit.admission != null) {
+        buffer.writeln(
+          '  Admission: ${unit.admission!['eligible'] == true ? 'eligible' : 'ineligible'}',
+        );
+      }
       for (final id in unit.installationIds) {
         buffer.writeln('  Installation: $id');
       }

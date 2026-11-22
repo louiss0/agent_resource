@@ -6,6 +6,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'src/resource_lifecycle_boundaries.dart';
+
 import 'src/agent_inspection.dart';
 import 'src/agent_inventory.dart';
 import 'src/services/agent_authoring_service.dart';
@@ -68,6 +70,7 @@ final class AgentCommand extends GroupCommand {
            conversion,
            guided,
          ),
+         longDescription: renderBoundaryHelp(BoundaryResource.agent),
        );
 
   static List<Command> _children(

@@ -262,6 +262,28 @@ void main() {
       expect('${admission['diagnostics']}', contains('source-link'));
     });
 
+    test('inspect reports installation admission separately from native '
+        'validity', () async {
+      fs
+          .file('$directory/SKILL.md')
+          .writeAsStringSync(
+            '---\nname: prompt\ndescription: ordinary\n---\nSee guide.md.\n',
+          );
+      fs.file('$directory/guide.md').writeAsStringSync('Guide');
+      final result = await run(['inspect', '--skill', directory]);
+      expect(result, isA<MambaSuccessResult>());
+      final report = jsonDecode(
+        (result as MambaSuccessResult).output!,
+      ) as Map<String, Object?>;
+      final views = report['views'] as List;
+      expect(views, isNotEmpty);
+      final admission = report['installationAdmission'] as Map;
+      expect(admission['scope'], 'source-only');
+      expect(admission['eligible'], true);
+      expect((admission['methods'] as Map)['source-link'], false);
+      expect('${admission['diagnostics']}', contains('source-link'));
+    });
+
     test('rejects malformed controls and unknown targets', () async {
       fs
           .file('$directory/SKILL.md')

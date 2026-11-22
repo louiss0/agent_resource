@@ -28,10 +28,12 @@ void main() {
         'profile',
         'baseline',
         'claim',
+        'verification',
         'diagnostics',
       ]);
       expect(json['valid'], isFalse);
       expect(json['claim'], mcpValidationClaim);
+      expect(json['verification'], 'static');
       expect(json['diagnostics'], isA<List<Object?>>());
       final diagnostic = (json['diagnostics'] as List).single as Map;
       expect(diagnostic.keys, <String>[

@@ -950,6 +950,62 @@ description: Writes docs.
       expect(result.outcome, 'valid');
     });
 
+    test(
+      'validate separates native validity from installation eligibility',
+      () async {
+        final service = PackLifecycleService(fileSystem: fs);
+
+        // A natively invalid Skill reports its native diagnostics.
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+---
+# Reviewer
+''');
+        await expectLater(
+          service.execute(
+            request(PackOperation.validate, PackResourceType.skill),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              allOf(contains('native:'), isNot(contains('eligibility:'))),
+            ),
+          ),
+        );
+
+        // A natively valid Skill with an inadmissible source tree reports
+        // installation eligibility, not a native failure.
+        fs
+            .file(fs.path.join(source.path, 'skills', 'reviewer', 'SKILL.md'))
+            .writeAsStringSync('''---
+name: reviewer
+description: Reviews code.
+---
+# Reviewer
+''');
+        fs
+            .file(
+              fs.path.join(source.path, 'skills', 'reviewer', 'metadata.json'),
+            )
+            .writeAsStringSync('{}');
+        await expectLater(
+          service.execute(
+            request(PackOperation.validate, PackResourceType.skill),
+          ),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('eligibility: SKILL_SOURCE_REJECTED'),
+            ),
+          ),
+        );
+      },
+    );
+
     test('records a pack Skill route and managed migration outputs', () async {
       fs
           .file(fs.path.join(source.path, 'skills', 'reviewer', 'guide.md'))

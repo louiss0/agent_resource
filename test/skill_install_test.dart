@@ -1415,6 +1415,14 @@ void main() {
             final units = data['units']! as List<Object?>;
             final unit = units.single! as Map<String, Object?>;
             expect(unit['method'], 'canonical');
+            final admission =
+                unit['installationAdmission']! as Map<String, Object?>;
+            expect(admission['scope'], 'source-only');
+            expect(admission['eligible'], isTrue);
+            expect(
+              (admission['methods'] as Map<String, Object?>).keys,
+              containsAll(<String>['copy', 'canonical', 'source-link']),
+            );
             expect(unit['entries'], hasLength(3));
             expect(project.listSync(recursive: true), isEmpty);
             expect(
