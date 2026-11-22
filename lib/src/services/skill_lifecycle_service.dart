@@ -1183,6 +1183,16 @@ interface class SkillLifecycleService implements LifecycleResource {
                 origin: origin,
                 installationRoute: newRoute,
                 expectedRecord: record,
+                allowedPaths: {
+                  for (final sibling in state.records(context))
+                    if (sibling.installationId != record.installationId &&
+                        sibling.lifecycle == 'live' &&
+                        sibling.name == record.name &&
+                        sibling.installationRoute != null &&
+                        jsonEncode(sibling.installationRoute!.toJson()) ==
+                            jsonEncode(route.toJson()))
+                      sibling.location,
+                },
               );
         return LifecycleResult(
           command: migrationMethod == null ? 'skill update' : 'skill migrate',

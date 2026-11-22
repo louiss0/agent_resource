@@ -429,6 +429,77 @@ void main() {
           );
         });
 
+        test('updates each record of a multi-target copy group', () async {
+          useLocalFileSystem();
+          final source = skill('update-group');
+          final install = await executor().fake().execute([
+            'skill',
+            'install',
+            source.path,
+            ...context(),
+            '--source-kind',
+            'resource',
+            '--target',
+            'claude',
+            '--target',
+            'codex',
+            '--method',
+            'copy',
+            '--yes',
+          ]);
+          expect(install, isA<MambaSuccessResult>());
+          final options = LifecycleOptions(
+            processWorkingDirectory: project.path,
+            scope: LifecycleScope.project,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+            stateDir: fs.path.join(sandbox.path, 'state'),
+          );
+          final lifecycle = SkillLifecycleService(fileSystem: fs);
+          final resolved = LifecycleContext.resolve(options, fileSystem: fs);
+          final group = lifecycle.state
+              .records(resolved)
+              .where((record) => record.name == 'review')
+              .toList();
+          expect(group, hasLength(2));
+          expect(
+            group
+                .map((record) => jsonEncode(record.installationRoute!.toJson()))
+                .toSet(),
+            hasLength(1),
+            reason: 'group members share one recorded route',
+          );
+
+          for (final record in group) {
+            final update = await executor().fake().execute([
+              'skill',
+              'update',
+              record.installationId,
+              ...context(),
+              '--yes',
+            ]);
+            expect(
+              update,
+              isA<MambaSuccessResult>(),
+              reason: 'update by id ${record.installationId}',
+            );
+          }
+          final after = lifecycle.state
+              .records(resolved)
+              .where((record) => record.name == 'review')
+              .toList();
+          expect(after, hasLength(2));
+          for (final record in after) {
+            expect(record.installationRoute?.method, InstallationMethod.copy);
+            expect(
+              [for (final t in record.installationRoute!.targets) t.name]
+                ..sort(),
+              ['claude', 'codex'],
+            );
+          }
+        });
+
         test(
           'migrates a multi-target copy group to canonical and back by id',
           () async {
