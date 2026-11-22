@@ -224,7 +224,7 @@ void main() {
       doc['actions'] = [
         {'path': live, 'oldKind': 'skillCopy', 'newKind': 'skillCopy'},
       ];
-      doc['phase'] = 'published';
+      doc['phase'] = tampered ? 'completed' : 'published';
       doc['completedActions'] = ['0-remove', '0-publish'];
       final stateDir = p.join(root.path, '.agent-resource');
       final transactions = Directory(p.join(stateDir, 'transactions'))

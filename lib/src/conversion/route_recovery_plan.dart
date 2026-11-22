@@ -112,32 +112,7 @@ final class RouteRecoveryPlan {
         candidates.single,
       );
     }
-    if (candidates.length != 1) {
-      // A committed-new ledger plus fully published live artifacts is complete
-      // even when quarantine evidence changed: rollback is impossible anyway,
-      // and cleanup separately retains anything that fails verification.
-      final terminalPhase = [
-        'published',
-        'committed',
-        'completed',
-        'recoveryRequired',
-      ].contains(doc['phase']);
-      if (ledger == LedgerObservation.newRecords &&
-          terminalPhase &&
-          markers == step &&
-          List.generate(actions.length, (i) {
-            final action = actions[i];
-            final observed = artifacts[i];
-            final expectedLive = action['newKind'] == null
-                ? ArtifactObservation.absent
-                : ArtifactObservation.newArtifact;
-            return observed.live == expectedLive &&
-                observed.staged == ArtifactObservation.absent;
-          }).every((v) => v)) {
-        return const RouteRecoveryPlan._(RecoveryDecision.complete, null);
-      }
-      return refuse;
-    }
+    if (candidates.length != 1) return refuse;
     final applied = candidates.single;
     final phase = doc['phase'];
     if (ledger == LedgerObservation.old) {
