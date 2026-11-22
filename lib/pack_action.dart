@@ -294,6 +294,7 @@ final class PackActionCommand extends Command {
     }
     final only = switch (_operation) {
       PackOperation.rollback => valueOf(_rollbackOnly),
+      PackOperation.migrate ||
       PackOperation.remove ||
       PackOperation.sourceAssociate => valueOf(_requiredOnly),
       _ => valueOf(_only) ?? const <String>[],

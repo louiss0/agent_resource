@@ -52,6 +52,95 @@ final class RecordingPackService implements PackLifecycleService {
 void main() {
   group('agent_resource', () {
     group('pack', () {
+      group('migrate', () {
+        test(
+          'forwards the reviewed plan, method, target, and selection',
+          () async {
+            final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+            fs.directory('/project').createSync();
+            fs.directory('/home').createSync();
+            fs.file('/project/agent-resources.toml').writeAsStringSync('''
+schema_version = 1
+[packs."local/demo".source]
+kind = "local"
+path = "../source"
+''');
+            final service = RecordingPackService();
+            final result =
+                await Executor('agent_resource', 'Test.', '1.0.0', [
+                  PackActionCommand(
+                    PackResourceType.skill,
+                    PackOperation.migrate,
+                    service,
+                    fileSystem: fs,
+                  ),
+                ]).fake().execute([
+                  'migrate',
+                  'local/demo',
+                  '--only',
+                  'reviewer',
+                  '--method',
+                  'copy',
+                  '--target',
+                  'claude',
+                  '--reviewed-plan',
+                  'plan_v1_test',
+                  '--scope',
+                  'project',
+                  '--cwd',
+                  '/project/',
+                  '--project-root',
+                  '/project/',
+                  '--home',
+                  '/home/',
+                  '--config',
+                  '/project/agent-resources.toml',
+                  '--yes',
+                ]);
+            expect(
+              result,
+              isA<MambaSuccessResult>(),
+              reason: result is MambaFailureResult ? result.message : null,
+            );
+            final request = service.requests.single;
+            expect(request.operation, PackOperation.migrate);
+            expect(request.only, ['reviewer']);
+            expect(request.method, 'copy');
+            expect(request.target, 'claude');
+            expect(request.reviewedPlan, 'plan_v1_test');
+          },
+        );
+
+        test('requires an explicit --only selection', () async {
+          final fs = MemoryFileSystem(style: FileSystemStyle.posix);
+          fs.directory('/project').createSync();
+          fs.directory('/home').createSync();
+          final result =
+              await Executor('agent_resource', 'Test.', '1.0.0', [
+                PackActionCommand(
+                  PackResourceType.skill,
+                  PackOperation.migrate,
+                  RecordingPackService(),
+                  fileSystem: fs,
+                ),
+              ]).fake().execute([
+                'migrate',
+                'local/demo',
+                '--method',
+                'copy',
+                '--scope',
+                'project',
+                '--cwd',
+                '/project/',
+                '--project-root',
+                '/project/',
+                '--home',
+                '/home/',
+                '--yes',
+              ]);
+          expect(result, isA<MambaFailureResult>());
+        });
+      });
       group('install', () {
         test('offers user scope when project context is unavailable', () async {
           final fs = MemoryFileSystem(style: FileSystemStyle.posix);
