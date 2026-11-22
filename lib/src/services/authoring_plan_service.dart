@@ -7,6 +7,7 @@ import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
 import '../agent_inspection.dart';
+import '../conversion/derived_prompt.dart';
 import '../authoring/authoring_inputs.dart';
 import '../authoring/authoring_profiles.dart';
 import '../authoring/package_manifest.dart';
@@ -1042,28 +1043,8 @@ interface class AuthoringPlanService {
     return null;
   }
 
-  List<String> _extraSkillEntries(String directory) {
-    final entries = <String>[];
-    final names = listSkillDirectory(
-      directory,
-      fs: _fileSystem,
-    ).map((entry) => _fileSystem.path.basename(entry.path)).toList();
-    for (final name in names) {
-      if (name == 'SKILL.md' || name == 'agents') continue;
-      entries.add(name);
-    }
-    final agents = _fileSystem.path.join(directory, 'agents');
-    if (skillEntityType(agents, followLinks: false, fs: _fileSystem) ==
-        FileSystemEntityType.directory) {
-      for (final entry in listSkillDirectory(agents, fs: _fileSystem)) {
-        if (_fileSystem.path.basename(entry.path) != 'openai.yaml') {
-          entries.add('agents/${_fileSystem.path.basename(entry.path)}');
-        }
-      }
-    }
-    entries.sort();
-    return entries;
-  }
+  List<String> _extraSkillEntries(String directory) =>
+      DerivedPromptEligibility.extraSkillEntries(directory, fs: _fileSystem);
 
   AuthoringOwnership _resolveOwnership(
     AuthoringInputs inputs,

@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
 import '../authoring/native_field_matrix.dart';
+import '../conversion/derived_prompt.dart';
 import '../harness/harness_catalog.dart';
 import '../installation/skill_root_markdown_migration.dart';
 import '../installation/installation_plan.dart';
@@ -20,6 +21,7 @@ import 'acquisition_service.dart';
 import 'conversion_coordinator_service.dart';
 import 'native_link_service.dart';
 import 'lifecycle_state_service.dart';
+import 'prompt_inspection_service.dart';
 import 'prompt_read_service.dart';
 
 enum SkillHarness implements HarnessWireNamed {
@@ -285,6 +287,15 @@ interface class SkillLifecycleService implements LifecycleResource {
             ],
             'runtimeActivation': 'notClaimed',
           },
+          if (record.derivedPrompts.isNotEmpty)
+            'derivedPrompts': [
+              for (final prompt in record.derivedPrompts)
+                <String, Object?>{
+                  'path': prompt.path,
+                  'artifactKind': 'prompt-template',
+                  'baselineDigest': prompt.baseline.digest,
+                },
+            ],
           'management': 'managed',
           'modification': !verify
               ? 'notVerified'
@@ -1045,6 +1056,46 @@ interface class SkillLifecycleService implements LifecycleResource {
               );
             }
           }
+          if (route.derivedPrompts &&
+              record.derivedPrompts.isNotEmpty &&
+              requestedTargets.any(
+                (target) => isPromptCapableTarget(target.name),
+              )) {
+            final capable = requestedTargets
+                .firstWhere((target) => isPromptCapableTarget(target.name))
+                .name;
+            String? content;
+            try {
+              final inspection = await PromptInspectionService(fs: state.io.fs)
+                  .inspect(staged.path, form: PromptForm.skill);
+              final assessment = assessDerivedPrompt(
+                skillDirectory: staged.path,
+                inspection: inspection,
+                consumers: [PromptConsumer.values.byName(capable)],
+                matrix: NativeFieldMatrix.forKind(
+                  AuthoringKind.prompt,
+                  AuthoringProfile.values.byName(capable),
+                ),
+              );
+              content = assessment.content;
+            } on Object {
+              content = null;
+            }
+            if (content != null) {
+              final promptRoot = derivedPromptRoot(context, capable);
+              entries.add(
+                InstallationEntryPlan(
+                  path: state.io.fs.path.join(promptRoot, '${record.name}.md'),
+                  kind: InstallationEntryKind.template,
+                  action: InstallationEntryAction.createContent,
+                  nativeRoot: promptRoot,
+                  nativeDestination: capable,
+                  artifactKind: OwnedArtifactKind.promptTemplate,
+                  content: content,
+                ),
+              );
+            }
+          }
           final desired = InstallationUnitPlan(
             resourceType: InstallationResourceType.skill,
             resourceId: record.name,
@@ -1156,6 +1207,38 @@ interface class SkillLifecycleService implements LifecycleResource {
             }
           }
         }
+        final derivedWrites = <DerivedPromptWrite>[];
+        if (route.derivedPrompts && record.derivedPrompts.isNotEmpty) {
+          final capable = <String>[
+            for (final target in requestedTargets)
+              if (isPromptCapableTarget(target.name)) target.name,
+          ];
+          if (capable.isNotEmpty) {
+            final inspection = await PromptInspectionService(fs: state.io.fs)
+                .inspect(staged.path, form: PromptForm.skill);
+            final assessment = assessDerivedPrompt(
+              skillDirectory: staged.path,
+              inspection: inspection,
+              consumers: [
+                for (final target in capable)
+                  PromptConsumer.values.byName(target),
+              ],
+              matrix: NativeFieldMatrix.forKind(
+                AuthoringKind.prompt,
+                AuthoringProfile.values.byName(capable.first),
+              ),
+            );
+            if (assessment.content != null) {
+              for (final prompt in record.derivedPrompts) {
+                derivedWrites.add((
+                  path: prompt.path,
+                  content: assessment.content!,
+                  nativeRoot: state.io.fs.path.dirname(prompt.path),
+                ));
+              }
+            }
+          }
+        }
         final result = expectedKind == ArtifactKind.skillCanonical
             ? await state.replaceCanonical(
                 resource: resource,
@@ -1183,6 +1266,7 @@ interface class SkillLifecycleService implements LifecycleResource {
                 origin: origin,
                 installationRoute: newRoute,
                 expectedRecord: record,
+                derivedWrites: derivedWrites,
                 allowedPaths: {
                   for (final sibling in state.records(context))
                     if (sibling.installationId != record.installationId &&

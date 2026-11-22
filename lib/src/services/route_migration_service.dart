@@ -84,6 +84,7 @@ final class RouteMigrationService {
               !oldIds.contains(record.installationId)) ...[
             record.location,
             ...record.exposures.map((e) => e.path),
+            ...record.derivedPrompts.map((prompt) => prompt.path),
           ],
       ];
       final actions = InstallationPathDiff(paths).prepare(
@@ -125,6 +126,13 @@ final class RouteMigrationService {
         } else {
           state._requireUnchanged(record);
         }
+        for (final prompt in record.derivedPrompts) {
+          state._verifyBaseline(
+            prompt.path,
+            prompt.baseline,
+            ArtifactKind.promptTemplate,
+          );
+        }
       }
       String? oldRootFor(String path) {
         for (final record in expectedOldRecords) {
@@ -132,6 +140,11 @@ final class RouteMigrationService {
           for (final exposure in record.exposures) {
             if (paths.equals(exposure.path, path)) {
               return paths.dirname(exposure.path);
+            }
+          }
+          for (final prompt in record.derivedPrompts) {
+            if (paths.equals(prompt.path, path)) {
+              return paths.dirname(prompt.path);
             }
           }
         }
@@ -188,7 +201,14 @@ final class RouteMigrationService {
                 kind == ArtifactKind.skillLink
             ? canonicalEntry!.path
             : desired.sourcePath;
-        if (desired.method == InstallationMethod.canonical &&
+        if (kind == ArtifactKind.promptTemplate) {
+          final content = entry.content;
+          if (content == null) {
+            throw StateError('A template entry requires rendered content.');
+          }
+          io.createDirectory(paths.dirname(stage));
+          io.fs.file(stage).writeAsStringSync(content);
+        } else if (desired.method == InstallationMethod.canonical &&
             kind == ArtifactKind.skillLink) {
           io.createDirectory(paths.dirname(stage));
           io.createLink(stage, linkSource);
@@ -208,14 +228,16 @@ final class RouteMigrationService {
               )
             : state._manifest(stage, kind);
         if (kind != ArtifactKind.skillLink &&
+            kind != ArtifactKind.promptTemplate &&
             baseline.digest != desired.sourceDigest) {
           throw MambaException(
             'The staged resource did not match the reviewed source digest.',
             exitCode: 4,
           );
         }
-        if (state._manifest(desired.sourcePath, _contentKind(kind)).digest !=
-            desired.sourceDigest) {
+        if (kind != ArtifactKind.promptTemplate &&
+            state._manifest(desired.sourcePath, _contentKind(kind)).digest !=
+                desired.sourceDigest) {
           throw MambaException(
             'The reviewed source changed while it was staged.',
             exitCode: 4,
@@ -256,6 +278,14 @@ final class RouteMigrationService {
       }
 
       final newRecords = <InstallationRecord>[];
+      final derivedPrompts = <DerivedPromptRecord>[
+        for (final entry in publishEntries)
+          if (entry.kind == InstallationEntryKind.template)
+            DerivedPromptRecord(
+              path: entry.path,
+              baseline: baselines[entry.path]!,
+            ),
+      ];
       if (canonicalEntry != null) {
         final targets = <String>{
           for (final entry in desired.entries) ?entry.target,
@@ -294,6 +324,7 @@ final class RouteMigrationService {
         );
       } else {
         for (final entry in publishEntries) {
+          if (entry.kind == InstallationEntryKind.template) continue;
           newRecords.add(
             InstallationRecord(
               installationId: idFor(entry),
@@ -316,6 +347,14 @@ final class RouteMigrationService {
             ),
           );
         }
+      }
+      if (derivedPrompts.isNotEmpty) {
+        if (newRecords.isEmpty) {
+          throw StateError('A derived Prompt requires a parent record.');
+        }
+        newRecords[0] = newRecords.first.copyWith(
+          derivedPrompts: derivedPrompts,
+        );
       }
       final steps = <String>[
         for (var i = 0; i < actions.length; i++) ...[

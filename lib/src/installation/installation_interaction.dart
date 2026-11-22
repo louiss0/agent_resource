@@ -54,6 +54,9 @@ abstract interface class InstallationInteraction {
     List<String> preferences, {
     required String scope,
   });
+
+  /// One yes/no offer to also publish derived native Prompt templates.
+  Future<bool> offerDerivedPrompts(List<String> eligibleSkills);
 }
 
 final class InteractInstallationInteraction implements InstallationInteraction {
@@ -154,6 +157,13 @@ final class InteractInstallationInteraction implements InstallationInteraction {
     required String scope,
   }) => InstallationApprovalComponent(
     label: 'Save $scope installation preferences (${preferences.join(', ')})?',
+  ).render();
+
+  @override
+  Future<bool> offerDerivedPrompts(
+    List<String> eligibleSkills,
+  ) => InstallationApprovalComponent(
+    label: 'Publish native Prompt templates for: ${eligibleSkills.join(', ')}?',
   ).render();
 
   Future<InteractionAnswer<T>> _guard<T>(

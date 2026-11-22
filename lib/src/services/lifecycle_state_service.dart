@@ -898,6 +898,9 @@ final class ExposureRecord {
   };
 }
 
+/// One derived Prompt file rewritten inside a parent replacement.
+typedef DerivedPromptWrite = ({String path, String content, String nativeRoot});
+
 /// A derived native Prompt template published alongside a managed Skill.
 final class DerivedPromptRecord {
   const DerivedPromptRecord({required this.path, required this.baseline});
@@ -2389,6 +2392,7 @@ interface class LifecycleStateService {
     bool allowModified = false,
     Set<String> allowedPaths = const <String>{},
     InstallationRecord? expectedRecord,
+    List<DerivedPromptWrite> derivedWrites = const <DerivedPromptWrite>[],
   }) async {
     var initial = recordById(context, installationId);
     if (expectedRecord != null &&
@@ -2524,6 +2528,7 @@ interface class LifecycleStateService {
       var published = false;
       var committed = false;
       String? backupId;
+      final promptQuarantines = <({String live, String quarantine})>[];
       try {
         _prepareStaging(record.nativeRoot);
         final linkTarget = _copySource(
@@ -2588,7 +2593,67 @@ interface class LifecycleStateService {
         _advanceTransaction(transactionPath, 'published');
         _verifyBaseline(record.location, newBaseline, resource.kind);
         _verifyBaseline(quarantine, record.baseline, record.kind);
+        for (final write in derivedWrites) {
+          final recorded = [
+            for (final prompt in record.derivedPrompts)
+              if (io.fs.path.equals(prompt.path, write.path)) prompt,
+          ];
+          if (recorded.length != 1) {
+            throw StateError(
+              'A derived Prompt write requires a recorded path: ${write.path}',
+            );
+          }
+          final live =
+              io.fs.typeSync(write.path, followLinks: false) !=
+              FileSystemEntityType.notFound;
+          if (!allowModified && live) {
+            _verifyBaseline(
+              write.path,
+              recorded.single.baseline,
+              ArtifactKind.promptTemplate,
+            );
+          }
+          if (!live && recorded.isNotEmpty) {
+            throw MambaException(
+              'The derived Prompt is missing: ${write.path}',
+              exitCode: 4,
+            );
+          }
+          final promptQuarantine = _quarantinePath(
+            write.nativeRoot,
+            transactionId,
+            write.path,
+          );
+          final promptStage = _stagePath(
+            write.nativeRoot,
+            transactionId,
+            io.fs.path.basename(write.path),
+          );
+          _prepareStaging(write.nativeRoot);
+          io.createDirectory(io.fs.path.dirname(promptStage));
+          io.fs.file(promptStage).writeAsStringSync(write.content);
+          io.createDirectory(io.fs.path.dirname(promptQuarantine));
+          io.rename(write.path, promptQuarantine);
+          promptQuarantines.add((
+            live: write.path,
+            quarantine: promptQuarantine,
+          ));
+          io.rename(promptStage, write.path);
+        }
+        final derivedPrompts = <DerivedPromptRecord>[
+          for (final prompt in record.derivedPrompts)
+            if (derivedWrites.every(
+              (write) => !io.fs.path.equals(write.path, prompt.path),
+            ))
+              prompt,
+          for (final write in derivedWrites)
+            DerivedPromptRecord(
+              path: write.path,
+              baseline: _manifest(write.path, ArtifactKind.promptTemplate),
+            ),
+        ];
         final updated = record.copyWith(
+          derivedPrompts: derivedPrompts,
           kind: resource.kind,
           nativeForm: candidate.nativeForm,
           baseline: newBaseline,
@@ -2604,6 +2669,9 @@ interface class LifecycleStateService {
         _verifyBaseline(quarantine, record.baseline, record.kind);
         _advanceTransaction(transactionPath, 'cleanupVerified');
         io.delete(quarantine);
+        for (final entry in promptQuarantines) {
+          io.delete(entry.quarantine);
+        }
         unpublished = false;
         _advanceTransaction(transactionPath, 'committed');
         _removeIfPresent(io.fs.path.dirname(stage));
@@ -2626,6 +2694,16 @@ interface class LifecycleStateService {
             'transaction $transactionId, evidence $transactionPath. $error',
             exitCode: 6,
           );
+        }
+        for (final entry in promptQuarantines) {
+          if (io.fs.typeSync(entry.live, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            io.delete(entry.live);
+          }
+          if (io.fs.typeSync(entry.quarantine, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            io.rename(entry.quarantine, entry.live);
+          }
         }
         if (unpublished || published) {
           if (_rollbackReplacement(
@@ -2752,6 +2830,16 @@ interface class LifecycleStateService {
           'quarantinePath': quarantine,
           'phase': 'prepared',
         });
+        for (final prompt in record.derivedPrompts) {
+          if (io.fs.typeSync(prompt.path, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            _verifyBaseline(
+              prompt.path,
+              prompt.baseline,
+              ArtifactKind.promptTemplate,
+            );
+          }
+        }
         io.createDirectory(io.fs.path.dirname(quarantine));
         io.rename(record.location, quarantine);
         unpublished = true;
@@ -2768,6 +2856,12 @@ interface class LifecycleStateService {
         _verifyBaseline(quarantine, record.baseline, record.kind);
         _advanceTransaction(transactionPath, 'cleanupVerified');
         io.delete(quarantine);
+        for (final prompt in record.derivedPrompts) {
+          if (io.fs.typeSync(prompt.path, followLinks: false) !=
+              FileSystemEntityType.notFound) {
+            io.delete(prompt.path);
+          }
+        }
         unpublished = false;
         _advanceTransaction(transactionPath, 'committed');
         return LifecycleResult(

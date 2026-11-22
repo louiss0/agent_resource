@@ -114,6 +114,10 @@ final class PackActionCommand extends Command {
            ],
            _dryRun,
            if (_operation != PackOperation.validate) _yes,
+           if (_operation == PackOperation.install &&
+               (_resourceType == PackResourceType.skill ||
+                   _resourceType == PackResourceType.prompt))
+             _derivedPrompts,
          ],
          conflicts: {
            if (_operation != PackOperation.validate)
@@ -224,6 +228,12 @@ final class PackActionCommand extends Command {
   static const _localEdits = BooleanFlag('local-edits');
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
+  static const _derivedPrompts = BooleanFlag(
+    'derived-prompts',
+    description:
+        'Also publish a native Prompt template for eligible manual-only '
+        'Skills when a prompt-capable target is selected.',
+  );
 
   @override
   String get name => switch (_operation) {
@@ -355,6 +365,8 @@ final class PackActionCommand extends Command {
             : null,
         localEdits: mutating && valueOf(_localEdits),
         dryRun: valueOf(_dryRun),
+        derivedPrompts:
+            _operation == PackOperation.install && valueOf(_derivedPrompts),
         yes: yes,
         interactive: interactive,
       ),

@@ -68,6 +68,9 @@ final class InstallationPathDiff(final p.Context paths) {
         path: record.location,
         kind: OldArtifactKind.values.byName(record.kind.name),
       ));
+      for (final prompt in record.derivedPrompts) {
+        oldPaths.add((path: prompt.path, kind: OldArtifactKind.promptTemplate));
+      }
       final exposureTargets = <String>{};
       for (final exposure in record.exposures) {
         if (!record.knownConsumers.contains(exposure.target) ||
@@ -87,6 +90,13 @@ final class InstallationPathDiff(final p.Context paths) {
     final newConsumers = <String>{};
     final placements = <String>{};
     for (final entry in desired.entries) {
+      if (entry.kind == InstallationEntryKind.template) {
+        if (entry.artifactKind != OwnedArtifactKind.promptTemplate) {
+          throw ArgumentError('Invalid desired artifact kind.');
+        }
+        newPaths.add((path: entry.path, kind: NewArtifactKind.promptTemplate));
+        continue;
+      }
       if (entry.target != null) newConsumers.add(entry.target!);
       if (entry.kind != InstallationEntryKind.content &&
           (entry.target == null || !placements.add(entry.target!))) {

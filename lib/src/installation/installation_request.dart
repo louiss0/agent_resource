@@ -29,6 +29,7 @@ final class InstallationWorkflowRequest {
     required this.ref,
     required this.subpath,
     required this.scopeExplicit,
+    this.derivedPrompts = false,
   });
 
   final String? source;
@@ -42,6 +43,7 @@ final class InstallationWorkflowRequest {
   final String? ref;
   final String? subpath;
   final bool scopeExplicit;
+  final bool derivedPrompts;
 
   InstallationWorkflowRequest withTargets(List<InstallationTarget> value) =>
       InstallationWorkflowRequest(
@@ -56,6 +58,7 @@ final class InstallationWorkflowRequest {
         ref: ref,
         subpath: subpath,
         scopeExplicit: scopeExplicit,
+        derivedPrompts: derivedPrompts,
       );
 
   InstallationWorkflowRequest withOptions(LifecycleOptions value) =>
@@ -71,6 +74,7 @@ final class InstallationWorkflowRequest {
         ref: ref,
         subpath: subpath,
         scopeExplicit: scopeExplicit,
+        derivedPrompts: derivedPrompts,
       );
 }
 
@@ -270,6 +274,7 @@ String installationExplicitCommand({
     for (final root in options.readRoots) ...['--read-root', root],
     if (request.ref != null) ...['--ref', request.ref!],
     if (request.subpath != null) ...['--subpath', request.subpath!],
+    if (request.derivedPrompts) '--derived-prompts',
     if (options.dryRun) '--dry-run' else '--yes',
   ];
   String quote(String value) {
