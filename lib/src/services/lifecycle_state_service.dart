@@ -3104,8 +3104,11 @@ interface class LifecycleStateService {
         );
       }
       _requireApproval(context, 'recovery');
-      final recovered = await RouteRecoveryService(state: this)
-          .recover(context, transactionId, action: action);
+      final recovered = await RouteRecoveryService(state: this).recover(
+        context,
+        transactionId,
+        action: RouteRecoveryAction.parse(action),
+      );
       return LifecycleResult(
         command: '${_resourceLabel(resource.kind)} recover',
         outcome: 'recovered',
@@ -5970,7 +5973,10 @@ interface class LifecycleStateService {
             expectedScope != null && evidence['scope'] != expectedScope) {
           throw const FormatException('Route journal authority mismatch.');
         }
-        if (const {'completed', 'rolledBack'}.contains(evidence['phase']) ||
+        if (const {
+              RouteJournalPhase.completed,
+              RouteJournalPhase.rolledBack,
+            }.contains(RouteJournalPhase.parse(evidence['phase'])) ||
             excluded.contains(file.path)) {
           continue;
         }

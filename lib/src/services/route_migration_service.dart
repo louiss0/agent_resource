@@ -134,22 +134,8 @@ final class RouteMigrationService {
           );
         }
       }
-      String? oldRootFor(String path) {
-        for (final record in expectedOldRecords) {
-          if (paths.equals(record.location, path)) return record.nativeRoot;
-          for (final exposure in record.exposures) {
-            if (paths.equals(exposure.path, path)) {
-              return paths.dirname(exposure.path);
-            }
-          }
-          for (final prompt in record.derivedPrompts) {
-            if (paths.equals(prompt.path, path)) {
-              return paths.dirname(prompt.path);
-            }
-          }
-        }
-        return null;
-      }
+      String? oldRootFor(String path) =>
+          routeOwningArtifact(expectedOldRecords, path, paths)?.nativeRoot;
 
       final publishEntries = [
         for (final entry in desired.entries)
@@ -357,49 +343,46 @@ final class RouteMigrationService {
           derivedPrompts: derivedPrompts,
         );
       }
-      final steps = <String>[
-        for (var i = 0; i < actions.length; i++) ...[
-          if (actions[i].oldKind != null) '$i-remove',
-          if (actions[i].newKind != null) '$i-publish',
-        ],
-      ];
+      final steps = RouteJournalStep.ofDiff(actions);
       final completed = <String>[];
-      Map<String, Object?> journal(String phase) => <String, Object?>{
-        'schemaVersion': 1,
-        'operation': 'cross-route',
-        'transactionId': transactionId,
-        'scope': context.scope.name,
-        'phase': phase,
-        'oldRecords': [
-          for (final record in expectedOldRecords) record.toJson(),
-        ],
-        'newRecords': [for (final record in newRecords) record.toJson()],
-        'actions': [
-          for (final action in actions)
-            <String, Object?>{
-              'path': action.path,
-              'oldKind': action.oldKind?.name,
-              'newKind': action.newKind?.name,
-            },
-        ],
-        'completedActions': completed,
-      };
+      Map<String, Object?> journal(RouteJournalPhase phase) =>
+          <String, Object?>{
+            'schemaVersion': 1,
+            'operation': 'cross-route',
+            'transactionId': transactionId,
+            'scope': context.scope.name,
+            'phase': phase.wireName,
+            'oldRecords': [
+              for (final record in expectedOldRecords) record.toJson(),
+            ],
+            'newRecords': [for (final record in newRecords) record.toJson()],
+            'actions': [
+              for (final action in actions)
+                <String, Object?>{
+                  'path': action.path,
+                  'oldKind': action.oldKind?.name,
+                  'newKind': action.newKind?.name,
+                },
+            ],
+            'completedActions': completed,
+          };
       void persist(Map<String, Object?> doc) {
-        final encoded = jsonEncode(doc);
-        RouteJournalEvidence.decode(encoded, paths);
-        final temporary =
-            '$journalPath.${LifecycleStateService._newId('tmp')}.tmp';
-        state._requireAbsent(temporary);
-        io.createDirectory(paths.dirname(journalPath));
-        state._makePrivate(paths.dirname(journalPath));
-        io.write(temporary, utf8.encode(encoded));
-        io.rename(temporary, journalPath);
+        persistRouteJournal(
+          io: io,
+          paths: paths,
+          journalPath: journalPath,
+          doc: doc,
+          prepareDirectory: () {
+            io.createDirectory(paths.dirname(journalPath));
+            state._makePrivate(paths.dirname(journalPath));
+          },
+        );
       }
 
       var journalWritten = false;
       Object? ledgerFailure;
       try {
-        persist(journal('prepared'));
+        persist(journal(RouteJournalPhase.prepared));
         journalWritten = true;
         checkPendingConversions(excluded: {journalPath});
         for (var i = 0; i < actions.length; i++) {
@@ -414,20 +397,28 @@ final class RouteMigrationService {
                 .quarantine;
             io.createDirectory(paths.dirname(quarantine));
             io.rename(action.path, quarantine);
-            completed.add('$i-remove');
+            completed.add(
+              RouteJournalStep(i, RouteJournalStepKind.remove).encode(),
+            );
             persist(
               journal(
-                completed.length == steps.length ? 'published' : 'applying',
+                completed.length == steps.length
+                    ? RouteJournalPhase.published
+                    : RouteJournalPhase.applying,
               ),
             );
           }
           if (action.newKind != null) {
             io.createDirectory(paths.dirname(action.path));
             io.rename(staged[_pathKey(action.path)]!, action.path);
-            completed.add('$i-publish');
+            completed.add(
+              RouteJournalStep(i, RouteJournalStepKind.publish).encode(),
+            );
             persist(
               journal(
-                completed.length == steps.length ? 'published' : 'applying',
+                completed.length == steps.length
+                    ? RouteJournalPhase.published
+                    : RouteJournalPhase.applying,
               ),
             );
           }
@@ -493,12 +484,13 @@ final class RouteMigrationService {
             exitCode: 6,
           );
         }
-        persist(journal('committed'));
-        persist(journal('completed'));
+        persist(journal(RouteJournalPhase.committed));
+        persist(journal(RouteJournalPhase.completed));
         // Verified cleanup: quarantine that still matches each old baseline
         // is removed; anything changed or foreign stays as evidence.
-        await RouteRecoveryService(state: state)
-            .recover(context, transactionId, action: 'complete');
+        await RouteRecoveryService(
+          state: state,
+        ).recover(context, transactionId, action: RouteRecoveryAction.complete);
         return List<InstallationRecord>.unmodifiable(newRecords);
       } on Object {
         if (!journalWritten) rethrow;
@@ -507,8 +499,8 @@ final class RouteMigrationService {
           // ledger completes forward rather than rolling back.
           if (ledgerFailure == null) {
             try {
-              persist(journal('committed'));
-              persist(journal('completed'));
+              persist(journal(RouteJournalPhase.committed));
+              persist(journal(RouteJournalPhase.completed));
             } on Object {
               // The committed ledger is already authoritative; the journal is
               // finalized by a later recovery pass.
@@ -516,18 +508,21 @@ final class RouteMigrationService {
             return List<InstallationRecord>.unmodifiable(newRecords);
           }
           try {
-            persist(journal('recoveryRequired'));
+            persist(journal(RouteJournalPhase.recoveryRequired));
           } on Object {
             // Evidence already records every completed mutation.
           }
           throw ledgerFailure;
         }
         try {
-          await RouteRecoveryService(state: state)
-              .recover(context, transactionId, action: 'rollback');
+          await RouteRecoveryService(state: state).recover(
+            context,
+            transactionId,
+            action: RouteRecoveryAction.rollback,
+          );
         } on Object {
           try {
-            persist(journal('recoveryRequired'));
+            persist(journal(RouteJournalPhase.recoveryRequired));
           } on Object {
             // Evidence already records every completed mutation.
           }
