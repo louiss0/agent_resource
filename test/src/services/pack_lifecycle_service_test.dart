@@ -96,7 +96,7 @@ track = { kind = "local" }
       bool localEdits = false,
       bool yes = true,
       bool interactive = false,
-      bool derivedPrompts = false,
+      List<String> promptTargets = const <String>[],
       bool noSave = false,
       bool useDefaultTarget = true,
       bool skipNew = false,
@@ -146,13 +146,13 @@ track = { kind = "local" }
         dryRun: dryRun,
         yes: yes,
         interactive: interactive,
-        derivedPrompts: derivedPrompts,
+        promptTargets: promptTargets,
       );
     }
 
     group('derived prompts', () {
       PackLifecycleRequest derivedRequest({
-        bool derivedPrompts = false,
+        List<String> promptTargets = const <String>[],
         bool yes = true,
         bool interactive = false,
       }) => PackLifecycleRequest(
@@ -175,7 +175,7 @@ track = { kind = "local" }
         dryRun: false,
         yes: yes,
         interactive: interactive,
-        derivedPrompts: derivedPrompts,
+        promptTargets: promptTargets,
       );
 
       void makeManualOnly(String name) {
@@ -193,11 +193,11 @@ Manual body.
       String promptPath(String name) =>
           fs.path.join(project.path, '.pi', 'prompts', '$name.md');
 
-      test('--derived-prompts publishes the pi template', () async {
+      test('--prompt-target publishes the pi template', () async {
         makeManualOnly('reviewer');
         final service = PackLifecycleService(fileSystem: fs);
         final result = await service.execute(
-          derivedRequest(derivedPrompts: true),
+          derivedRequest(promptTargets: const ['pi']),
         );
         expect(result.outcome, isNot('failed'));
         final prompt = fs.file(promptPath('reviewer'));
@@ -205,43 +205,40 @@ Manual body.
         expect(prompt.readAsStringSync(), endsWith('Manual body.\n'));
       });
 
-      test(
-        '--derived-prompts fails an ineligible Skill before writes',
-        () async {
-          makeManualOnly('reviewer');
-          fs
-              .directory(
-                fs.path.join(source.path, 'skills', 'reviewer', 'references'),
-              )
-              .createSync();
-          await expectLater(
-            PackLifecycleService(fileSystem: fs)
-                .execute(derivedRequest(derivedPrompts: true)),
-            throwsA(
-              isA<MambaException>().having(
-                (error) => error.message,
-                'message',
-                contains('ineligible'),
-              ),
+      test('--prompt-target fails an ineligible Skill before writes', () async {
+        makeManualOnly('reviewer');
+        fs
+            .directory(
+              fs.path.join(source.path, 'skills', 'reviewer', 'references'),
+            )
+            .createSync();
+        await expectLater(
+          PackLifecycleService(fileSystem: fs)
+              .execute(derivedRequest(promptTargets: const ['pi'])),
+          throwsA(
+            isA<MambaException>().having(
+              (error) => error.message,
+              'message',
+              contains('ineligible'),
             ),
-          );
-          expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
-          expect(
-            fs
-                .file(
-                  fs.path.join(
-                    project.path,
-                    '.codex',
-                    'skills',
-                    'reviewer',
-                    'SKILL.md',
-                  ),
-                )
-                .existsSync(),
-            isFalse,
-          );
-        },
-      );
+          ),
+        );
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        expect(
+          fs
+              .file(
+                fs.path.join(
+                  project.path,
+                  '.codex',
+                  'skills',
+                  'reviewer',
+                  'SKILL.md',
+                ),
+              )
+              .existsSync(),
+          isFalse,
+        );
+      });
 
       test('interactive asks once and publishes on approval', () async {
         makeManualOnly('reviewer');

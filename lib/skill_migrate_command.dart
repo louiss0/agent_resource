@@ -26,7 +26,7 @@ final class SkillMigrateCommand extends Command {
           _gemini,
           _format,
         ],
-        flags: [_dryRun, _yes],
+        flags: [_dryRun, _yes, _dropPromptTargets],
         longDescription:
             'Preview with --dry-run, then confirm the unchanged plan with '
             '--reviewed-plan <planId> --yes. Specify --target to review a '
@@ -58,6 +58,7 @@ final class SkillMigrateCommand extends Command {
     defaultValue: 'text',
   );
   static const _dryRun = BooleanFlag('dry-run');
+  static const _dropPromptTargets = BooleanFlag('drop-prompt-targets');
   static const _yes = BooleanFlag('yes');
 
   @override
@@ -100,6 +101,7 @@ final class SkillMigrateCommand extends Command {
       method: method,
       targets: valueOf(_targets),
       reviewedPlan: valueOf(_reviewedPlan),
+      dropPromptTargets: valueOf(_dropPromptTargets),
     );
     return format == 'json'
         ? jsonEncode(result.envelope())

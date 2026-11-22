@@ -106,14 +106,9 @@ final class SkillInstallCommand extends Command {
           _destination,
           _harness,
           _mode,
+          _promptTargets,
         ],
-        flags: const [
-          _allResources,
-          _dryRun,
-          _yes,
-          _derivedPrompts,
-          _interactive,
-        ],
+        flags: const [_allResources, _dryRun, _yes, _interactive],
         conflicts: const {
           'resource': ['all-resources'],
         },
@@ -192,11 +187,11 @@ final class SkillInstallCommand extends Command {
   );
   static const _dryRun = BooleanFlag('dry-run');
   static const _yes = BooleanFlag('yes');
-  static const _derivedPrompts = BooleanFlag(
-    'derived-prompts',
+  static final _promptTargets = RepeatableStringOption(
+    'prompt-target',
     description:
         'Also publish a native Prompt template for eligible manual-only Skills '
-        'when a prompt-capable target is selected.',
+        'on this prompt-capable harness; repeat to select several.',
   );
 
   static final _destination = StringOption('destination', hidden: true);
@@ -243,7 +238,7 @@ final class SkillInstallCommand extends Command {
         ref: valueOf(_ref),
         subpath: valueOf(_subpath),
         scopeExplicit: valueOf(_scope) != null,
-        derivedPrompts: valueOf(_derivedPrompts),
+        promptTargets: valueOf(_promptTargets) ?? const <String>[],
       ),
       interactive:
           format == LifecycleOutputFormat.text &&

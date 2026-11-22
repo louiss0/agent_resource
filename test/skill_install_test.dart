@@ -15,6 +15,7 @@ import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/skill_installation_service.dart';
 import 'package:agent_resource/src/services/skill_lifecycle_service.dart';
 import 'package:mamba/executor.dart';
+import 'package:mamba/mamba.dart' show MambaException;
 
 import 'package:test/test.dart';
 
@@ -3123,7 +3124,8 @@ path = "invalid"
               'claude',
               '--method',
               'copy',
-              '--derived-prompts',
+              '--prompt-target',
+              'pi',
               '--yes',
             ]);
             expect(
@@ -3147,7 +3149,7 @@ path = "invalid"
               fileSystem: fs,
             );
             final record = lifecycle.state.records(resolved).single;
-            expect(record.installationRoute!.derivedPromptTargets, ['pi']);
+            expect(record.installationRoute!.promptTargets, ['pi']);
             expect(record.derivedPrompts.single.path, prompt.path);
           });
 
@@ -3187,7 +3189,8 @@ path = "invalid"
               'codex',
               '--method',
               'copy',
-              '--derived-prompts',
+              '--prompt-target',
+              'pi',
               '--yes',
             ]);
             expect(
@@ -3222,7 +3225,8 @@ path = "invalid"
                 'claude',
                 '--method',
                 'copy',
-                '--derived-prompts',
+                '--prompt-target',
+                'pi',
                 '--yes',
               ]);
               expect(result, isA<MambaFailureResult>());
@@ -3267,7 +3271,8 @@ path = "invalid"
                 'claude',
                 '--method',
                 'copy',
-                '--derived-prompts',
+                '--prompt-target',
+                'pi',
                 '--yes',
                 '--format',
                 'json',
@@ -3317,7 +3322,7 @@ path = "skills/second"
 ''');
             interaction.resourceSelections.add(['first', 'second']);
             interaction.targetSelections.add([InstallationTarget.claude]);
-            interaction.derivedPromptAnswers.add(true);
+            interaction.derivedPromptAnswers.add(['pi']);
             interaction.approvals.add(true);
             final result = await executor().fake().execute([
               'skill',
@@ -3400,7 +3405,8 @@ path = "skills/second"
               'claude',
               '--method',
               'copy',
-              '--derived-prompts',
+              '--prompt-target',
+              'pi',
               '--yes',
             ]);
             expect(install, isA<MambaSuccessResult>());
@@ -3454,7 +3460,8 @@ path = "skills/second"
               'claude',
               '--method',
               'copy',
-              '--derived-prompts',
+              '--prompt-target',
+              'pi',
               '--yes',
             ]);
             expect(install, isA<MambaSuccessResult>());
@@ -3502,7 +3509,8 @@ path = "skills/second"
                 'claude',
                 '--method',
                 'canonical',
-                '--derived-prompts',
+                '--prompt-target',
+                'pi',
                 '--yes',
               ]);
               expect(
@@ -3571,7 +3579,8 @@ path = "skills/second"
               'claude',
               '--method',
               'copy',
-              '--derived-prompts',
+              '--prompt-target',
+              'pi',
               '--yes',
             ]);
             expect(install, isA<MambaSuccessResult>());
@@ -3628,7 +3637,8 @@ path = "skills/second"
                 'claude',
                 '--method',
                 'copy',
-                '--derived-prompts',
+                '--prompt-target',
+                'pi',
                 '--yes',
               ]);
               expect(install, isA<MambaSuccessResult>());
@@ -3709,7 +3719,8 @@ path = "skills/second"
               'claude',
               '--method',
               'copy',
-              '--derived-prompts',
+              '--prompt-target',
+              'pi',
               '--yes',
             ]);
             expect(install, isA<MambaSuccessResult>());
@@ -3736,21 +3747,209 @@ path = "skills/second"
             final records = ledger['installations'] as List;
             for (final record in records) {
               (record as Map).remove('derivedPrompts');
-              (record['installationRoute'] as Map?)?.remove(
-                'derivedPromptTargets',
-              );
+              (record['installationRoute'] as Map?)?.remove('promptTargets');
             }
             ledgerFile.writeAsStringSync(jsonEncode(ledger));
             final loaded = lifecycle.state.records(resolved);
             expect(loaded, hasLength(1));
             expect(loaded.single.derivedPrompts, isEmpty);
+            expect(loaded.single.installationRoute!.promptTargets, isEmpty);
+          });
+
+          test(
+            'rejects a non-prompt-capable prompt target before writes',
+            () async {
+              final source = manualSkill('bad-target-source');
+              final result = await executor().fake().execute([
+                'skill',
+                'install',
+                source.path,
+                ...context(),
+                '--source-kind',
+                'resource',
+                '--target',
+                'claude',
+                '--method',
+                'copy',
+                '--prompt-target',
+                'claude',
+                '--yes',
+              ]);
+              expect(result, isA<MambaFailureResult>());
+              expect(
+                (result as MambaFailureResult).message,
+                contains('not prompt-capable'),
+              );
+              expect(
+                fs.file(promptPath('bad-target-source')).existsSync(),
+                isFalse,
+              );
+              expect(
+                fs
+                    .directory(fs.path.join(project.path, '.claude', 'skills'))
+                    .existsSync(),
+                isFalse,
+              );
+            },
+          );
+
+          test('migrate --drop-prompt-targets removes the template', () async {
+            useLocalFileSystem();
+            final source = manualSkill('migrate-drop-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--prompt-target',
+              'pi',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            LifecycleContext resolved() => LifecycleContext.resolve(
+              LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                stateDir: fs.path.join(sandbox.path, 'state'),
+              ),
+              fileSystem: fs,
+            );
+            final record = lifecycle.state.records(resolved()).single;
+            final args = [
+              'skill',
+              'migrate',
+              record.installationId,
+              ...context(),
+              '--method',
+              'canonical',
+              '--drop-prompt-targets',
+              '--format',
+              'json',
+            ];
+            final preview = await executor().fake().execute([
+              ...args,
+              '--dry-run',
+            ]);
             expect(
-              loaded.single.installationRoute!.derivedPromptTargets,
-              isEmpty,
+              preview,
+              isA<MambaSuccessResult>(),
+              reason: preview is MambaFailureResult ? preview.message : null,
+            );
+            final planId =
+                ((jsonDecode((preview as MambaSuccessResult).output!)
+                            as Map)['data']
+                        as Map)['planId']
+                    as String;
+            final migrated = await executor().fake().execute([
+              ...args,
+              '--yes',
+              '--reviewed-plan',
+              planId,
+            ]);
+            expect(
+              migrated,
+              isA<MambaSuccessResult>(),
+              reason: migrated is MambaFailureResult ? migrated.message : null,
+            );
+            final migratedRecord = lifecycle.state
+                .records(resolved())
+                .singleWhere((r) => r.name == 'migrate-drop-source');
+            expect(migratedRecord.derivedPrompts, isEmpty);
+            expect(migratedRecord.installationRoute!.promptTargets, isEmpty);
+            expect(
+              fs.file(promptPath('migrate-drop-source')).existsSync(),
+              isFalse,
             );
           });
+
+          test(
+            'a failed update restores the old skill and old template',
+            () async {
+              final source = manualSkill('fail-update-source');
+              final install = await executor().fake().execute([
+                'skill',
+                'install',
+                source.path,
+                ...context(),
+                '--source-kind',
+                'resource',
+                '--target',
+                'claude',
+                '--method',
+                'copy',
+                '--prompt-target',
+                'pi',
+                '--yes',
+              ]);
+              expect(install, isA<MambaSuccessResult>());
+              final options = LifecycleOptions(
+                processWorkingDirectory: project.path,
+                scope: LifecycleScope.project,
+                cwd: project.path,
+                projectRoot: project.path,
+                home: home.path,
+                stateDir: fs.path.join(sandbox.path, 'state'),
+                approved: true,
+              );
+              final resolved = LifecycleContext.resolve(
+                options,
+                fileSystem: fs,
+              );
+              final record = SkillLifecycleService(fileSystem: fs).state
+                  .records(resolved)
+                  .single;
+              final skillPath = fs.path.join(record.location, 'SKILL.md');
+              final oldSkill = fs.file(skillPath).readAsStringSync();
+              final oldPrompt = fs
+                  .file(promptPath('fail-update-source'))
+                  .readAsStringSync();
+              fs
+                  .file(fs.path.join(source.path, 'SKILL.md'))
+                  .writeAsStringSync(
+                    '---\nname: fail-update-source\ndescription: Reviews.\n'
+                    'disable-model-invocation: true\n---\nNew body.\n',
+                  );
+              final failing = SkillLifecycleService(
+                state: LifecycleStateService(io: _FailOnPromptStageIO(fs: fs)),
+              );
+              await expectLater(
+                failing.update(
+                  LifecycleIdInput(id: record.installationId, options: options),
+                ),
+                throwsA(isA<MambaException>()),
+              );
+              expect(fs.file(skillPath).readAsStringSync(), oldSkill);
+              expect(
+                fs.file(promptPath('fail-update-source')).readAsStringSync(),
+                oldPrompt,
+              );
+            },
+          );
         });
       });
     });
   });
+}
+
+final class _FailOnPromptStageIO extends LifecycleIO {
+  _FailOnPromptStageIO({required super.fs});
+
+  @override
+  void before(String operation, String path) {
+    if (operation == 'rename' &&
+        path.contains('staging') &&
+        path.endsWith('fail-update-source.md')) {
+      throw const FileSystemException('Injected publish failure');
+    }
+  }
 }

@@ -251,12 +251,15 @@ interface class SkillInstallationService {
           }
         }
         final promptCapable = promptCapableHarnesses();
-        if (request.derivedPrompts && promptCapable.isEmpty) {
-          throw MambaException(
-            '--derived-prompts requires a prompt-capable harness in the '
-            'catalog; none publishes a native Prompt template.',
-            exitCode: 4,
-          );
+        for (final harness in request.promptTargets) {
+          if (!isPromptCapableTarget(harness)) {
+            throw MambaException(
+              '--prompt-target $harness is not prompt-capable; '
+              '${promptCapable.isEmpty ? 'no catalog harness' : 'only ${promptCapable.join(', ')}'} '
+              'publishes a native Prompt template.',
+              exitCode: 4,
+            );
+          }
         }
         final assessments =
             <
@@ -265,9 +268,7 @@ interface class SkillInstallationService {
             >{};
         if (promptCapable.isNotEmpty) {
           final failed =
-              <
-                ({InstallationCandidate candidate, StagedSkill staged})
-              >[];
+              <({InstallationCandidate candidate, StagedSkill staged})>[];
           for (final pair in stagedPairs) {
             try {
               final inspection = await _prompts.inspect(
@@ -292,8 +293,8 @@ interface class SkillInstallationService {
           }
           stagedPairs.removeWhere(failed.contains);
         }
-        var derive = request.derivedPrompts;
-        if (!derive &&
+        var derive = List<String>.of(request.promptTargets);
+        if (derive.isEmpty &&
             interactive &&
             !request.options.approved &&
             context.scope == LifecycleScope.project &&
@@ -321,10 +322,10 @@ interface class SkillInstallationService {
             stdout.writeln('Ineligible for a derived Prompt: $entry');
           }
           if (eligible.isNotEmpty) {
-            derive = await _interaction.offerDerivedPrompts([
-              for (final skill in eligible)
-                '$skill -> ${promptCapable.join(', ')}',
-            ]);
+            derive = await _interaction.offerDerivedPrompts(
+              eligible,
+              promptCapable,
+            );
           }
         }
         for (final pair in stagedPairs) {
@@ -332,22 +333,25 @@ interface class SkillInstallationService {
           final name =
               pair.candidate.id ??
               _fileSystem.path.basename(pair.candidate.path);
-          if (derive && perHarness != null) {
-            for (final assessment in perHarness.values) {
-              if (assessment.manualOnly && !assessment.eligible) {
+          if (derive.isNotEmpty && perHarness != null) {
+            for (final harness in derive) {
+              final assessment = perHarness[harness];
+              if (assessment != null &&
+                  assessment.manualOnly &&
+                  !assessment.eligible) {
                 errors.add(
                   '$name: a selected manual-only Skill is ineligible for a '
-                  'derived Prompt in ${assessment.harness}: '
+                  'derived Prompt in $harness: '
                   '${assessment.reasons.join('; ')}',
                 );
               }
             }
           }
           final derived = <String, String>{
-            if (derive && perHarness != null)
-              for (final entry in perHarness.entries)
-                if (entry.value.content != null)
-                  entry.key: entry.value.content!,
+            if (derive.isNotEmpty && perHarness != null)
+              for (final harness in derive)
+                if (perHarness[harness]?.content != null)
+                  harness: perHarness[harness]!.content!,
           };
           try {
             units.add(
@@ -371,8 +375,9 @@ interface class SkillInstallationService {
               '${pair.candidate.id ?? pair.candidate.path}: ${error.message}',
             );
           }
-          if (derive && perHarness != null) {
+          if (derive.isNotEmpty && perHarness != null) {
             for (final entry in perHarness.entries) {
+              if (!derive.contains(entry.key)) continue;
               for (final field in entry.value.unsupportedFields) {
                 migrationDiagnostics.add({
                   'code': 'derived-prompt-field-dropped',
@@ -555,7 +560,7 @@ interface class SkillInstallationService {
           InstallationRouteTarget.values.byName(target.name),
       ]..sort((a, b) => a.name.compareTo(b.name))),
       method: method,
-      derivedPromptTargets: derived.keys.toList(),
+      promptTargets: derived.keys.toList(),
       derivedArtifacts: [
         for (final path in [...staged.movedMarkdown, ...staged.movedImages])
           ManagedDerivedArtifact(

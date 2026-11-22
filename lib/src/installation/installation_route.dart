@@ -19,10 +19,10 @@ final class InstallationRoute {
     required List<ManagedDerivedArtifact> derivedArtifacts,
     this.entryId,
     this.packKey,
-    List<String> derivedPromptTargets = const <String>[],
+    List<String> promptTargets = const <String>[],
   }) : targets = List.unmodifiable(targets),
-       derivedPromptTargets = List.unmodifiable(
-         derivedPromptTargets.toSet().toList()..sort(),
+       promptTargets = List.unmodifiable(
+         promptTargets.toSet().toList()..sort(),
        ),
        derivedArtifacts = List.unmodifiable(derivedArtifacts) {
     _relative(sourceRelativePath, allowRoot: true);
@@ -77,9 +77,9 @@ final class InstallationRoute {
       entryId: entry as String?,
       packKey: pack as String?,
       scope: named(LifecycleScope.values, (v) => v.name, value['scope']),
-      derivedPromptTargets: value['derivedPromptTargets'] is List
+      promptTargets: value['promptTargets'] is List
           ? [
-              for (final item in value['derivedPromptTargets'] as List)
+              for (final item in value['promptTargets'] as List)
                 item is String
                     ? item
                     : (throw const FormatException(
@@ -115,7 +115,7 @@ final class InstallationRoute {
 
   /// The prompt-capable harnesses publishing a derived Prompt template
   /// alongside the Skill; empty means none.
-  final List<String> derivedPromptTargets;
+  final List<String> promptTargets;
 
   InstallationRoute withTargets(List<InstallationRouteTarget> targets) =>
       InstallationRoute(
@@ -128,7 +128,7 @@ final class InstallationRoute {
         targets: targets,
         method: method,
         derivedArtifacts: derivedArtifacts,
-        derivedPromptTargets: derivedPromptTargets,
+        promptTargets: promptTargets,
       );
 
   Map<String, Object?> toJson() => {
@@ -147,8 +147,7 @@ final class InstallationRoute {
     'derivedArtifacts': [
       for (final artifact in derivedArtifacts) artifact.toJson(),
     ],
-    if (derivedPromptTargets.isNotEmpty)
-      'derivedPromptTargets': derivedPromptTargets,
+    if (promptTargets.isNotEmpty) 'promptTargets': promptTargets,
   };
 }
 

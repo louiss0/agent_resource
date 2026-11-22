@@ -20,7 +20,7 @@ final class ScriptedInstallationInteraction implements InstallationInteraction {
   final preferenceOffers = <List<String>>[];
   bool preferencePromptFails = false;
   final derivedPromptOffers = <List<String>>[];
-  final derivedPromptAnswers = <bool>[];
+  final derivedPromptAnswers = <List<String>>[];
 
   @override
   Future<bool> offerUserScope() async => userScopeFallbacks.removeAt(0);
@@ -89,8 +89,11 @@ final class ScriptedInstallationInteraction implements InstallationInteraction {
       InteractionAnswer.value(approvals.removeAt(0));
 
   @override
-  Future<bool> offerDerivedPrompts(List<String> eligibleSkills) async {
-    derivedPromptOffers.add(eligibleSkills);
+  Future<List<String>> offerDerivedPrompts(
+    List<String> eligibleSkills,
+    List<String> harnesses,
+  ) async {
+    derivedPromptOffers.add([...eligibleSkills, ...harnesses]);
     return derivedPromptAnswers.removeAt(0);
   }
 }

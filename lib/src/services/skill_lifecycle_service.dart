@@ -768,11 +768,13 @@ interface class SkillLifecycleService implements LifecycleResource {
     required InstallationMethod method,
     List<InstallationTarget>? targets,
     String? reviewedPlan,
+    bool dropPromptTargets = false,
   }) => _replay(
     input,
     migrationMethod: method,
     migrationTargets: targets,
     reviewedPlan: reviewedPlan,
+    dropPromptTargets: dropPromptTargets,
   );
 
   Future<LifecycleResult> _replay(
@@ -780,6 +782,7 @@ interface class SkillLifecycleService implements LifecycleResource {
     InstallationMethod? migrationMethod,
     List<InstallationTarget>? migrationTargets,
     String? reviewedPlan,
+    bool dropPromptTargets = false,
   }) async {
     final context = LifecycleContext.resolve(
       input.options,
@@ -932,6 +935,9 @@ interface class SkillLifecycleService implements LifecycleResource {
                 outputPath: 'SKILL.md',
               ),
           ],
+          promptTargets: dropPromptTargets
+              ? const <String>[]
+              : route.promptTargets,
         );
         final resource = installationResource(
           targets: [for (final target in requestedTargets) target.name],
@@ -1056,7 +1062,7 @@ interface class SkillLifecycleService implements LifecycleResource {
               );
             }
           }
-          for (final harness in route.derivedPromptTargets) {
+          for (final harness in newRoute.promptTargets) {
             final promptRoot = derivedPromptRoot(context, harness);
             final promptPath = state.io.fs.path.join(
               promptRoot,
@@ -1208,13 +1214,13 @@ interface class SkillLifecycleService implements LifecycleResource {
           }
         }
         final derivedWrites = <DerivedPromptWrite>[];
-        if (route.derivedPromptTargets.isNotEmpty) {
+        if (route.promptTargets.isNotEmpty) {
           final inspection = await PromptInspectionService(fs: state.io.fs)
               .inspect(staged.path, form: PromptForm.skill);
           final perHarness = assessDerivedPrompts(
             skillDirectory: staged.path,
             inspection: inspection,
-            harnesses: route.derivedPromptTargets,
+            harnesses: route.promptTargets,
             fileSystem: state.io.fs,
           );
           for (final prompt in record.derivedPrompts) {

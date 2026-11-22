@@ -131,7 +131,8 @@ final class const PackLifecycleRequest({
   final bool dryRun = false,
   final bool yes = false,
   final bool interactive = false,
-  final bool derivedPrompts = false,
+  final List<String> promptTargets = const <String>[],
+  final bool dropPromptTargets = false,
   final Future<bool> Function(PackPlan plan)? planReview,
 });
 
@@ -2148,17 +2149,20 @@ interface class PackLifecycleService {
       final derivedHarnesses = derivedType
           ? promptCapableHarnesses()
           : <String>[];
-      if (request.derivedPrompts && derivedType && derivedHarnesses.isEmpty) {
-        throw MambaException(
-          '--derived-prompts requires a prompt-capable harness in the '
-          'catalog; none publishes a native Prompt template.',
-          exitCode: PackProcessStatus.invalidInput.code,
-        );
+      for (final harness in request.promptTargets) {
+        if (!isPromptCapableTarget(harness)) {
+          throw MambaException(
+            '--prompt-target $harness is not prompt-capable; '
+            '${derivedHarnesses.isEmpty ? 'no catalog harness' : 'only ${derivedHarnesses.join(', ')}'} '
+            'publishes a native Prompt template.',
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
+        }
       }
       final offersDerived =
           derivedType &&
           derivedHarnesses.isNotEmpty &&
-          (request.derivedPrompts ||
+          (request.promptTargets.isNotEmpty ||
               (request.interactive &&
                   !request.yes &&
                   context.scope == LifecycleScope.project));
@@ -2186,36 +2190,37 @@ interface class PackLifecycleService {
             }
           }
         }
-        var derive = request.derivedPrompts;
-        if (!derive) {
+        var derive = List<String>.of(request.promptTargets);
+        if (derive.isEmpty) {
           for (final line in ineligible) {
             stdout.writeln('Ineligible for a derived Prompt: $line');
           }
           if (eligible.isNotEmpty) {
-            derive = await _promptYesNo(
-              'Publish native Prompt templates for: '
-              '${eligible.join(', ')} -> ${derivedHarnesses.join(', ')}?',
+            derive = await _offerPromptTargets(
+              'Publish Prompt templates for: ${eligible.join(', ')}',
+              derivedHarnesses,
             );
           }
         }
-        if (derive) {
+        if (derive.isNotEmpty) {
           for (final candidate in perCandidate.keys) {
             final perHarness = perCandidate[candidate]!;
             final usable = <String, DerivedPromptAssessment>{};
-            for (final assessment in perHarness.values) {
-              if (!assessment.manualOnly) continue;
+            for (final harness in derive) {
+              final assessment = perHarness[harness];
+              if (assessment == null || !assessment.manualOnly) continue;
               if (!assessment.eligible) {
-                if (request.derivedPrompts) {
+                if (request.promptTargets.isNotEmpty) {
                   throw MambaException(
                     '${candidate.name} is ineligible for a derived Prompt on '
-                    '${assessment.harness}: '
+                    '$harness: '
                     '${assessment.reasons.join('; ')}',
                     exitCode: PackProcessStatus.invalidInput.code,
                   );
                 }
                 continue;
               }
-              usable[assessment.harness] = assessment;
+              usable[harness] = assessment;
             }
             if (usable.isNotEmpty) {
               derivedAssessments[candidate.name] = usable;
@@ -3309,11 +3314,8 @@ interface class PackLifecycleService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
-      final migratePerHarness = oldRoute.derivedPromptTargets.isNotEmpty
-          ? await _assessDerivedPrompts(
-              candidate.path,
-              oldRoute.derivedPromptTargets,
-            )
+      final migratePerHarness = oldRoute.promptTargets.isNotEmpty
+          ? await _assessDerivedPrompts(candidate.path, oldRoute.promptTargets)
           : <String, DerivedPromptAssessment>{};
       final desired = _installationUnit(
         context,
@@ -3325,7 +3327,9 @@ interface class PackLifecycleService {
           for (final entry in migratePerHarness.entries)
             if (entry.value.content != null) entry.key: entry.value.content!,
         },
-        derivedPromptTargets: oldRoute.derivedPromptTargets,
+        promptTargets: request.dropPromptTargets
+            ? const <String>[]
+            : oldRoute.promptTargets,
       );
       const review = PackSkillMigrationReview();
       final plan = review.preview(
@@ -3522,8 +3526,8 @@ interface class PackLifecycleService {
       method,
       targets,
       PackResourceType.skill,
-      derivedPromptTargets:
-          record.installationRoute?.derivedPromptTargets ?? const <String>[],
+      promptTargets:
+          record.installationRoute?.promptTargets ?? const <String>[],
     ).installationRoute;
   }
 
@@ -3537,11 +3541,11 @@ interface class PackLifecycleService {
     final derivedWrites = <DerivedPromptWrite>[];
     final oldRoute = record.installationRoute;
     if (oldRoute != null &&
-        oldRoute.derivedPromptTargets.isNotEmpty &&
+        oldRoute.promptTargets.isNotEmpty &&
         record.derivedPrompts.isNotEmpty) {
       final perHarness = await _assessDerivedPrompts(
         candidate.path,
-        oldRoute.derivedPromptTargets,
+        oldRoute.promptTargets,
       );
       for (final prompt in record.derivedPrompts) {
         final content = <String>[
@@ -3609,7 +3613,7 @@ interface class PackLifecycleService {
     List<String> targets,
     PackResourceType type, {
     Map<String, String> derivedContents = const <String, String>{},
-    List<String> derivedPromptTargets = const <String>[],
+    List<String> promptTargets = const <String>[],
   }) {
     if (type == PackResourceType.agent) {
       final harness = _harness(candidate.profile!);
@@ -3782,9 +3786,9 @@ interface class PackLifecycleService {
                 SkillInstallMethod.sourceLink => InstallationMethod.sourceLink,
               },
               derivedArtifacts: candidate.derivedArtifacts,
-              derivedPromptTargets: derivedContents.isNotEmpty
+              promptTargets: derivedContents.isNotEmpty
                   ? derivedContents.keys.toList()
-                  : derivedPromptTargets,
+                  : promptTargets,
             ),
     );
   }
@@ -4918,6 +4922,24 @@ interface class PackLifecycleService {
       }
     }
     return result;
+  }
+
+  Future<List<String>> _offerPromptTargets(
+    String label,
+    List<String> harnesses,
+  ) async {
+    if (harnesses.length == 1) {
+      return await _promptYesNo('$label on ${harnesses.single}?')
+          ? harnesses
+          : const <String>[];
+    }
+    final picked = await _promptMultiChoice(
+      '$label; select harnesses:',
+      harnesses,
+    );
+    return picked == null
+        ? const <String>[]
+        : [for (final index in picked) harnesses[index]];
   }
 
   Future<bool> _promptYesNo(String label) async {
