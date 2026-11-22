@@ -3935,10 +3935,223 @@ path = "skills/second"
               );
             },
           );
+
+          test('an interrupted remove finishes through recovery', () async {
+            final source = manualSkill('recover-remove-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--prompt-target',
+              'pi',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            LifecycleContext resolved({bool approved = true}) =>
+                LifecycleContext.resolve(
+                  LifecycleOptions(
+                    processWorkingDirectory: project.path,
+                    scope: LifecycleScope.project,
+                    cwd: project.path,
+                    projectRoot: project.path,
+                    home: home.path,
+                    stateDir: fs.path.join(sandbox.path, 'state'),
+                    approved: approved,
+                  ),
+                  fileSystem: fs,
+                );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final record = lifecycle.state.records(resolved()).single;
+            final failing = SkillLifecycleService(
+              state: LifecycleStateService(
+                io: _FailOnQuarantineDeleteIO(fs: fs),
+              ),
+            );
+            await expectLater(
+              failing.state.remove(
+                resource: failing,
+                context: resolved(),
+                installationId: record.installationId,
+              ),
+              throwsA(isA<MambaException>()),
+            );
+            expect(
+              fs.file(promptPath('recover-remove-source')).existsSync(),
+              isFalse,
+            );
+            final transaction = fs
+                .directory(
+                  fs.path.join(project.path, '.agent-resource', 'transactions'),
+                )
+                .listSync()
+                .whereType<File>()
+                .singleWhere(
+                  (file) =>
+                      (jsonDecode(file.readAsStringSync())
+                          as Map)['operation'] ==
+                      'remove',
+                );
+            final transactionId = fs.path.basenameWithoutExtension(
+              transaction.path,
+            );
+            final recovered = await lifecycle.state.recover(
+              resource: lifecycle,
+              context: resolved(),
+              transactionId: transactionId,
+              action: 'complete',
+            );
+            expect(recovered.outcome, 'recovered');
+            expect(
+              fs.file(promptPath('recover-remove-source')).existsSync(),
+              isFalse,
+            );
+            final promptQuarantine = fs.directory(
+              fs.path.join(
+                project.path,
+                '.pi',
+                '.agent-resource',
+                'quarantine',
+                transactionId,
+              ),
+            );
+            expect(
+              promptQuarantine.existsSync()
+                  ? promptQuarantine.listSync().isEmpty
+                  : true,
+              isTrue,
+            );
+          });
+
+          test('restore after remove brings back the template', () async {
+            final source = manualSkill('restore-template-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--prompt-target',
+              'pi',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            LifecycleContext resolved({bool approved = true}) =>
+                LifecycleContext.resolve(
+                  LifecycleOptions(
+                    processWorkingDirectory: project.path,
+                    scope: LifecycleScope.project,
+                    cwd: project.path,
+                    projectRoot: project.path,
+                    home: home.path,
+                    stateDir: fs.path.join(sandbox.path, 'state'),
+                    approved: approved,
+                  ),
+                  fileSystem: fs,
+                );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final record = lifecycle.state.records(resolved()).single;
+            final removed = await lifecycle.state.remove(
+              resource: lifecycle,
+              context: resolved(),
+              installationId: record.installationId,
+            );
+            expect(
+              fs.file(promptPath('restore-template-source')).existsSync(),
+              isFalse,
+            );
+            final restored = await lifecycle.state.restore(
+              resource: lifecycle,
+              context: resolved(),
+              backupId: removed.data['backupId']! as String,
+            );
+            expect(restored.outcome, 'restored');
+            expect(
+              fs.file(promptPath('restore-template-source')).readAsStringSync(),
+              endsWith('Body.\n'),
+            );
+            final live = lifecycle.state.records(resolved()).single;
+            expect(live.lifecycle, 'live');
+            expect(live.derivedPrompts, hasLength(1));
+          });
+
+          test('a locally edited template refuses removal', () async {
+            final source = manualSkill('edit-refuse-source');
+            final install = await executor().fake().execute([
+              'skill',
+              'install',
+              source.path,
+              ...context(),
+              '--source-kind',
+              'resource',
+              '--target',
+              'claude',
+              '--method',
+              'copy',
+              '--prompt-target',
+              'pi',
+              '--yes',
+            ]);
+            expect(install, isA<MambaSuccessResult>());
+            LifecycleContext resolved({bool approved = true}) =>
+                LifecycleContext.resolve(
+                  LifecycleOptions(
+                    processWorkingDirectory: project.path,
+                    scope: LifecycleScope.project,
+                    cwd: project.path,
+                    projectRoot: project.path,
+                    home: home.path,
+                    stateDir: fs.path.join(sandbox.path, 'state'),
+                    approved: approved,
+                  ),
+                  fileSystem: fs,
+                );
+            final lifecycle = SkillLifecycleService(fileSystem: fs);
+            final record = lifecycle.state.records(resolved()).single;
+            fs
+                .file(promptPath('edit-refuse-source'))
+                .writeAsStringSync('Local edit.\n');
+            await expectLater(
+              lifecycle.state.remove(
+                resource: lifecycle,
+                context: resolved(),
+                installationId: record.installationId,
+              ),
+              throwsA(isA<MambaException>()),
+            );
+            expect(record.location, isNotEmpty);
+            expect(fs.directory(record.location).existsSync(), isTrue);
+            expect(
+              fs.file(promptPath('edit-refuse-source')).readAsStringSync(),
+              'Local edit.\n',
+            );
+          });
         });
       });
     });
   });
+}
+
+final class _FailOnQuarantineDeleteIO extends LifecycleIO {
+  _FailOnQuarantineDeleteIO({required super.fs});
+
+  @override
+  void before(String operation, String path) {
+    if (operation == 'delete' && path.contains('quarantine')) {
+      throw const FileSystemException('Injected cleanup failure');
+    }
+  }
 }
 
 final class _FailOnPromptStageIO extends LifecycleIO {

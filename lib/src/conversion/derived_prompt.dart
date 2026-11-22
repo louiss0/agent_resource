@@ -65,11 +65,11 @@ final class DerivedPromptEligibility {
   }
 }
 
-/// Renders native Markdown frontmatter and body, keeping only fields the
-/// matrix supports.
+/// Renders native Markdown frontmatter and body.
 ///
-/// Fields the matrix has no spec for are collected in [unsupported] and
-/// dropped rather than silently discarded. The body is preserved exactly.
+/// When [unsupported] is provided, fields the matrix has no spec for are
+/// collected into it and dropped rather than silently discarded; otherwise
+/// every field is emitted. The body is preserved exactly.
 String renderNativeMarkdown({
   required Map<String, Object?> fields,
   required String body,
@@ -77,10 +77,12 @@ String renderNativeMarkdown({
   List<String>? unsupported,
 }) {
   final rendered = <String, Object?>{...fields};
-  for (final key in fields.keys) {
-    if (matrix.specFor(key) == null) {
-      unsupported?.add(key);
-      rendered.remove(key);
+  if (unsupported != null) {
+    for (final key in fields.keys) {
+      if (matrix.specFor(key) == null) {
+        unsupported.add(key);
+        rendered.remove(key);
+      }
     }
   }
   final entries = rendered.entries.toList()
@@ -128,13 +130,9 @@ String derivedPromptRoot(LifecycleContext context, String harness) {
   }
   final id = HarnessId.values.singleWhere((value) => value.wireName == harness);
   final spec = HarnessCatalog.instance.requireFacet(id, HarnessFacet.prompt);
-  if (spec is PromptHarnessSpec) {
-    final paths = context.fs.path;
-    if (id == HarnessId.pi) {
-      return context.scope == LifecycleScope.project
-          ? paths.join(context.projectRoot, '.pi', 'prompts')
-          : paths.join(context.piAgentRoot(), 'prompts');
-    }
+  final root = spec is PromptHarnessSpec ? spec.templateRoot(context) : null;
+  if (root != null) {
+    return root;
   }
   throw ArgumentError.value(harness, 'harness', 'No template root');
 }

@@ -3314,7 +3314,8 @@ interface class PackLifecycleService {
           exitCode: PackProcessStatus.invalidInput.code,
         );
       }
-      final migratePerHarness = oldRoute.promptTargets.isNotEmpty
+      final migratePerHarness =
+          oldRoute.promptTargets.isNotEmpty && !request.dropPromptTargets
           ? await _assessDerivedPrompts(candidate.path, oldRoute.promptTargets)
           : <String, DerivedPromptAssessment>{};
       final desired = _installationUnit(

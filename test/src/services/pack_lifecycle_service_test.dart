@@ -97,6 +97,7 @@ track = { kind = "local" }
       bool yes = true,
       bool interactive = false,
       List<String> promptTargets = const <String>[],
+      bool dropPromptTargets = false,
       bool noSave = false,
       bool useDefaultTarget = true,
       bool skipNew = false,
@@ -147,6 +148,7 @@ track = { kind = "local" }
         yes: yes,
         interactive: interactive,
         promptTargets: promptTargets,
+        dropPromptTargets: dropPromptTargets,
       );
     }
 
@@ -282,6 +284,52 @@ Manual body.
           isEmpty,
         );
         expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+      });
+
+      test('migrate --drop-prompt-targets removes the template', () async {
+        makeManualOnly('reviewer');
+        final service = PackLifecycleService(fileSystem: fs);
+        await service.execute(derivedRequest(promptTargets: const ['pi']));
+        expect(fs.file(promptPath('reviewer')).existsSync(), isTrue);
+        final preview = await service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            dropPromptTargets: true,
+            dryRun: true,
+          ),
+        );
+        expect(preview.plan!.planId, isNotNull);
+        final applied = await service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            dropPromptTargets: true,
+            reviewedPlan: preview.plan!.planId,
+          ),
+        );
+        expect(applied.outcome, 'completed');
+        expect(fs.file(promptPath('reviewer')).existsSync(), isFalse);
+        final context = LifecycleContext.resolve(
+          LifecycleOptions(
+            processWorkingDirectory: project.path,
+            cwd: project.path,
+            projectRoot: project.path,
+            home: home.path,
+          ),
+          fileSystem: fs,
+        );
+        final migrated = LifecycleStateService(io: LifecycleIO(fs: fs))
+            .records(context)
+            .single;
+        expect(migrated.derivedPrompts, isEmpty);
+        expect(migrated.installationRoute!.promptTargets, isEmpty);
       });
     });
 
