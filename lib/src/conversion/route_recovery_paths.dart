@@ -22,8 +22,14 @@ final class RouteRecoveryPaths {
         !paths.isWithin(nativeRoot, location)) {
       throw const FormatException('Invalid route transaction path identity.');
     }
+    // The journal records case-folded action paths on Windows while records
+    // keep their reviewed case; key the layout on a case-stable form so every
+    // reader derives the same staged and quarantine locations.
+    final canonical = paths.style == p.Style.windows
+        ? location.toLowerCase()
+        : location;
     final name =
-        '${sha256.convert(utf8.encode(location)).toString().substring(0, 16)}-${paths.basename(location)}';
+        '${sha256.convert(utf8.encode(canonical)).toString().substring(0, 16)}-${paths.basename(canonical)}';
     final root = paths.join(paths.dirname(nativeRoot), '.agent-resource');
     return (
       staged: paths.join(root, 'staging', transactionId, name),

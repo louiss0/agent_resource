@@ -12,6 +12,8 @@ import 'package:path/path.dart' as p;
 import '../conversion/conversion_evidence.dart';
 import '../conversion/route_journal_evidence.dart';
 import '../conversion/conversion_restore_evidence.dart';
+import '../conversion/installation_path_diff.dart';
+import '../conversion/route_recovery_paths.dart';
 import '../harness/harness_user_roots.dart';
 import '../authoring/authoring_transaction.dart';
 import '../installation/installation_plan.dart';
@@ -19,8 +21,11 @@ import '../installation/installation_route.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
 import 'configuration_publication_service.dart';
+import 'route_rollback_service.dart';
+import 'skill_lifecycle_service.dart';
 
 part 'lifecycle_canonical.dart';
+part 'route_migration_service.dart';
 
 const managementSchemaVersion = 1;
 
