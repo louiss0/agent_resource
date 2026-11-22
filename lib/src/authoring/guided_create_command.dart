@@ -9,6 +9,9 @@ import '../services/lifecycle_state_service.dart';
 import 'authoring_inputs.dart';
 import 'guided_create_fields.dart';
 
+const String _selectedFieldsOmission =
+    'Explicit command omitted: selected fields cannot be represented safely.';
+
 /// The shared base of the guided create commands.
 ///
 /// The base owns the named native vocabulary, the interaction boundary and
@@ -169,7 +172,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
     final needsBody = operation != AuthoringOperation.clone;
     final fields = outcome.data['fields'];
     if (fields is! Map) {
-      return 'Explicit command omitted: selected fields cannot be represented safely.';
+      return _selectedFieldsOmission;
     }
     const supported = {
       'name',
@@ -190,7 +193,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
       return 'Explicit command omitted: selected field intents cannot be represented safely.';
     }
     if (intents.keys.any((key) => key is! String || !supported.contains(key))) {
-      return 'Explicit command omitted: selected fields cannot be represented safely.';
+      return _selectedFieldsOmission;
     }
     final words = <String>[
       ...commandPath.split(' '),
@@ -228,7 +231,7 @@ abstract class GuidedCreateCommand extends Command with HookRunner {
           words.addAll(['--metadata', '${item.key}=${item.value}']);
         }
       } else {
-        return 'Explicit command omitted: selected fields cannot be represented safely.';
+        return _selectedFieldsOmission;
       }
     }
     if (inputs.output != null) words.addAll(['--output', inputs.output!]);
