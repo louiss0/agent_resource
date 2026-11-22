@@ -84,6 +84,37 @@ void main() {
     doc['completedActions'] = ['0-remove', '0-publish'];
     expect(RouteJournalEvidence.decode(jsonEncode(doc), p.posix).toJson(), doc);
   });
+  test('validates durable reverse prefix and rollback phases', () {
+    final doc = evidence();
+    doc['completedActions'] = ['0-remove', '1-publish'];
+    doc['phase'] = 'rollingBack';
+    doc['rolledBackActions'] = ['1-publish'];
+    expect(RouteJournalEvidence.decode(jsonEncode(doc), p.posix).toJson(), doc);
+    void rejected(Object? value, String phase) {
+      doc['rolledBackActions'] = value;
+      doc['phase'] = phase;
+      expect(
+        () => RouteJournalEvidence.decode(jsonEncode(doc), p.posix),
+        throwsFormatException,
+      );
+    }
+
+    rejected(null, 'rollingBack');
+    rejected(['0-remove'], 'rollingBack');
+    rejected(['1-publish', '1-publish'], 'rollingBack');
+    rejected(['1-publish', '0-remove', '0-remove'], 'rollingBack');
+    rejected(['1-publish'], 'rolledBack');
+    rejected([], 'published');
+    rejected([], 'committed');
+    doc.remove('rolledBackActions');
+    doc['phase'] = 'rolledBack';
+    expect(
+      () => RouteJournalEvidence.decode(jsonEncode(doc), p.posix),
+      throwsFormatException,
+    );
+    doc['rolledBackActions'] = ['1-publish', '0-remove'];
+    expect(RouteJournalEvidence.decode(jsonEncode(doc), p.posix).toJson(), doc);
+  });
   test('rejects duplicate JSON object keys', () {
     final encoded = jsonEncode(evidence()).replaceFirst(
       '"phase":"prepared"',

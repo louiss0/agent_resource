@@ -37,6 +37,62 @@ void main() {
     expect(plan.appliedSteps, 1);
   });
 
+  test('resumes after a reverse rename before its marker and verifies terminal evidence', () {
+    final doc = fixture.evidence();
+    doc['completedActions'] = ['0-remove', '1-publish'];
+    doc['phase'] = 'rollingBack';
+    doc['rolledBackActions'] = <String>[];
+    final afterReverse = <RouteArtifactObservations>[
+      (
+        live: ArtifactObservation.absent,
+        staged: ArtifactObservation.absent,
+        quarantine: ArtifactObservation.old,
+      ),
+      (
+        live: ArtifactObservation.absent,
+        staged: ArtifactObservation.newArtifact,
+        quarantine: ArtifactObservation.absent,
+      ),
+    ];
+    RouteRecoveryPlan inspect(
+      LedgerObservation ledger,
+      List<RouteArtifactObservations> artifacts,
+    ) => RouteRecoveryPlan.inspect(
+      RouteJournalEvidence.decode(jsonEncode(doc), p.posix),
+      ledger: ledger,
+      artifacts: artifacts,
+    );
+    expect(inspect(LedgerObservation.old, afterReverse).appliedSteps, 1);
+    expect(
+      inspect(LedgerObservation.newRecords, afterReverse).decision,
+      RecoveryDecision.refuse,
+    );
+    final initial = <RouteArtifactObservations>[
+      (
+        live: ArtifactObservation.old,
+        staged: ArtifactObservation.absent,
+        quarantine: ArtifactObservation.absent,
+      ),
+      afterReverse.last,
+    ];
+    expect(
+      inspect(LedgerObservation.old, initial).decision,
+      RecoveryDecision.refuse,
+    );
+    doc['rolledBackActions'] = ['1-publish'];
+    expect(inspect(LedgerObservation.old, initial).appliedSteps, 0);
+    doc['phase'] = 'rolledBack';
+    doc['rolledBackActions'] = ['1-publish', '0-remove'];
+    expect(
+      inspect(LedgerObservation.old, initial).decision,
+      RecoveryDecision.rolledBack,
+    );
+    expect(
+      inspect(LedgerObservation.old, afterReverse).decision,
+      RecoveryDecision.refuse,
+    );
+  });
+
   test('distinguishes old and new baselines at a replaced path', () {
     final doc = fixture.evidence();
     final next = (doc['newRecords'] as List).first as Map;

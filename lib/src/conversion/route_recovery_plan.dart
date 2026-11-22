@@ -8,7 +8,7 @@ enum ArtifactObservation { absent, old, newArtifact, ambiguous, unknown }
 /// Exact comparison of the complete participating ledger state, not a write result.
 enum LedgerObservation { old, newRecords, ambiguous, unknown }
 
-enum RecoveryDecision { rollback, complete, refuse }
+enum RecoveryDecision { rollback, rolledBack, complete, refuse }
 
 typedef RouteArtifactObservations = ({
   ArtifactObservation live,
@@ -25,7 +25,7 @@ final class RouteRecoveryPlan {
 
   final RecoveryDecision decision;
 
-  /// Number of proven forward renames, or null when evidence is inconclusive.
+  /// Number of forward renames still in effect, or null when inconclusive.
   final int? appliedSteps;
 
   static RouteRecoveryPlan inspect(
@@ -42,6 +42,9 @@ final class RouteRecoveryPlan {
         ledger == LedgerObservation.unknown) {
       return refuse;
     }
+
+    final reverse = doc['rolledBackActions'] as List?;
+    if (reverse != null && ledger != LedgerObservation.old) return refuse;
 
     // Simulate only the recorded prefix and the single possible rename that
     // can occur before its marker is durable. No later mutation is inferred.
@@ -60,7 +63,14 @@ final class RouteRecoveryPlan {
     final candidates = <int>[];
     var step = 0;
     void match() {
-      if ((step == markers || step == markers + 1) &&
+      final remaining = reverse == null ? null : markers - reverse.length;
+      final eligible = remaining == null
+          ? step == markers || step == markers + 1
+          : step == remaining ||
+                (remaining > 0 &&
+                    doc['phase'] != 'rolledBack' &&
+                    step == remaining - 1);
+      if (eligible &&
           List.generate(
             state.length,
             (i) => state[i] == artifacts[i],
@@ -90,6 +100,17 @@ final class RouteRecoveryPlan {
         step++;
         match();
       }
+    }
+    if (reverse != null) {
+      // Rollback starts only after every applied forward rename is marked.
+      // Candidates include at most one unmarked reverse rename.
+      if (candidates.length != 1) return refuse;
+      return RouteRecoveryPlan._(
+        doc['phase'] == 'rolledBack'
+            ? RecoveryDecision.rolledBack
+            : RecoveryDecision.rollback,
+        candidates.single,
+      );
     }
     if (candidates.length != 1) return refuse;
     final applied = candidates.single;

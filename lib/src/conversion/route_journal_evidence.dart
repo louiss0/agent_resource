@@ -35,6 +35,7 @@ final class RouteJournalEvidence {
     }
 
     keys(map, {
+      if (map.containsKey('rolledBackActions')) 'rolledBackActions',
       'schemaVersion',
       'operation',
       'transactionId',
@@ -221,13 +222,31 @@ final class RouteJournalEvidence {
         if (completed[i] != steps[i]) fail();
       }
       final phase = map['phase'];
+      final hasRollback = map.containsKey('rolledBackActions');
+      final reversed = map['rolledBackActions'];
+      if (hasRollback) {
+        if (reversed is! List || reversed.length > completed.length) fail();
+        for (var i = 0; i < (reversed as List).length; i++) {
+          if (reversed[i] != completed[completed.length - 1 - i]) fail();
+        }
+        if (![
+              'rollingBack',
+              'rolledBack',
+              'recoveryRequired',
+            ].contains(phase) ||
+            phase == 'rolledBack' && reversed.length != completed.length) {
+          fail();
+        }
+      } else if (phase == 'rollingBack' || phase == 'rolledBack') {
+        fail();
+      }
       if (!(phase == 'prepared' && completed.isEmpty ||
           phase == 'applying' &&
               completed.isNotEmpty &&
               completed.length < steps.length ||
           ['published', 'committed', 'completed'].contains(phase) &&
               completed.length == steps.length ||
-          phase == 'recoveryRequired')) {
+          ['recoveryRequired', 'rollingBack', 'rolledBack'].contains(phase))) {
         fail();
       }
     } on FormatException {
