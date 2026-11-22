@@ -4926,6 +4926,7 @@ interface class LifecycleStateService {
     Set<String> validatedRecoveryPaths = const {},
     Set<String> excludedAuthoringEvidencePaths = const {},
     Set<String> excludedConfigurationEvidencePaths = const {},
+    Set<String> excludedRouteEvidencePaths = const {},
     ({
       ArtifactKind kind,
       String name,
@@ -4981,6 +4982,7 @@ interface class LifecycleStateService {
           locations: locations,
           installationIds: touchedIds,
           packKeys: packKeys,
+          excluded: excludedRouteEvidencePaths,
           expectedScope:
               io.fs.path.equals(
                 state,
@@ -5294,6 +5296,7 @@ interface class LifecycleStateService {
     Iterable<String> locations = const [],
     Set<String> installationIds = const {},
     Set<String> packKeys = const {},
+    Set<String> excluded = const {},
     String? expectedScope,
   }) {
     final root = io.fs.path.join(state, 'transactions');
@@ -5322,7 +5325,9 @@ interface class LifecycleStateService {
             expectedScope != null && evidence['scope'] != expectedScope) {
           throw const FormatException('Route journal authority mismatch.');
         }
-        if (evidence['phase'] == 'completed') continue;
+        if (evidence['phase'] == 'completed' || excluded.contains(file.path)) {
+          continue;
+        }
         final records = [
           for (final item in evidence['oldRecords'] as List)
             InstallationRecord.fromJson(item),
