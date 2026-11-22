@@ -103,8 +103,9 @@ final class RouteJournalEvidence {
             source != null &&
                 jsonEncode(_sorted(source)) !=
                     jsonEncode(_sorted(sourceJson)) ||
-            jsonEncode(_sorted(record.origin['source'])) !=
-                jsonEncode(_sorted(sourceJson))) {
+            record.origin['source'] != null &&
+                jsonEncode(_sorted(record.origin['source'])) !=
+                    jsonEncode(_sorted(sourceJson))) {
           fail();
         }
         name = record.name;
@@ -116,12 +117,15 @@ final class RouteJournalEvidence {
         ].contains(record.kind.name)) {
           fail();
         }
-        for (final consumer in record.knownConsumers) {
+        for (final consumer
+            in record.kind.name == 'skillCanonical'
+                ? record.knownConsumers
+                : [record.nativeDestination]) {
           if (!consumers.add(consumer)) fail();
         }
         if (record.kind.name != 'skillCanonical' &&
             (record.exposures.isNotEmpty ||
-                record.knownConsumers.length != 1)) {
+                !record.knownConsumers.contains(record.nativeDestination))) {
           fail();
         }
         final targets = <String>{};

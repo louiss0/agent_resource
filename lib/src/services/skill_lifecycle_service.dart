@@ -822,12 +822,10 @@ interface class SkillLifecycleService implements LifecycleResource {
         targetsChanged;
     if (migrationMethod != null &&
         !canonicalTargets &&
-        (targetsChanged ||
-            migrationMethod == InstallationMethod.canonical ||
-            route.method == InstallationMethod.canonical ||
-            migrationMethod == route.method)) {
+        !targetsChanged &&
+        migrationMethod == route.method) {
       throw MambaException(
-        'This migration supports canonical target changes or copy/source-link method changes at the existing target; the requested transition is not supported.',
+        'The requested migration does not change the installation route.',
         exitCode: 4,
       );
     }
@@ -958,6 +956,121 @@ interface class SkillLifecycleService implements LifecycleResource {
           throw MambaException(
             'Review a current migration preview and supply its plan ID with --reviewed-plan.',
             exitCode: 4,
+          );
+        }
+        if (migrationMethod != null && !canonicalTargets) {
+          final userScope = context.scope == LifecycleScope.user;
+          final linkKind = Platform.isWindows
+              ? 'windows-directory-symlink'
+              : 'posix-directory-symlink';
+          final entries = <InstallationEntryPlan>[];
+          if (method == InstallationMethod.canonical) {
+            final canonicalRoot = fs.path.normalize(context.sharedSkillsRoot());
+            final canonicalPath = fs.path.join(canonicalRoot, record.name);
+            entries.add(
+              InstallationEntryPlan(
+                path: canonicalPath,
+                kind: InstallationEntryKind.content,
+                action: InstallationEntryAction.createContent,
+                nativeRoot: canonicalRoot,
+                nativeDestination: 'canonical',
+                artifactKind: OwnedArtifactKind.skillCanonical,
+              ),
+            );
+            for (final target in requestedTargets) {
+              final exposureRoot = canonicalExposureRoot(context, target.name);
+              entries.add(
+                exposureRoot == null
+                    ? InstallationEntryPlan(
+                        path: canonicalPath,
+                        kind: InstallationEntryKind.consumer,
+                        action: InstallationEntryAction.recordConsumer,
+                        target: target.name,
+                      )
+                    : InstallationEntryPlan(
+                        path: fs.path.join(exposureRoot, record.name),
+                        kind: InstallationEntryKind.link,
+                        action: InstallationEntryAction.createLink,
+                        target: target.name,
+                        linkTarget: canonicalPath,
+                        nativeLinkKind: linkKind,
+                        nativeRoot: exposureRoot,
+                        nativeDestination: target.name,
+                        artifactKind: OwnedArtifactKind.skillLink,
+                      ),
+              );
+            }
+          } else {
+            for (final target in requestedTargets) {
+              final spec = HarnessCatalog.instance.requireSkillInstallation(
+                HarnessId.of(InstallationTarget.values.byName(target.name)),
+              );
+              final root = fs.path.normalize(switch (spec.installationRoot!) {
+                SkillInstallationRoot.shared => context.sharedSkillsRoot(),
+                SkillInstallationRoot.harness => spec.root(
+                  context,
+                  userScope: userScope,
+                ),
+              });
+              entries.add(
+                InstallationEntryPlan(
+                  path: fs.path.join(root, record.name),
+                  kind: method == InstallationMethod.copy
+                      ? InstallationEntryKind.copy
+                      : InstallationEntryKind.link,
+                  action: method == InstallationMethod.copy
+                      ? InstallationEntryAction.createCopy
+                      : InstallationEntryAction.createLink,
+                  target: target.name,
+                  linkTarget: method == InstallationMethod.sourceLink
+                      ? path
+                      : null,
+                  nativeLinkKind: method == InstallationMethod.sourceLink
+                      ? linkKind
+                      : null,
+                  nativeRoot: root,
+                  nativeDestination: userScope
+                      ? spec.userInstallationDestination!
+                      : spec.projectInstallationDestination!,
+                  artifactKind: method == InstallationMethod.copy
+                      ? OwnedArtifactKind.skillCopy
+                      : OwnedArtifactKind.skillLink,
+                ),
+              );
+            }
+          }
+          final desired = InstallationUnitPlan(
+            resourceType: InstallationResourceType.skill,
+            resourceId: record.name,
+            nativeName: record.name,
+            profile: null,
+            method: method,
+            status: InstallationUnitStatus.planned,
+            installationIds: const <String>[],
+            entries: entries,
+            sourcePath: method == InstallationMethod.sourceLink
+                ? path
+                : staged.path,
+            sourceDigest: digest,
+            origin: origin,
+            installationRoute: newRoute,
+          );
+          if (!context.dryRun) {
+            await RouteMigrationService(
+              state: state,
+            ).migrate(context, expectedOldRecords: [record], desired: desired);
+          }
+          return LifecycleResult(
+            command: 'skill migrate',
+            outcome: context.dryRun ? 'planned' : 'migrated',
+            data: {
+              'fromMethod': route.method.wireName,
+              'toMethod': method.wireName,
+              'fromTargets': [for (final target in route.targets) target.name],
+              'toTargets': [for (final target in requestedTargets) target.name],
+              'planId': planId,
+              'route': newRoute.toJson(),
+            },
           );
         }
         if (expectedKind == ArtifactKind.skillLink && migrationMethod == null) {

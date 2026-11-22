@@ -43,15 +43,20 @@ final class InstallationPathDiff(final p.Context paths) {
           record.lifecycle != 'live' ||
           record.name != desired.nativeName ||
           !ids.add(record.installationId) ||
-          !_same(record.origin['source'], oldRoute.source.toJson()) ||
+          record.origin['source'] != null &&
+              !_same(record.origin['source'], oldRoute.source.toJson()) ||
           record.kind != _recordKind(oldRoute.method)) {
         throw ArgumentError('Mixed or invalid old installation group.');
       }
       if (record.kind != ArtifactKind.skillCanonical &&
-          (record.exposures.isNotEmpty || record.knownConsumers.length != 1)) {
+          (record.exposures.isNotEmpty ||
+              !record.knownConsumers.contains(record.nativeDestination))) {
         throw ArgumentError('Unexpected exposures.');
       }
-      for (final consumer in record.knownConsumers) {
+      for (final consumer
+          in record.kind == ArtifactKind.skillCanonical
+              ? record.knownConsumers
+              : [record.nativeDestination]) {
         if (!consumers.add(consumer)) {
           throw ArgumentError('Duplicate consumer.');
         }
