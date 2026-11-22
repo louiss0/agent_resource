@@ -21,7 +21,7 @@ import '../installation/installation_route.dart';
 import '../skill_files.dart';
 import 'native_link_service.dart';
 import 'configuration_publication_service.dart';
-import 'route_rollback_service.dart';
+import 'route_recovery_service.dart';
 import 'skill_lifecycle_service.dart';
 
 part 'lifecycle_canonical.dart';
@@ -2769,7 +2769,14 @@ interface class LifecycleStateService {
     if (transactionId == null) {
       final transactions =
           _readTransactions(state, kinds ?? <ArtifactKind>{resource.kind})
-              .where((transaction) => !_recoveryTerminal(transaction['phase']))
+              .where(
+                (transaction) => transaction['operation'] == 'cross-route'
+                    ? !const {
+                        'completed',
+                        'rolledBack',
+                      }.contains(transaction['phase'])
+                    : !_recoveryTerminal(transaction['phase']),
+              )
               .toList();
       return LifecycleResult(
         command: '${_resourceLabel(resource.kind)} recover',
@@ -2795,7 +2802,10 @@ interface class LifecycleStateService {
         },
       );
     }
-    if (_recoveryTerminal(transaction['phase'])) {
+    final routeJournal = transaction['operation'] == 'cross-route';
+    if (routeJournal
+        ? const {'completed', 'rolledBack'}.contains(transaction['phase'])
+        : _recoveryTerminal(transaction['phase'])) {
       throw MambaException(
         'Transaction $transactionId is already terminal; destructive recovery cannot be replayed.',
         exitCode: 4,
@@ -2808,6 +2818,33 @@ interface class LifecycleStateService {
       );
     }
     _validateRecoveryAuthority(resource, context, transaction);
+    if (routeJournal) {
+      if (context.dryRun) {
+        return LifecycleResult(
+          command: '${_resourceLabel(resource.kind)} recover',
+          outcome: 'planned',
+          data: <String, Object?>{
+            ..._transactionSummary(transaction),
+            'action': action,
+            'approvalRequiredForApply': true,
+          },
+        );
+      }
+      _requireApproval(context, 'recovery');
+      final recovered = await RouteRecoveryService(state: this)
+          .recover(context, transactionId, action: action);
+      return LifecycleResult(
+        command: '${_resourceLabel(resource.kind)} recover',
+        outcome: 'recovered',
+        data: <String, Object?>{
+          ..._transactionSummary(transaction),
+          'action': action,
+          'stateEstablished': recovered['outcome'],
+          'retainedArtifacts': recovered['retained'],
+          'originalOperationSucceeded': recovered['outcome'] == 'completed',
+        },
+      );
+    }
     if (context.dryRun) {
       return LifecycleResult(
         command: '${_resourceLabel(resource.kind)} recover',
@@ -2884,7 +2921,9 @@ interface class LifecycleStateService {
         exitCode: 4,
       );
     }
-    final coordinated = transaction['schemaVersion'] == 2;
+    final coordinated =
+        transaction['schemaVersion'] == 2 ||
+        transaction['operation'] == 'cross-route';
     for (final record in records) {
       if (record.scope != context.scope ||
           (!coordinated &&
@@ -2985,6 +3024,9 @@ interface class LifecycleStateService {
         throw const FormatException(
           'Transaction identity or schema is invalid.',
         );
+      }
+      if (transaction['operation'] == 'cross-route') {
+        return _validateRouteTransaction(transaction, expectedId);
       }
       if (schemaVersion == 2) {
         return _validateCoordinatedTransaction(transaction, state, expectedId);
@@ -3106,6 +3148,35 @@ interface class LifecycleStateService {
         throw const FormatException('New baseline evidence does not match.');
       }
       return transaction;
+    } on FormatException catch (error) {
+      throw MambaException(
+        'Unsafe or unsupported transaction $expectedId: ${error.message}',
+        exitCode: 4,
+      );
+    }
+  }
+
+  /// Validates strict cross-route journal evidence and derives the display
+  /// fields the shared recovery surface summarizes.
+  Map<String, Object?> _validateRouteTransaction(
+    Map<String, Object?> transaction,
+    String expectedId,
+  ) {
+    try {
+      final doc = RouteJournalEvidence.decode(
+        jsonEncode(transaction),
+        io.fs.path,
+      ).toJson();
+      final firstNew = InstallationRecord.fromJson(
+        (doc['newRecords'] as List).first,
+      );
+      final firstAction = (doc['actions'] as List).first as Map;
+      return <String, Object?>{
+        ...doc,
+        'artifactKind': firstNew.kind.wireName,
+        'location': firstAction['path'],
+        'installationId': firstNew.installationId,
+      };
     } on FormatException catch (error) {
       throw MambaException(
         'Unsafe or unsupported transaction $expectedId: ${error.message}',
@@ -3588,6 +3659,16 @@ interface class LifecycleStateService {
   List<String> _availableRecoveryActions(Map<String, Object?> transaction) {
     final phase = transaction['phase'];
     final operation = transaction['operation'];
+    if (operation == 'cross-route') {
+      return switch (phase) {
+        'prepared' ||
+        'applying' ||
+        'published' => const ['rollback', 'complete'],
+        'committed' => const ['complete'],
+        'rollingBack' => const ['rollback'],
+        _ => const <String>[],
+      };
+    }
     if (phase == 'committedCleanupPending' || phase == 'cleanupVerified') {
       return const ['complete'];
     }
@@ -5330,7 +5411,8 @@ interface class LifecycleStateService {
             expectedScope != null && evidence['scope'] != expectedScope) {
           throw const FormatException('Route journal authority mismatch.');
         }
-        if (evidence['phase'] == 'completed' || excluded.contains(file.path)) {
+        if (const {'completed', 'rolledBack'}.contains(evidence['phase']) ||
+            excluded.contains(file.path)) {
           continue;
         }
         final records = [

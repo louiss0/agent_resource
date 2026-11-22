@@ -8,7 +8,7 @@ import 'package:agent_resource/src/installation/installation_route.dart';
 import 'package:agent_resource/src/services/acquisition_service.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/route_recovery_observation_service.dart';
-import 'package:agent_resource/src/services/route_rollback_service.dart';
+import 'package:agent_resource/src/services/route_recovery_service.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -403,8 +403,11 @@ void main() {
         ).inspect(journal, context);
         expect(observation.plan.decision, RecoveryDecision.complete);
         await expectLater(
-          RouteRollbackService(state: LifecycleStateService())
-              .rollback(context, doc['transactionId'] as String),
+          RouteRecoveryService(state: LifecycleStateService()).recover(
+            context,
+            doc['transactionId'] as String,
+            action: 'rollback',
+          ),
           throwsStateError,
         );
       },

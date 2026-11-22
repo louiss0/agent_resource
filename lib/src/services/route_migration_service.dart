@@ -6,7 +6,7 @@ part of 'lifecycle_state_service.dart';
 /// publishes the desired route's artifacts under the shared coordination
 /// domain. Its journal is strict [RouteJournalEvidence]: every live rename is
 /// recorded before the ledger commit, and any failure after the journal is
-/// durable is compensated by [RouteRollbackService]. Nothing outside the
+/// durable is compensated by [RouteRecoveryService]. Nothing outside the
 /// recorded actions is touched, no artifact is deleted, and a ledger commit
 /// whose outcome is uncertain is verified before compensation.
 final class RouteMigrationService {
@@ -449,8 +449,8 @@ final class RouteMigrationService {
           throw ledgerFailure;
         }
         try {
-          await RouteRollbackService(state: state)
-              .rollback(context, transactionId);
+          await RouteRecoveryService(state: state)
+              .recover(context, transactionId, action: 'rollback');
         } on Object {
           try {
             persist(journal('recoveryRequired'));
