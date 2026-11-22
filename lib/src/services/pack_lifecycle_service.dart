@@ -1642,13 +1642,21 @@ interface class PackLifecycleService {
           scope: scope,
         ),
       ]..sort(_compareDiscoveryCandidates);
+      final reported = <PackDiscoveryCandidate>[];
+      for (final candidate in discovered) {
+        if (!_discoveryIncludes(request, candidate)) continue;
+        reported.add(
+          candidate.kind == PackDiscoveryKind.skill
+              ? candidate.withAdmission(
+                  await _skills.installationAdmission(candidate.path),
+                )
+              : candidate,
+        );
+      }
       return PackDiscoveryReport(
         pack: pack.key,
         source: _sourceJson(pack, workspace.provenance),
-        candidates: [
-          for (final candidate in discovered)
-            if (_discoveryIncludes(request, candidate)) candidate,
-        ],
+        candidates: reported,
         types: _discoveryTypes(request),
       );
     } finally {
@@ -4045,10 +4053,8 @@ interface class PackLifecycleService {
         );
         final report = validateSkill(candidate.path, fs: _fileSystem);
         for (final diagnostic in report.diagnostics) {
-          final label = _validationDiagnosticLabel(
-            diagnostic.code,
-            diagnostic.field,
-          );
+          final label =
+              'native: ${_validationDiagnosticLabel(diagnostic.code, diagnostic.field)}';
           if (diagnostic.severity == DiagnosticSeverity.error) {
             failures.add(label);
           } else {
@@ -4057,9 +4063,9 @@ interface class PackLifecycleService {
         }
       } else if (candidate.profile == null) {
         failures.add(
-          'NATIVE_PROFILE_REQUIRED: discovered Agents require an explicit '
-          'catalog profile (claude, codex, pi-common, or antigravity); no '
-          'profile was inferred',
+          'eligibility: NATIVE_PROFILE_REQUIRED: discovered Agents require an '
+          'explicit catalog profile (claude, codex, pi-common, or '
+          'antigravity); no profile was inferred',
         );
       } else {
         final report = inspectNativeAgent(
@@ -4074,12 +4080,12 @@ interface class PackLifecycleService {
         if (identity is Map<String, Object?>) {
           name = identity['resolved'] as String?;
         }
-        if (name == null) failures.add('NATIVE_NAME_UNRESOLVED');
+        if (name == null) {
+          failures.add('native: NATIVE_NAME_UNRESOLVED');
+        }
         for (final diagnostic in report.diagnostics) {
-          final label = _validationDiagnosticLabel(
-            diagnostic.code,
-            diagnostic.field,
-          );
+          final label =
+              'native: ${_validationDiagnosticLabel(diagnostic.code, diagnostic.field)}';
           if (diagnostic.severity == AgentDiagnosticSeverity.error) {
             failures.add(label);
           } else {
@@ -4090,10 +4096,11 @@ interface class PackLifecycleService {
     } on MambaException catch (error) {
       failures.add(
         _isSkillFamily(candidate.type)
-            ? 'SKILL_SOURCE_REJECTED (source): the Skill root, marker, name, '
-                  'or tree was not admitted (status ${error.exitCode})'
-            : 'NATIVE_INSPECTION_INCOMPLETE: validation could not complete '
-                  'safely (status ${error.exitCode})',
+            ? 'eligibility: SKILL_SOURCE_REJECTED (source): the Skill root, '
+                  'marker, name, or tree was not admitted '
+                  '(status ${error.exitCode})'
+            : 'eligibility: NATIVE_INSPECTION_INCOMPLETE: validation could '
+                  'not complete safely (status ${error.exitCode})',
       );
     }
     return _InspectedPackResource(

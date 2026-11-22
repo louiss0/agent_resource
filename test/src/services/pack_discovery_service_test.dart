@@ -143,6 +143,9 @@ Review changes.
               .installationSupported,
           isTrue,
         );
+        expect(manual.admission, isNotNull);
+        expect(manual.admission!['scope'], 'source-only');
+        expect(manual.admission!['eligible'], isTrue);
         expect(
           manual.views
               .firstWhere((view) => view.consumer == PromptConsumer.pi)
@@ -153,12 +156,49 @@ Review changes.
           (candidate) => candidate.id == 'skills/plain',
         );
         expect(plain.promptCandidate, isFalse);
+        expect(plain.admission, isNotNull);
         final agent = report.candidates.firstWhere(
           (candidate) => candidate.id == 'agents/reviewer.md',
         );
         expect(agent.kind.name, 'agent');
         expect(agent.profile, 'claude');
         expect(agent.views, isEmpty);
+        expect(agent.admission, isNull);
+      },
+    );
+
+    test(
+      'reports method-specific admission diagnostics for a Skill candidate',
+      () async {
+        writeCatalog('''
+schema_version = 1
+[[catalog.skills]]
+path = "skills/loose"
+''');
+        writeSkill('skills/loose', '''
+---
+name: loose
+description: A skill with a loose root file.
+---
+See guide.md.
+''');
+        fs
+            .file(fs.path.join(source.path, 'skills', 'loose', 'guide.md'))
+            .writeAsStringSync('Guide');
+        final service = PackLifecycleService.withDependencies(fileSystem: fs);
+
+        final report = await service.discover(
+          request(types: [PackResourceType.skill]),
+        );
+
+        final candidate = report.candidates.single;
+        final admission = candidate.admission!;
+        expect(admission['eligible'], isTrue);
+        expect((admission['methods'] as Map)['copy'], isTrue);
+        expect((admission['methods'] as Map)['canonical'], isTrue);
+        expect((admission['methods'] as Map)['source-link'], isFalse);
+        expect('${admission['diagnostics']}', contains('source-link'));
+        expect(report.renderText(), contains('admission: eligible'));
       },
     );
 

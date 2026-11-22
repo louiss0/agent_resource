@@ -129,6 +129,7 @@ final class McpValidationReport {
     'profile': profile,
     'baseline': baseline,
     'claim': claim,
+    'verification': 'static',
     'diagnostics': <Object?>[
       for (final diagnostic in diagnostics) diagnostic.toJson(),
     ],
@@ -139,6 +140,7 @@ final class McpValidationReport {
       ..writeln('valid: $valid')
       ..writeln('profile: $profile')
       ..writeln('claim: $claim')
+      ..writeln('verification: static')
       ..writeln('baseline: ${jsonEncode(baseline)}')
       ..writeln('diagnostics:');
     if (diagnostics.isEmpty) {

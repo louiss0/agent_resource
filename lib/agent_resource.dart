@@ -6,6 +6,7 @@ import 'agent.dart';
 import 'authoring.dart';
 import 'config.dart';
 import 'skill.dart';
+import 'support.dart';
 import 'pack.dart';
 import 'prompt.dart';
 import 'mcp.dart';
@@ -129,6 +130,7 @@ Executor createExecutor({
         conversion: agentConversion,
         guided: guidedService,
       ),
+      SupportCommand(),
       PackCommand(service: packLifecycle, fileSystem: fileSystem),
       ConfigCommand(
         service: packLifecycle,

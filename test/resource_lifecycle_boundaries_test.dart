@@ -3,24 +3,6 @@ import 'package:agent_resource/src/resource_lifecycle_boundaries.dart';
 import 'package:mamba/mamba.dart';
 import 'package:test/test.dart';
 
-/// Collects every command name in the subtree of [group].
-Set<String> _descendantNames(GroupCommand group) {
-  final names = <String>{};
-  void visit(Command command) {
-    names.add(command.name);
-    if (command is GroupCommand) {
-      for (final child in command.commands) {
-        visit(child);
-      }
-    }
-  }
-
-  for (final child in group.commands) {
-    visit(child);
-  }
-  return names;
-}
-
 /// Whether the relative [path] resolves inside [group].
 bool _pathExists(GroupCommand group, List<String> path) {
   var children = group.commands;
@@ -33,22 +15,22 @@ bool _pathExists(GroupCommand group, List<String> path) {
 }
 
 /// The conventional command spelling a deferred operation would have.
-const Map<LifecycleBoundaryOperation, List<String>>
-_deferredCommandCandidates = <LifecycleBoundaryOperation, List<String>>{
-  LifecycleBoundaryOperation.create: ['create'],
-  LifecycleBoundaryOperation.inspect: ['inspect'],
-  LifecycleBoundaryOperation.validate: ['validate'],
-  LifecycleBoundaryOperation.install: ['install'],
-  LifecycleBoundaryOperation.adopt: ['adopt'],
-  LifecycleBoundaryOperation.update: ['update'],
-  LifecycleBoundaryOperation.migrate: ['migrate'],
-  LifecycleBoundaryOperation.replace: ['replace'],
-  LifecycleBoundaryOperation.remove: ['remove', 'delete', 'unregister'],
-  LifecycleBoundaryOperation.backupRestore: ['backup', 'restore'],
-  LifecycleBoundaryOperation.recover: ['recover'],
-  LifecycleBoundaryOperation.edit: ['edit'],
-  LifecycleBoundaryOperation.sync: ['sync'],
-};
+const Map<LifecycleBoundaryOperation, List<String>> _deferredCommandCandidates =
+    <LifecycleBoundaryOperation, List<String>>{
+      LifecycleBoundaryOperation.create: ['create'],
+      LifecycleBoundaryOperation.inspect: ['inspect'],
+      LifecycleBoundaryOperation.validate: ['validate'],
+      LifecycleBoundaryOperation.install: ['install'],
+      LifecycleBoundaryOperation.adopt: ['adopt'],
+      LifecycleBoundaryOperation.update: ['update'],
+      LifecycleBoundaryOperation.migrate: ['migrate'],
+      LifecycleBoundaryOperation.replace: ['replace'],
+      LifecycleBoundaryOperation.remove: ['remove', 'delete', 'unregister'],
+      LifecycleBoundaryOperation.backupRestore: ['backup', 'restore'],
+      LifecycleBoundaryOperation.recover: ['recover'],
+      LifecycleBoundaryOperation.edit: ['edit'],
+      LifecycleBoundaryOperation.sync: ['sync'],
+    };
 
 void main() {
   final executor = createExecutor();
@@ -79,7 +61,8 @@ void main() {
           expect(
             _pathExists(group, boundary.commandPath),
             isTrue,
-            reason: '${boundary.resource.wireName} '
+            reason:
+                '${boundary.resource.wireName} '
                 '${boundary.commandPath.join(' ')} is not registered',
           );
         });
@@ -100,7 +83,8 @@ void main() {
             expect(
               names.contains(candidate),
               isFalse,
-              reason: '${boundary.resource.wireName} $candidate is registered '
+              reason:
+                  '${boundary.resource.wireName} $candidate is registered '
                   'but $label is declared deferred',
             );
           }

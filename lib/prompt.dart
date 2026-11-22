@@ -5,6 +5,8 @@ import 'package:file/file.dart' as fslib;
 import 'package:file/local.dart' as local;
 import 'package:mamba/mamba.dart';
 
+import 'src/resource_lifecycle_boundaries.dart';
+
 import 'conversion.dart';
 import 'lifecycle.dart' show LifecycleOutputFormat;
 import 'prompt_create_command.dart';
@@ -41,7 +43,7 @@ final class PromptCommand extends GroupCommand {
            fileSystem: fileSystem,
            guided: guided,
          ),
-       ]);
+       ], longDescription: renderBoundaryHelp(BoundaryResource.prompt));
 
   @override
   String get name => 'prompt';

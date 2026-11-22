@@ -14,6 +14,7 @@ import '../authoring/package_manifest.dart';
 import '../harness/harness_catalog.dart';
 import '../native_references.dart';
 import '../prompt_resource_path_scanner.dart';
+import '../resource_lifecycle_boundaries.dart';
 import '../skill_files.dart';
 import 'agent_authoring_service.dart'
     show authoringReferenceDecisionFindings, canonicalJsonForHash;
@@ -1079,7 +1080,8 @@ interface class AuthoringPlanService {
         'management',
         'Managed publication is not supported for ${inputs.kind.name} '
             'resources in the ${inputs.profile.name} profile; author-only '
-            'output remains available.',
+            'output remains available.'
+            '${inputs.kind == AuthoringKind.prompt ? ' ${lifecycleBoundary(BoundaryResource.prompt, LifecycleBoundaryOperation.install).deferredReason}' : ''}',
       );
       return AuthoringOwnership.authorOnly;
     }

@@ -535,7 +535,8 @@ LifecycleBoundary lifecycleBoundary(
 );
 
 /// The boundaries of one resource, in declared operation order.
-List<LifecycleBoundary> boundariesFor(BoundaryResource resource) => <LifecycleBoundary>[
+List<LifecycleBoundary> boundariesFor(BoundaryResource resource) =>
+    <LifecycleBoundary>[
       for (final operation in LifecycleBoundaryOperation.values)
         lifecycleBoundary(resource, operation),
     ];
@@ -557,8 +558,10 @@ String renderBoundaryHelp(BoundaryResource resource) {
   ];
   for (final entry in entries) {
     if (entry.status == LifecycleBoundaryStatus.deferred) {
-      lines.add('  deferred ${entry.operation.wireName}: '
-          '${entry.deferredReason}');
+      lines.add(
+        '  deferred ${entry.operation.wireName}: '
+        '${entry.deferredReason}',
+      );
     }
   }
   for (final note in lifecycleBoundaryNotes[resource] ?? const <String>[]) {
@@ -585,8 +588,7 @@ String renderSupportMatrixText() {
         );
       }
     }
-    for (final note
-        in lifecycleBoundaryNotes[resource] ?? const <String>[]) {
+    for (final note in lifecycleBoundaryNotes[resource] ?? const <String>[]) {
       lines.add('  note: $note');
     }
   }

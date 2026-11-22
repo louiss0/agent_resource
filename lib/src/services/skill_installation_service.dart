@@ -723,6 +723,7 @@ interface class SkillInstallationService {
       sourceDigest: digest,
       origin: origin,
       installationRoute: route,
+      admission: await _lifecycle.installationAdmission(stagedPath),
     );
   }
 
