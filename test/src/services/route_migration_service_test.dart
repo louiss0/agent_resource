@@ -406,7 +406,7 @@ void main() {
           RouteRecoveryService(state: LifecycleStateService()).recover(
             context,
             doc['transactionId'] as String,
-            action: 'rollback',
+            action: RouteRecoveryAction.rollback,
           ),
           throwsStateError,
         );

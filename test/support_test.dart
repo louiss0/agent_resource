@@ -40,8 +40,12 @@ void main() {
       final prompt = resources['prompt'] as Map<String, Object?>;
       final operations = prompt['operations'] as Map<String, Object?>;
       final install = operations['install'] as Map<String, Object?>;
-      expect(install['status'], 'deferred');
-      expect(install['reason'], isNotNull);
+      expect(install['status'], 'supported');
+      expect(install['command'], 'pack install');
+      expect(
+        (prompt['notes'] as List).join(' '),
+        contains('direct `prompt install` is deferred'),
+      );
       final skill = resources['skill'] as Map<String, Object?>;
       final skillInstall =
           (skill['operations'] as Map<String, Object?>)['install']
@@ -70,9 +74,11 @@ void main() {
       });
     }
 
-    test('prompt help explains the deferred install boundary', () async {
+    test('prompt help discloses the real install routes', () async {
       final text = await output(<String>['prompt', '--help']);
-      expect(text, contains('no direct prompt install'));
+      expect(text, contains('pack install --type prompt'));
+      expect(text, contains('--prompt-target'));
+      expect(text, contains('direct `prompt install` is deferred'));
     });
 
     test('context help explains the one-shot injection boundary', () async {

@@ -2128,27 +2128,6 @@ interface class PackLifecycleService {
           ),
         );
       }
-      final plan = PackPlan.create(
-        operation: '${request.resourceType.name}s.${request.operation.name}',
-        context: {
-          ..._contextJson(request, context, configuration),
-          'scopeOrigin': (request.scopeExplicit ?? (request.scope != null))
-              ? 'explicit-argument'
-              : context.scope == LifecycleScope.user
-              ? 'interactive-selection'
-              : 'built-in-default',
-          'preferenceOrigins': [
-            for (final setting in effectiveInstall.settings)
-              if (setting.key == EligiblePreference.installTargets.wireName ||
-                  setting.key == EligiblePreference.installSkillMethod.wireName)
-                setting.toJson(),
-          ],
-        },
-        source: _sourceJson(pack, workspace.provenance),
-        resources: planResources,
-        warnings: warnings,
-        policy: _policyChange(request, pack),
-      );
       final derivedAssessments =
           <String, Map<String, DerivedPromptAssessment>>{};
       final derivedType =
@@ -2216,7 +2195,19 @@ interface class PackLifecycleService {
             final usable = <String, DerivedPromptAssessment>{};
             for (final harness in derive) {
               final assessment = perHarness[harness];
-              if (assessment == null || !assessment.manualOnly) continue;
+              if (assessment == null || !assessment.manualOnly) {
+                if (request.promptTargets.isNotEmpty) {
+                  warnings.add(
+                    PackWarning(
+                      id: 'derived-prompt-not-manual-only',
+                      message:
+                          '${candidate.name}: no derived Prompt for $harness: '
+                          'not manual-only',
+                    ),
+                  );
+                }
+                continue;
+              }
               if (!assessment.eligible) {
                 if (request.promptTargets.isNotEmpty) {
                   throw MambaException(
@@ -2234,8 +2225,37 @@ interface class PackLifecycleService {
               derivedAssessments[candidate.name] = usable;
             }
           }
+          if (request.promptTargets.isNotEmpty && derivedAssessments.isEmpty) {
+            throw MambaException(
+              '--prompt-target ${request.promptTargets.join(' ')} has no '
+              'effect: no selected Skill is a manual-only Prompt for the '
+              'requested harness; omit the flag to install only the Skills.',
+              exitCode: PackProcessStatus.invalidInput.code,
+            );
+          }
         }
       }
+      final plan = PackPlan.create(
+        operation: '${request.resourceType.name}s.${request.operation.name}',
+        context: {
+          ..._contextJson(request, context, configuration),
+          'scopeOrigin': (request.scopeExplicit ?? (request.scope != null))
+              ? 'explicit-argument'
+              : context.scope == LifecycleScope.user
+              ? 'interactive-selection'
+              : 'built-in-default',
+          'preferenceOrigins': [
+            for (final setting in effectiveInstall.settings)
+              if (setting.key == EligiblePreference.installTargets.wireName ||
+                  setting.key == EligiblePreference.installSkillMethod.wireName)
+                setting.toJson(),
+          ],
+        },
+        source: _sourceJson(pack, workspace.provenance),
+        resources: planResources,
+        warnings: warnings,
+        policy: _policyChange(request, pack),
+      );
       await _confirmPlan(request, plan);
       return await _publishPackMutation(request, context, pack, () async {
         var recoveryRequired = false;
@@ -3326,6 +3346,17 @@ interface class PackLifecycleService {
           oldRoute.promptTargets.isNotEmpty && !request.dropPromptTargets
           ? await _assessDerivedPrompts(candidate.path, oldRoute.promptTargets)
           : <String, DerivedPromptAssessment>{};
+      if (!request.dropPromptTargets) {
+        for (final harness in oldRoute.promptTargets) {
+          final assessment = migratePerHarness[harness];
+          if (assessment?.content == null) {
+            throw MambaException(
+              stalePromptTargetDiagnostic(name, harness, assessment),
+              exitCode: PackProcessStatus.invalidInput.code,
+            );
+          }
+        }
+      }
       final desired = _installationUnit(
         context,
         candidate,
@@ -3557,21 +3588,31 @@ interface class PackLifecycleService {
         oldRoute.promptTargets,
       );
       for (final prompt in record.derivedPrompts) {
-        final content = <String>[
-          for (final entry in perHarness.entries)
-            if (_fileSystem.path.equals(
-              derivedPromptRoot(context, entry.key),
-              _fileSystem.path.dirname(prompt.path),
-            ))
-              ?entry.value.content,
-        ].firstOrNull;
-        if (content != null) {
-          derivedWrites.add((
-            path: prompt.path,
-            content: content,
-            nativeRoot: _fileSystem.path.dirname(prompt.path),
-          ));
+        final harness = oldRoute.promptTargets
+            .where(
+              (candidate) => _fileSystem.path.equals(
+                derivedPromptRoot(context, candidate),
+                _fileSystem.path.dirname(prompt.path),
+              ),
+            )
+            .firstOrNull;
+        final assessment = harness == null ? null : perHarness[harness];
+        final content = assessment?.content;
+        if (content == null) {
+          throw MambaException(
+            stalePromptTargetDiagnostic(
+              record.name,
+              harness ?? _fileSystem.path.dirname(prompt.path),
+              assessment,
+            ),
+            exitCode: PackProcessStatus.invalidInput.code,
+          );
         }
+        derivedWrites.add((
+          path: prompt.path,
+          content: content,
+          nativeRoot: _fileSystem.path.dirname(prompt.path),
+        ));
       }
     }
     if (record.kind == ArtifactKind.skillCanonical) {

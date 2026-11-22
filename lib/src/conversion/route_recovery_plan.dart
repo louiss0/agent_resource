@@ -44,6 +44,7 @@ final class RouteRecoveryPlan {
     }
 
     final reverse = doc['rolledBackActions'] as List?;
+    final phase = RouteJournalPhase.parse(doc['phase']);
     if (reverse != null && ledger != LedgerObservation.old) return refuse;
 
     // Simulate only the recorded prefix and the single possible rename that
@@ -68,7 +69,7 @@ final class RouteRecoveryPlan {
           ? step == markers || step == markers + 1
           : step == remaining ||
                 (remaining > 0 &&
-                    doc['phase'] != 'rolledBack' &&
+                    phase != RouteJournalPhase.rolledBack &&
                     step == remaining - 1);
       if (eligible &&
           List.generate(
@@ -106,7 +107,7 @@ final class RouteRecoveryPlan {
       // Candidates include at most one unmarked reverse rename.
       if (candidates.length != 1) return refuse;
       return RouteRecoveryPlan._(
-        doc['phase'] == 'rolledBack'
+        phase == RouteJournalPhase.rolledBack
             ? RecoveryDecision.rolledBack
             : RecoveryDecision.rollback,
         candidates.single,
@@ -114,18 +115,20 @@ final class RouteRecoveryPlan {
     }
     if (candidates.length != 1) return refuse;
     final applied = candidates.single;
-    final phase = doc['phase'];
     if (ledger == LedgerObservation.old) {
-      if (phase == 'committed' || phase == 'completed') return refuse;
+      if (phase == RouteJournalPhase.committed ||
+          phase == RouteJournalPhase.completed) {
+        return refuse;
+      }
       return RouteRecoveryPlan._(RecoveryDecision.rollback, applied);
     }
     if (applied != step ||
         markers != step ||
         ![
-          'published',
-          'committed',
-          'completed',
-          'recoveryRequired',
+          RouteJournalPhase.published,
+          RouteJournalPhase.committed,
+          RouteJournalPhase.completed,
+          RouteJournalPhase.recoveryRequired,
         ].contains(phase)) {
       return refuse;
     }

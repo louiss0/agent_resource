@@ -328,6 +328,34 @@ interface class SkillInstallationService {
             );
           }
         }
+        if (request.promptTargets.isNotEmpty) {
+          var manualOnlySelected = false;
+          for (final pair in stagedPairs) {
+            final name =
+                pair.candidate.id ??
+                _fileSystem.path.basename(pair.candidate.path);
+            for (final harness in request.promptTargets) {
+              if (assessments[pair]?[harness]?.manualOnly == true) {
+                manualOnlySelected = true;
+              } else {
+                migrationDiagnostics.add({
+                  'code': 'derived-prompt-not-manual-only',
+                  'message':
+                      '$name: no derived Prompt for $harness: '
+                      'not manual-only',
+                });
+              }
+            }
+          }
+          if (!manualOnlySelected && stagedPairs.isNotEmpty) {
+            throw MambaException(
+              '--prompt-target ${request.promptTargets.join(' ')} has no '
+              'effect: no selected Skill is a manual-only Prompt for the '
+              'requested harness; omit the flag to install only the Skills.',
+              exitCode: 4,
+            );
+          }
+        }
         for (final pair in stagedPairs) {
           final perHarness = assessments[pair];
           final name =

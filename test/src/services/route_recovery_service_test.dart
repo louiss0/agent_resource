@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_resource/src/conversion/path_action_diff.dart';
+import 'package:agent_resource/src/conversion/route_journal_evidence.dart';
 import 'package:agent_resource/src/conversion/route_recovery_paths.dart';
 import 'package:agent_resource/src/services/lifecycle_state_service.dart';
 import 'package:agent_resource/src/services/route_recovery_service.dart';
@@ -79,7 +80,7 @@ void main() {
       if (scenario == 'foreign' || scenario == 'ambiguous') {
         final before = journal.readAsStringSync();
         await expectLater(
-          service.recover(context, id, action: 'rollback'),
+          service.recover(context, id, action: RouteRecoveryAction.rollback),
           throwsStateError,
         );
         expect(journal.readAsStringSync(), before);
@@ -93,14 +94,14 @@ void main() {
         io.interruptAfterRename =
             (doc['actions'] as List).first['path'] as String;
         await expectLater(
-          service.recover(context, id, action: 'rollback'),
+          service.recover(context, id, action: RouteRecoveryAction.rollback),
           throwsStateError,
         );
         final interrupted = jsonDecode(journal.readAsStringSync());
         expect(interrupted['rolledBackActions'], isEmpty);
         expect(Directory(paths.staged).existsSync(), isTrue);
       }
-      await service.recover(context, id, action: 'rollback');
+      await service.recover(context, id, action: RouteRecoveryAction.rollback);
       expect(File(p.join(live, 'SKILL.md')).readAsStringSync(), 'old');
       expect(
         FileSystemEntity.typeSync(paths.staged, followLinks: false),
@@ -111,7 +112,7 @@ void main() {
       expect(persisted['rolledBackActions'], ['0-publish', '0-remove']);
       final terminal = journal.readAsStringSync();
       await RouteRecoveryService(state: LifecycleStateService())
-          .recover(context, id, action: 'rollback');
+          .recover(context, id, action: RouteRecoveryAction.rollback);
       expect(journal.readAsStringSync(), terminal);
     });
   }
@@ -174,7 +175,7 @@ void main() {
       ),
     );
     await RouteRecoveryService(state: state)
-        .recover(context, id, action: 'rollback');
+        .recover(context, id, action: RouteRecoveryAction.rollback);
     expect(File(p.join(liveOld, 'SKILL.md')).readAsStringSync(), 'old');
     expect(
       FileSystemEntity.typeSync(newPaths.staged, followLinks: false),
@@ -186,7 +187,7 @@ void main() {
     expect(persisted['rolledBackActions'], ['1-publish', '0-remove']);
     final terminal = journal.readAsStringSync();
     await RouteRecoveryService(state: LifecycleStateService())
-        .recover(context, id, action: 'rollback');
+        .recover(context, id, action: RouteRecoveryAction.rollback);
     expect(journal.readAsStringSync(), terminal);
   });
 
@@ -269,7 +270,7 @@ void main() {
       () async {
         final env = await committedJournal();
         final result = await RouteRecoveryService(state: env.state)
-            .recover(env.context, env.id, action: 'complete');
+            .recover(env.context, env.id, action: RouteRecoveryAction.complete);
         expect(result['outcome'], 'completed');
         expect(result['retained'], isEmpty);
         expect(Directory(env.quarantine).existsSync(), isFalse);
@@ -282,7 +283,7 @@ void main() {
     test('keeps and reports a tampered quarantine', () async {
       final env = await committedJournal(tampered: true);
       final result = await RouteRecoveryService(state: env.state)
-          .recover(env.context, env.id, action: 'complete');
+          .recover(env.context, env.id, action: RouteRecoveryAction.complete);
       expect(result['outcome'], 'completed');
       expect(result['retained'], [env.quarantine]);
       expect(

@@ -35,9 +35,12 @@ const Map<LifecycleBoundaryOperation, List<String>> _deferredCommandCandidates =
 void main() {
   final executor = createExecutor();
 
-  GroupCommand resourceGroup(BoundaryResource resource) => executor.commands
+  GroupCommand topLevelGroup(String name) => executor.commands
       .whereType<GroupCommand>()
-      .singleWhere((command) => command.name == resource.wireName);
+      .singleWhere((command) => command.name == name);
+
+  GroupCommand resourceGroup(BoundaryResource resource) =>
+      topLevelGroup(resource.wireName);
 
   group('resource lifecycle boundaries', () {
     test('every resource declares every operation exactly once', () {
@@ -56,7 +59,9 @@ void main() {
           '${boundary.resource.wireName} ${boundary.operation.wireName}';
       if (boundary.status == LifecycleBoundaryStatus.supported) {
         test('$label resolves to a registered command', () {
-          final group = resourceGroup(boundary.resource);
+          final group = topLevelGroup(
+            boundary.commandGroup ?? boundary.resource.wireName,
+          );
           expect(boundary.commandPath, isNotEmpty, reason: label);
           expect(
             _pathExists(group, boundary.commandPath),

@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import '../conversion/route_journal_evidence.dart';
 import '../conversion/route_recovery_paths.dart';
@@ -25,14 +24,11 @@ interface class RouteRecoveryService {
   Future<Map<String, Object?>> recover(
     LifecycleContext context,
     String transactionId, {
-    required String action,
+    required RouteRecoveryAction action,
   }) => state.runCoordinated(
     context: context,
     location: context.stateRoot(),
     body: () async {
-      if (action != 'rollback' && action != 'complete') {
-        throw ArgumentError('Unsupported route recovery action: $action');
-      }
       if (!RegExp(r'^trx_[a-f0-9]{32}$').hasMatch(transactionId)) {
         throw const FormatException('Invalid route transaction identity');
       }
@@ -42,23 +38,9 @@ interface class RouteRecoveryService {
         'transactions',
         '$transactionId.json',
       );
-      void checkPath(String path) {
-        final parent = fs.path.dirname(path);
-        for (final component in skillPathComponents(
-          parent,
-          base: fs.path.rootPrefix(parent),
-          fs: fs,
-        )) {
-          final type = state.io.type(component, followLinks: false);
-          if (type != FileSystemEntityType.directory ||
-              const NativeLinkService().isWindowsReparsePoint(component)) {
-            throw const FormatException('Unsafe recovery parent');
-          }
-        }
-      }
 
       RouteJournalEvidence read() {
-        checkPath(path);
+        _checkPath(path);
         if (state.io.type(path, followLinks: false) !=
                 FileSystemEntityType.file ||
             const NativeLinkService().isWindowsReparsePoint(path)) {
@@ -78,35 +60,36 @@ interface class RouteRecoveryService {
       }
 
       void persist(Map<String, Object?> doc) {
-        final encoded = jsonEncode(doc);
-        RouteJournalEvidence.decode(encoded, fs.path);
-        checkPath(path);
-        final temp = '$path.${Random.secure().nextInt(1 << 32)}.tmp';
-        if (state.io.type(temp, followLinks: false) !=
-            FileSystemEntityType.notFound) {
-          throw const FileSystemException('Temporary journal already exists');
-        }
-        state.io.write(temp, utf8.encode(encoded));
-        state.io.rename(temp, path);
+        _checkPath(path);
+        persistRouteJournal(
+          io: state.io,
+          paths: fs.path,
+          journalPath: path,
+          doc: doc,
+        );
       }
 
       final observer = RouteRecoveryObservationService(state: state);
       while (true) {
         final journal = read();
         final doc = journal.toJson();
-        final phase = doc['phase'] as String;
-        if (phase == 'completed') {
-          if (action != 'complete') {
-            throw StateError('Route recovery action $action is not provable');
+        final phase = RouteJournalPhase.parse(doc['phase']);
+        if (phase == RouteJournalPhase.completed) {
+          if (action != RouteRecoveryAction.complete) {
+            throw StateError(
+              'Route recovery action ${action.wireName} is not provable',
+            );
           }
           return <String, Object?>{
             'outcome': 'completed',
             'retained': _cleanup(doc, transactionId, quarantined: true),
           };
         }
-        if (phase == 'rolledBack') {
-          if (action != 'rollback') {
-            throw StateError('Route recovery action $action is not provable');
+        if (phase == RouteJournalPhase.rolledBack) {
+          if (action != RouteRecoveryAction.rollback) {
+            throw StateError(
+              'Route recovery action ${action.wireName} is not provable',
+            );
           }
           return <String, Object?>{
             'outcome': 'rolledBack',
@@ -116,14 +99,15 @@ interface class RouteRecoveryService {
         final observation = observer.inspect(journal, context);
         final plan = observation.plan;
         if (plan.decision == RecoveryDecision.complete) {
-          if (action == 'rollback' && doc['phase'] != 'committed') {
+          if (action == RouteRecoveryAction.rollback &&
+              phase != RouteJournalPhase.committed) {
             throw StateError(
               'Route evidence proves a committed ledger; rollback is refused.',
             );
           }
-          doc['phase'] = 'committed';
+          doc['phase'] = RouteJournalPhase.committed.wireName;
           persist(doc);
-          doc['phase'] = 'completed';
+          doc['phase'] = RouteJournalPhase.completed.wireName;
           persist(doc);
           return <String, Object?>{
             'outcome': 'completed',
@@ -137,7 +121,7 @@ interface class RouteRecoveryService {
           };
         }
         if (plan.decision != RecoveryDecision.rollback ||
-            action != 'rollback') {
+            action != RouteRecoveryAction.rollback) {
           throw StateError('Route rollback evidence is unsafe or ambiguous');
         }
         final actions = doc['actions'] as List;
@@ -159,20 +143,15 @@ interface class RouteRecoveryService {
           },
           excludedRouteEvidencePaths: {path},
         );
-        final steps = <String>[
-          for (var i = 0; i < actions.length; i++) ...[
-            if (actions[i]['oldKind'] != null) '$i-remove',
-            if (actions[i]['newKind'] != null) '$i-publish',
-          ],
-        ];
+        final steps = RouteJournalStep.ofActions(actions);
         final completed = doc['completedActions'] as List;
         final applied = plan.appliedSteps!;
         if (!doc.containsKey('rolledBackActions')) {
           if (applied > completed.length) {
-            completed.add(steps[completed.length]);
+            completed.add(steps[completed.length].encode());
           }
           doc['rolledBackActions'] = <String>[];
-          doc['phase'] = 'rollingBack';
+          doc['phase'] = RouteJournalPhase.rollingBack.wireName;
           persist(doc);
           continue;
         }
@@ -184,40 +163,30 @@ interface class RouteRecoveryService {
           continue;
         }
         if (remaining == 0) {
-          doc['phase'] = 'rolledBack';
+          doc['phase'] = RouteJournalPhase.rolledBack.wireName;
           persist(doc);
           continue;
         }
-        final parts = (completed[remaining - 1] as String).split('-');
-        final stepAction = actions[int.parse(parts[0])];
+        final step = RouteJournalStep.parse(completed[remaining - 1] as String);
+        final stepAction = actions[step.index];
         final live = stepAction['path'] as String;
-        final isPublish = parts[1] == 'publish';
+        final isPublish = step.kind == RouteJournalStepKind.publish;
         final sideRecords =
             doc[isPublish ? 'newRecords' : 'oldRecords'] as List;
-        InstallationRecord? owner;
-        String? root;
-        for (final item in sideRecords) {
-          final record = InstallationRecord.fromJson(item);
-          if (fs.path.equals(record.location, live)) {
-            owner = record;
-            root = record.nativeRoot;
-          }
-          for (final exposure in record.exposures) {
-            if (fs.path.equals(exposure.path, live)) {
-              owner = record;
-              root = fs.path.dirname(exposure.path);
-            }
-          }
-        }
-        if (owner == null || root == null) {
+        final owner = routeOwningArtifact(
+          sideRecords.map(InstallationRecord.fromJson),
+          live,
+          fs.path,
+        );
+        if (owner == null) {
           throw const FormatException('Missing route authority');
         }
         final locations = RouteRecoveryPaths(fs.path)
-            .forLocation(root, live, transactionId);
+            .forLocation(owner.nativeRoot, live, transactionId);
         final source = isPublish ? live : locations.quarantine;
         final destination = isPublish ? locations.staged : live;
-        checkPath(source);
-        checkPath(destination);
+        _checkPath(source);
+        _checkPath(destination);
         state.io.rename(source, destination);
       }
     },
@@ -240,34 +209,23 @@ interface class RouteRecoveryService {
     for (final action in doc['actions'] as List) {
       if (action[kindKey] == null) continue;
       final live = action['path'] as String;
-      String? root;
-      ArtifactBaseline? baseline;
-      ArtifactKind? kind;
-      for (final item in doc[recordsKey] as List) {
-        final record = InstallationRecord.fromJson(item);
-        if (fs.path.equals(record.location, live)) {
-          root = record.nativeRoot;
-          baseline = record.baseline;
-          kind = record.kind;
-        }
-        for (final exposure in record.exposures) {
-          if (fs.path.equals(exposure.path, live)) {
-            root = fs.path.dirname(exposure.path);
-            baseline = exposure.baseline;
-            kind = ArtifactKind.skillLink;
-          }
-        }
-      }
-      if (root == null || baseline == null || kind == null) {
+      final owner = routeOwningArtifact(
+        (doc[recordsKey] as List).map(InstallationRecord.fromJson),
+        live,
+        fs.path,
+      );
+      if (owner == null) {
         throw const FormatException('Missing route authority');
       }
-      roots.add(root);
+      roots.add(owner.nativeRoot);
+      final baseline = owner.baseline;
+      final kind = owner.kind;
       final artifact = quarantined
           ? RouteRecoveryPaths(fs.path)
-                .forLocation(root, live, transactionId)
+                .forLocation(owner.nativeRoot, live, transactionId)
                 .quarantine
           : RouteRecoveryPaths(fs.path)
-                .forLocation(root, live, transactionId)
+                .forLocation(owner.nativeRoot, live, transactionId)
                 .staged;
       try {
         _checkPath(artifact);
@@ -279,7 +237,7 @@ interface class RouteRecoveryService {
         final matches = kind == ArtifactKind.skillLink
             ? () {
                 final left = actual.entries.single;
-                final right = baseline!.entries.single;
+                final right = baseline.entries.single;
                 return left.type == 'link' &&
                     right.type == 'link' &&
                     left.target == right.target &&
