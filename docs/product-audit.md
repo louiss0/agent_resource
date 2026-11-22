@@ -42,17 +42,24 @@ lifecycle coverage.
 
 Important boundaries:
 
-- There is no registered direct `prompt install` or `prompt edit` command.
-- Supported Prompt pack installations use Skill ownership records. Subsequent
+- <!-- PA-1.1 -->
+  There is no registered direct `prompt install` or `prompt edit` command.
+- <!-- PA-1.2 -->
+  Supported Prompt pack installations use Skill ownership records. Subsequent
   lifecycle operations use Skill selectors rather than Prompt selectors.
-- Pi Prompt templates can be created and inspected but cannot be installed
+- <!-- PA-1.3 -->
+  Pi Prompt templates can be created and inspected but cannot be installed
   through the Prompt pack route.
-- Prompt creation refuses managed publication through `--manage`.
-- Editing a stored Context template does not automatically update files into
+- <!-- PA-1.4 -->
+  Prompt creation refuses managed publication through `--manage`.
+- <!-- PA-1.5 -->
+  Editing a stored Context template does not automatically update files into
   which it was previously injected.
-- MCP inspection and validation are static operations, not connectivity or
+- <!-- PA-1.6 -->
+  MCP inspection and validation are static operations, not connectivity or
   runtime activation checks.
-- Claude user/local MCP scopes are inspect-only for native mutation.
+- <!-- PA-1.7 -->
+  Claude user/local MCP scopes are inspect-only for native mutation.
 
 These can be legitimate release boundaries. They should be documented as
 intentional limits rather than discovered through command refusals.
@@ -77,13 +84,19 @@ The persistent preference model already supports:
 - Preferred Skill installation method.
 - Snapshot retention days.
 
+<!-- PA-2.1 -->
+
 Pack workflows use this model. Direct `skill install` and `agent install`
 construct their requests without loading the same preference model.
+
+<!-- PA-2.2 -->
 
 The public `config` group exposes `validate`, but no effective-settings
 viewer or preference editor. Users cannot readily discover which settings
 are in effect, their configuration path, or where individual values came
 from.
+
+<!-- PA-2.3 -->
 
 Some direct-install choices instead come from hardcoded defaults or detected
 native directories. Detection is useful evidence, but it is not saved user
@@ -94,13 +107,13 @@ intent.
 Build on the existing configuration rather than create a second settings
 system:
 
-1. Show effective settings and configuration paths.
-2. Explain each resolved value's origin: explicit argument, project config,
+1. <!-- PA-2.4 --> Show effective settings and configuration paths.
+2. <!-- PA-2.5 --> Explain each resolved value's origin: explicit argument, project config,
    user config, detection, or built-in default.
-3. Provide an explicit, previewable way to save preferences.
-4. Apply existing preferences consistently to interactive direct-install
+3. <!-- PA-2.6 --> Provide an explicit, previewable way to save preferences.
+4. <!-- PA-2.7 --> Apply existing preferences consistently to interactive direct-install
    and pack workflows.
-5. Preserve explicit unattended contracts rather than silently changing
+5. <!-- PA-2.8 --> Preserve explicit unattended contracts rather than silently changing
    script behavior through newly consulted personal defaults.
 
 Useful durable questions include:
@@ -131,29 +144,35 @@ presentation, and approval.
 
 The gaps are elsewhere:
 
-- Guided creation still requires an explicit profile before its missing-field
+- <!-- PA-3.1 -->
+  Guided creation still requires an explicit profile before its missing-field
   guidance begins.
-- Creation defaults to project scope, while bare Skill and Prompt inventory
+- <!-- PA-3.2 -->
+  Creation defaults to project scope, while bare Skill and Prompt inventory
   defaults to user scope. A newly created resource can therefore appear to
   be missing from a subsequent bare list command.
-- Creation normally plans first and requires `--apply` for publication;
+- <!-- PA-3.3 -->
+  Creation normally plans first and requires `--apply` for publication;
   installation follows a different interaction pattern.
-- Context injection can request confirmation before rendering its destination
+- <!-- PA-3.4 -->
+  Context injection can request confirmation before rendering its destination
   and change report.
-- Pack interactivity checks stdin terminal availability without consistently
+- <!-- PA-3.5 -->
+  Pack interactivity checks stdin terminal availability without consistently
   requiring stdout to be a terminal as well.
-- Root help lists groups but does not provide a short task-oriented first
+- <!-- PA-3.6 -->
+  Root help lists groups but does not provide a short task-oriented first
   success path.
 
 Recommended interaction principles:
 
-- Keep no-argument help read-only.
-- Offer an optional guided starting point that routes into existing flows.
-- Show resolved scope, targets, method, and their origins.
-- Let users change relevant choices without asking every question every time.
-- Standardize preview, then confirmation, then write.
-- Require usable input and output terminals for interactive workflows.
-- Show an equivalent explicit command after guided operations where useful.
+- <!-- PA-3.7 --> Keep no-argument help read-only.
+- <!-- PA-3.8 --> Offer an optional guided starting point that routes into existing flows.
+- <!-- PA-3.9 --> Show resolved scope, targets, method, and their origins.
+- <!-- PA-3.10 --> Let users change relevant choices without asking every question every time.
+- <!-- PA-3.11 --> Standardize preview, then confirmation, then write.
+- <!-- PA-3.12 --> Require usable input and output terminals for interactive workflows.
+- <!-- PA-3.13 --> Show an equivalent explicit command after guided operations where useful.
 
 ### Supporting locations
 
@@ -173,6 +192,8 @@ Recommended interaction principles:
 The following are code-traced findings, not newly reproduced failures.
 They should become focused regression tests before implementation changes.
 
+<!-- PA-4.1 -->
+
 ### Canonical installation versus Prompt inventory
 
 Canonical Claude Skill installation creates a native link exposure. Prompt
@@ -187,6 +208,8 @@ Evidence:
 Desired outcome: safe inventory behavior that remains usable in the presence
 of the application's own canonical installations, without blindly following
 untrusted links.
+
+<!-- PA-4.2 -->
 
 ### Validation versus installation admission
 
@@ -204,6 +227,8 @@ Evidence:
 Desired outcome: distinguish native validity from installation eligibility
 explicitly, or align the admission rules where appropriate.
 
+<!-- PA-4.3 -->
+
 ### MCP replacement is a partial patch interface
 
 Replacement merges maps and only updates arguments when supplied arguments
@@ -214,6 +239,8 @@ Evidence: `lib/src/services/mcp_mutation_service.dart:490–511`.
 
 Desired outcome: ordinary edits can explicitly clear or remove values, with
 reviewable native consequences.
+
+<!-- PA-4.4 -->
 
 ### MCP credential references need harness-specific encoding
 
@@ -232,6 +259,8 @@ Desired outcome: encode references according to the selected harness and
 refuse unsupported substitutions instead of assuming portable semantics.
 Live behavior remains unverified by this audit.
 
+<!-- PA-4.5 -->
+
 ### Context confirmation can leave stale destination evidence
 
 Template authoring observes the destination before awaiting approval, then
@@ -243,6 +272,8 @@ Evidence: `lib/src/services/context_template_authoring_service.dart:207–238`.
 Desired outcome: test changes during approval and enforce a documented,
 bounded concurrent-writer contract.
 
+<!-- PA-4.6 -->
+
 ### Context multi-target publication can be partial
 
 Context injection publishes targets sequentially and writes receipts after
@@ -253,6 +284,8 @@ Evidence: `lib/src/services/context_injection_service.dart:252–302`.
 
 Desired outcome: explicit partial-failure reporting and a verified recovery
 journey, with publication behavior tested across supported filesystem layouts.
+
+<!-- PA-4.7 -->
 
 ### Context parent-link boundary needs verification
 
@@ -270,14 +303,18 @@ verify it for roots, native homes, intermediate directories, and final files.
 
 ## 5. Documentation drift contributes directly to confusion
 
+<!-- PA-5.1 -->
+
 The README understates current Skill support. Its claim that Codex's
 `agents/` sidecar directory is not accepted contradicts current tree
 validation, which permits that native support directory. Installation also
 contains root Markdown migration behavior absent from the old restrictions.
 
+<!-- PA-5.2 -->
+
 The initial command overview omits MCP and Context, although both are
 registered. Dedicated first-success walkthroughs for those resource types
-are missing. Some planning documents describe delivered behavior as pending
+are missing. <!-- PA-5.3 --> Some planning documents describe delivered behavior as pending
 or absent.
 
 Evidence:

@@ -138,6 +138,32 @@ Future<void> main(List<String> args) async {
         ),
       );
     }
+    final unverified = bundle['unverifiedLiveHarness'];
+    if (unverified is! List<Object?> ||
+        unverified.isEmpty ||
+        unverified.any((entry) => entry is! String)) {
+      blockers.add(
+        _blocker(
+          'LIVE_HARNESS_BOUNDARY_MISSING',
+          '$os does not declare its unverified live-harness behaviors.',
+        ),
+      );
+    }
+    const verificationClasses = <String>{
+      'static',
+      'native',
+      'unverified-live-harness',
+    };
+    if (https is! Map<String, Object?> ||
+        https['verification'] is! String ||
+        !verificationClasses.contains(https['verification'])) {
+      blockers.add(
+        _blocker(
+          'VERIFICATION_CLASS_MISSING',
+          '$os HTTPS evidence lacks a verification class.',
+        ),
+      );
+    }
     final resultStatuses = <int>{};
     if (bundle['results'] is! List<Object?> ||
         (bundle['results']! as List<Object?>).isEmpty) {
@@ -152,7 +178,9 @@ Future<void> main(List<String> args) async {
         if (result is! Map<String, Object?> ||
             result['scenario'] is! String ||
             result['exitCode'] is! int ||
-            result['rawStreamsRetained'] != false) {
+            result['rawStreamsRetained'] != false ||
+            result['verification'] is! String ||
+            !verificationClasses.contains(result['verification'])) {
           blockers.add(
             _blocker(
               'EXECUTION_EVIDENCE_INVALID',
