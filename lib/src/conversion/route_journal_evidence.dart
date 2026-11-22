@@ -120,12 +120,15 @@ final class RouteJournalEvidence {
         for (final consumer
             in record.kind.name == 'skillCanonical'
                 ? record.knownConsumers
-                : [record.nativeDestination]) {
+                : record.validatedProfiles) {
           if (!consumers.add(consumer)) fail();
         }
         if (record.kind.name != 'skillCanonical' &&
             (record.exposures.isNotEmpty ||
-                !record.knownConsumers.contains(record.nativeDestination))) {
+                record.validatedProfiles.length != 1 ||
+                !record.knownConsumers.contains(
+                  record.validatedProfiles.single,
+                ))) {
           fail();
         }
         final targets = <String>{};

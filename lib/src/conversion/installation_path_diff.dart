@@ -50,13 +50,16 @@ final class InstallationPathDiff(final p.Context paths) {
       }
       if (record.kind != ArtifactKind.skillCanonical &&
           (record.exposures.isNotEmpty ||
-              !record.knownConsumers.contains(record.nativeDestination))) {
+              record.validatedProfiles.length != 1 ||
+              !record.knownConsumers.contains(
+                record.validatedProfiles.single,
+              ))) {
         throw ArgumentError('Unexpected exposures.');
       }
       for (final consumer
           in record.kind == ArtifactKind.skillCanonical
               ? record.knownConsumers
-              : [record.nativeDestination]) {
+              : record.validatedProfiles) {
         if (!consumers.add(consumer)) {
           throw ArgumentError('Duplicate consumer.');
         }

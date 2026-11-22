@@ -425,6 +425,10 @@ final class RouteMigrationService {
         }
         persist(journal('committed'));
         persist(journal('completed'));
+        // Verified cleanup: quarantine that still matches each old baseline
+        // is removed; anything changed or foreign stays as evidence.
+        await RouteRecoveryService(state: state)
+            .recover(context, transactionId, action: 'complete');
         return List<InstallationRecord>.unmodifiable(newRecords);
       } on Object {
         if (!journalWritten) rethrow;

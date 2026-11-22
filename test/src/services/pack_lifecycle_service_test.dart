@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:agent_resource/src/installation/installation_plan.dart';
 import 'package:agent_resource/src/pack/github_release_resolver.dart';
 import 'package:agent_resource/src/pack/pack_configuration.dart';
 import 'package:agent_resource/src/pack/pack_models.dart';
@@ -91,6 +92,7 @@ track = { kind = "local" }
       String? snapshot,
       String? method,
       String? target,
+      String? reviewedPlan,
       bool localEdits = false,
       bool yes = true,
       bool interactive = false,
@@ -123,6 +125,7 @@ track = { kind = "local" }
                 type == PackResourceType.skill
             ? method ?? 'copy'
             : null,
+        reviewedPlan: reviewedPlan,
         target:
             !selectedTypes.contains(PackResourceType.agent) &&
                 type == PackResourceType.skill &&
@@ -144,6 +147,128 @@ track = { kind = "local" }
         interactive: interactive,
       );
     }
+
+    test('migrates a managed Pack Skill across native roots', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      final context = LifecycleContext.resolve(
+        LifecycleOptions(
+          processWorkingDirectory: project.path,
+          cwd: project.path,
+          projectRoot: project.path,
+          home: home.path,
+        ),
+        fileSystem: fs,
+      );
+      final state = LifecycleStateService(io: LifecycleIO(fs: fs));
+      final before = state.records(context).single;
+      final oldPath = before.location;
+      final preview = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          dryRun: true,
+        ),
+      );
+      expect(preview.dryRun, isTrue);
+      expect(preview.plan!.operation, 'skills.migrate');
+      expect(preview.plan!.resources.single.action, 'migrate');
+      expect(fs.directory(before.location).existsSync(), isTrue);
+
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'claude',
+            reviewedPlan: 'stale-plan',
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+
+      final applied = await service.execute(
+        request(
+          PackOperation.migrate,
+          PackResourceType.skill,
+          only: ['reviewer'],
+          method: 'copy',
+          target: 'claude',
+          reviewedPlan: preview.plan!.planId,
+        ),
+      );
+      expect(applied.outcome, 'completed');
+      final migrated = state.records(context).single;
+      expect(migrated.installationRoute?.method, InstallationMethod.copy);
+      expect(migrated.installationRoute?.targets.map((t) => t.name).toList(), [
+        'claude',
+      ]);
+      expect(
+        migrated.location,
+        fs.path.join(project.path, '.claude', 'skills', 'reviewer'),
+      );
+      expect(
+        fs.file(fs.path.join(migrated.location, 'SKILL.md')).readAsStringSync(),
+        contains('name: reviewer'),
+      );
+      expect(
+        fs.file(fs.path.join(migrated.location, 'SKILL.md')).readAsStringSync(),
+        contains('Reviews code.'),
+      );
+      expect(
+        fs.typeSync(oldPath, followLinks: false),
+        FileSystemEntityType.notFound,
+      );
+      // The verified old artifact was quarantined during publication, then
+      // removed by cleanup once its recorded baseline re-verified.
+      final quarantine = fs.directory(
+        fs.path.join(project.path, '.agents', '.agent-resource', 'quarantine'),
+      );
+      expect(
+        !quarantine.existsSync() ||
+            quarantine.listSync(recursive: true).isEmpty,
+        isTrue,
+      );
+    });
+
+    test('refuses a Pack Skill migration that changes nothing', () async {
+      final service = PackLifecycleService(fileSystem: fs);
+      await service.execute(
+        request(PackOperation.install, PackResourceType.skill),
+      );
+      await expectLater(
+        service.execute(
+          request(
+            PackOperation.migrate,
+            PackResourceType.skill,
+            only: ['reviewer'],
+            method: 'copy',
+            target: 'codex',
+            dryRun: true,
+          ),
+        ),
+        throwsA(isA<MambaException>()),
+      );
+    });
 
     test('interactive Skill pack ignores shared preferred target like direct install', () async {
       final config = fs.file(
