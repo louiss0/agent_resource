@@ -135,14 +135,14 @@ used at install. Derived Prompt templates are regenerated in the same
 transaction; a locally edited template fails the update unless the explicit
 local-edit decision approves replacement.
 
-`skill migrate` changes the installation method or target set. It previews
-the complete installation-path diff first — additions, removals, retained
-paths — and requires explicit confirmation of the reviewed plan before any
-write, then revalidates the plan inside the journal lock. Derived Prompt
-templates are carried through the migration unchanged because they do not
-depend on the Skill route; `--drop-prompt-targets` explicitly removes them
-in the same commit. An interrupted migration is recovered through
-`skill recover`.
+`skill migrate` changes the installation method or target set. It validates
+the reacquired Skill for the destination targets, previews the route change,
+and requires confirmation of the reviewed plan before any write. Derived
+Prompt targets are retained and their templates are regenerated from the
+reacquired Skill unless `--drop-prompt-targets` is supplied. Dropping them
+removes the tracked templates in the same transaction as the route change;
+missing or locally edited templates are refused. Use `skill recover` after
+an interrupted migration.
 
 ## Adopt, replace, remove, back up, recover
 
@@ -162,9 +162,11 @@ location. Removal and replacement require a currently unchanged complete
 baseline and create independent retained backups before live mutation;
 derived Prompt templates are quarantined, journaled, and backed up with the
 parent. Canonical replacement preserves its method and accounts for all
-associated exposures and direct consumers. Canonical `skill remove --target
-claude` or user-scoped `skill remove --target antigravity` detaches only
-that managed link. Direct readers cannot be revoked while shared content
+associated exposures and direct consumers. Canonical backup restore refuses
+an older backup if restoring it would reintroduce Prompt targets whose
+tracked templates were dropped; it cannot republish those templates.
+Canonical `skill remove --target claude` or user-scoped `skill remove
+--target antigravity` detaches only that managed link. Direct readers cannot be revoked while shared content
 remains.
 
 Linked Skills keep target validation separate from entry ownership: removal

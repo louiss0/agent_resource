@@ -70,8 +70,9 @@ void main() {
           acquisition.fileSystem = fs;
         }
 
-        Executor executor() => createExecutor(
+        Executor executor({SkillLifecycleService? lifecycle}) => createExecutor(
           fileSystem: fs,
+          skillLifecycle: lifecycle,
           skillInstallation: SkillInstallationService(
             fileSystem: fs,
             acquisition: acquisition,
@@ -654,6 +655,111 @@ void main() {
             );
           },
         );
+
+        for (final (method, target, contents, diagnostic) in [
+          ('canonical', 'claude', null, 'SKILL.md'),
+          (
+            'source-link',
+            'claude',
+            '---\nname: renamed\ndescription: Reviews.\n---\nBody.\n',
+            'The declared Skill name changed',
+          ),
+          (
+            'canonical',
+            'antigravity',
+            '---\nname: review\ndescription: Reviews.\n'
+                'disable-model-invocation: true\n---\nBody.\n',
+            'The antigravity Skill profile',
+          ),
+        ]) {
+          test(
+            'refuses invalid source for $method / $target: $diagnostic',
+            () async {
+              final source = skill('invalid-migration-source');
+              final cli = executor().fake();
+              final installed = await cli.execute([
+                'skill',
+                'install',
+                source.path,
+                ...context(),
+                '--source-kind',
+                'resource',
+                '--target',
+                'claude',
+                '--method',
+                'copy',
+                '--yes',
+              ]);
+              expect(installed, isA<MambaSuccessResult>());
+              final resolved = LifecycleContext.resolve(
+                LifecycleOptions(
+                  processWorkingDirectory: project.path,
+                  scope: LifecycleScope.project,
+                  cwd: project.path,
+                  projectRoot: project.path,
+                  home: home.path,
+                  stateDir: fs.path.join(sandbox.path, 'state'),
+                ),
+                fileSystem: fs,
+              );
+              final record = SkillLifecycleService(fileSystem: fs).state
+                  .records(resolved)
+                  .single;
+              final ledger = fs.file(
+                fs.path.join(resolved.stateRoot(), 'installations.json'),
+              );
+              final before = ledger.readAsStringSync();
+              final marker = fs.file(fs.path.join(source.path, 'SKILL.md'));
+              final original = marker.readAsStringSync();
+              if (contents == null) {
+                marker.deleteSync();
+              } else {
+                marker.writeAsStringSync(contents);
+              }
+              final args = [
+                'skill',
+                'migrate',
+                record.installationId,
+                ...context(),
+                '--method',
+                method,
+                '--target',
+                target,
+              ];
+              final pathsBefore = sandbox
+                  .listSync(recursive: true, followLinks: false)
+                  .map((entry) => entry.path)
+                  .toSet();
+              for (final flags in [
+                ['--dry-run'],
+                ['--yes', '--reviewed-plan', 'stale'],
+              ]) {
+                expect(
+                  await cli.execute([...args, ...flags]),
+                  isA<MambaFailureResult>().having(
+                    (result) => result.message,
+                    'message',
+                    contains(diagnostic),
+                  ),
+                );
+                expect(ledger.readAsStringSync(), before);
+                expect(
+                  fs
+                      .file(fs.path.join(record.location, 'SKILL.md'))
+                      .readAsStringSync(),
+                  original,
+                );
+                expect(
+                  sandbox
+                      .listSync(recursive: true, followLinks: false)
+                      .map((entry) => entry.path)
+                      .toSet(),
+                  pathsBefore,
+                );
+              }
+            },
+          );
+        }
 
         test(
           'previews and confirms a direct copy to source-link migration',
@@ -3880,6 +3986,260 @@ path = "skills/second"
             );
           });
 
+          for (final stale in [false, true]) {
+            test(
+              'canonical target migration drops ${stale ? 'stale' : 'eligible'} templates',
+              () async {
+                useLocalFileSystem();
+                const name = 'canonical-drop-source';
+                final source = manualSkill(name);
+                final cli = executor().fake();
+                final install = await cli.execute([
+                  'skill',
+                  'install',
+                  source.path,
+                  ...context(),
+                  '--source-kind',
+                  'resource',
+                  '--target',
+                  'claude',
+                  '--target',
+                  'codex',
+                  '--method',
+                  'canonical',
+                  '--prompt-target',
+                  'pi',
+                  '--yes',
+                ]);
+                expect(
+                  install,
+                  isA<MambaSuccessResult>(),
+                  reason: install is MambaFailureResult
+                      ? install.message
+                      : null,
+                );
+                final lifecycle = SkillLifecycleService(fileSystem: fs);
+                final resolved = LifecycleContext.resolve(
+                  LifecycleOptions(
+                    processWorkingDirectory: project.path,
+                    scope: LifecycleScope.project,
+                    cwd: project.path,
+                    projectRoot: project.path,
+                    home: home.path,
+                    stateDir: fs.path.join(sandbox.path, 'state'),
+                  ),
+                  fileSystem: fs,
+                );
+                InstallationRecord record() =>
+                    lifecycle.state.records(resolved).single;
+                final id = record().installationId;
+                expect(
+                  await cli.execute([
+                    'skill',
+                    'update',
+                    id,
+                    ...context(),
+                    '--yes',
+                  ]),
+                  isA<MambaSuccessResult>(),
+                );
+                final before = record();
+                expect(before.backupIds, isNotEmpty);
+                final marker = fs.file(
+                  fs.path.join(before.location, 'SKILL.md'),
+                );
+                final original = marker.readAsStringSync();
+                final exposure = before.exposures.single.path;
+                final prompt = fs.file(promptPath(name));
+                final originalPrompt = prompt.readAsStringSync();
+                final newSkill =
+                    '---\nname: $name\ndescription: Reviews.\n'
+                    '${stale ? '' : 'disable-model-invocation: true\n'}'
+                    '---\nNew body.\n';
+                fs
+                    .file(fs.path.join(source.path, 'SKILL.md'))
+                    .writeAsStringSync(newSkill);
+                final args = [
+                  'skill',
+                  'migrate',
+                  id,
+                  ...context(),
+                  '--method',
+                  'canonical',
+                  '--drop-prompt-targets',
+                  '--format',
+                  'json',
+                ];
+                expect(
+                  await cli.execute([
+                    ...args,
+                    '--target',
+                    'claude',
+                    '--dry-run',
+                  ]),
+                  isA<MambaFailureResult>().having(
+                    (r) => r.message,
+                    'message',
+                    contains(
+                      'Shared canonical content remains discoverable to codex',
+                    ),
+                  ),
+                );
+                final targetArgs = [...args, '--target', 'codex'];
+                final preview = await cli.execute([...targetArgs, '--dry-run']);
+                expect(
+                  preview,
+                  isA<MambaSuccessResult>(),
+                  reason: preview is MambaFailureResult
+                      ? preview.message
+                      : null,
+                );
+                final plan =
+                    (jsonDecode((preview as MambaSuccessResult).output!)
+                            as Map)['data']
+                        as Map;
+                expect(
+                  (plan['route'] as Map)['promptTargets'] ?? const <String>[],
+                  isEmpty,
+                );
+                expect(record().toJson(), before.toJson());
+                expect(marker.readAsStringSync(), original);
+                expect(prompt.readAsStringSync(), originalPrompt);
+                expect(
+                  fs.typeSync(exposure, followLinks: false),
+                  FileSystemEntityType.link,
+                );
+                final apply = [
+                  ...targetArgs,
+                  '--yes',
+                  '--reviewed-plan',
+                  plan['planId'] as String,
+                ];
+                if (!stale) {
+                  prompt.writeAsStringSync('Local edit.\n');
+                  expect(await cli.execute(apply), isA<MambaFailureResult>());
+                  expect(record().toJson(), before.toJson());
+                  expect(marker.readAsStringSync(), original);
+                  expect(prompt.readAsStringSync(), 'Local edit.\n');
+                  expect(
+                    fs.typeSync(exposure, followLinks: false),
+                    FileSystemEntityType.link,
+                  );
+                  prompt.writeAsStringSync(originalPrompt);
+                }
+                final result =
+                    await (stale
+                            ? cli
+                            : executor(
+                                lifecycle: SkillLifecycleService(
+                                  state: LifecycleStateService(
+                                    io: _FailOnQuarantineDeleteIO(
+                                      fs: fs,
+                                      suffix: '$name.md',
+                                    ),
+                                  ),
+                                ),
+                              ).fake())
+                        .execute(apply);
+                if (stale) {
+                  expect(
+                    result,
+                    isA<MambaSuccessResult>(),
+                    reason: result is MambaFailureResult
+                        ? result.message
+                        : null,
+                  );
+                } else {
+                  expect(
+                    result,
+                    isA<MambaFailureResult>()
+                        .having((r) => r.exitCode, 'exit code', 6)
+                        .having(
+                          (r) => r.message,
+                          'message',
+                          contains('cleanup pending'),
+                        ),
+                  );
+                  final pending = fs
+                      .directory(
+                        fs.path.join(resolved.stateRoot(), 'transactions'),
+                      )
+                      .listSync()
+                      .whereType<File>()
+                      .map((file) => jsonDecode(file.readAsStringSync()) as Map)
+                      .singleWhere(
+                        (transaction) =>
+                            transaction['phase'] == 'committedCleanupPending',
+                      );
+                  final removal = (pending['changes'] as List)
+                      .cast<Map<String, Object?>>()
+                      .singleWhere(
+                        (change) => change['artifactKind'] == 'prompt-template',
+                      );
+                  expect(removal['location'], prompt.path);
+                  expect(removal['removeOld'], isTrue);
+                  expect(removal['publishNew'], isFalse);
+                  final quarantine = fs.file(
+                    removal['quarantinePath'] as String,
+                  );
+                  expect(quarantine.readAsStringSync(), originalPrompt);
+                  final recovered = await cli.execute([
+                    'skill',
+                    'recover',
+                    pending['transactionId'] as String,
+                    ...context(),
+                    '--action',
+                    'complete',
+                    '--yes',
+                  ]);
+                  expect(
+                    recovered,
+                    isA<MambaSuccessResult>(),
+                    reason: recovered is MambaFailureResult
+                        ? recovered.message
+                        : null,
+                  );
+                  expect(quarantine.existsSync(), isFalse);
+                }
+                final after = record();
+                expect(after.installationId, id);
+                expect(after.backupIds, containsAll(before.backupIds));
+                expect(after.backupIds, hasLength(before.backupIds.length + 1));
+                expect(after.derivedPrompts, isEmpty);
+                expect(after.installationRoute!.promptTargets, isEmpty);
+                expect(after.knownConsumers, ['codex']);
+                expect(after.exposures, isEmpty);
+                expect(
+                  fs.typeSync(exposure, followLinks: false),
+                  FileSystemEntityType.notFound,
+                );
+                expect(marker.readAsStringSync(), newSkill);
+                expect(prompt.existsSync(), isFalse);
+                if (stale) {
+                  final restore = await cli.execute([
+                    'skill',
+                    'backup',
+                    'restore',
+                    before.backupIds.single,
+                    ...context(),
+                    '--yes',
+                  ]);
+                  expect(
+                    restore,
+                    isA<MambaFailureResult>().having(
+                      (r) => r.message,
+                      'message',
+                      contains('would reintroduce dropped derived Prompts'),
+                    ),
+                  );
+                  expect(record().toJson(), after.toJson());
+                  expect(marker.readAsStringSync(), newSkill);
+                  expect(prompt.existsSync(), isFalse);
+                }
+              },
+            );
+          }
+
           test(
             'a failed update restores the old skill and old template',
             () async {
@@ -4439,11 +4799,15 @@ path = "skills/plain-second"
 }
 
 final class _FailOnQuarantineDeleteIO extends LifecycleIO {
-  _FailOnQuarantineDeleteIO({required super.fs});
+  _FailOnQuarantineDeleteIO({required super.fs, this.suffix = ''});
+
+  final String suffix;
 
   @override
   void before(String operation, String path) {
-    if (operation == 'delete' && path.contains('quarantine')) {
+    if (operation == 'delete' &&
+        path.contains('quarantine') &&
+        path.endsWith(suffix)) {
       throw const FileSystemException('Injected cleanup failure');
     }
   }

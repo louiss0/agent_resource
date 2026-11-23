@@ -51,6 +51,26 @@ same extensionless output. The adapter injects GoReleaser's snapshot or tag
 version into the executable.
 `dist/` contains GoReleaser's ordinary build output and is not committed.
 
+## Terminal acceptance
+
+On each target OS, use the built executable from the candidate revision in
+an actual terminal and a disposable project, home, and state directory.
+Record the revision, OS, terminal, observed exit statuses, and any failures
+in the qualification evidence. Do not use a real user configuration or
+capture credentials or template contents in the evidence.
+
+| Check | Expected result |
+| --- | --- |
+| Preview and approve a Context injection | The destination and changes appear before the prompt. Nothing is written before approval; the approved file is published afterward. |
+| Decline, interrupt, and send EOF at a prompt | Each attempt finishes without publishing. Verify that the shell still echoes input and accepts a new command. |
+| Use a long resource list; resize the terminal while selecting | The requested resource remains identifiable and selectable. Cancel before writing. |
+| Redirect stdin and stdout separately with `--interactive` | The command refuses interaction without prompting or writing. |
+
+Run the manual `ci.yml` workflow for the committed candidate and verify that
+its head SHA matches before using the `release-decision` artifact. The
+workflow's automated results do not substitute for these terminal checks or
+for the final human approval.
+
 ## Publish
 
 After committing and pushing the release candidate, tag the approved revision:

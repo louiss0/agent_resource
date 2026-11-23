@@ -129,6 +129,10 @@ interface class ContextTemplateAuthoringService {
   bool get hasTerminal => _terminal();
 
   /// Runs one authoring request and returns its house envelope payload.
+  ///
+  /// Publication checks the reviewed target again after approval and before
+  /// writing recovery or staging files. This detects observed drift, not
+  /// changes by a writer racing between that check and publication.
   Future<LifecycleResult> run(ContextAuthoringRequest request) async {
     final name = await _resolveName(request);
     if (!isValidContextTemplateName(name)) {
@@ -207,6 +211,7 @@ interface class ContextTemplateAuthoringService {
     _verifyPlan(plan, request, draftRef);
     _observeTarget(plan, request, existing, draftRef);
     await _approve(plan, request, draftRef);
+    _observeTarget(plan, request, existing, draftRef);
 
     String? recoveryPath;
     if (!request.create) {
