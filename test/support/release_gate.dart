@@ -448,6 +448,18 @@ Review.
       cancelled,
     );
 
+    if (!Platform.isWindows) {
+      await _provePosixPtyConfirmation(
+        executable: executable,
+        sandbox: sandbox,
+        work: work,
+        home: home,
+        environment: environment,
+        installation: installation,
+        results: results,
+      );
+    }
+
     final installedLocation =
         ((installedUnit['entries']! as List<Object?>).single!
                 as Map<String, Object?>)['path']!
@@ -1617,4 +1629,76 @@ Directory _packageRoot() {
     }
     current = parent;
   }
+}
+
+/// Drives the interactive approval through a real POSIX pseudo-terminal:
+/// script(1) attaches the built artifact's stdin and stdout to a pty, so the
+/// terminal gate takes the interactive path the redirected-input scenario
+/// proved it refuses without a terminal. The child's real status is recovered
+/// through a marker file because script(1) exit-code propagation differs
+/// between util-linux and BSD.
+Future<void> _provePosixPtyConfirmation({
+  required File executable,
+  required Directory sandbox,
+  required Directory work,
+  required Directory home,
+  required Map<String, String> environment,
+  required String installation,
+  required List<Map<String, Object?>> results,
+}) async {
+  String shQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+  final exitMarker = File(p.join(sandbox.path, 'pty-remove-exit'));
+  final childArguments = <String>[
+    'agent',
+    'remove',
+    installation,
+    '--cwd',
+    '${work.path}${p.separator}',
+    '--project-root',
+    '${work.path}${p.separator}',
+    '--home',
+    '${home.path}${p.separator}',
+    '--interactive',
+  ];
+  final inner =
+      '${shQuote(executable.path)} '
+      '${childArguments.map(shQuote).join(' ')}; '
+      'printf %s "\$?" > ${shQuote(exitMarker.path)}';
+  final scriptArguments = Platform.isMacOS
+      ? <String>['-q', '/dev/null', 'sh', '-c', inner]
+      : <String>['-q', '-e', '-c', inner, '/dev/null'];
+  final pty = await runProcess(
+    'script',
+    scriptArguments,
+    workingDirectory: work,
+    environment: Map<String, String>.of(environment)..['TERM'] = 'xterm',
+    timeout: const Duration(seconds: 45),
+    standardInput: 'n\n',
+  );
+  _expect(
+    exitMarker.existsSync(),
+    'PTY run did not reach the interactive command.',
+    pty,
+  );
+  final childExit = int.tryParse(exitMarker.readAsStringSync().trim()) ?? -1;
+  results.add(<String, Object?>{
+    'scenario': 'built-pty-remove-confirmation',
+    'verification': 'native',
+    'channel': 'posix-pty-script(1)',
+    'arguments': <String>[
+      'script',
+      for (final argument in scriptArguments)
+        argument.replaceAll(sandbox.path, '<sandbox>'),
+    ],
+    'exitCode': childExit,
+    'stdoutBytes': utf8.encode(pty.stdout).length,
+    'stderrBytes': utf8.encode(pty.stderr).length,
+    'rawStreamsRetained': false,
+  });
+  _expect(
+    pty.stdout.contains('Apply this reviewed remove operation?'),
+    'A real pseudo-terminal did not render the approval prompt.',
+    pty,
+  );
+  _expect(childExit == 7, 'PTY cancellation did not return status 7.', pty);
 }

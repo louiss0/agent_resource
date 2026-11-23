@@ -55,7 +55,7 @@ exercises the compiled executable on each runner's real filesystem.
 | Case sensitivity / journal path keys | Windows case-folds action paths (`PathActionDiff`); route-recovery suites build journal rows through the real diff | case-sensitive paths exercised by the same suites | same |
 | Linked-ancestor refusal | `context_injection_service_test` — `refuses a linked intermediate destination directory`; route-recovery refusal tests | same; additionally guards symlinked temp ancestors (see below) | `/var`→`/private/var` temp ancestors resolved in tests |
 | Cross-root renames | `context_injection_service_test` staging/compensation suites | same | same |
-| Terminal detection (stdin AND stdout) | `pack_action_test` — `does not prompt when stdout is redirected`; interactive gating tests | same | same |
+| Terminal detection (stdin AND stdout) | `pack_action_test` — `does not prompt when stdout is redirected`; interactive gating tests | same; gate `built-pty-remove-confirmation` renders and cancels under a real PTY | same |
 | Non-TTY refusal / fallback | `cli_process_test` interactive refusal on redirected stdin; `context_delete_test` — `no usable terminal implies unattended confirmation` | same | same |
 
 Documented boundary: a project root, state root, or Context destination
@@ -116,7 +116,7 @@ boundary list is absent or malformed.
 | Coordinated interruption recovery | Deterministic transaction suites and real Windows built-production statuses 5 and 6. | The integrated decision must verify the capable Windows job's evidence against the other native jobs. |
 | Native link ownership and bounded traversal | Native-link suites and the gate's true-directory-symlink capability result. | Windows-specific link subtypes and hostile concurrent filesystem races remain outside the cooperative-local-root trust model. |
 | Source acquisition security | `httpsGitQualification` in the gate evidence records certificate verification, credential kind, redirect policy, and six fixture scenarios. | Fixture-local HTTPS does not certify arbitrary public hosts, credential stores, or live accounts. |
-| Interactive selectors and confirmations | Scripted adapter and command suites cover unattended and safely redirected-input behavior. | Graceful EOF, complete terminal-mode restoration, long-list rendering, resize behavior, and real Windows/macOS/Linux PTY acceptance remain unverified. |
+| Interactive selectors and confirmations | Scripted adapter and command suites cover unattended and safely redirected-input behavior; the gate drives a real POSIX PTY approval/cancellation through `script(1)` (`built-pty-remove-confirmation`). | Graceful EOF, complete terminal-mode restoration, long-list rendering, resize behavior, and real Windows PTY acceptance remain unverified. |
 | Runtime activation and equivalence | Explicitly `false` in the gate evidence. | Native harness activation and behavioral equivalence are not release claims. |
 
 ## Evidence protocol
@@ -153,9 +153,10 @@ not set CI environment variables locally to manufacture job provenance.
    with matching SDK, lockfile, artifact, and CI job provenance.
 2. No integrated `release-decision` result exists for the current
    candidate. Local evidence has `revision: local-working-tree`.
-3. Real cross-platform PTY acceptance, cancellation/EOF behavior,
-   terminal-mode restoration, long-list rendering, and resize behavior
-   are not evidenced. Scripted byte streams are not substitutes.
+3. POSIX PTY approval and cancellation are evidenced through the gate's
+   `built-pty-remove-confirmation` scenario; real Windows PTY acceptance,
+   EOF behavior, terminal-mode restoration, long-list rendering, and
+   resize behavior remain unverified.
 4. Final human approval has not been recorded in this document.
 
 ## Release prerequisites
