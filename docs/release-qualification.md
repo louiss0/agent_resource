@@ -39,55 +39,6 @@ Each skip's condition and the CI operating system that discharges it are
 recorded there; a Windows-only full-suite result does not discharge
 cross-platform verification on its own.
 
-## Audit findings → evidence
-
-Every actionable finding in `docs/product-audit.md` carries a stable
-`PA-x.y` identifier (HTML comment markers). This table maps each finding
-to the ticket that resolved it, the focused regression tests that guard
-the fix, and its status. `test/release_qualification_test.dart` fails if
-any audit ID is missing here or any referenced test name disappears.
-
-| Finding | Ticket | Focused evidence (test file — test name) | Status |
-| --- | --- | --- | --- |
-| PA-1.1 | #134 | `test/resource_lifecycle_boundaries_test.dart` — `has no registered command`; `test/support_test.dart` — `prompt help discloses the real install routes` | intentional boundary |
-| PA-1.2 | #134 | `test/pack_test.dart` — `installs both resource types through the real service`; `test/prompt_read_test.dart` — `Pi template validation is recognized but installation stays unsupported` | intentional boundary |
-| PA-1.3 | #130 | `test/skill_install_test.dart` — `publishes a derived prompt template with the skill`; `test/src/services/pack_lifecycle_service_test.dart` — `--prompt-target publishes the pi template` | resolved |
-| PA-1.4 | #134 | `test/prompt_create_command_test.dart` — `refuses a managed Prompt without falling back to author-only` | intentional boundary |
-| PA-1.5 | #134 | `test/support_test.dart` — `context help explains the one-shot injection boundary` | intentional boundary |
-| PA-1.6 | #134 | `test/mcp_test.dart` — `states the static verification boundary in text and JSON`; `test/support_test.dart` — `mcp help discloses the static-check boundary` | intentional boundary |
-| PA-1.7 | #134 | `test/mcp_lifecycle_test.dart` — `Claude user/local mutations are refused for every operation` | intentional boundary |
-| PA-2.1 | #128 | `test/skill_install_test.dart` — `direct and pack previews disclose the same configured defaults and origins` | resolved |
-| PA-2.2 | #126 | `test/config_test.dart` — `shows default settings with explicit paths and origins` | resolved |
-| PA-2.3 | #126 | `test/config_test.dart` — `labels XDG_CONFIG_HOME as the user config origin`; `test/skill_install_test.dart` — `unattended plan reports explicit origins in JSON` | resolved |
-| PA-2.4 | #126 | `test/config_test.dart` — `reports discovered paths and layered origins as JSON` | resolved |
-| PA-2.5 | #126 | `test/config_test.dart` — `shows explicit target and method origins` | resolved |
-| PA-2.6 | #126 | `test/config_test.dart` — `previews safe changes without writing configuration` | resolved |
-| PA-2.7 | #128 | `test/config_test.dart` — `applies eligible preferences at` | resolved |
-| PA-2.8 | #128 | `test/agent_install_test.dart` — `exact unattended dry-run requires and preserves explicit native profile` | resolved |
-| PA-3.1 | #127 | `test/guided_profile_cli_test.dart` — `guides the missing native profile` | resolved |
-| PA-3.2 | #127 | `test/project_scope_cli_test.dart` — `defaults to project inventory`; `test/skill_install_test.dart` — `interactive installation defaults to project scope` | resolved |
-| PA-3.3 | #127 | `test/agent_create_command_test.dart` — `shows the bound-role plan before requesting approval`; `test/skill_install_test.dart` — `reviews a canonical target change before publishing` | resolved |
-| PA-3.4 | #132 | `test/context_inject_test.dart` — `refuses destination changes made during approval`; `test/context_inject_test.dart` — `uses the selected harness and template interactively` | resolved |
-| PA-3.5 | #127 | `test/pack_action_test.dart` — `does not prompt when stdout is redirected` | resolved |
-| PA-3.6 | #135 | `test/application_test.dart` — `root help gives task-oriented first-success guidance` | resolved |
-| PA-3.7 | #135 | `test/application_test.dart` — `shows nonempty root help when no arguments are supplied` | resolved |
-| PA-3.8 | #135 | `test/application_test.dart` — `root help gives task-oriented first-success guidance`; `test/guided_profile_cli_test.dart` — `guides the missing native profile` | resolved |
-| PA-3.9 | #127 | `test/skill_install_test.dart` — `unattended plan reports explicit origins in JSON` | resolved |
-| PA-3.10 | #128 | `test/config_test.dart` — `previews safe changes without writing configuration` | resolved |
-| PA-3.11 | #127 | `test/context_inject_test.dart` — `refuses a cancelled apply confirmation`; `test/agent_create_command_test.dart` — `shows the bound-role plan before requesting approval` | resolved |
-| PA-3.12 | #127 | `test/pack_action_test.dart` — `does not prompt when stdout is redirected`; `test/context_delete_test.dart` — `no usable terminal implies unattended confirmation` | resolved |
-| PA-3.13 | #127 | `test/agent_create_command_test.dart` — `prints a replayable guided bound-role command`; `test/context_inject_test.dart` — `prints a quoted explicit command without template content` | resolved |
-| PA-4.1 | #131 | `test/skill_install_test.dart` — `canonical inventory follows only its tracked exposure`; `test/prompt_read_test.dart` — `refuses a linked skill marker` | resolved |
-| PA-4.2 | #134 | `test/skill_native_view_test.dart` — `inspect reports installation admission separately from native`; `test/src/services/pack_lifecycle_service_test.dart` — `validate separates native validity from installation eligibility` | resolved |
-| PA-4.3 | #133 | `test/mcp_lifecycle_test.dart` — `TOML: replacement removes omitted fields and preserves unrelated bytes`; `test/mcp_lifecycle_test.dart` — `replaces stdio with a complete HTTP registration` | resolved |
-| PA-4.4 | #133 | `test/mcp_lifecycle_test.dart` — `encodes Codex HTTP environment references natively`; `test/mcp_lifecycle_test.dart` — `forwards a Codex stdio environment variable by name`; `test/mcp_lifecycle_test.dart` — `refuses credential references containing literal defaults` | resolved |
-| PA-4.5 | #132 | `test/src/services/context_template_authoring_service_test.dart` — `refuses an edit when the template changes during approval`; `test/src/services/context_template_authoring_service_test.dart` — `refuses a create when the template appears during approval` | resolved |
-| PA-4.6 | #132 | `test/src/services/context_injection_service_test.dart` — `compensates an earlier write when a later target fails`; `test/src/services/context_injection_service_test.dart` — `preserves an independently changed published target on failure`; `test/src/services/context_injection_service_test.dart` — `reports retained recovery when compensation also fails` | resolved |
-| PA-4.7 | #132 | `test/src/services/context_injection_service_test.dart` — `refuses a linked intermediate destination directory`; `test/src/services/context_injection_service_test.dart` — `refuses a Windows junction in a Context destination` | resolved |
-| PA-5.1 | #135 | `test/documentation_test.dart` — `the harness matrix matches the catalog`; `test/documentation_test.dart` — `the lifecycle matrix matches the boundary contract` | resolved |
-| PA-5.2 | #135 | `test/documentation_test.dart` — `every fenced agent-resource invocation resolves and parses`; `test/application_test.dart` — `root help gives task-oriented first-success guidance` | resolved |
-| PA-5.3 | #135 | `test/documentation_test.dart` — `every docs/specs document carries the banner` | resolved |
-
 ## Platform qualification
 
 Windows and Linux are release-blocking platforms; macOS runs the same CI
