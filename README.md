@@ -212,8 +212,10 @@ dart compile exe bin/agent_resource.dart -o build/agent_resource.exe
 dart run test/support/release_gate.dart build/agent_resource.exe build/release-evidence.json
 ```
 
-Use `build/agent_resource` without `.exe` on macOS/Linux. CI runs this gate
-on all three native operating systems and uploads only the sanitized
+Use `build/agent_resource` without `.exe` on macOS/Linux. A local run
+produces native-job evidence with `revision: local-working-tree` and no CI
+job provenance, so it is not an integrated release verdict. CI runs this
+gate on all three native operating systems and uploads only the sanitized
 evidence JSON. `docs/release-qualification.md` contains the
 behavior/evidence index, current blockers, and explicit readiness decision;
 green tests alone do not qualify a release.
