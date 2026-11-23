@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -1647,6 +1648,16 @@ Future<void> _provePosixPtyConfirmation({
   required List<Map<String, Object?>> results,
 }) async {
   String shQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
+  final probeMarker = File(p.join(sandbox.path, 'pty-probe'));
+  final detectScript = File(p.join(sandbox.path, 'pty-detect.dart'))
+    ..writeAsStringSync(
+      "import 'dart:io';\n"
+      'void main() {\n'
+      "  stderr.writeln('stdin=\${stdin.hasTerminal} '\n"
+      "      'stdout=\${stdout.hasTerminal}');\n"
+      '}\n',
+    );
+  final detectOut = File(p.join(sandbox.path, 'pty-detect-out'));
   final exitMarker = File(p.join(sandbox.path, 'pty-remove-exit'));
   final childArguments = <String>[
     'agent',
@@ -1660,26 +1671,88 @@ Future<void> _provePosixPtyConfirmation({
     '${home.path}${p.separator}',
     '--interactive',
   ];
+  // script(1) creates a 0x0 pty when its own stdin is not a terminal;
+  // Dart's stdout.hasTerminal requires a nonzero TIOCGWINSZ, so the
+  // session must size the slave before the artifact runs.
   final inner =
+      'stty rows 24 cols 80; '
+      'test -t 0 && test -t 1; '
+      'printf %s "\$?" > ${shQuote(probeMarker.path)}; '
+      '${shQuote(Platform.resolvedExecutable)} '
+      '${shQuote(detectScript.path)} '
+      '2> ${shQuote(detectOut.path)}; '
       '${shQuote(executable.path)} '
       '${childArguments.map(shQuote).join(' ')}; '
       'printf %s "\$?" > ${shQuote(exitMarker.path)}';
   final scriptArguments = Platform.isMacOS
       ? <String>['-q', '/dev/null', 'sh', '-c', inner]
       : <String>['-q', '-e', '-c', inner, '/dev/null'];
-  final pty = await runProcess(
+  // Pre-written input is flushed when the console enters raw mode, so the
+  // answer must be sent only after the approval prompt has rendered.
+  final process = await Process.start(
     'script',
     scriptArguments,
-    workingDirectory: work,
+    workingDirectory: work.path,
     environment: Map<String, String>.of(environment)..['TERM'] = 'xterm',
-    timeout: const Duration(seconds: 45),
-    standardInput: 'n\n',
+    includeParentEnvironment: false,
   );
-  _expect(
-    exitMarker.existsSync(),
-    'PTY run did not reach the interactive command.',
-    pty,
+  final transcript = StringBuffer();
+  final errors = StringBuffer();
+  const Utf8Decoder(allowMalformed: true)
+      .bind(process.stdout)
+      .listen(transcript.write, onError: (Object _, StackTrace _) {});
+  const Utf8Decoder(allowMalformed: true)
+      .bind(process.stderr)
+      .listen(errors.write, onError: (Object _, StackTrace _) {});
+  var exited = false;
+  unawaited(process.exitCode.then((_) => exited = true));
+  const prompt = 'Apply this reviewed remove operation?';
+  final deadline = DateTime.now().add(const Duration(seconds: 45));
+  var lastNudge = DateTime.fromMillisecondsSinceEpoch(0);
+  while (!exitMarker.existsSync() && !exited) {
+    if (DateTime.now().isAfter(deadline)) break;
+    final seen = transcript.toString().contains(prompt);
+    if (seen &&
+        DateTime.now().difference(lastNudge) > const Duration(seconds: 2)) {
+      lastNudge = DateTime.now();
+      try {
+        process.stdin.write('n\r');
+        await process.stdin.flush();
+      } on Object {
+        // A script(1) that exits mid-answer makes the marker check fail.
+      }
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  if (!exitMarker.existsSync()) process.kill();
+  try {
+    await process.stdin.close();
+  } on Object {
+    // The session may already be gone after a kill or early exit.
+  }
+  final scriptExit = await process.exitCode.timeout(
+    const Duration(seconds: 10),
+    onTimeout: () => -1,
   );
+  final pty = CliProcessResult(
+    exitCode: scriptExit,
+    stdout: transcript.toString(),
+    stderr: errors.toString(),
+  );
+  // The transcript is this scenario's own binary output — no native
+  // documents or credentials — so a bounded escaped preview is safe to
+  // retain in failure diagnostics (never in the evidence bundle itself).
+  void fail(String message) => throw StateError(
+    '$message Status ${pty.exitCode}; '
+    'tty-probe: ${probeMarker.existsSync() ? probeMarker.readAsStringSync() : 'absent'}; '
+    'dart-tty: ${detectOut.existsSync() ? detectOut.readAsStringSync() : 'absent'}; '
+    'child-exit: ${exitMarker.existsSync() ? exitMarker.readAsStringSync() : 'absent'}; '
+    'transcript: ${jsonEncode(_bounded(pty.stdout))}; '
+    'stderr: ${pty.stderr}',
+  );
+  if (!exitMarker.existsSync()) {
+    fail('PTY run did not reach the interactive command.');
+  }
   final childExit = int.tryParse(exitMarker.readAsStringSync().trim()) ?? -1;
   results.add(<String, Object?>{
     'scenario': 'built-pty-remove-confirmation',
@@ -1695,10 +1768,13 @@ Future<void> _provePosixPtyConfirmation({
     'stderrBytes': utf8.encode(pty.stderr).length,
     'rawStreamsRetained': false,
   });
-  _expect(
-    pty.stdout.contains('Apply this reviewed remove operation?'),
-    'A real pseudo-terminal did not render the approval prompt.',
-    pty,
-  );
-  _expect(childExit == 7, 'PTY cancellation did not return status 7.', pty);
+  if (!pty.stdout.contains('Apply this reviewed remove operation?')) {
+    fail('A real pseudo-terminal did not render the approval prompt.');
+  }
+  if (childExit != 7) {
+    fail('PTY cancellation did not return status 7.');
+  }
 }
+
+String _bounded(String text) =>
+    text.length <= 2000 ? text : text.substring(0, 2000);
