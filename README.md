@@ -27,8 +27,7 @@ On Windows, after the release's WinGet pull request has been merged:
 winget install --id louiss0.AgentResource --exact
 ```
 
-Release archives and checksums are also attached to GitHub releases. See
-`docs/releasing.md` for supported targets and the release process.
+Release archives and checksums are also attached to GitHub releases.
 
 ## Get dependencies and run
 
@@ -216,9 +215,7 @@ Use `build/agent_resource` without `.exe` on macOS/Linux. A local run
 produces native-job evidence with `revision: local-working-tree` and no CI
 job provenance, so it is not an integrated release verdict. CI runs this
 gate on all three native operating systems and uploads only the sanitized
-evidence JSON. `docs/release-qualification.md` contains the
-behavior/evidence index, current blockers, and explicit readiness decision;
-green tests alone do not qualify a release.
+evidence JSON. Green tests alone do not qualify a release.
 
 The process-boundary tests run the executable with isolated temporary
 working, home, and configuration directories, initializing all of those
